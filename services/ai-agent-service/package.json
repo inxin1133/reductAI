@@ -1,0 +1,11 @@
+{
+  "name": "@reductai/ai-agent-service",
+  "version": "1.0.0",
+  "description": "LLM Agent and Model Management Service",
+  "main": "src/main.ts",
+  "scripts": {
+    "start": "ts-node src/main.ts",
+    "dev": "nodemon src/main.ts"
+  }
+}
+

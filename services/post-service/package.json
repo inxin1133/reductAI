@@ -1,0 +1,11 @@
+{
+  "name": "@reductai/post-service",
+  "version": "1.0.0",
+  "description": "Block Editor and Board Service",
+  "main": "src/main.ts",
+  "scripts": {
+    "start": "ts-node src/main.ts",
+    "dev": "nodemon src/main.ts"
+  }
+}
+
