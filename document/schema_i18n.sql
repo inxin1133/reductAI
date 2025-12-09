@@ -57,6 +57,18 @@ COMMENT ON COLUMN languages.updated_at IS '언어 정보 최종 수정 시각';
 -- 2. TRANSLATION NAMESPACES (번역 네임스페이스)
 -- ============================================
 
+-- 
+-- 네임스페이스란?
+--   - 번역 키(key) 들을 논리적으로 그룹화하여 관리하는 단위입니다.
+--   - 예시: 'common', 'auth', 'posts', 'errors' 와 같이 기능/도메인/서비스별로 번역키 묶음 지정
+--   - 코드 및 DB에서 'namespace'를 기준으로 번역키 충돌 없이 분리/추적/로딩이 가능합니다.
+--   - 주로 백엔드/프론트엔드 등에서 다음과 같이 번역키 FQN(fully qualified name) 접근 시 사용됨:
+--         {namespace}.{key}  (예: common.save, auth.login.button)
+--   - 네임스페이스는 여러 서비스에서 중복되지 않는 일관성 있는 번역 구조를 만드는데 필수적입니다.
+--   - 이 테이블은 namespace별 메타데이터·설명·서비스소속 등을 함께 정의하여
+--     번역 관리 체계(특히 다수 서비스/마이크로서비스 환경)에서 확장성과 명확성을 보장합니다.
+--
+
 CREATE TABLE translation_namespaces (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name VARCHAR(100) NOT NULL UNIQUE, -- 네임스페이스 이름 (예: 'common', 'auth', 'posts')
@@ -71,7 +83,7 @@ CREATE TABLE translation_namespaces (
 CREATE INDEX idx_translation_namespaces_name ON translation_namespaces(name);
 CREATE INDEX idx_translation_namespaces_service_name ON translation_namespaces(service_name);
 
-COMMENT ON TABLE translation_namespaces IS '번역 키를 그룹화하는 네임스페이스를 관리하는 테이블';
+COMMENT ON TABLE translation_namespaces IS '번역 키를 그룹화하는 네임스페이스를 관리하는 테이블. 하나의 네임스페이스는 여러 번역 키를 가질 수 있으며, 네임스페이스로 번역 키 충돌을 방지하고 효율적으로 관리할 수 있습니다.';
 COMMENT ON COLUMN translation_namespaces.id IS '네임스페이스의 고유 식별자 (UUID)';
 COMMENT ON COLUMN translation_namespaces.name IS '네임스페이스 이름 (예: common, auth, posts, errors)';
 COMMENT ON COLUMN translation_namespaces.description IS '네임스페이스 설명';
@@ -116,6 +128,21 @@ COMMENT ON COLUMN translation_keys.updated_at IS '번역 키 정보 최종 수�
 -- ============================================
 -- 4. TRANSLATIONS (번역 텍스트)
 -- ============================================
+-- 
+-- [내부 주석: "번역 텍스트"와 "번역 가능한 콘텐츠"의 차이]
+-- 
+-- "번역 텍스트(translations)" 테이블은 UI, 시스템 메시지, 에러 메세지 등에서 반복적으로 재사용되는 "문자열 리소스"의 실제 번역 텍스트 데이터를 저장합니다.
+-- 즉, translation_keys와 연결되어 공통적으로 쓰이는 키/값 번역 (예: 'button.save' = '저장').
+--
+-- "번역 가능한 콘텐츠(translatable_content)" 테이블은 게시물, 카테고리, 커뮤니티, 상품 등
+-- 실제 사용자가 생성하거나 관리하는 레코드의 특정 필드(예: 게시글 제목, 설명 등)가 여러 언어로 번역 가능한 경우
+-- 각 객체와 필드별로 번역 키 또는 기본 텍스트와 연결하여 별도로 관리합니다. 
+-- 즉, 도메인(비즈니스/실제 데이터) 오브젝트의 다국어 컬럼 추적에 활용되며,
+-- 주로 실데이터의 국제화를 위함입니다.
+--
+-- 요약: 
+--   - 'translations'는 공통 UI/시스템 문자열(Key-Value 중심)의 다국어 값을 저장
+--   - 'translatable_content'는 게시글·카테고리·상품 등 개별 데이터 객체의 여러 언어 값을 관리
 
 CREATE TABLE translations (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

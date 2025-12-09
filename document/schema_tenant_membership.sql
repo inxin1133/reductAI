@@ -210,8 +210,8 @@ CREATE TABLE billing_accounts (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     payment_method_type VARCHAR(50) CHECK (payment_method_type IN ('credit_card', 'bank_transfer', 'paypal', 'other')),
-    payment_method_last4 VARCHAR(4), -- 카드 마지막 4자리
-    payment_method_brand VARCHAR(50), -- 카드 브랜드 (visa, mastercard 등)
+    payment_method_last4 VARCHAR(4), -- 카드 마지막 4자리 (Legacy: Payment Methods 테이블 권장)
+    payment_method_brand VARCHAR(50), -- 카드 브랜드 (Legacy)
     billing_email VARCHAR(255),
     billing_name VARCHAR(255),
     billing_address JSONB, -- 주소 정보 (JSON 형식)
@@ -242,7 +242,43 @@ COMMENT ON COLUMN billing_accounts.created_at IS '과금 계정 생성 시각';
 COMMENT ON COLUMN billing_accounts.updated_at IS '과금 계정 정보 최종 수정 시각';
 
 -- ============================================
--- 7. BILLING INVOICES (청구서)
+-- 7. PAYMENT METHODS (결제 수단 관리)
+-- ============================================
+
+CREATE TABLE payment_methods (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    billing_account_id UUID NOT NULL REFERENCES billing_accounts(id) ON DELETE CASCADE,
+    type VARCHAR(50) NOT NULL DEFAULT 'card' CHECK (type IN ('card', 'bank_account')),
+    provider VARCHAR(50) NOT NULL DEFAULT 'stripe', -- e.g., stripe, paypal
+    provider_payment_method_id VARCHAR(255) NOT NULL, -- PG사(Gateway)에서 발급한 Payment Method ID
+    card_brand VARCHAR(50), -- Visa, Mastercard, Amex 등
+    card_last4 VARCHAR(4), -- 카드번호 마지막 4자리
+    card_exp_month INTEGER,
+    card_exp_year INTEGER,
+    is_default BOOLEAN DEFAULT FALSE, -- 기본 결제 수단 여부
+    status VARCHAR(50) DEFAULT 'active' CHECK (status IN ('active', 'expired', 'deleted')),
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_payment_methods_billing_account_id ON payment_methods(billing_account_id);
+CREATE INDEX idx_payment_methods_provider_id ON payment_methods(provider_payment_method_id);
+CREATE INDEX idx_payment_methods_is_default ON payment_methods(billing_account_id, is_default) WHERE is_default = TRUE;
+
+COMMENT ON TABLE payment_methods IS '등록된 카드 등 결제 수단을 상세 관리하는 테이블';
+COMMENT ON COLUMN payment_methods.id IS '결제 수단의 고유 식별자';
+COMMENT ON COLUMN payment_methods.provider_payment_method_id IS 'PG사(Gateway)의 결제 수단 ID (토큰)';
+COMMENT ON COLUMN payment_methods.card_last4 IS '카드번호 마지막 4자리 (보안 저장)';
+COMMENT ON COLUMN payment_methods.is_default IS '기본 결제 수단 여부 (계정당 하나만 TRUE)';
+COMMENT ON COLUMN payment_methods.status IS '결제 수단 상태: active(활성), expired(만료), deleted(삭제)';
+COMMENT ON COLUMN payment_methods.metadata IS '결제 수단의 추가 메타데이터 (JSON 형식)';
+COMMENT ON COLUMN payment_methods.created_at IS '결제 수단 생성 시각';
+COMMENT ON COLUMN payment_methods.updated_at IS '결제 수단 정보 최종 수정 시각';    
+
+
+-- ============================================
+-- 8. BILLING INVOICES (청구서)
 -- ============================================
 
 CREATE TABLE billing_invoices (
@@ -293,20 +329,24 @@ COMMENT ON COLUMN billing_invoices.created_at IS '청구서 생성 시각';
 COMMENT ON COLUMN billing_invoices.updated_at IS '청구서 정보 최종 수정 시각';
 
 -- ============================================
--- 8. PAYMENT TRANSACTIONS (결제 거래)
+-- 9. PAYMENT TRANSACTIONS (결제 거래)
 -- ============================================
 
 CREATE TABLE payment_transactions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     invoice_id UUID NOT NULL REFERENCES billing_invoices(id) ON DELETE RESTRICT,
     billing_account_id UUID NOT NULL REFERENCES billing_accounts(id) ON DELETE RESTRICT,
-    transaction_type VARCHAR(50) NOT NULL CHECK (transaction_type IN ('charge', 'refund', 'adjustment')),
+    payment_method_id UUID REFERENCES payment_methods(id) ON DELETE SET NULL, -- 사용된 결제 수단
+    related_transaction_id UUID REFERENCES payment_transactions(id) ON DELETE SET NULL, -- 환불 시 원본 거래 ID
+    transaction_type VARCHAR(50) NOT NULL CHECK (transaction_type IN ('charge', 'refund', 'adjustment', 'cancel')),
     amount DECIMAL(10, 2) NOT NULL,
     currency VARCHAR(3) DEFAULT 'USD',
     status VARCHAR(50) NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed', 'refunded', 'cancelled')),
-    payment_method_id VARCHAR(255), -- 외부 결제 시스템의 결제 수단 ID
-    transaction_id VARCHAR(255), -- 외부 결제 시스템의 거래 ID
+    payment_method_provider_id VARCHAR(255), -- PG사의 결제 수단 ID (payment_methods 테이블 삭제 대비 백업)
+    transaction_id VARCHAR(255), -- 외부 결제 시스템의 거래 ID (예: Stripe Charge ID)
     failure_reason TEXT, -- 실패 사유
+    refund_reason TEXT, -- 환불/취소 사유
+    gateway_response JSONB DEFAULT '{}', -- PG사 응답 전문 (JSON)
     processed_at TIMESTAMP WITH TIME ZONE,
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -317,25 +357,30 @@ CREATE INDEX idx_payment_transactions_invoice_id ON payment_transactions(invoice
 CREATE INDEX idx_payment_transactions_billing_account_id ON payment_transactions(billing_account_id);
 CREATE INDEX idx_payment_transactions_status ON payment_transactions(status);
 CREATE INDEX idx_payment_transactions_transaction_id ON payment_transactions(transaction_id);
+CREATE INDEX idx_payment_transactions_related_id ON payment_transactions(related_transaction_id);
 
 COMMENT ON TABLE payment_transactions IS '결제 거래 정보를 관리하는 테이블';
 COMMENT ON COLUMN payment_transactions.id IS '거래의 고유 식별자 (UUID)';
 COMMENT ON COLUMN payment_transactions.invoice_id IS '거래가 속한 청구서 ID (billing_invoices 테이블 참조)';
 COMMENT ON COLUMN payment_transactions.billing_account_id IS '거래가 속한 과금 계정 ID (billing_accounts 테이블 참조)';
-COMMENT ON COLUMN payment_transactions.transaction_type IS '거래 타입: charge(결제), refund(환불), adjustment(조정)';
+COMMENT ON COLUMN payment_transactions.payment_method_id IS '사용된 결제 수단 ID (payment_methods 테이블 참조)';
+COMMENT ON COLUMN payment_transactions.related_transaction_id IS '환불/취소 시 원본 거래 ID (자기 참조)';
+COMMENT ON COLUMN payment_transactions.transaction_type IS '거래 타입: charge(결제), refund(환불), adjustment(조정), cancel(취소)';
 COMMENT ON COLUMN payment_transactions.amount IS '거래 금액';
 COMMENT ON COLUMN payment_transactions.currency IS '통화 코드';
 COMMENT ON COLUMN payment_transactions.status IS '거래 상태: pending(대기), succeeded(성공), failed(실패), refunded(환불됨), cancelled(취소)';
-COMMENT ON COLUMN payment_transactions.payment_method_id IS '외부 결제 시스템의 결제 수단 ID';
+COMMENT ON COLUMN payment_transactions.payment_method_provider_id IS 'PG사의 결제 수단 ID (payment_methods 테이블 삭제 대비 백업)';
 COMMENT ON COLUMN payment_transactions.transaction_id IS '외부 결제 시스템의 거래 ID';
 COMMENT ON COLUMN payment_transactions.failure_reason IS '실패 사유';
+COMMENT ON COLUMN payment_transactions.refund_reason IS '환불/취소 사유';
+COMMENT ON COLUMN payment_transactions.gateway_response IS 'PG사 응답 데이터 (디버깅용)';
 COMMENT ON COLUMN payment_transactions.processed_at IS '거래 처리 완료 시각';
 COMMENT ON COLUMN payment_transactions.metadata IS '거래의 추가 메타데이터 (JSON 형식)';
 COMMENT ON COLUMN payment_transactions.created_at IS '거래 생성 시각';
 COMMENT ON COLUMN payment_transactions.updated_at IS '거래 정보 최종 수정 시각';
 
 -- ============================================
--- 9. USAGE TRACKING (사용량 추적)
+-- 10. USAGE TRACKING (사용량 추적)
 -- ============================================
 
 CREATE TABLE usage_tracking (
@@ -367,7 +412,7 @@ COMMENT ON COLUMN usage_tracking.recorded_at IS '사용량 기록 시각';
 COMMENT ON COLUMN usage_tracking.metadata IS '사용량의 추가 메타데이터 (JSON 형식)';
 
 -- ============================================
--- 10. TRIGGERS FOR UPDATED_AT
+-- 11. TRIGGERS FOR UPDATED_AT
 -- ============================================
 
 -- Reuse the function from main schema if it exists, otherwise create it
@@ -399,6 +444,9 @@ CREATE TRIGGER update_tenant_subscriptions_updated_at BEFORE UPDATE ON tenant_su
 CREATE TRIGGER update_billing_accounts_updated_at BEFORE UPDATE ON billing_accounts
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TRIGGER update_payment_methods_updated_at BEFORE UPDATE ON payment_methods
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 CREATE TRIGGER update_billing_invoices_updated_at BEFORE UPDATE ON billing_invoices
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
@@ -406,7 +454,7 @@ CREATE TRIGGER update_payment_transactions_updated_at BEFORE UPDATE ON payment_t
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================
--- 11. FUNCTIONS FOR AUTOMATIC COUNTS
+-- 12. FUNCTIONS FOR AUTOMATIC COUNTS AND DEFAULTS
 -- ============================================
 
 -- Function to update tenant member count
@@ -471,8 +519,30 @@ CREATE TRIGGER trigger_update_tenant_member_count
     AFTER INSERT OR UPDATE OR DELETE ON tenant_memberships
     FOR EACH ROW EXECUTE FUNCTION update_tenant_member_count();
 
+-- Function to ensure only one default payment method
+CREATE OR REPLACE FUNCTION ensure_single_default_payment_method()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.is_default = TRUE THEN
+        -- Unset other default payment methods for the same billing account
+        UPDATE payment_methods
+        SET is_default = FALSE
+        WHERE billing_account_id = NEW.billing_account_id
+        AND is_default = TRUE
+        AND id != NEW.id;
+    END IF;
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+COMMENT ON FUNCTION ensure_single_default_payment_method() IS '계정당 하나의 기본 결제 수단만 존재하도록 보장하는 트리거 함수';
+
+CREATE TRIGGER trigger_ensure_single_default_payment_method
+    BEFORE INSERT OR UPDATE ON payment_methods
+    FOR EACH ROW EXECUTE FUNCTION ensure_single_default_payment_method();
+
 -- ============================================
--- 12. CONSTRAINTS AND VALIDATIONS
+-- 13. CONSTRAINTS AND VALIDATIONS
 -- ============================================
 
 -- Ensure only one owner per tenant
@@ -524,7 +594,7 @@ CREATE TRIGGER trigger_ensure_single_primary_tenant
     FOR EACH ROW EXECUTE FUNCTION ensure_single_primary_tenant();
 
 -- ============================================
--- 13. INITIAL DATA - DEFAULT PLANS
+-- 14. INITIAL DATA - DEFAULT PLANS
 -- ============================================
 
 -- Default subscription plans
@@ -536,7 +606,7 @@ INSERT INTO subscription_plans (name, slug, plan_type, description, max_members,
 ON CONFLICT (slug) DO NOTHING;
 
 -- ============================================
--- 14. NOTES FOR SCHEMA MIGRATION
+-- 15. NOTES FOR SCHEMA MIGRATION
 -- ============================================
 
 -- Important: The following ALTER TABLE statements should be run on the existing tenants table
@@ -554,4 +624,3 @@ COMMENT ON COLUMN tenants.tenant_type IS '테넌트 타입: personal(개인), te
 COMMENT ON COLUMN tenants.member_limit IS '최대 멤버 수 (NULL이면 무제한)';
 COMMENT ON COLUMN tenants.current_member_count IS '현재 활성 멤버 수 (자동 업데이트)';
 */
-

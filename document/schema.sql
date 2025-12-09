@@ -12,9 +12,8 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    email VARCHAR(255) NOT NULL UNIQUE,
-    username VARCHAR(100) NOT NULL UNIQUE,
-    password_hash VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL UNIQUE, -- 로그인 아이디로 사용
+    password_hash VARCHAR(255), -- SSO 사용자는 NULL일 수 있음
     full_name VARCHAR(255),
     status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'suspended', 'locked')),
     email_verified BOOLEAN DEFAULT FALSE,
@@ -26,16 +25,14 @@ CREATE TABLE users (
 );
 
 CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_username ON users(username);
 CREATE INDEX idx_users_status ON users(status);
 CREATE INDEX idx_users_deleted_at ON users(deleted_at) WHERE deleted_at IS NULL;
 
 -- Column comments for users table
-COMMENT ON TABLE users IS '시스템 사용자 정보를 관리하는 테이블';
+COMMENT ON TABLE users IS '시스템 사용자 정보를 관리하는 테이블. email을 유일한 로그인 아이디로 사용. password_hash가 NULL인 경우 SSO(구글/카카오/네이버 등) 인증 사용.';
 COMMENT ON COLUMN users.id IS '사용자의 고유 식별자 (UUID)';
-COMMENT ON COLUMN users.email IS '사용자의 이메일 주소 (고유값)';
-COMMENT ON COLUMN users.username IS '사용자의 로그인 아이디 (고유값)';
-COMMENT ON COLUMN users.password_hash IS '암호화된 비밀번호 해시값';
+COMMENT ON COLUMN users.email IS '사용자의 이메일 주소 (고유값, 로그인 식별자)';
+COMMENT ON COLUMN users.password_hash IS '암호화된 비밀번호 해시값 (SSO 사용자는 NULL)';
 COMMENT ON COLUMN users.full_name IS '사용자의 전체 이름';
 COMMENT ON COLUMN users.status IS '사용자 상태: active(활성), inactive(비활성), suspended(정지됨), locked(잠김)';
 COMMENT ON COLUMN users.email_verified IS '이메일 인증 완료 여부';
@@ -44,6 +41,31 @@ COMMENT ON COLUMN users.metadata IS '사용자의 추가 메타데이터 (JSON �
 COMMENT ON COLUMN users.created_at IS '사용자 계정 생성 시각';
 COMMENT ON COLUMN users.updated_at IS '사용자 정보 최종 수정 시각';
 COMMENT ON COLUMN users.deleted_at IS '사용자 계정 삭제 시각 (Soft Delete용, NULL이면 삭제되지 않음)';
+
+
+-- SSO 및 email 연결 관리 테이블
+CREATE TABLE user_providers (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider VARCHAR(50) NOT NULL CHECK (provider IN ('google', 'kakao', 'naver', 'local')),
+    provider_user_id VARCHAR(255) NOT NULL,
+    extra_data JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (provider, provider_user_id)
+);
+
+CREATE INDEX idx_user_providers_user_id ON user_providers(user_id);
+CREATE INDEX idx_user_providers_provider ON user_providers(provider);
+CREATE INDEX idx_user_providers_provider_user_id ON user_providers(provider_user_id);
+
+-- Column comments for user_providers table
+COMMENT ON TABLE user_providers IS '소셜/외부인증(구글,카카오,네이버 등) 및 로컬 인증 사용 계정 연동 관리 테이블';
+COMMENT ON COLUMN user_providers.id IS 'provider 매핑의 고유 식별자 (UUID)';
+COMMENT ON COLUMN user_providers.user_id IS 'users 테이블의 사용자 ID';
+COMMENT ON COLUMN user_providers.provider IS '인증 제공자 이름(google/kakao/naver/local)';
+COMMENT ON COLUMN user_providers.provider_user_id IS '프로바이더별 유니크한 외부 계정 ID';
+COMMENT ON COLUMN user_providers.extra_data IS '프로바이더에서 제공받은 추가 정보(JSON)';
+COMMENT ON COLUMN user_providers.created_at IS '연동 생성 시각';
 
 -- ============================================
 -- 2. TENANT MANAGEMENT
@@ -118,26 +140,39 @@ COMMENT ON COLUMN services.config IS '서비스 설정 정보 (JSON 형식)';
 COMMENT ON COLUMN services.created_at IS '서비스 생성 시각';
 COMMENT ON COLUMN services.updated_at IS '서비스 정보 최종 수정 시각';
 
+-- 
+-- [service_instances 테이블 역할/설명]
+-- 
+-- 이 테이블은 "테넌트별 서비스 인스턴스"를 관리합니다.
+-- 즉, 다수의 테넌트가 동일한 마이크로서비스(services 테이블에 정의된)를 각자의 설정 또는 환경에 맞추어 여러 인스턴스로 실행할 수 있는데,
+-- 이 때 각 서비스 인스턴스(=한 테넌트에서 실행 중인 한 서비스 단위)의 상세 정보를 독립적으로 저장/관리하기 위한 핵심 테이블입니다.
+-- 
+-- 주요 목적 및 기능:
+--   - 여러 테넌트가 동일한 서비스의 인스턴스를 각기 다르게 가질 수 있도록 지원함 (멀티테넌트 SaaS에서 필수적)
+--   - 서비스 인스턴스별로 구성(config), 상태(status), 배포 지역(region), 엔드포인트 URL 등을 분리해서 관리
+--   - 서비스 인스턴스마다 헬스 체크용 URL 및 고유 이름 등을 저장
+--   - 서비스, 테넌트, 인스턴스명을 조합하여 고유성(UNIQUE)을 보장
+--
 CREATE TABLE service_instances (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    service_id UUID NOT NULL REFERENCES services(id) ON DELETE CASCADE,
-    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    instance_name VARCHAR(255) NOT NULL,
-    endpoint_url VARCHAR(500),
-    region VARCHAR(100),
-    status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'degraded', 'down')),
-    health_check_url VARCHAR(500),
-    config JSONB DEFAULT '{}',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(service_id, tenant_id, instance_name)
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),                                               -- 서비스 인스턴스의 고유 식별자
+    service_id UUID NOT NULL REFERENCES services(id) ON DELETE CASCADE,                           -- 해당 인스턴스가 속한 서비스 (services 테이블 참조)
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,                             -- 인스턴스를 사용하는 테넌트 (tenants 테이블 참조)
+    instance_name VARCHAR(255) NOT NULL,                                                          -- 인스턴스명(동일 테넌트+서비스 내에서 고유)
+    endpoint_url VARCHAR(500),                                                                    -- 인스턴스 접속용 엔드포인트 URL (API 등)
+    region VARCHAR(100),                                                                          -- 배포 지역(리전, e.g. ap-northeast-2, us-west-1)
+    status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'degraded', 'down')), -- 인스턴스 상태
+    health_check_url VARCHAR(500),                                                                -- Health check용 URL
+    config JSONB DEFAULT '{}',                                                                    -- 인스턴스별 개별 설정값 (JSON)
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,                                -- 생성 시각
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,                                -- 수정 시각
+    UNIQUE(service_id, tenant_id, instance_name)                                                  -- 같은 서비스+테넌트 내에서 인스턴스명 고유
 );
 
-CREATE INDEX idx_service_instances_service_id ON service_instances(service_id);
-CREATE INDEX idx_service_instances_tenant_id ON service_instances(tenant_id);
-CREATE INDEX idx_service_instances_status ON service_instances(status);
+CREATE INDEX idx_service_instances_service_id ON service_instances(service_id);                    -- 서비스 기준 조회를 빠르게
+CREATE INDEX idx_service_instances_tenant_id ON service_instances(tenant_id);                      -- 테넌트 기준 조회를 빠르게
+CREATE INDEX idx_service_instances_status ON service_instances(status);                            -- 상태별 조회
 
--- Column comments for service_instances table
+-- 상세 컬럼 주석(설명)
 COMMENT ON TABLE service_instances IS '테넌트별 서비스 인스턴스 정보를 관리하는 테이블. 각 테넌트는 동일한 서비스의 여러 인스턴스를 가질 수 있습니다.';
 COMMENT ON COLUMN service_instances.id IS '서비스 인스턴스의 고유 식별자 (UUID)';
 COMMENT ON COLUMN service_instances.service_id IS '참조하는 서비스 ID (services 테이블 참조)';
