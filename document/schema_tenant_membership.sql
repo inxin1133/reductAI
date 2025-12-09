@@ -416,7 +416,7 @@ COMMENT ON COLUMN usage_tracking.metadata IS '사용량의 추가 메타데이�
 -- ============================================
 
 -- Reuse the function from main schema if it exists, otherwise create it
-DO $$ 
+DO $do$ 
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'update_updated_at_column') THEN
         CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -427,7 +427,7 @@ BEGIN
         END;
         $$ language 'plpgsql';
     END IF;
-END $$;
+END $do$;
 
 CREATE TRIGGER update_subscription_plans_updated_at BEFORE UPDATE ON subscription_plans
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

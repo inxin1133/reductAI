@@ -4,27 +4,27 @@
 -- PostgreSQL Database Schema
 -- ============================================
 --
--- IMPORTANT NOTES:
--- 1. This schema requires schema.sql and schema_tenant_membership.sql to be executed first
--- 2. Board service should be registered in the services table (schema.sql)
--- 3. Tenant access to board service should be managed via tenant_service_access table
--- 4. Subscription plans can define board-related limits in features JSONB field:
---    - max_posts: Maximum number of posts allowed
---    - max_storage_gb: Maximum storage in GB for attachments
---    - max_categories: Maximum number of categories
---    - enable_advanced_features: Boolean for advanced block editor features
--- 5. Usage tracking should be implemented using usage_tracking table (schema_tenant_membership.sql)
---    with metric_name values like: 'posts_count', 'storage_gb', 'categories_count'
--- 6. Users must have active membership (tenant_memberships) to create/edit posts
--- 7. Subscription status (tenant_subscriptions.status) should be checked before allowing access
--- 8. PAGE HIERARCHY: Supports Notion-style page-in-page structure with unlimited nesting
---    - Pages can contain other pages as children (parent_id)
---    - Pages can act as both content and category (page_type)
---    - Use get_page_path() for breadcrumbs, get_page_tree() for navigation
--- 9. COMMENTS AND LIKES: Maintained as useful features for user engagement
---    - Comments support nested replies (hierarchical structure)
---    - Likes provide simple feedback mechanism
---    - Can be disabled per page using allow_comments flag
+-- 중요 안내사항:
+-- 1. 이 스키마를 적용하기 전 schema.sql과 schema_tenant_membership.sql을 먼저 실행해야 합니다.
+-- 2. 게시판 서비스는 services 테이블(schema.sql)에 등록되어야 합니다.
+-- 3. 테넌트의 게시판 서비스 접근 권한은 tenant_service_access 테이블로 관리합니다.
+-- 4. 구독 플랜의 게시판 관련 제한 사항은 features(JSONB) 필드에 정의할 수 있습니다:
+--    - max_posts: 허용 가능한 게시글 최대 개수
+--    - max_storage_gb: 첨부파일 최대 저장 용량(GB)
+--    - max_categories: 허용 가능한 카테고리 최대 개수
+--    - enable_advanced_features: 고급 블록 에디터 기능 활성화 여부 (boolean)
+-- 5. 사용량 추적(usage tracking)은 usage_tracking 테이블(schema_tenant_membership.sql)을 활용하여 구현해야 하며,
+--    metric_name 값으로는 'posts_count', 'storage_gb', 'categories_count' 등이 사용됩니다.
+-- 6. 사용자는 게시글을 생성/수정하려면 활성화된 멤버십(tenant_memberships)이 있어야 합니다.
+-- 7. 접근 허용 전에 구독 상태(tenant_subscriptions.status)를 반드시 확인해야 합니다.
+-- 8. 페이지 계층구조: Notion 스타일의 하위 페이지 구조(무한 중첩)를 지원합니다.
+--    - 페이지는 다른 페이지(parent_id)를 자식으로 가질 수 있습니다.
+--    - 페이지는 콘텐츠 또는 카테고리(page_type)로 동작할 수 있습니다.
+--    - get_page_path()를 통해 빵부스러기, get_page_tree()로 네비게이션이 가능합니다.
+-- 9. 댓글과 좋아요: 사용자 참여 강화를 위해 댓글 및 좋아요 기능을 제공합니다.
+--    - 댓글은 대댓글(계층 구조)를 지원합니다.
+--    - 좋아요는 간단한 피드백 메커니즘을 제공합니다.
+--    - 페이지별로 allow_comments 플래그를 사용해 댓글 기능을 비활성화할 수 있습니다.
 --
 -- ============================================
 
@@ -669,7 +669,7 @@ SELECT
     p.title,
     p.slug,
     p.parent_id,
-    get_page_path(p.id) as path
+    (SELECT jsonb_agg(row_to_json(pp)) FROM get_page_path(p.id) pp) as path
 FROM posts p
 WHERE p.deleted_at IS NULL;
 

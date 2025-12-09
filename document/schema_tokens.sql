@@ -4,12 +4,12 @@
 -- PostgreSQL Database Schema
 -- ============================================
 --
--- IMPORTANT NOTES:
--- 1. This schema requires schema.sql and schema_tenant_membership.sql to be executed first
--- 2. Tokens are used across microservices for various features (AI search, API calls, etc.)
--- 3. Token usage is tracked per tenant and per user
--- 4. Tokens can be purchased in packages (prepaid) or billed on usage (postpaid)
--- 5. Usage limits can be set and adjusted per tenant
+-- 중요 안내사항:
+-- 1. 이 스키마를 적용하기 전에 schema.sql 및 schema_tenant_membership.sql이 먼저 실행되어야 합니다.
+-- 2. 토큰은 마이크로서비스 전반에서 다양한 기능(AI 검색, API 호출 등)에 사용됩니다.
+-- 3. 토큰 사용량은 테넌트별/사용자별로 추적됩니다.
+-- 4. 토큰은 패키지(선불)로 구매하거나 사용량(후불) 기반으로 과금할 수 있습니다.
+-- 5. 사용 한도는 테넌트별로 설정 및 조정할 수 있습니다.
 --
 -- ============================================
 
@@ -347,7 +347,7 @@ COMMENT ON COLUMN postpaid_billing_cycles.updated_at IS '청구 주기 정보 �
 -- ============================================
 
 -- Reuse the function from main schema if it exists, otherwise create it
-DO $$ 
+DO $do$ 
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'update_updated_at_column') THEN
         CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -358,7 +358,7 @@ BEGIN
         END;
         $$ language 'plpgsql';
     END IF;
-END $$;
+END $do$;
 
 CREATE TRIGGER update_token_products_updated_at BEFORE UPDATE ON token_products
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

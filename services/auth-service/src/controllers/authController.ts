@@ -1,0 +1,164 @@
+import { Request, Response } from 'express';
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
+import * as db from '../config/db';
+import { sendVerificationEmail } from '../services/emailService';
+
+// Temporary storage for OTPs (In production, use Redis)
+const otpStore: Record<string, { code: string; expiresAt: number }> = {};
+
+export const sendVerificationCode = async (req: Request, res: Response) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ message: 'Email is required' });
+  }
+
+  // Check if user already exists
+  try {
+    const userCheck = await db.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (userCheck.rows.length > 0) {
+      // User exists - usually we'd send a login link or handle password reset, 
+      // but for this flow we might want to indicate existence or just proceed for verification if it's login/signup flow
+      // For now, we'll allow sending code even if user exists (for login verification or just flow)
+      // or we can return a flag
+    }
+  } catch (error) {
+    console.error('Database error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresAt = Date.now() + 3 * 60 * 1000; // 3 minutes
+
+  otpStore[email] = { code, expiresAt };
+
+  const emailSent = await sendVerificationEmail(email, code);
+
+  if (emailSent) {
+    res.json({ message: 'Verification code sent', success: true });
+  } else {
+    res.status(500).json({ message: 'Failed to send verification email', success: false });
+  }
+};
+
+export const verifyCode = async (req: Request, res: Response) => {
+  const { email, code } = req.body;
+
+  if (!email || !code) {
+    return res.status(400).json({ message: 'Email and code are required' });
+  }
+
+  const storedOtp = otpStore[email];
+
+  if (!storedOtp) {
+    return res.status(400).json({ message: 'No verification code found for this email', success: false });
+  }
+
+  if (Date.now() > storedOtp.expiresAt) {
+    delete otpStore[email];
+    return res.status(400).json({ message: 'Verification code expired', success: false });
+  }
+
+  if (storedOtp.code !== code) {
+    return res.status(400).json({ message: 'Invalid verification code', success: false });
+  }
+
+  // Verification successful
+  delete otpStore[email];
+  
+  // Check if user exists to guide frontend
+  const userResult = await db.query('SELECT id, email, full_name FROM users WHERE email = $1', [email]);
+  const isExistingUser = userResult.rows.length > 0;
+
+  res.json({ 
+    success: true, 
+    message: 'Verification successful',
+    isExistingUser
+  });
+};
+
+export const register = async (req: Request, res: Response) => {
+  const { email, password, name } = req.body;
+
+  if (!email || !password || !name) {
+    return res.status(400).json({ message: 'All fields are required' });
+  }
+
+  try {
+    // Check if user exists
+    const userCheck = await db.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (userCheck.rows.length > 0) {
+      return res.status(400).json({ message: 'User already exists' });
+    }
+
+    const saltRounds = 10;
+    const passwordHash = await bcrypt.hash(password, saltRounds);
+
+    const result = await db.query(
+      'INSERT INTO users (email, password_hash, full_name, email_verified, status) VALUES ($1, $2, $3, $4, $5) RETURNING id, email, full_name',
+      [email, passwordHash, name, true, 'active']
+    );
+
+    const user = result.rows[0];
+    
+    // Generate JWT
+    const token = jwt.sign(
+      { userId: user.id, email: user.email },
+      process.env.JWT_SECRET || 'secret',
+      { expiresIn: '24h' }
+    );
+
+    res.status(201).json({ 
+      success: true,
+      message: 'User registered successfully', 
+      user,
+      token
+    });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const login = async (req: Request, res: Response) => {
+  const { email, password } = req.body;
+
+  try {
+    const result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+    const user = result.rows[0];
+
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    if (!user.password_hash) {
+      return res.status(401).json({ message: 'Please use SSO login' });
+    }
+
+    const match = await bcrypt.compare(password, user.password_hash);
+
+    if (!match) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    // Update last login
+    await db.query('UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = $1', [user.id]);
+
+    const token = jwt.sign(
+      { userId: user.id, email: user.email },
+      process.env.JWT_SECRET || 'secret',
+      { expiresIn: '24h' }
+    );
+
+    res.json({
+      success: true,
+      user: { id: user.id, email: user.email, full_name: user.full_name },
+      token
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+

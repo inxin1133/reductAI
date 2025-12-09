@@ -4,13 +4,13 @@
 -- PostgreSQL Database Schema
 -- ============================================
 --
--- IMPORTANT NOTES:
--- 1. This schema requires schema.sql, schema_tenant_membership.sql, and schema_tokens.sql to be executed first
--- 2. Supports multiple LLM providers (OpenAI, Anthropic, Google, etc.)
--- 3. Tracks input/output tokens separately for accurate billing
--- 4. Model selection and routing based on tenant/user preferences
--- 5. Cost tracking per model and provider
--- 6. Performance metrics and analytics
+-- 중요 안내사항:
+-- 1. 이 스키마를 적용하기 전에 schema.sql, schema_tenant_membership.sql, schema_tokens.sql이 먼저 실행되어야 합니다.
+-- 2. 다양한 LLM 제공업체(OpenAI, Anthropic, Google 등)를 지원합니다.
+-- 3. 정확한 과금 산정을 위해 입력/출력 토큰 개수를 별도로 추적합니다.
+-- 4. 테넌트/사용자별 선호도 기반 모델 선택 및 라우팅을 지원합니다.
+-- 5. 모델 및 제공업체별 비용 추적 기능이 있습니다.
+-- 6. 성능 메트릭과 분석도 지원됩니다.
 --
 -- ============================================
 

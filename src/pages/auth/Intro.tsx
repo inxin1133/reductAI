@@ -1,8 +1,8 @@
 import * as React from "react"
-import { useNavigate } from "react-router-dom"
 import { Mic, ChevronDown, Lock, Plus, Eclipse } from "lucide-react"
 import { useTheme } from "@/hooks/useTheme"
 import { Button } from "@/components/ui/button"
+import { LoginModal } from "@/components/LoginModal"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -90,8 +90,8 @@ function IconsGemini({ className }: { className?: string }) {
 
 
 export default function Intro() {
-  const navigate = useNavigate();
   const { toggleTheme } = useTheme();
+  const [isLoginModalOpen, setIsLoginModalOpen] = React.useState(false);
 
   return (
     <div className="bg-background relative w-full h-screen overflow-hidden flex justify-center font-sans">
@@ -103,7 +103,7 @@ export default function Intro() {
               reduct
             </p>
           </div>
-          <a onClick={() => navigate('/front-ai')} className="bg-primary box-border cursor-pointer flex flex-col gap-[10px] h-[36px] items-center justify-center px-[16px] py-[8px] relative rounded-[8px] shadow-sm shrink-0">
+          <a onClick={() => setIsLoginModalOpen(true)} className="bg-primary box-border cursor-pointer flex flex-col gap-[10px] h-[36px] items-center justify-center px-[16px] py-[8px] relative rounded-[8px] shadow-sm shrink-0">
             <div className="flex gap-[10px] items-center justify-center relative shrink-0">
               <p className="font-medium leading-[20px] text-primary-foreground text-[14px]">
                 로그인 및 회원가입
@@ -386,6 +386,7 @@ export default function Intro() {
           </div>
         </div>
       </div>
+      <LoginModal open={isLoginModalOpen} onOpenChange={setIsLoginModalOpen} />
     </div>
   );
 }

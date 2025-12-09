@@ -10,17 +10,36 @@ import {
   ChevronsUpDown,
   PanelLeftClose,
   BookOpen,
-  Share2
+  Share2,
+  User,
+  Wallet,
+  Sun,
+  Moon,
+  ChevronRight,
+  LogOut
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useState } from "react"
+import { useNavigate } from "react-router-dom"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Separator } from "@/components/ui/separator"
+import { Badge } from "@/components/ui/badge"
+import { useTheme } from "@/hooks/useTheme"
 
 type SidebarProps = {
   className?: string
 }
 
 export function Sidebar({ className }: SidebarProps) {
+  const navigate = useNavigate()
   const [isOpen, setIsOpen] = useState(true)
+  const [isProfileOpen, setIsProfileOpen] = useState(false)
+  const { theme } = useTheme()
+
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    navigate('/')
+  }
 
   return (
     <div 
@@ -45,26 +64,109 @@ export function Sidebar({ className }: SidebarProps) {
 
       {/* User Profile - 유저 프로필 */}
       <div className="p-2">
-        <div className={cn("flex items-center gap-2 p-2", !isOpen && "justify-center p-0")}>
-          <div className="size-8 bg-teal-500 rounded-lg flex items-center justify-center shrink-0">
-            <span className="text-white font-semibold text-sm">김</span>
-          </div>
-          {isOpen && (
-            <>
-              <div className="flex flex-col flex-1 min-w-0">
-                <p className="text-sm font-semibold text-sidebar-foreground truncate">김가나</p>
-                <div className="flex items-center text-xs text-muted-foreground">
-                   <span>Pro</span>
-                   <span className="mx-1">・</span>
-                   <span>Premium</span>
+        <Popover open={isProfileOpen} onOpenChange={setIsProfileOpen}>
+          <PopoverTrigger asChild>
+            <div className={cn("flex items-center gap-2 p-2 cursor-pointer hover:bg-accent/50 rounded-md transition-colors", !isOpen && "justify-center p-0")}>
+              <div className="size-8 bg-teal-500 rounded-lg flex items-center justify-center shrink-0">
+                <span className="text-white font-semibold text-sm">김</span>
+              </div>
+              {isOpen && (
+                <>
+                  <div className="flex flex-col flex-1 min-w-0">
+                    <p className="text-sm text-left font-semibold text-sidebar-foreground truncate">김가나</p>
+                    <div className="flex items-center text-xs text-muted-foreground">
+                       <span>Pro</span>
+                       <span className="mx-1">・</span>
+                       <span>Premium</span>
+                    </div>
+                  </div>
+                  <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
+                      <ChevronsUpDown className="size-full" />
+                  </div>
+                </>
+              )}
+            </div>
+          </PopoverTrigger>
+          <PopoverContent 
+            className="w-64 p-1" 
+            align={isOpen ? "start" : "center"}
+            side="right"
+            sideOffset={8}
+          >
+            {/* User Info Section - 유저 정보 섹션 */}
+            <div className="flex flex-col gap-1 px-1 py-1">
+              <div className="flex gap-2 items-center px-2 py-1.5 rounded-sm">
+                <div className="size-10 bg-teal-500 rounded-lg flex items-center justify-center shrink-0">
+                  <span className="text-white font-semibold text-lg">김</span>
+                </div>
+                <div className="flex flex-col flex-1 min-w-0">
+                  <p className="text-lg font-bold text-popover-foreground truncate">김가나</p>
                 </div>
               </div>
-              <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-                  <ChevronsUpDown className="size-full" />
+              <div className="flex gap-1 items-center px-2 py-1.5 rounded-sm">
+                <User className="size-4 text-muted-foreground shrink-0" />
+                <p className="text-xs text-muted-foreground truncate">abc@naver.com</p>
               </div>
-            </>
-          )}
-        </div>
+              <div className="flex gap-1 items-center px-2 py-1.5 rounded-sm">
+                <div className="flex gap-1 items-center flex-wrap">
+                  <Badge variant="outline" className="h-[22px] px-2.5 py-0.5 text-xs font-medium">
+                    개인:Pro
+                  </Badge>
+                  <Badge variant="outline" className="h-[22px] px-2.5 py-0.5 text-xs font-medium">
+                    KIA:Premium
+                  </Badge>
+                </div>
+              </div>
+            </div>
+
+            <Separator className="my-2" />
+
+            {/* Settings Section - 설정 섹션 */}
+            <div className="flex flex-col gap-0 px-1">
+              <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
+                <Settings className="size-4 text-popover-foreground shrink-0" />
+                <p className="text-sm text-popover-foreground flex-1">개인정보 관리</p>
+              </div>
+              <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
+                <Wallet className="size-4 text-popover-foreground shrink-0" />
+                <p className="text-sm text-popover-foreground flex-1">결제 관리</p>
+              </div>
+            </div>
+
+            <Separator className="my-2" />
+
+            {/* Theme & Language Section - 테마 및 언어 섹션 */}
+            <div className="flex flex-col gap-0 px-1">
+              <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
+                <div className="flex gap-1 items-center flex-1">
+                  {theme === 'dark' ? <Moon className="size-4 text-popover-foreground shrink-0" /> : <Sun className="size-4 text-popover-foreground shrink-0" />}
+                  <p className="text-sm text-popover-foreground">Light</p>
+                </div>
+                <ChevronRight className="size-4 text-popover-foreground shrink-0" />
+              </div>
+              <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
+                <div className="flex gap-1 items-center flex-1">
+                  <span className="text-sm">🇰🇷</span>
+                  <p className="text-sm text-popover-foreground">한국어</p>
+                </div>
+                <ChevronRight className="size-4 text-popover-foreground shrink-0" />
+              </div>
+            </div>
+
+            <Separator className="my-2" />
+
+            {/* Logout Section - 로그아웃 섹션 */}
+            <div className="flex flex-col gap-0 px-1 pb-1">
+              <div 
+                className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors"
+                onClick={handleLogout}
+              >
+                <LogOut className="size-4 text-popover-foreground shrink-0" />
+                <p className="text-sm text-popover-foreground flex-1">Log out</p>
+              </div>
+            </div>
+          </PopoverContent>
+        </Popover>
       </div>
 
       {/* Menu Items - 메뉴 아이템 */}
@@ -94,7 +196,7 @@ export function Sidebar({ className }: SidebarProps) {
           {/* Personal Pages - 개인 페이지 */}
           <div className="flex flex-col p-2 gap-1 mt-4">
              <div className="flex items-center gap-2 px-2 h-8 opacity-70">
-                <span className="flex-1 text-xs text-sidebar-foreground">개인 페이지</span>
+                <span className="flex-1 text-left text-xs text-sidebar-foreground">개인 페이지</span>
                 <div className="size-4 relative shrink-0 cursor-pointer flex items-center justify-center text-sidebar-foreground">
                     <Plus className="size-full" />
                 </div>
@@ -116,7 +218,7 @@ export function Sidebar({ className }: SidebarProps) {
           {/* Team Pages - 팀 페이지 */}
           <div className="flex flex-col p-2 gap-1 mt-4">
              <div className="flex items-center gap-2 px-2 h-8 opacity-70">
-                <span className="flex-1 text-xs text-sidebar-foreground">팀/그룹 페이지</span>
+                <span className="flex-1 text-left text-xs text-sidebar-foreground">팀/그룹 페이지</span>
                 <div className="size-4 relative shrink-0 cursor-pointer flex items-center justify-center text-sidebar-foreground">
                     <Plus className="size-full" />
                 </div>

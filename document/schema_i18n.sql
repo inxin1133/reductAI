@@ -4,12 +4,12 @@
 -- PostgreSQL Database Schema
 -- ============================================
 --
--- IMPORTANT NOTES:
--- 1. This schema provides comprehensive i18n support for the entire system
--- 2. Supports dynamic language switching per user/tenant
--- 3. Translation keys are stored separately from content
--- 4. Supports fallback to default language when translation is missing
--- 5. All translatable content should reference translation keys
+-- 중요 안내사항:
+-- 1. 이 스키마는 시스템 전체에 대한 포괄적인 i18n(다국어) 지원을 제공합니다.
+-- 2. 사용자/테넌트별 동적 언어 전환을 지원합니다.
+-- 3. 번역 키는 실제 콘텐츠와 분리되어 별도로 저장됩니다.
+-- 4. 번역이 없는 경우 기본 언어로 폴백(fallback)이 동작합니다.
+-- 5. 모든 번역 가능한 콘텐츠는 반드시 translation key를 참조해야 합니다.
 --
 -- ============================================
 
