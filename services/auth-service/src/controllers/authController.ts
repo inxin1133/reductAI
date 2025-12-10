@@ -65,7 +65,8 @@ export const verifyCode = async (req: Request, res: Response) => {
   }
 
   // Verification successful
-  delete otpStore[email];
+  // DO NOT delete otpStore[email] here, because we need it for resetPassword or register steps
+  // delete otpStore[email];
   
   // Check if user exists to guide frontend
   const userResult = await db.query('SELECT id, email, full_name FROM users WHERE email = $1', [email]);
@@ -76,6 +77,59 @@ export const verifyCode = async (req: Request, res: Response) => {
     message: 'Verification successful',
     isExistingUser
   });
+};
+
+export const checkEmail = async (req: Request, res: Response) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ message: 'Email is required' });
+  }
+
+  try {
+    const result = await db.query('SELECT id FROM users WHERE email = $1', [email]);
+    res.json({ exists: result.rows.length > 0 });
+  } catch (error) {
+    console.error('Check email error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const resetPassword = async (req: Request, res: Response) => {
+  const { email, code, newPassword } = req.body;
+
+  if (!email || !code || !newPassword) {
+    return res.status(400).json({ message: 'Email, code, and new password are required' });
+  }
+
+  const storedOtp = otpStore[email];
+
+  if (!storedOtp) {
+    return res.status(400).json({ message: 'Verification code not found or expired', success: false });
+  }
+
+  if (Date.now() > storedOtp.expiresAt) {
+    delete otpStore[email];
+    return res.status(400).json({ message: 'Verification code expired', success: false });
+  }
+
+  if (storedOtp.code !== code) {
+    return res.status(400).json({ message: 'Invalid verification code', success: false });
+  }
+
+  try {
+    const saltRounds = 10;
+    const passwordHash = await bcrypt.hash(newPassword, saltRounds);
+
+    await db.query('UPDATE users SET password_hash = $1 WHERE email = $2', [passwordHash, email]);
+    
+    delete otpStore[email];
+
+    res.json({ success: true, message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
 };
 
 export const register = async (req: Request, res: Response) => {

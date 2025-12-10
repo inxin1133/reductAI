@@ -432,7 +432,7 @@ COMMENT ON COLUMN model_messages.created_at IS '메시지 생성 시각';
 -- 10. TRIGGERS FOR UPDATED_AT
 -- ============================================
 
--- Reuse the function from main schema if it exists, otherwise create it
+-- Reuse the function from main schema if it exists, otherwise create  
 DO $$ 
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'update_updated_at_column') THEN

@@ -8,11 +8,14 @@ import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp
 import { Checkbox } from "@/components/ui/checkbox"
 import { Info, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { LogoGoogle } from "@/components/icons/LogoGoogle"
+import { LogoNaver } from "@/components/icons/LogoNaver"
+import { LogoKakao } from "@/components/icons/LogoKakao"
 
 // Asset URLs from Figma
-const imgGoogle = "https://www.figma.com/api/mcp/asset/20f95895-9d79-4ac0-a707-52df26035fad"
-const imgNaver = "https://www.figma.com/api/mcp/asset/245a06ec-85c2-4760-b280-15853ac758c9"
-const imgKakao = "https://www.figma.com/api/mcp/asset/8829f16c-6093-4f3c-adf6-60e04288acc6"
+// const imgGoogle = "https://www.figma.com/api/mcp/asset/20f95895-9d79-4ac0-a707-52df26035fad"
+// const imgNaver = "https://www.figma.com/api/mcp/asset/245a06ec-85c2-4760-b280-15853ac758c9"
+// const imgKakao = "https://www.figma.com/api/mcp/asset/8829f16c-6093-4f3c-adf6-60e04288acc6"
 
 const API_URL = 'http://localhost:3001/auth'
 
@@ -21,7 +24,7 @@ interface LoginModalProps {
   onOpenChange: (open: boolean) => void
 }
 
-type Step = 'login' | 'verification' | 'info' | 'completion'
+type Step = 'login' | 'password_input' | 'forgot_password_verify' | 'reset_password' | 'reset_complete' | 'verification' | 'info' | 'completion'
 
 export function LoginModal({ open, onOpenChange }: LoginModalProps) {
   const navigate = useNavigate()
@@ -35,6 +38,8 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
   const [name, setName] = React.useState("")
   const [password, setPassword] = React.useState("")
   const [passwordConfirm, setPasswordConfirm] = React.useState("")
+  const [newPassword, setNewPassword] = React.useState("")
+  const [confirmNewPassword, setConfirmNewPassword] = React.useState("")
   const [termsAccepted, setTermsAccepted] = React.useState(false)
   const [termsViewed, setTermsViewed] = React.useState(false)
 
@@ -48,6 +53,8 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
         setName("")
         setPassword("")
         setPasswordConfirm("")
+        setNewPassword("")
+        setConfirmNewPassword("")
         setTermsAccepted(false)
         setTermsViewed(false)
         setError(null)
@@ -60,27 +67,54 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       setError("이메일을 입력해주세요.")
       return
     }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(email)) {
+      setError("이메일 형식이 아닙니다. 다시 작성해 주세요")
+      return
+    }
     
     setIsLoading(true)
     setError(null)
     try {
-      // First, try to login or check user existence.
-      // For this flow, we'll first try to send verification code.
-      const response = await fetch(`${API_URL}/send-verification-code`, {
+      // Check if user exists
+      const checkResponse = await fetch(`${API_URL}/check-email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email })
       })
       
-      const data = await response.json()
+      const checkData = await checkResponse.json()
       
-      if (!response.ok) {
-        throw new Error(data.message || '인증번호 발송 실패')
+      if (!checkResponse.ok) {
+        throw new Error(checkData.message || '이메일 확인 실패')
       }
-      
-      setStep('verification')
-    } catch (err: any) {
-      setError(err.message)
+
+      if (checkData.exists) {
+        // User exists, go to password input
+        setStep('password_input')
+      } else {
+        // User does not exist, send verification code for signup
+        const response = await fetch(`${API_URL}/send-verification-code`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email })
+        })
+        
+        const data = await response.json()
+        
+        if (!response.ok) {
+          throw new Error(data.message || '인증번호 발송 실패')
+        }
+        
+        setStep('verification')
+      }
+    } catch (err) {
+      if (err instanceof Error) {
+        setError(err.message)
+      } else {
+        setError("알 수 없는 오류가 발생했습니다.")
+      }
     } finally {
       setIsLoading(false)
     }
@@ -103,8 +137,12 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       }
       
       alert("인증번호가 재발송되었습니다.")
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err) {
+      if (err instanceof Error) {
+        setError(err.message)
+      } else {
+        setError("알 수 없는 오류가 발생했습니다.")
+      }
     } finally {
       setIsLoading(false)
     }
@@ -146,8 +184,12 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       } else {
         setStep('info')
       }
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err) {
+      if (err instanceof Error) {
+        setError(err.message)
+      } else {
+        setError("알 수 없는 오류가 발생했습니다.")
+      }
     } finally {
       setIsLoading(false)
     }
@@ -190,8 +232,12 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       }
       
       setStep('completion')
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err) {
+      if (err instanceof Error) {
+        setError(err.message)
+      } else {
+        setError("알 수 없는 오류가 발생했습니다.")
+      }
     } finally {
       setIsLoading(false)
     }
@@ -219,11 +265,146 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
              onOpenChange(false)
              navigate('/front-ai')
         }
-    } catch (e) {
+    } catch {
          onOpenChange(false)
          navigate('/front-ai')
     } finally {
         setIsLoading(false)
+    }
+  }
+
+  const handlePasswordLogin = async () => {
+    if (!password) {
+      setError("비밀번호를 입력해주세요.")
+      return
+    }
+
+    setIsLoading(true)
+    setError(null)
+    try {
+      const response = await fetch(`${API_URL}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      })
+
+      const data = await response.json()
+
+      if (response.ok && data.token) {
+        localStorage.setItem('token', data.token)
+        onOpenChange(false)
+        navigate('/front-ai')
+      } else {
+        throw new Error(data.message || '로그인 실패')
+      }
+    } catch (err) {
+      if (err instanceof Error) {
+        setError(err.message)
+      } else {
+        setError("알 수 없는 오류가 발생했습니다.")
+      }
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleForgotPassword = async () => {
+    setIsLoading(true)
+    setError(null)
+    setOtp("") // Reset OTP
+    try {
+      const response = await fetch(`${API_URL}/send-verification-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      })
+      
+      const data = await response.json()
+      
+      if (!response.ok) {
+        throw new Error(data.message || '인증번호 발송 실패')
+      }
+      
+      setStep('forgot_password_verify')
+    } catch (err) {
+      if (err instanceof Error) {
+        setError(err.message)
+      } else {
+        setError("알 수 없는 오류가 발생했습니다.")
+      }
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleVerifyResetCode = async () => {
+    if (otp.length !== 6) {
+      setError("인증번호 6자리를 입력해주세요.")
+      return
+    }
+
+    setIsLoading(true)
+    setError(null)
+    try {
+      const response = await fetch(`${API_URL}/verify-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, code: otp })
+      })
+      
+      const data = await response.json()
+      
+      if (!response.ok) {
+        throw new Error(data.message || '인증번호 확인 실패')
+      }
+      
+      setStep('reset_password')
+    } catch (err) {
+      if (err instanceof Error) {
+        setError(err.message)
+      } else {
+        setError("알 수 없는 오류가 발생했습니다.")
+      }
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleResetPassword = async () => {
+    if (!newPassword || !confirmNewPassword) {
+      setError("비밀번호를 입력해주세요.")
+      return
+    }
+    
+    if (newPassword !== confirmNewPassword) {
+      setError("비밀번호가 일치하지 않습니다.")
+      return
+    }
+
+    setIsLoading(true)
+    setError(null)
+    try {
+      const response = await fetch(`${API_URL}/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, code: otp, newPassword })
+      })
+      
+      const data = await response.json()
+      
+      if (!response.ok) {
+        throw new Error(data.message || '비밀번호 변경 실패')
+      }
+      
+      setStep('reset_complete')
+    } catch (err) {
+      if (err instanceof Error) {
+        setError(err.message)
+      } else {
+        setError("알 수 없는 오류가 발생했습니다.")
+      }
+    } finally {
+      setIsLoading(false)
     }
   }
 
@@ -237,6 +418,10 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
         <DialogHeader className="flex flex-row items-center justify-between space-y-0">
           <DialogTitle className="text-lg font-semibold">
             {step === 'login' && "로그인 또는 회원가입"}
+            {step === 'password_input' && "비밀번호 입력"}
+            {step === 'forgot_password_verify' && "비밀번호 찾기"}
+            {step === 'reset_password' && "비밀번호 변경"}
+            {step === 'reset_complete' && "비밀번호 변경 완료"}
             {(step === 'verification' || step === 'info') && "회원가입"}
             {step === 'completion' && "회원가입 완료"}
           </DialogTitle>
@@ -249,11 +434,161 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
             </div>
         )}
         
+        {/* Step: Password Input (User Exists) */}
+        {step === 'password_input' && (
+          <div className="flex flex-col gap-6">
+            <div className="flex flex-col gap-2">
+              <p className="text-sm text-left text-muted-foreground text-center break-keep">
+                계정 비밀번호를 입력하세요.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2 w-full">
+               <div className="relative">
+                 <Input 
+                   type="password" 
+                   placeholder="비밀번호 입력" 
+                   className="h-[36px] font-bold placeholder:font-bold placeholder:text-muted-foreground pr-10"
+                   value={password}
+                   onChange={(e) => setPassword(e.target.value)}
+                   onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      handlePasswordLogin()
+                    }
+                  }}
+                   disabled={isLoading}
+                 />
+                 <div className="absolute right-2 top-1/2 -translate-y-1/2">
+                    <div className="bg-accent rounded-sm w-6 h-6 flex items-center justify-center">
+                      <Info className="w-4 h-4" />
+                    </div>
+                  </div>
+               </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+               <span className="text-sm cursor-pointer hover:underline" onClick={handleForgotPassword}>비밀번호 찾기</span>
+               <div className="flex gap-2">
+                  <Button variant="secondary" className="h-[36px]" onClick={() => setStep('login')}>취소</Button>
+                  <Button className="h-[36px]" onClick={handlePasswordLogin} disabled={isLoading}>
+                    {isLoading ? <Loader2 className="animate-spin w-4 h-4" /> : "로그인"}
+                  </Button>
+               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Step: Forgot Password - Verify Code */}
+        {step === 'forgot_password_verify' && (
+          <div className="flex flex-col gap-6">
+            <div className="flex flex-col gap-2">
+              <p className="text-sm text-muted-foreground text-center break-keep">
+                등록된 주소로 인증 메일을 송부 했습니다.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2 items-center">
+              <span className="text-sm font-medium">인증번호입력</span>
+              <InputOTP maxLength={6} value={otp} onChange={setOtp} disabled={isLoading}>
+                <InputOTPGroup>
+                  <InputOTPSlot index={0} className="w-[36px] h-[36px]" />
+                  <InputOTPSlot index={1} className="w-[36px] h-[36px]" />
+                  <InputOTPSlot index={2} className="w-[36px] h-[36px]" />
+                  <InputOTPSlot index={3} className="w-[36px] h-[36px]" />
+                  <InputOTPSlot index={4} className="w-[36px] h-[36px]" />
+                  <InputOTPSlot index={5} className="w-[36px] h-[36px]" />
+                </InputOTPGroup>
+              </InputOTP>
+              <p className="text-sm text-muted-foreground text-center mt-2">
+                {email} 주소로 받은 인증 코드를 입력하세요
+              </p>
+            </div>
+
+            <div className="flex gap-2 w-full">
+              <Button variant="outline" className="flex-1 h-[36px]" onClick={handleResendOTP} disabled={isLoading}>
+                 {isLoading ? <Loader2 className="animate-spin w-4 h-4" /> : "인증번호 재발송"}
+              </Button>
+              <Button className="flex-1 h-[36px]" onClick={handleVerifyResetCode} disabled={isLoading}>
+                 {isLoading ? <Loader2 className="animate-spin w-4 h-4" /> : "확인"}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Step: Reset Password - Input New Password */}
+        {step === 'reset_password' && (
+          <div className="flex flex-col gap-6">
+            <div className="flex flex-col gap-2">
+              <p className="text-sm text-muted-foreground text-center break-keep">
+                변경할 비밀번호를 입력해주세요.
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <p className="text-sm font-bold">비밀번호</p>
+                <div className="relative">
+                  <Input 
+                    type="password" 
+                    placeholder="비밀번호 입력" 
+                    className="h-[36px] font-bold placeholder:font-bold placeholder:text-muted-foreground pr-10" 
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    disabled={isLoading}
+                  />
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2">
+                    <div className="bg-accent rounded-sm w-6 h-6 flex items-center justify-center">
+                      <Info className="w-4 h-4" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <p className="text-sm font-bold">비밀번호확인</p>
+                <Input 
+                  type="password" 
+                  placeholder="비밀번호 다시 입력" 
+                  className="h-[36px] font-bold placeholder:font-bold placeholder:text-muted-foreground" 
+                  value={confirmNewPassword}
+                  onChange={(e) => setConfirmNewPassword(e.target.value)}
+                  disabled={isLoading}
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 w-full">
+              <Button variant="secondary" className="flex-1 h-[36px]" onClick={() => setStep('login')}>취소</Button>
+              <Button className="flex-1 h-[36px]" onClick={handleResetPassword} disabled={isLoading}>
+                {isLoading ? <Loader2 className="animate-spin w-4 h-4" /> : "비밀번호 변경"}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Step: Reset Complete */}
+        {step === 'reset_complete' && (
+          <div className="flex flex-col gap-6">
+            <div className="flex flex-col gap-2">
+              <p className="text-sm text-muted-foreground text-center break-keep">
+                비밀번호가 성공적으로 변경되었습니다.
+              </p>
+            </div>
+
+            <div className="flex gap-2 w-full">
+              <Button variant="secondary" className="flex-1 h-[36px]" onClick={() => onOpenChange(false)}>취소</Button>
+              <Button className="flex-1 h-[36px]" onClick={() => setStep('password_input')}>
+                바로 로그인
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Step 1: Login / Initial */}
         {step === 'login' && (
           <>
             <div className="flex flex-col gap-2">
-              <p className="text-sm text-muted-foreground text-center break-keep">
+              <p className="text-sm text-left text-muted-foreground text-center break-keep">
                 SSO 인증 또는 아이디를 통한 로그인 또는 신규계정 생성을 진행합니다.
               </p>
             </div>
@@ -261,32 +596,33 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
             <div className="flex flex-col gap-2 w-full">
               <button 
                 type="button"
-                className="flex items-center justify-center gap-2 w-full h-[36px] bg-white border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 transition-colors"
+                className="flex items-center justify-center gap-2 w-full h-[40px] bg-primary-foreground text-primary border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 transition-colors"
               >
-                <div className="w-4 h-4 flex items-center justify-center overflow-hidden">
-                   <img src={imgGoogle} alt="Google" className="w-full h-full object-contain" />
+                <div className="size-[24px] flex items-center justify-center overflow-hidden">
+                   <LogoGoogle className="relative shrink-0 size-[24px]" />
                 </div>
-                <span className="text-sm font-medium text-black">Google</span>
+                <span className="text-base text-primary">Google</span>
               </button>
 
               <button 
                 type="button"
-                className="flex items-center justify-center gap-2 w-full h-[36px] bg-white border border-[#66c76b] rounded-md shadow-sm hover:bg-gray-50 transition-colors"
+                className="flex items-center justify-center gap-2 w-full h-[40px] bg-primary-foreground text-primary border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 transition-colors"
               >
-                <div className="w-4 h-4 flex items-center justify-center overflow-hidden">
-                   <img src={imgNaver} alt="Naver" className="w-full h-full object-contain" />
+                <div className="size-[24px] flex items-center justify-center overflow-hidden">
+                   
+                   <LogoNaver className="relative shrink-0 size-[24px]" />
                 </div>
-                <span className="text-sm font-medium text-black">NAVER</span>
+                <span className="text-base text-primary">NAVER</span>
               </button>
 
               <button 
                  type="button"
-                 className="flex items-center justify-center gap-2 w-full h-[36px] bg-[#fde047] border border-[#3e2727] rounded-md shadow-sm hover:opacity-90 transition-opacity"
+                className="flex items-center justify-center gap-2 w-full h-[40px] bg-yellow-400 text-yellow-900 border border-gray-200 rounded-md shadow-sm hover:bg-yellow-300 transition-colors"
               >
-                <div className="w-4 h-4 flex items-center justify-center overflow-hidden">
-                   <img src={imgKakao} alt="Kakao" className="w-full h-full object-contain" />
+                <div className="size-[24px] flex items-center justify-center overflow-hidden">
+                   <LogoKakao className="relative shrink-0 size-[24px]" />
                 </div>
-                <span className="text-sm font-medium text-black">Kakao</span>
+                <span className="text-base text-black">KAKAO</span>
               </button>
             </div>
 
@@ -303,6 +639,11 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                 className="h-[36px]"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleLoginContinue()
+                  }
+                }}
                 disabled={isLoading}
               />
               <Button className="w-full h-[36px]" onClick={handleLoginContinue} disabled={isLoading}>

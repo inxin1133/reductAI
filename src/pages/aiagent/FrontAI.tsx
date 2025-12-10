@@ -3,11 +3,10 @@ import { cn } from "@/lib/utils"
 import { 
    Mic, 
    ChevronDown,    
-   Plus, 
-   Eclipse 
+   Plus 
 } from "lucide-react"
 import { Sidebar } from "@/components/Sidebar"
-import { useTheme } from "@/hooks/useTheme"
+import { UserHeader } from "@/components/UserHeader"
 
 const imgIconsGrok = "https://www.figma.com/api/mcp/asset/956f5384-69cd-4631-9bb8-3d0b71c7e689";
 const imgVector3 = "https://www.figma.com/api/mcp/asset/5cbcace5-43b3-4afa-85c7-a3b42cfb70c7";
@@ -118,7 +117,6 @@ function IconsGemini({ className }: { className?: string }) {
 }
 
 export default function FrontAI() {
-  const { toggleTheme } = useTheme();
 
   return (
     <div className="bg-background relative w-full h-screen overflow-hidden flex font-sans">
@@ -132,22 +130,7 @@ export default function FrontAI() {
       {/* Main Content - 메인 컨텐츠 시작 */}
       <div className="flex-1 flex flex-col h-full bg-background relative">
         {/* Top Bar */}
-        <div className="h-[60px] flex items-center px-6 gap-4 shrink-0 border-b border-border/10">
-           <div className="flex-1" />
-           <div className="bg-background border border-border flex items-center justify-between px-3 py-2 rounded-md shadow-sm w-[120px] h-9">
-              <span className="text-sm text-muted-foreground">한국어</span>
-              <ChevronDown className="size-4 relative shrink-0" />
-           </div>
-           <div className="flex gap-[10px] items-center justify-end relative shrink-0">
-              <ChevronDown className="size-full" />
-           </div>
-           <div 
-             className="size-4 relative shrink-0 flex items-center justify-center cursor-pointer"
-             onClick={toggleTheme}
-           >
-             <Eclipse className="size-full text-foreground" />
-           </div>
-        </div>
+        <UserHeader />
 
         {/* Main Body - 메인 바디 */}
         <div className="flex-1 flex flex-col items-center p-6 pt-3 gap-6 overflow-y-auto">

@@ -1,7 +1,7 @@
 #root {
   width: 100%;
   margin: 0 auto;
-  text-align: center;
+  text-align: center;  
 }
 
 /* 기본 스타일 제거 - Tailwind CSS가 처리 */

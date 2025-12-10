@@ -67,3 +67,11 @@ export default tseslint.config([
   },
 ])
 ```
+
+# 도커 실행
+
+## 올리기
+docker compose up --build
+
+## 내리기
+docker compose down
