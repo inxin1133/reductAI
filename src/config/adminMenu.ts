@@ -40,9 +40,9 @@ export const adminMenuGroups: MenuGroup[] = [
         title: "회원 및 테넌트", 
         icon: Users,
         items: [
-          { title: "회원 관리" },
-          { title: "테넌트 관리" },
-          { title: "역할 및 권한 관리" }, // RBAC
+          { title: "회원 관리", href: "/admin/users" },
+          { title: "테넌트 관리", href: "/admin/tenants" },
+          { title: "역할 및 권한 관리", href: "/admin/roles" }, // RBAC
         ]
       },
       { 
