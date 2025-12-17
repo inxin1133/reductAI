@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils"
 import { LogoGoogle } from "@/components/icons/LogoGoogle"
 import { LogoNaver } from "@/components/icons/LogoNaver"
 import { LogoKakao } from "@/components/icons/LogoKakao"
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip"
 
 // Asset URLs from Figma
 // const imgGoogle = "https://www.figma.com/api/mcp/asset/20f95895-9d79-4ac0-a707-52df26035fad"
@@ -43,6 +44,9 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
   const [termsAccepted, setTermsAccepted] = React.useState(false)
   const [termsViewed, setTermsViewed] = React.useState(false)
 
+  // Ref for password input
+  const passwordInputRef = React.useRef<HTMLInputElement>(null)
+
   // Reset state when modal opens/closes
   React.useEffect(() => {
     if (!open) {
@@ -61,6 +65,64 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       }, 300)
     }
   }, [open])
+
+  // Focus password input when step changes to 'password_input'
+  React.useEffect(() => {
+    if (step === 'password_input' && open) {
+      // setTimeout을 사용하여 렌더링 후 포커스
+      setTimeout(() => {
+        passwordInputRef.current?.focus()
+      }, 100)
+    }
+  }, [step, open])
+
+  // 비밀번호 유효성 검사 함수
+  const validatePassword = (pwd: string) => {
+    const hasLetter = /[a-zA-Z]/.test(pwd);
+    const hasNumber = /\d/.test(pwd);
+    const hasSpecial = /[!@#$%^&*(),.?":{}|<>]/.test(pwd);
+    const isValidLength = pwd.length >= 8;
+    return hasLetter && hasNumber && hasSpecial && isValidLength;
+  };
+
+  // 실시간 비밀번호 피드백 함수
+  const getPasswordFeedback = (pwd: string) => {
+    if (!pwd) return null;
+
+    const hasLetter = /[a-zA-Z]/.test(pwd);
+    const hasNumber = /\d/.test(pwd);
+    const hasSpecial = /[!@#$%^&*(),.?":{}|<>]/.test(pwd);
+    const isValidLength = pwd.length >= 8;
+
+    if (!isValidLength) {
+      return <p className="text-xs text-muted-foreground mt-1">➡️ 최소 8자 이상으로 입력해주세요.</p>;
+    }
+
+    if (hasLetter && hasNumber && hasSpecial) {
+      return <p className="text-xs text-green-600 font-medium mt-1">✅ 완벽합니다! 안전하고 강력한 비밀번호가 생성되었습니다.</p>;
+    }
+
+    if (hasLetter && hasNumber) return <p className="text-xs text-amber-600 mt-1">⚠️ 특수문자가 한개 이상 포함되어야 합니다.</p>;
+    if (hasLetter && hasSpecial) return <p className="text-xs text-amber-600 mt-1">⚠️ 숫자가 반드시 포함되어야 합니다.</p>;
+    if (hasNumber && hasSpecial) return <p className="text-xs text-amber-600 mt-1">⚠️ 영문이 반드시 포함되어야 합니다.</p>;
+    
+    if (hasNumber) return <p className="text-xs text-amber-600 mt-1">⚠️ 영문과 특수문자가 반드시 포함되어야 합니다.</p>;
+    if (hasLetter) return <p className="text-xs text-amber-600 mt-1">⚠️ 숫자와 특수문자가 반드시 포함되어야 합니다.</p>;
+    
+    // Only special or none
+    return <p className="text-xs text-amber-600 mt-1">⚠️ 영문과 숫자가 반드시 포함되어야 합니다.</p>;
+  };
+
+  // 비밀번호 확인 피드백 함수
+  const getPasswordConfirmFeedback = () => {
+    if (!passwordConfirm) return null;
+    
+    if (password !== passwordConfirm) {
+      return <p className="text-xs text-destructive mt-1">작성한 비밀번호가 맞지 않습니다.</p>;
+    } else {
+      return <p className="text-xs text-green-600 font-medium mt-1">작성한 비밀번호가 일치합니다.</p>;
+    }
+  };
 
   const handleLoginContinue = async () => {
     if (!email) {
@@ -201,6 +263,15 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       return
     }
     
+    // 비밀번호 유효성 검사
+    if (!validatePassword(password)) {
+      // setError("비밀번호는 영문, 숫자, 특수문자를 포함하여 8자 이상이어야 합니다.")
+      // 실시간 피드백이 있으므로 여기서는 상세 에러 메시지보다는 간단히 표시하거나,
+      // 혹은 상세 메시지를 그대로 둬도 무방. 사용자 경험상 놔두는게 확실함.
+      setError("비밀번호 규칙을 확인해주세요.") 
+      return
+    }
+
     if (password !== passwordConfirm) {
       setError("비밀번호가 일치하지 않습니다.")
       return
@@ -247,29 +318,33 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
     setIsLoading(true)
     setError(null)
     try {
-        // Try automatic login
-        const response = await fetch(`${API_URL}/login`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password })
-        })
+      const response = await fetch(`${API_URL}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      })
 
-        const data = await response.json()
+      const data = await response.json()
 
-        if (response.ok && data.token) {
-            localStorage.setItem('token', data.token)
-            onOpenChange(false)
-            navigate('/front-ai')
-        } else {
-            // Fallback
-             onOpenChange(false)
-             navigate('/front-ai')
+      if (response.ok && data.token) {
+        // 토큰과 만료 시간을 저장하여 세션 유지 (기본 1시간)
+        const expiresAt = Date.now() + 60 * 60 * 1000
+        localStorage.setItem('token', data.token)
+        localStorage.setItem('token_expires_at', expiresAt.toString())
+        localStorage.setItem('user_email', email)
+        if (data.user?.id) {
+          localStorage.setItem('user_id', data.user.id)
         }
-    } catch {
-         onOpenChange(false)
-         navigate('/front-ai')
+        onOpenChange(false)
+        navigate('/front-ai')
+      } else {
+        throw new Error(data.message || '로그인 실패')
+      }
+    } catch (err) {
+      console.error(err)
+      setError("로그인 중 오류가 발생했습니다.")
     } finally {
-        setIsLoading(false)
+      setIsLoading(false)
     }
   }
 
@@ -291,7 +366,14 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       const data = await response.json()
 
       if (response.ok && data.token) {
+        // 토큰과 만료 시간을 저장하여 세션 유지 (기본 1시간)
+        const expiresAt = Date.now() + 60 * 60 * 1000
         localStorage.setItem('token', data.token)
+        localStorage.setItem('token_expires_at', expiresAt.toString())
+        localStorage.setItem('user_email', email)
+        if (data.user?.id) {
+          localStorage.setItem('user_id', data.user.id)
+        }
         onOpenChange(false)
         navigate('/front-ai')
       } else {
@@ -376,6 +458,12 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       return
     }
     
+    // 비밀번호 유효성 검사
+    if (!validatePassword(newPassword)) {
+      setError("비밀번호 규칙을 확인해주세요.")
+      return
+    }
+
     if (newPassword !== confirmNewPassword) {
       setError("비밀번호가 일치하지 않습니다.")
       return
@@ -407,6 +495,14 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       setIsLoading(false)
     }
   }
+
+  // 계정 생성 버튼 활성화 조건
+  const isSignupFormValid = 
+    name && 
+    validatePassword(password) && 
+    password === passwordConfirm && 
+    termsAccepted && 
+    termsViewed;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -446,6 +542,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
             <div className="flex flex-col gap-2 w-full">
                <div className="relative">
                  <Input 
+                   ref={passwordInputRef}
                    type="password" 
                    placeholder="비밀번호 입력" 
                    className="h-[36px] font-bold placeholder:font-bold placeholder:text-muted-foreground pr-10"
@@ -459,9 +556,18 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                    disabled={isLoading}
                  />
                  <div className="absolute right-2 top-1/2 -translate-y-1/2">
-                    <div className="bg-accent rounded-sm w-6 h-6 flex items-center justify-center">
-                      <Info className="w-4 h-4" />
-                    </div>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className="bg-accent rounded-sm w-6 h-6 flex items-center justify-center cursor-pointer">
+                            <Info className="w-4 h-4" />
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" align="center">
+                          영문+숫자, 특수문자 포함 8자
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
                   </div>
                </div>
             </div>
@@ -537,11 +643,22 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                     disabled={isLoading}
                   />
                   <div className="absolute right-2 top-1/2 -translate-y-1/2">
-                    <div className="bg-accent rounded-sm w-6 h-6 flex items-center justify-center">
-                      <Info className="w-4 h-4" />
-                    </div>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className="bg-accent rounded-sm w-6 h-6 flex items-center justify-center cursor-pointer">
+                            <Info className="w-4 h-4" />
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" align="center">
+                          영문+숫자, 특수문자 포함 8자
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
                   </div>
                 </div>
+                {/* Real-time Feedback for Reset Password */}
+                {getPasswordFeedback(newPassword)}
               </div>
 
               <div className="space-y-1">
@@ -616,7 +733,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
               </button>
 
               <button 
-                 type="button"
+                type="button"
                 className="flex items-center justify-center gap-2 w-full h-[40px] bg-yellow-400 text-yellow-900 border border-gray-200 rounded-md shadow-sm hover:bg-yellow-300 transition-colors"
               >
                 <div className="size-[24px] flex items-center justify-center overflow-hidden">
@@ -722,12 +839,23 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                     onChange={(e) => setPassword(e.target.value)}
                     disabled={isLoading}
                   />
-                  <div className="absolute right-2 top-1/2 -translate-y-1/2">
-                    <div className="bg-accent rounded-sm w-6 h-6 flex items-center justify-center">
-                      <Info className="w-4 h-4" />
-                    </div>
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2">                    
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className="bg-accent rounded-sm w-6 h-6 flex items-center justify-center cursor-pointer">
+                            <Info className="w-4 h-4" />
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" align="center">
+                          영문+숫자, 특수문자 포함 8자
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
                   </div>
                 </div>
+                {/* Real-time Feedback for Signup Password */}
+                {getPasswordFeedback(password)}
               </div>
 
               <div className="space-y-1">
@@ -740,6 +868,8 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                   onChange={(e) => setPasswordConfirm(e.target.value)}
                   disabled={isLoading}
                 />
+                {/* Real-time Feedback for Signup Password Confirm */}
+                {getPasswordConfirmFeedback()}
               </div>
 
               {/* Terms Section */}
@@ -785,7 +915,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
               <Button 
                 className="flex-1 h-[36px] font-bold" 
                 onClick={handleInfoSubmit}
-                disabled={!termsAccepted || !termsViewed || isLoading}
+                disabled={!isSignupFormValid || isLoading}
               >
                 {isLoading ? <Loader2 className="animate-spin w-4 h-4" /> : "계정생성"}
               </Button>

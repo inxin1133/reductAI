@@ -20,7 +20,7 @@ import {
   X
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useNavigate } from "react-router-dom"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Separator } from "@/components/ui/separator"
@@ -61,9 +61,40 @@ export function Sidebar({ className }: SidebarProps) {
   }, [])
 
   const handleLogout = () => {
+    // 세션/토큰 정리
     localStorage.removeItem('token')
+    localStorage.removeItem('token_expires_at')
+    localStorage.removeItem('user_email')
+    localStorage.removeItem('user_id')
+    // 로그인 페이지(인트로)로 이동
     navigate('/')
   }
+
+  // 토큰이 없거나 만료된 경우 접근 차단
+  const alertShownRef = useRef(false)
+
+  useEffect(() => {
+    const token = localStorage.getItem('token')
+    const expiresAt = Number(localStorage.getItem('token_expires_at') || 0)
+    const isExpired = !expiresAt || Date.now() > expiresAt
+
+    if (!token || isExpired) {
+      if (!alertShownRef.current) {
+        alertShownRef.current = true
+        // 보안상 정리 후 경고 표시
+        localStorage.removeItem('token')
+        localStorage.removeItem('token_expires_at')
+        localStorage.removeItem('user_email')
+        localStorage.removeItem('user_id')
+        alert('로그인이 필요합니다. 인트로(로그인) 페이지로 이동합니다.')
+        navigate('/', { replace: true })
+      }
+      return
+    }
+
+    // 토큰이 정상인 경우 경고 상태 초기화
+    alertShownRef.current = false
+  }, [navigate])
 
   // Profile Popover Content (Shared) - 프로필 팝오버 콘텐츠 (공유)
   const ProfilePopoverContent = () => (

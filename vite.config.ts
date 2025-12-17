@@ -11,4 +11,32 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  server: {
+    proxy: {
+      '/auth': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/api/users': {
+        target: 'http://localhost:3002',
+        changeOrigin: true,
+      },
+      '/api/roles': {
+        target: 'http://localhost:3002',
+        changeOrigin: true,
+      },
+      '/api/permissions': {
+        target: 'http://localhost:3002',
+        changeOrigin: true,
+      },
+      '/api/tenants': {
+        target: 'http://localhost:3003',
+        changeOrigin: true,
+      },
+      '/api/i18n': {
+        target: 'http://localhost:3006',
+        changeOrigin: true,
+      },
+    }
+  }
 })

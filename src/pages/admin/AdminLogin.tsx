@@ -1,19 +1,116 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useTheme } from "@/hooks/useTheme"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Eclipse } from "lucide-react"
 
+import { IconReduct } from "@/components/icons/IconReduct"
+import { IconPika } from "@/components/icons/IconPika"
+import { IconStableAudio } from "@/components/icons/IconStableAudio"
+import { IconRunway } from "@/components/icons/IconRunway"
+import { IconElevenlabs } from "@/components/icons/IconElevenlabs"
+import { IconPlayai } from "@/components/icons/IconPlayai"
+import { IconFierfly } from "@/components/icons/IconFierfly"
+import { IconPolly } from "@/components/icons/IconPolly"
+import { IconStableDiffusion } from "@/components/icons/IconStableDiffusion"
+import { IconChatGPT } from "@/components/icons/IconChatGPT"
+import { IconClaude } from "@/components/icons/IconClaude"
+import { IconGemini } from "@/components/icons/IconGemini"
+import { IconGrok } from "@/components/icons/IconGrok"
+import { IconUdio } from "@/components/icons/IconUdio"
 export default function AdminLogin() {
   const navigate = useNavigate()
   const { toggleTheme } = useTheme()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [isLoading, setIsLoading] = useState(false)
 
-  const handleLogin = () => {
-    // TODO: Implement admin login logic  
-    console.log("Admin Login", email, password)
+  // API 베이스 URL (환경변수 우선, 없으면 로컬 기본값 사용)
+  const AUTH_API_BASE = useMemo(
+    () => import.meta.env.VITE_API_BASE_URL || "http://localhost:3001",
+    []
+  )
+  const USER_API_BASE = "http://localhost:3002/api/users"
+
+  // 관리자 여부를 확인하는 헬퍼 (role_name/slug에 admin 포함 여부)
+  const isAdminRole = (roleName?: string | null, roleSlug?: string | null) => {
+    const toLower = (v?: string | null) => (v || "").toLowerCase()
+    const name = toLower(roleName)
+    const slug = toLower(roleSlug)
+    return name === "admin" || slug === "admin" || name.includes("admin") || slug.includes("admin")
+  }
+
+  const handleLogin = async () => {
+    if (!email || !password) {
+      alert("이메일과 비밀번호를 입력해주세요.")
+      return
+    }
+
+    setIsLoading(true)
+    try {
+      // 1) 기본 로그인 요청
+      const loginRes = await fetch(`${AUTH_API_BASE}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      })
+
+      if (!loginRes.ok) {
+        const err = await loginRes.json().catch(() => ({}))
+        alert(err.message || "로그인에 실패했습니다.")
+        return
+      }
+
+      const loginData = await loginRes.json()
+      const token = loginData.token
+      const user = loginData.user
+
+      if (!token || !user?.id) {
+        alert("로그인 응답에 필요한 정보가 없습니다.")
+        return
+      }
+
+      // 2) 사용자 역할 조회 (user-service)
+      //    검색 조건으로 email을 사용해 1명만 조회 -> role 정보를 확인
+      const roleRes = await fetch(`${USER_API_BASE}?limit=1&search=${encodeURIComponent(email)}`, {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      })
+
+      if (!roleRes.ok) {
+        const err = await roleRes.json().catch(() => ({}))
+        alert(err.message || "역할 정보를 불러오지 못했습니다.")
+        return
+      }
+
+      const roleData = await roleRes.json()
+      const foundUser = roleData.users?.[0]
+      const roleName = foundUser?.role_name
+      const roleSlug = foundUser?.role_slug
+
+      if (!isAdminRole(roleName, roleSlug)) {
+        alert("관리자 권한이 없습니다. 관리자 계정으로 로그인하세요.")
+        return
+      }
+
+      // 3) 세션 1시간 유지 (만료 시각 저장)
+      const expiresAt = Date.now() + 60 * 60 * 1000 // 1 hour
+      localStorage.setItem("token", token)
+      localStorage.setItem("token_expires_at", expiresAt.toString())
+      localStorage.setItem("user_email", user.email || email)
+      localStorage.setItem("user_id", user.id)
+
+      // 4) 관리자 대시보드로 이동
+      navigate("/admin/dashboard")
+    } catch (error) {
+      console.error("Admin login error", error)
+      alert("로그인 중 오류가 발생했습니다.")
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   const handleGoToUserPage = () => {
@@ -73,6 +170,12 @@ export default function AdminLogin() {
                   className="h-9"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault()
+                      handleLogin()
+                    }
+                  }}
                 />
               </div>
 
@@ -80,8 +183,9 @@ export default function AdminLogin() {
               <Button 
                 className="w-full h-9 text-sm font-medium"
                 onClick={handleLogin}
+                disabled={isLoading}
               >
-                Login
+                {isLoading ? "Logging in..." : "Login"}
               </Button>
             </div>
 
@@ -92,9 +196,7 @@ export default function AdminLogin() {
               onClick={handleGoToUserPage}
             >
               {/* 로고 플레이스홀더 또는 아이콘 */}
-              <div className="bg-foreground text-background size-5 flex items-center justify-center rounded-sm font-bold text-[10px]">
-                RDT
-              </div>
+              <IconReduct className="size-5" />              
               <span className="text-sm font-medium">Go to the User Page</span>
             </Button>
           </div>
@@ -103,6 +205,24 @@ export default function AdminLogin() {
           <div className="flex flex-col items-center text-center text-muted-foreground text-xs leading-4">
             <p>Copyright (c) 2025 reduct</p>
             <p>All rights reserved.</p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <IconReduct className="relative shrink-0 size-[24px]" />
+            <IconChatGPT className="relative shrink-0 size-[24px]" />
+            <IconClaude className="relative shrink-0 size-[24px]" />
+            <IconGemini className="relative shrink-0 size-[24px]" />
+            <IconGrok className="relative shrink-0 size-[24px]" />            
+            <IconPika className="relative shrink-0 size-[24px]" />
+            <IconStableAudio className="relative shrink-0 size-[24px]" />
+            <IconRunway className="relative shrink-0 size-[24px]" />            
+            <IconFierfly className="relative shrink-0 size-[24px]" />
+            <IconPolly className="relative shrink-0 size-[24px]" />
+            <IconPlayai className="relative shrink-0 size-[24px]" />
+            <IconStableDiffusion className="relative shrink-0 size-[24px]" />
+            <IconStableAudio className="relative shrink-0 size-[24px]" />
+            <IconElevenlabs className="relative shrink-0 size-[24px]" />     
+            <IconUdio className="relative shrink-0 size-[24px]" />
           </div>
 
         </div>

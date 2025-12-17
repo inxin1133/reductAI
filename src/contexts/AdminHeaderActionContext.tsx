@@ -4,14 +4,18 @@ import type { ReactNode } from "react"
 type AdminHeaderActionContextType = {
   action: ReactNode | null
   setAction: (node: ReactNode | null) => void
+  title: string
+  setTitle: (title: string) => void
 }
 
 const AdminHeaderActionContext = createContext<AdminHeaderActionContextType | undefined>(undefined)
 
 export function AdminHeaderActionProvider({ children }: { children: ReactNode }) {
   const [action, setAction] = useState<ReactNode | null>(null)
+  const [title, setTitle] = useState<string>("")
+
   return (
-    <AdminHeaderActionContext.Provider value={{ action, setAction }}>
+    <AdminHeaderActionContext.Provider value={{ action, setAction, title, setTitle }}>
       {children}
     </AdminHeaderActionContext.Provider>
   )
@@ -35,4 +39,3 @@ export function useAdminHeaderAction(node: ReactNode | null) {
     return () => setAction(null)
   }, [node, setAction])
 }
-

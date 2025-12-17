@@ -85,8 +85,14 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
   }
 
   const handleLogout = () => {
+    // 세션 및 토큰 정리
     localStorage.removeItem('token')
-    navigate('/')
+    localStorage.removeItem('token_expires_at')
+    localStorage.removeItem('user_email')
+    localStorage.removeItem('user_id')
+
+    // 로그인 페이지로 이동
+    navigate('/admin/login')
   }
 
   const toggleSubmenu = (title: string) => {
@@ -95,6 +101,13 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
       ...prev,
       [title]: !prev[title]
     }))
+  }
+
+  // 모바일에서는 메뉴 선택 후 자동으로 메뉴를 닫으며 해당 경로로 이동
+  const handleNavigate = (href?: string) => {
+    if (!href) return
+    navigate(href)
+    if (isMobile) setIsMobileMenuOpen(false)
   }
 
   const isActive = (href?: string) => {
@@ -263,7 +276,7 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
                         "flex items-center gap-2 p-2 h-10 rounded-md cursor-pointer hover:bg-accent/50 transition-colors", 
                         isActive(menu.href) && "bg-accent text-accent-foreground font-medium"
                       )}
-                      onClick={() => menu.items ? toggleSubmenu(menu.title) : navigate(menu.href || '#')}
+                      onClick={() => menu.items ? toggleSubmenu(menu.title) : handleNavigate(menu.href)}
                     >
                       <div className="size-5 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
                         <menu.icon className="size-full" />
@@ -284,7 +297,7 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
                               "flex items-center h-9 px-2 rounded-md hover:bg-accent/50 cursor-pointer",
                               isSubActive(subItem.href) && "bg-accent/50 text-accent-foreground font-medium"
                             )}
-                            onClick={() => navigate(subItem.href || '#')}
+                            onClick={() => handleNavigate(subItem.href)}
                           >
                             <span className="text-base text-sidebar-foreground truncate">{subItem.title}</span>
                           </div>

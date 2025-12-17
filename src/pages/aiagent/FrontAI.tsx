@@ -7,6 +7,8 @@ import {
 } from "lucide-react"
 import { Sidebar } from "@/components/Sidebar"
 import { UserHeader } from "@/components/UserHeader"
+import { useNavigate } from "react-router-dom"
+import { useRef } from "react"
 
 const imgIconsGrok = "https://www.figma.com/api/mcp/asset/956f5384-69cd-4631-9bb8-3d0b71c7e689";
 const imgVector3 = "https://www.figma.com/api/mcp/asset/5cbcace5-43b3-4afa-85c7-a3b42cfb70c7";
@@ -23,8 +25,8 @@ type PaidTokenProps = {
 
 function PaidToken({ className }: PaidTokenProps) {
   return (
-    <div className={cn("flex items-center rounded-full shadow-sm", className)}>
-      <div className="bg-primary flex gap-[10px] items-center justify-center px-[12px] py-[6px] rounded-tr-full shadow-sm shrink-0">
+    <div className={cn("flex items-center gap-2", className)}>
+      <div className="bg-primary flex gap-[10px] items-center justify-center px-[12px] py-[6px] rounded-full shadow-sm shrink-0">
         <p className="font-medium leading-[20px] text-primary-foreground text-[14px]">
           개인:Pro
         </p>
@@ -34,7 +36,7 @@ function PaidToken({ className }: PaidTokenProps) {
           </p>
         </div>
       </div>
-      <button className="bg-primary-foreground border border-border cursor-pointer flex gap-[10px] items-center justify-center px-[12px] py-[6px] rounded-tr-full shadow-sm shrink-0 hover:bg-accent/50" type="button">
+      <button className="bg-primary-foreground border border-border cursor-pointer flex gap-[10px] items-center justify-center px-[12px] py-[6px] rounded-full shadow-sm shrink-0 hover:bg-accent/50" type="button">
         <p className="font-medium leading-[20px] text-primary text-[14px]">
           KIA:Premium
         </p>
@@ -117,6 +119,31 @@ function IconsGemini({ className }: { className?: string }) {
 }
 
 export default function FrontAI() {
+  const navigate = useNavigate()
+  const alertShownRef = useRef(false)
+
+  // 토큰이 없거나 만료된 경우 접근 차단 및 경고 표시
+  React.useEffect(() => {
+    const token = localStorage.getItem("token")
+    const expiresAt = Number(localStorage.getItem("token_expires_at") || 0)
+    const isExpired = !expiresAt || Date.now() > expiresAt
+
+    if (!token || isExpired) {
+      if (!alertShownRef.current) {
+        alertShownRef.current = true
+        localStorage.removeItem("token")
+        localStorage.removeItem("token_expires_at")
+        localStorage.removeItem("user_email")
+        localStorage.removeItem("user_id")
+        alert("로그인이 필요합니다. 로그인 페이지로 이동합니다.")
+        navigate("/", { replace: true })
+      }
+      return
+    }
+
+    // 토큰이 정상인 경우 경고 상태 초기화
+    alertShownRef.current = false
+  }, [navigate])
 
   return (
     <div className="bg-background relative w-full h-screen overflow-hidden flex font-sans">

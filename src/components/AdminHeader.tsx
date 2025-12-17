@@ -8,8 +8,8 @@ import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext
 export function AdminHeader() {
   const { toggleTheme } = useTheme()
   const location = useLocation()
-  const [title, setTitle] = useState("Dashboard")
-  const { action } = useAdminHeaderActionContext()
+  const [defaultTitle, setDefaultTitle] = useState("Dashboard")
+  const { action, title: contextTitle } = useAdminHeaderActionContext()
 
   useEffect(() => {
     let foundTitle = "Dashboard"
@@ -31,13 +31,15 @@ export function AdminHeader() {
       }
     }
     
-    setTitle(foundTitle)
+    setDefaultTitle(foundTitle)
   }, [location.pathname])
+
+  const displayTitle = contextTitle || defaultTitle
 
   return (
     <div className="h-[60px] flex items-center justify-between px-6 shrink-0">
       <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-sm text-muted-foreground">
-        {title.split(" > ").map((segment, idx, arr) => (
+        {displayTitle.split(" > ").map((segment, idx, arr) => (
           <span key={segment} className="flex items-center gap-2">
             <span className={idx === arr.length - 1 ? "text-foreground font-semibold" : ""}>
               {segment}

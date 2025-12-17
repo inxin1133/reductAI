@@ -6,6 +6,9 @@ import AdminLogin from "./pages/admin/AdminLogin";
 import AdminLayout from "./pages/admin/AdminLayout";
 import AdminDashboard from "./pages/admin/AdminDashboard";
 import LanguageManager from "./pages/admin/i18n/LanguageManager";
+import NamespaceManager from "./pages/admin/i18n/NamespaceManager";
+import TranslationManager from "./pages/admin/i18n/TranslationManager";
+import TranslationHistoryPage from "./pages/admin/i18n/TranslationHistory";
 
 import UserManager from "./pages/admin/users/UserManager";
 import RoleManager from "./pages/admin/users/RoleManager";
@@ -51,6 +54,18 @@ const router = createBrowserRouter([
           {
             path: "i18n/languages",
             element: <LanguageManager />,
+          },
+          {
+            path: "i18n/namespaces",
+            element: <NamespaceManager />,
+          },
+          {
+            path: "i18n/translations",
+            element: <TranslationManager />,
+          },
+          {
+            path: "i18n/history",
+            element: <TranslationHistoryPage />,
           },
           {
             path: "users",

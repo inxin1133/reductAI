@@ -99,14 +99,14 @@ export const adminMenuGroups: MenuGroup[] = [
           { title: "감사 로그(Audit)" },
         ]
       },
-      { 
-        title: "다국어(i18n)", 
-        icon: Globe,
-        items: [
-          { title: "지원 언어 관리", href: "/admin/i18n/languages" },
-          { title: "네임스페이스 관리" },
-          { title: "번역 데이터 관리" },
-          { title: "번역 이력" },
+          { 
+            title: "다국어(i18n)", 
+            icon: Globe,
+            items: [
+              { title: "지원 언어 관리", href: "/admin/i18n/languages" },
+              { title: "네임스페이스 관리", href: "/admin/i18n/namespaces" },
+              { title: "번역 데이터 관리", href: "/admin/i18n/translations" },
+              { title: "번역 이력", href: "/admin/i18n/history" },
         ]
       },
     ]
