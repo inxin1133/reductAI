@@ -1,7 +1,8 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
-import { Mic, ChevronDown, Lock, Plus, ChevronLeft, ChevronRight } from "lucide-react"
+import { Mic, ChevronDown, Lock, Plus, ChevronLeft, ChevronRight, Settings2, ChevronsRight, ChevronsLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Slider } from "@/components/ui/slider"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -65,7 +66,7 @@ interface ChatInterfaceProps {
 }
 
 // AI 모델 타입 정의
-type AIModelId = 'chatgpt' | 'gemini' | 'claude' | 'grok' | 'nanobanana' | 'dalle' | 'stable-diffusion' | 'fierfly' | 'sora' | 'runway' | 'veo' | 'pika' | 'stable-video' | 'musiclm' | 'udio' | 'stable-audio' | 'jukebox' | 'elevenlabs' | 'amazon-polly' | 'playai' | 'cloud-text-to-speech';
+type AIModelId = 'chatgpt' | 'gemini' | 'claude' | 'grok' | 'nanobanana' | 'dalle' | 'stable-diffusion' | 'fierfly' | 'sora' | 'runway' | 'veo' | 'pika' | 'stable-video' | 'musiclm' | 'udio' | 'stable-audio' | 'jukebox' | 'elevenlabs' | 'amazon-polly' | 'playai' | 'cloud-text-to-speech' | 'copilot';
 
 // 탭 타입 정의
 type TabType = 'chat' | 'extract' | 'image' | 'video' | 'music' | 'voice' | 'code';
@@ -80,24 +81,25 @@ interface AIModelConfig {
   isLocked?: boolean;
   models: string[]; // 드롭다운에 표시될 구체적인 모델명 리스트
   category: TabType[]; // 해당 모델이 속한 카테고리
+  hasOptions?: boolean; // 옵션 패널 존재 여부
 }
 
-// 아이콘 래퍼들 (추가적인 아이콘이 필요하면 여기에 추가)
-// 임시로 기존 아이콘 재사용 혹은 대체
-const InitialGemini = ({ className }: { className?: string }) => <div className={className}>G</div>; // Placeholder
-const InitialClaude = ({ className }: { className?: string }) => <div className={className}>C</div>; // Placeholder
-const InitialGrok = ({ className }: { className?: string }) => <div className={className}>G</div>; // Placeholder
-const InitialChatGPT = ({ className }: { className?: string }) => <div className={className}>D</div>; // Placeholder
-const InitialStableDiffusion = ({ className }: { className?: string }) => <div className={className}>S</div>; // Placeholder
-const InitialFierfly = ({ className }: { className?: string }) => <div className={className}>F</div>; // Placeholder
-const InitialRunway = ({ className }: { className?: string }) => <div className={className}>R</div>; // Placeholder
-const InitialPika = ({ className }: { className?: string }) => <div className={className}>P</div>; // Placeholder
-const InitialStableVideo = ({ className }: { className?: string }) => <div className={className}>V</div>; // Placeholder
-const InitialUdio = ({ className }: { className?: string }) => <div className={className}>U</div>; // Placeholder
-const InitialStableAudio = ({ className }: { className?: string }) => <div className={className}>A</div>; // Placeholder
-const InitialElevenlabs = ({ className }: { className?: string }) => <div className={className}>E</div>; // Placeholder
-const InitialPolly = ({ className }: { className?: string }) => <div className={className}>P</div>; // Placeholder
-const InitialPlayai = ({ className }: { className?: string }) => <div className={className}>P</div>; // Placeholder
+// 아이콘 래퍼들
+const InitialGemini = ({ className }: { className?: string }) => <div className={className}>G</div>;
+const InitialClaude = ({ className }: { className?: string }) => <div className={className}>C</div>;
+const InitialGrok = ({ className }: { className?: string }) => <div className={className}>G</div>;
+const InitialChatGPT = ({ className }: { className?: string }) => <div className={className}>D</div>;
+const InitialStableDiffusion = ({ className }: { className?: string }) => <div className={className}>S</div>;
+const InitialFierfly = ({ className }: { className?: string }) => <div className={className}>F</div>;
+const InitialRunway = ({ className }: { className?: string }) => <div className={className}>R</div>;
+const InitialPika = ({ className }: { className?: string }) => <div className={className}>P</div>;
+const InitialStableVideo = ({ className }: { className?: string }) => <div className={className}>V</div>;
+const InitialUdio = ({ className }: { className?: string }) => <div className={className}>U</div>;
+const InitialStableAudio = ({ className }: { className?: string }) => <div className={className}>A</div>;
+const InitialElevenlabs = ({ className }: { className?: string }) => <div className={className}>E</div>;
+const InitialPolly = ({ className }: { className?: string }) => <div className={className}>P</div>;
+const InitialPlayai = ({ className }: { className?: string }) => <div className={className}>P</div>;
+const IconCopilot = ({ className }: { className?: string }) => <div className={className}>C</div>;
 
 
 const AI_MODELS: AIModelConfig[] = [
@@ -143,44 +145,46 @@ const AI_MODELS: AIModelConfig[] = [
     models: ["Grok-1", "Grok-2", "Grok-3"]
   },
 
-
-
   // Image Models
   {
     id: 'nanobanana',
     name: 'Nano Banana',
     provider: 'Google',
     description: "Nano Banana는 예술적이고 고품질의 이미지를 생성하는 데 특화되어 있습니다.",
-    icon: typeof IconGemini !== "undefined" ? IconGemini : InitialGemini, // Replace with actual icon
+    icon: typeof IconGemini !== "undefined" ? IconGemini : InitialGemini,
     category: ['image'],
-    models: ["Nano Banana Pro"]
+    models: ["Nano Banana Pro"],
+    hasOptions: true
   },
   {
     id: 'dalle',
     name: 'DALL·E',
     provider: 'OpenAI',
     description: "프롬프트에 충실한 이미지를 생성하며, 편집 기능이 강력합니다.",
-    icon: typeof IconChatGPT !== "undefined" ? IconChatGPT : InitialChatGPT, // Replace with actual icon
+    icon: typeof IconChatGPT !== "undefined" ? IconChatGPT : InitialChatGPT,
     category: ['image'],
-    models: ["DALL·E 3", "DALL·E 2"]
+    models: ["DALL·E 3", "DALL·E 2"],
+    hasOptions: true
   },
   {
     id: 'stable-diffusion',
     name: 'Stable Diffusion',
     provider: 'Stability AI',
     description: "오픈소스 기반으로 다양한 스타일과 커스터마이징이 가능합니다.",
-    icon: typeof IconStableDiffusion !== "undefined" ? IconStableDiffusion : InitialStableDiffusion, // Replace with actual icon
+    icon: typeof IconStableDiffusion !== "undefined" ? IconStableDiffusion : InitialStableDiffusion,
     category: ['image', 'extract'],
-    models: ["SD3", "SDXL 1.0", "SD 1.5"]
+    models: ["SD3", "SDXL 1.0", "SD 1.5"],
+    hasOptions: true
   },
   {
     id: 'fierfly',
     name: 'Fierfly',
     provider: 'Adobe',
     description: "Adobe의 최신 멀티모달 모델로, 텍스트와 이미지 처리에 뛰어납니다.",
-    icon: typeof IconFierfly !== "undefined" ? IconFierfly : InitialFierfly, // Replace with actual icon
+    icon: typeof IconFierfly !== "undefined" ? IconFierfly : InitialFierfly,
     category: ['image'],
-    models: ["SD3", "SDXL 1.0", "SD 1.5"]
+    models: ["SD3", "SDXL 1.0", "SD 1.5"],
+    hasOptions: true
   },
 
 
@@ -190,7 +194,7 @@ const AI_MODELS: AIModelConfig[] = [
     name: 'Sora',
     provider: 'OpenAI',
     description: "텍스트에서 고화질의 비디오를 생성하는 혁신적인 모델입니다.",
-    icon: typeof IconChatGPT !== "undefined" ? IconChatGPT : InitialChatGPT, // Replace with actual icon
+    icon: typeof IconChatGPT !== "undefined" ? IconChatGPT : InitialChatGPT,
     category: ['video'],
     models: ["Sora 1.0"]
   },
@@ -199,7 +203,7 @@ const AI_MODELS: AIModelConfig[] = [
     name: 'Veo',
     provider: 'Google',
     description: "영상 편집 및 생성에 특화된 전문적인 AI 툴입니다.",
-    icon: typeof IconGemini !== "undefined" ? IconGemini : InitialGemini, // Replace with actual icon
+    icon: typeof IconGemini !== "undefined" ? IconGemini : InitialGemini,
     category: ['video'],
     models: ["Veo 1.0", "Veo 2.0", "Veo 3.0"]
   },
@@ -208,7 +212,7 @@ const AI_MODELS: AIModelConfig[] = [
     name: 'Runway',
     provider: 'Runway ML',
     description: "영상 편집 및 생성에 특화된 전문적인 AI 툴입니다.",
-    icon: typeof IconRunway !== "undefined" ? IconRunway : InitialRunway, // Replace with actual icon
+    icon: typeof IconRunway !== "undefined" ? IconRunway : InitialRunway,
     category: ['video'],
     models: ["Gen-3 Alpha", "Gen-2"]
   },
@@ -217,7 +221,7 @@ const AI_MODELS: AIModelConfig[] = [
     name: 'Pika',
     provider: 'Pika Labs',
     description: "텍스트나 이미지를 통해 생동감 있는 비디오를 만듭니다.",
-    icon: typeof IconPika !== "undefined" ? IconPika : InitialPika, // Replace with actual icon
+    icon: typeof IconPika !== "undefined" ? IconPika : InitialPika,
     category: ['video'],
     models: ["Pika 1.0"]
   },
@@ -226,7 +230,7 @@ const AI_MODELS: AIModelConfig[] = [
     name: 'Stable Video',
     provider: 'Stability AI',
     description: "텍스트나 이미지를 통해 생동감 있는 비디오를 만듭니다.",
-    icon: typeof IconStableVideo !== "undefined" ? IconStableVideo : InitialStableVideo, // Replace with actual icon
+    icon: typeof IconStableVideo !== "undefined" ? IconStableVideo : InitialStableVideo,
     category: ['video'],
     models: ["Stable Video 1.0"]
   },
@@ -238,7 +242,7 @@ const AI_MODELS: AIModelConfig[] = [
     name: 'Udio',
     provider: 'Udio',
     description: "다양한 장르의 음악을 생성하며, 높은 음악성을 자랑합니다.",
-    icon: typeof IconUdio !== "undefined" ? IconUdio : InitialUdio, // Replace with actual icon
+    icon: typeof IconUdio !== "undefined" ? IconUdio : InitialUdio,
     category: ['music'],
     models: ["v1"]
   },  
@@ -247,7 +251,7 @@ const AI_MODELS: AIModelConfig[] = [
     name: 'Stable Audio',
     provider: 'Stability AI',
     description: "다양한 장르의 음악을 생성하며, 높은 음악성을 자랑합니다.",
-    icon: typeof IconStableAudio !== "undefined" ? IconStableAudio : InitialStableAudio, // Replace with actual icon
+    icon: typeof IconStableAudio !== "undefined" ? IconStableAudio : InitialStableAudio,
     category: ['music'],
     models: ["Stable Audio 1.0"]
   },  
@@ -256,7 +260,7 @@ const AI_MODELS: AIModelConfig[] = [
     name: 'MusicLM',
     provider: 'Google',
     description: "가사와 스타일을 입력하면 고품질의 노래를 생성합니다.",
-    icon: typeof IconGemini !== "undefined" ? IconGemini : InitialGemini, // Replace with actual icon
+    icon: typeof IconGemini !== "undefined" ? IconGemini : InitialGemini,
     category: ['music'],
     models: ["MusicLM 1.0"]
   },
@@ -265,19 +269,19 @@ const AI_MODELS: AIModelConfig[] = [
     name: 'Jukebox',
     provider: 'OpenAI',
     description: "가사와 스타일을 입력하면 고품질의 노래를 생성합니다.",
-    icon: typeof IconChatGPT !== "undefined" ? IconChatGPT : InitialChatGPT, // Replace with actual icon
+    icon: typeof IconChatGPT !== "undefined" ? IconChatGPT : InitialChatGPT,
     category: ['music'],
     models: ["Jukebox 1.0"]
   },
 
-
+ 
   // Voice Models
   {
     id: 'elevenlabs',
     name: 'ElevenLabs',
     provider: 'ElevenLabs',
     description: "가장 자연스럽고 감정 표현이 풍부한 음성 합성 AI입니다.",
-    icon: typeof IconElevenlabs !== "undefined" ? IconElevenlabs : InitialElevenlabs, // Replace with actual icon
+    icon: typeof IconElevenlabs !== "undefined" ? IconElevenlabs : InitialElevenlabs,
     category: ['voice'],
     models: ["Multilingual v2", "Turbo v2"]
   },
@@ -286,7 +290,7 @@ const AI_MODELS: AIModelConfig[] = [
     name: 'Amazon Polly',
     provider: 'Amazon',
     description: "가장 자연스럽고 감정 표현이 풍부한 음성 합성 AI입니다.",
-    icon: typeof IconPolly !== "undefined" ? IconPolly : InitialPolly, // Replace with actual icon
+    icon: typeof IconPolly !== "undefined" ? IconPolly : InitialPolly,
     category: ['voice'],
     models: ["Polly 1.0"]
   },
@@ -295,7 +299,7 @@ const AI_MODELS: AIModelConfig[] = [
     name: 'PlayAI',
     provider: 'PlayHT',
     description: "가장 자연스럽고 감정 표현이 풍부한 음성 합성 AI입니다.",
-    icon: typeof IconPlayai !== "undefined" ? IconPlayai : InitialPlayai, // Replace with actual icon
+    icon: typeof IconPlayai !== "undefined" ? IconPlayai : InitialPlayai,
     category: ['voice'],
     models: ["PlayAI 1.0"]
   },
@@ -304,11 +308,21 @@ const AI_MODELS: AIModelConfig[] = [
     name: 'Cloud Text-to-Speech',
     provider: 'Google',
     description: "가장 자연스럽고 감정 표현이 풍부한 음성 합성 AI입니다.",
-    icon: typeof IconGemini !== "undefined" ? IconGemini : InitialGemini, // Replace with actual icon
+    icon: typeof IconGemini !== "undefined" ? IconGemini : InitialGemini,
     category: ['voice'],
     models: ["Cloud Text-to-Speech 1.0"]
   },  
   
+  // Code Models
+  {
+    id: 'copilot',
+    name: 'Copilot',
+    provider: 'GitHub',
+    description: "코딩에 최적화된 AI 페어 프로그래머입니다.",
+    icon: IconCopilot,
+    category: ['code'],
+    models: ["Copilot Enterprise"]
+  }
 ];
 
 export function ChatInterface({ className }: ChatInterfaceProps) {
@@ -320,6 +334,9 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
   
   // 선택된 하위 모델(버전) 상태 관리
   const [selectedSubModel, setSelectedSubModel] = React.useState<string>("GPT-4o");
+
+  // 옵션 패널 확장 상태 관리
+  const [isOptionExpanded, setIsOptionExpanded] = React.useState(true);
 
   // Scroll logic
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
@@ -336,14 +353,13 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
     if (scrollContainerRef.current) {
       const { scrollLeft, scrollWidth, clientWidth } = scrollContainerRef.current;
       setShowLeftArrow(scrollLeft > 0);
-      setShowRightArrow(scrollLeft + clientWidth < scrollWidth - 1); // -1 for tolerance
+      setShowRightArrow(scrollLeft + clientWidth < scrollWidth - 1);
     }
   }, []);
 
   // 모델 리스트가 변경되거나 창 크기가 변경될 때 스크롤 버튼 상태 초기화
   React.useEffect(() => {
     updateScrollButtons();
-    // 리사이즈 이벤트 리스너 추가 (반응형 대응)
     window.addEventListener('resize', updateScrollButtons);
     return () => window.removeEventListener('resize', updateScrollButtons);
   }, [currentTabModels, updateScrollButtons]);
@@ -376,7 +392,6 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
   };
 
   // 현재 선택된 모델의 설정 정보
-  // 만약 현재 탭에 selectedModelId가 없다면 첫 번째 모델 사용 (안전장치)
   const currentModelConfig = React.useMemo(() => {
     return AI_MODELS.find(m => m.id === selectedModelId && m.category.includes(selectedTab)) 
       || currentTabModels[0] 
@@ -399,201 +414,327 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
   };
 
   return (
-    <div className={`flex flex-col gap-[16px] items-center relative shrink-0 w-full max-w-[800px] ${className || ''}`}>
-      
-      {/* Token Display - 토큰 디스플레이 */}
-      <div className="w-full flex items-center gap-4">
-        <PaidToken />
-      </div>
-      
-      <div className="flex flex-col gap-[16px] items-start relative shrink-0 w-full">
-        {/* Mode Tabs */}
-        <div className="flex flex-col gap-[10px] items-start relative shrink-0 w-full">
-          <div className="bg-muted box-border flex h-[36px] items-center justify-center p-[3px] relative rounded-[8px] shrink-0 w-full">
-            <div 
-              className={cn(
-                "box-border flex flex-[1_0_0] flex-col gap-[10px] h-[29px] items-center justify-center px-[8px] py-[4px] relative rounded-[6px] shrink-0 cursor-pointer transition-colors",
-                selectedTab === 'chat' ? "bg-background border border-border shadow-sm" : "hover:bg-background/50"
-              )}
-              onClick={() => handleTabChange('chat')}
-            >
-              <p className={cn("font-medium leading-[20px] text-[14px]", selectedTab === 'chat' ? "text-foreground" : "text-muted-foreground")}>채팅</p>
-            </div>
-            {['이미지', '영상', '음악', '음성', '추출', '코드'].map((tabLabel) => {
-              // 한글 라벨을 내부 TabType으로 매핑
-              const tabMap:Record<string, TabType> = {
-                '추출': 'extract',
-                '이미지': 'image',
-                '영상': 'video',
-                '음악': 'music',
-                '음성': 'voice',
-                '코드': 'code'
-              };
-              const tabKey = tabMap[tabLabel];
-
-              return (
-                <div 
-                  key={tabLabel} 
-                  className={cn(
-                    "box-border flex flex-[1_0_0] flex-col gap-[10px] h-[29px] items-center justify-center px-[8px] py-[4px] relative rounded-[6px] shrink-0 cursor-pointer transition-colors",
-                    selectedTab === tabKey ? "bg-background border border-border shadow-sm" : "hover:bg-background/50"
-                  )}
-                  onClick={() => handleTabChange(tabKey)}
-                >
-                  <p className={cn("font-medium leading-[20px] text-[14px]", selectedTab === tabKey ? "text-foreground" : "text-muted-foreground")}>{tabLabel}</p>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* AI Models Grid - AI 모델 선택 그리드 (현재 탭에 해당하는 모델만 표시) */}
-        <div className="relative w-full group">
-          {/* Left Arrow Button */}
-          {showLeftArrow && (
-            <div className="absolute left-0 top-1/2 -translate-y-1/2 z-10 -ml-4">
-               <Button 
-                variant="ghost" 
-                size="icon" 
-                className="rounded-full bg-background shadow-md border hover:bg-accent h-8 w-8"
-                onClick={scrollLeft}
-               >
-                 <ChevronLeft className="h-4 w-4" />
-               </Button>
-            </div>
-          )}
-
-          <div 
-            ref={scrollContainerRef}
-            className="flex gap-4 items-start relative w-full overflow-x-auto pb-2 scrollbar-hide snap-x"
-            onScroll={handleScroll}
-            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }} // Hide scrollbar for Firefox and IE/Edge
-          >
-            {currentTabModels.map((model) => (
-              <div 
-                key={model.id}
-                onClick={() => handleModelSelect(model.id)}
-                className={cn(
-                  "box-border flex flex-col min-w-[180px] w-[180px] gap-2 items-center overflow-hidden p-4 relative rounded-[8px] shrink-0 cursor-pointer transition-all border snap-start",
-                  selectedModelId === model.id 
-                    ? "bg-accent border-primary text-primary-foreground" // 선택됨
-                    : "bg-card border-border hover:bg-accent/50" // 선택되지 않음
-                )}
-              >
-                <div className="flex w-full items-start justify-between">
-                   <div className={cn(
-                    "box-border flex gap-[10px] items-center justify-center relative rounded-[4px] shrink-0 size-[32px]",
-                    selectedModelId === model.id ? "bg-primary" : "bg-muted border border-border"
-                  )}>              
-                    <model.icon className={cn(
-                      "relative shrink-0 size-[24px]",
-                      selectedModelId === model.id && model.iconColorClass ? model.iconColorClass : ""
-                    )} />              
-                  </div>
-                  
-                  {/* 선택 표시 (라디오 버튼 스타일) 또는 잠금 표시 */}
-                  <div className="flex flex-col items-center justify-center relative shrink-0">
-                    {selectedModelId === model.id ? (
-                        <div className="border border-ring rounded-full shadow-sm shrink-0 size-[16px] relative flex items-center justify-center">
-                          <div className="size-[8px] rounded-full bg-primary" />
-                        </div>
-                    ) : (
-                        <div className="bg-background border border-border rounded-full shadow-sm shrink-0 size-[16px]" />
-                    )}
-                  </div>
-                </div>
-                
-                <div className="flex w-full flex-col items-start relative shrink-0 mt-2">
-                  <div className="flex w-full justify-between items-center">
-                     <p className="font-medium text-card-foreground text-[14px] truncate">{model.name}</p>
-                     {model.isLocked && <Lock className="size-3 text-muted-foreground ml-1 shrink-0" />}
-                  </div>
-                  <p className="font-normal text-muted-foreground text-[14px] line-clamp-1 w-full text-left">{model.provider}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Right Arrow Button */}
-          {showRightArrow && (
-            <div className="absolute right-0 top-1/2 -translate-y-1/2 z-10 -mr-4">
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                className="rounded-full bg-background shadow-md border hover:bg-accent h-8 w-8"
-                onClick={scrollRight}
-              >
-                <ChevronRight className="h-4 w-4" />
-              </Button>
-            </div>
-          )}
-        </div>
-
-        {/* Description - 선택된 모델 설명 */}
-        {currentModelConfig && (
-          <div className="flex gap-[10px] items-center justify-start w-full min-h-[20px]">
-            <p className="font-medium leading-[20px] text-card-foreground text-[14px]">{currentModelConfig.name}</p>
-            <p className="font-normal leading-[20px] text-muted-foreground text-[14px]">
-              {currentModelConfig.description}
-            </p>
-          </div>
-        )}
-
-        {/* Search Bar & Actions - 검색창 및 액션 (선택된 모델에 따라 변경) */}
-        {currentModelConfig && (
-          <div className="bg-background border border-border box-border flex flex-col gap-[10px] items-start justify-center pb-[12px] pt-[16px] px-[16px] relative rounded-[24px] shadow-sm shrink-0 w-full">
-            <div className="flex flex-col gap-[10px] items-start justify-center relative shrink-0 w-full">
-              <input 
-                type="text" 
-                placeholder={`${currentModelConfig.name}에게 무엇이든 물어보세요`} 
-                className="w-full border-none outline-none text-[16px] placeholder:text-muted-foreground bg-transparent"
-              />
-            </div>
-            <div className="flex gap-[16px] items-center relative shrink-0 w-full mt-2">
-              <div className="flex flex-[1_0_0] gap-[10px] items-center relative shrink-0">
-                <div className="relative shrink-0 size-[24px] cursor-pointer hover:opacity-70 flex items-center justify-center">
-                    <Plus className="size-full" />
-                </div>
-              </div>                  
-              
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" disabled={currentModelConfig.isLocked}>
-                    {selectedSubModel}
-                    <ChevronDown className="size-4 relative shrink-0 ml-2" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent className="w-56" align="start">
-                  <DropdownMenuLabel>모델 선택</DropdownMenuLabel>
-                  <DropdownMenuGroup>
-                    {currentModelConfig.models.map((subModel) => (
-                      <DropdownMenuItem 
-                        key={subModel}
-                        onClick={() => setSelectedSubModel(subModel)}
-                      >
-                        {subModel}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuGroup>     
-                </DropdownMenuContent>
-              </DropdownMenu>
-
-              <Mic className="text-primary size-[24px]" />                                    
-            </div>
-          </div>
-        )}
-
-        {/* Action Badges */}
-        <div className="flex gap-[4px] items-start relative shrink-0 w-full">
-          <div className="bg-secondary cursor-pointer hover:bg-secondary/80 px-[10px] py-[2px] rounded-[8px]">
-            <p className="font-medium leading-[16px] text-secondary-foreground text-[12px]">심층 리서치를 작성해줘</p>
-          </div>
-          <div className="bg-secondary cursor-pointer hover:bg-secondary/80 px-[10px] py-[2px] rounded-[8px]">
-            <p className="font-medium leading-[16px] text-secondary-foreground text-[12px]">잘 생각해줘</p>
-          </div>
+    <div className="flex flex-row gap-4 items-end justify-center w-full">
+      <div className={`flex flex-col gap-[16px] items-center relative shrink-0 w-full max-w-[800px] ${className || ''}`}>
+        
+        {/* Token Display - 토큰 디스플레이 */}
+        <div className="w-full flex items-center gap-4">
+          <PaidToken />
         </div>
         
+        <div className="flex flex-col gap-[16px] items-start relative shrink-0 w-full">
+          {/* Mode Tabs */}
+          <div className="flex flex-col gap-[10px] items-start relative shrink-0 w-full">
+            <div className="bg-muted box-border flex h-[36px] items-center justify-center p-[3px] relative rounded-[8px] shrink-0 w-full">
+              <div 
+                className={cn(
+                  "box-border flex flex-[1_0_0] flex-col gap-[10px] h-[29px] items-center justify-center px-[8px] py-[4px] relative rounded-[6px] shrink-0 cursor-pointer transition-colors",
+                  selectedTab === 'chat' ? "bg-background border border-border shadow-sm" : "hover:bg-background/50"
+                )}
+                onClick={() => handleTabChange('chat')}
+              >
+                <p className={cn("font-medium leading-[20px] text-[14px]", selectedTab === 'chat' ? "text-foreground" : "text-muted-foreground")}>채팅</p>
+              </div>
+              {['이미지', '영상', '음악', '음성', '추출', '코드'].map((tabLabel) => {
+                // 한글 라벨을 내부 TabType으로 매핑
+                const tabMap:Record<string, TabType> = {
+                  '추출': 'extract',
+                  '이미지': 'image',
+                  '영상': 'video',
+                  '음악': 'music',
+                  '음성': 'voice',
+                  '코드': 'code'
+                };
+                const tabKey = tabMap[tabLabel];
+
+                return (
+                  <div 
+                    key={tabLabel} 
+                    className={cn(
+                      "box-border flex flex-[1_0_0] flex-col gap-[10px] h-[29px] items-center justify-center px-[8px] py-[4px] relative rounded-[6px] shrink-0 cursor-pointer transition-colors",
+                      selectedTab === tabKey ? "bg-background border border-border shadow-sm" : "hover:bg-background/50"
+                    )}
+                    onClick={() => handleTabChange(tabKey)}
+                  >
+                    <p className={cn("font-medium leading-[20px] text-[14px]", selectedTab === tabKey ? "text-foreground" : "text-muted-foreground")}>{tabLabel}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* AI Models Grid */}
+          <div className="relative w-full group">
+            {/* Left Arrow Button */}
+            {showLeftArrow && (
+              <div className="absolute left-0 top-1/2 -translate-y-1/2 z-10 -ml-4">
+                 <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  className="rounded-full bg-background shadow-md border hover:bg-accent h-8 w-8"
+                  onClick={scrollLeft}
+                >
+                   <ChevronLeft className="h-4 w-4" />
+                 </Button>
+              </div>
+            )}
+
+            <div 
+              ref={scrollContainerRef}
+              className="flex gap-4 items-start relative w-full overflow-x-auto pb-2 scrollbar-hide snap-x"
+              onScroll={handleScroll}
+              style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+            >
+              {currentTabModels.map((model) => (
+                <div 
+                  key={model.id}
+                  onClick={() => handleModelSelect(model.id)}
+                  className={cn(
+                    "box-border flex flex-col min-w-[180px] w-[180px] gap-2 items-center overflow-hidden p-4 relative rounded-[8px] shrink-0 cursor-pointer transition-all border snap-start",
+                    selectedModelId === model.id 
+                      ? "bg-accent border-primary text-primary-foreground" // 선택됨
+                      : "bg-card border-border hover:bg-accent/50" // 선택되지 않음
+                  )}
+                >
+                  <div className="flex w-full items-start justify-between">
+                     <div className={cn(
+                      "box-border flex gap-[10px] items-center justify-center relative rounded-[4px] shrink-0 size-[32px]",
+                      selectedModelId === model.id ? "bg-primary" : "bg-muted border border-border"
+                    )}>              
+                      <model.icon className={cn(
+                        "relative shrink-0 size-[24px]",
+                        selectedModelId === model.id && model.iconColorClass ? model.iconColorClass : ""
+                      )} />              
+                    </div>
+                    
+                    <div className="flex flex-col items-center justify-center relative shrink-0">
+                      {selectedModelId === model.id ? (
+                          <div className="border border-ring rounded-full shadow-sm shrink-0 size-[16px] relative flex items-center justify-center">
+                            <div className="size-[8px] rounded-full bg-primary" />
+                          </div>
+                      ) : (
+                          <div className="bg-background border border-border rounded-full shadow-sm shrink-0 size-[16px]" />
+                      )}
+                    </div>
+                  </div>
+                  
+                  <div className="flex w-full flex-col items-start relative shrink-0 mt-2">
+                    <div className="flex w-full justify-between items-center">
+                       <p className="font-medium text-card-foreground text-[14px] truncate">{model.name}</p>
+                       {model.isLocked && <Lock className="size-3 text-muted-foreground ml-1 shrink-0" />}
+                    </div>
+                    <p className="font-normal text-muted-foreground text-[14px] line-clamp-1 w-full text-left">{model.provider}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Right Arrow Button */}
+            {showRightArrow && (
+              <div className="absolute right-0 top-1/2 -translate-y-1/2 z-10 -mr-4">
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  className="rounded-full bg-background shadow-md border hover:bg-accent h-8 w-8"
+                  onClick={scrollRight}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
+          </div>
+
+          {/* Content Area: Chat/Option Container */}
+          <div className="flex gap-[16px] items-start relative shrink-0 w-full">
+            
+            {/* Main Content (Chat/Input Area) */}
+            <div className="flex flex-[1_0_0] flex-col gap-[16px] items-start h-full relative shrink-0">
+              {/* Description - 선택된 모델 설명 */}
+              {currentModelConfig && (
+                <div className="flex gap-[10px] items-center justify-start w-full">
+                  <p className="font-medium leading-[20px] text-card-foreground text-[14px] whitespace-nowrap">{currentModelConfig.name}</p>
+                  <p className="font-normal leading-[20px] text-muted-foreground text-[14px] line-clamp-1 text-ellipsis overflow-hidden">
+                    {currentModelConfig.description}
+                  </p>
+                </div>
+              )}
+
+              {/* Search Bar & Actions - 검색창 및 액션 */}
+              {currentModelConfig && (
+                <div className="bg-background border border-border box-border flex flex-col gap-[10px] items-start justify-between pb-[12px] pt-[16px] px-[16px] relative rounded-[24px] shadow-sm shrink-0 w-full h-full">
+                  <div className="flex flex-col gap-[10px] items-start justify-center relative shrink-0 w-full">
+                    <p className="font-medium text-muted-foreground text-[14px] w-full">
+                      무엇이든 상상하는 이미지를 자유롭게 서술해보세요
+                    </p>
+                    <input 
+                      type="text" 
+                      placeholder={`${currentModelConfig.name}에게 무엇이든 물어보세요`} 
+                      className="w-full border-none outline-none text-[16px] placeholder:text-muted-foreground bg-transparent"
+                    />
+                  </div>
+                  <div className="flex gap-[16px] items-center relative shrink-0 w-full mt-auto">
+                    <div className="flex flex-[1_0_0] gap-[10px] items-center relative shrink-0">
+                      <div className="relative shrink-0 size-[24px] cursor-pointer hover:opacity-70 flex items-center justify-center">
+                          <Plus className="size-full" />
+                      </div>
+                    </div>                  
+                    
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" className="h-[36px] rounded-[8px] gap-2 px-4" disabled={currentModelConfig.isLocked}>
+                          {selectedSubModel}
+                          <ChevronDown className="size-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent className="w-56" align="start">
+                        <DropdownMenuLabel>모델 선택</DropdownMenuLabel>
+                        <DropdownMenuGroup>
+                          {currentModelConfig.models.map((subModel) => (
+                            <DropdownMenuItem 
+                              key={subModel}
+                              onClick={() => setSelectedSubModel(subModel)}
+                            >
+                              {subModel}
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuGroup>     
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+
+                    <div className="bg-primary rounded-full size-[28px] flex items-center justify-center cursor-pointer">
+                       <Mic className="text-primary-foreground size-[16px]" /> 
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              {/* Example Badges (Optional) - 예시 뱃지 */}
+              <div className="flex flex-wrap gap-[4px] items-start relative shrink-0 w-full">
+                {['우주를 여행하는 고양이, 디지털 아트', '미래도시의 석양, 사이버펑크 스타일'].map((badge) => (
+                  <div key={badge} className="bg-secondary px-[10px] py-[2px] rounded-[8px] cursor-pointer hover:bg-secondary/80">
+                    <p className="text-[12px] font-medium text-secondary-foreground">{badge}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Compact Option Panel (Trigger) - Inside Main Container - 패널 축소되었을 때 확장 트리거 */}
+            {currentModelConfig?.hasOptions && !isOptionExpanded && (
+              <div 
+                className="bg-card border border-border flex flex-col gap-2 items-center p-[16px] rounded-[8px] max-w-[200px] w-full min-w-[120px] cursor-pointer hover:bg-accent/50 transition-colors"
+                onClick={() => setIsOptionExpanded(true)}
+              >
+                <div className="flex items-center w-full gap-[10px]">
+                  <Settings2 className="size-6" />                
+                  
+                  <p className="text-[14px] font-medium text-card-foreground truncate w-full">이미지 설정</p>
+                  <div className="size-[16px] flex items-center justify-center relative shrink-0">
+                    <ChevronsRight className="size-4" />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-start w-full gap-2">
+                  <p className="text-[14px] text-muted-foreground whitespace-nowrap">크기</p>
+                  <p className="text-[14px] font-medium text-foreground line-clamp-1 text-ellipsis w-full">1024x1024 (Square) sdf</p>
+                </div>
+                <div className="flex items-center justify-start w-full gap-2">
+                  <p className="text-[14px] text-muted-foreground whitespace-nowrap">품질</p>
+                  <p className="text-[14px] font-medium text-foreground line-clamp-1 text-ellipsis w-full">일반</p>
+                </div>
+                <div className="flex items-center justify-start w-full gap-2">
+                  <p className="text-[14px] text-muted-foreground whitespace-nowrap">스타일</p>
+                  <p className="text-[14px] font-medium text-foreground line-clamp-1 text-ellipsis w-full">Vivid (생동감)</p>
+                </div>
+                <div className="flex items-center justify-start w-full gap-2">
+                  <p className="text-[14px] text-muted-foreground whitespace-nowrap">생성 개수</p>
+                  <p className="text-[14px] font-medium text-foreground line-clamp-1 text-ellipsis w-full">2</p>
+                </div>
+
+
+              </div>
+            )}
+
+
+          </div>
+        </div>
       </div>
+
+      {/* Expanded Panel (Outside Main Container) - 패널 확장되었을 때 영역 */}
+      {currentModelConfig?.hasOptions && isOptionExpanded && (
+        <div className="bg-card border border-border flex flex-col gap-[16px] items-start p-[16px] rounded-[8px] relative shrink-0 w-[260px] animate-in fade-in slide-in-from-left-4 duration-300">
+          
+          <div className="flex items-center gap-[10px] w-full cursor-pointer"
+          onClick={() => setIsOptionExpanded(false)}>
+            <div className="size-[16px] flex items-center justify-center relative shrink-0">
+              <Settings2 className="size-full" />
+            </div>
+            
+              <p className="text-sm font-medium text-card-foreground truncate w-full">이미지 설정</p>
+              <div className="size-[16px] flex items-center justify-center relative shrink-0">
+                <ChevronsLeft className="size-full" />
+              </div>            
+          </div>
+
+          <div className="flex flex-col gap-[16px] w-full">
+            {/* Option: Size */}
+            <div className="flex flex-col gap-[4px] w-full">
+              <div className="flex items-center justify-center">
+                <p className="text-sm font-medium text-foreground">크기</p>
+              </div>
+              <div className="bg-background border border-border h-[36px] flex items-center justify-between px-[12px] py-[8px] rounded-[6px] shadow-sm w-full cursor-pointer">
+                <p className="text-sm text-foreground">1024x1024 (Square)</p>
+                <ChevronDown className="size-4 text-muted-foreground" />
+              </div>
+            </div>
+
+            {/* Option: Quality */}
+            <div className="flex flex-col gap-[4px] w-full">
+              <div className="flex items-center justify-center">
+                <p className="text-sm font-medium text-foreground">품질</p>
+              </div>
+              <div className="bg-background border border-border h-[36px] flex items-center justify-between px-[12px] py-[8px] rounded-[6px] shadow-sm w-full cursor-pointer">
+                <p className="text-sm text-foreground">일반</p>
+                <ChevronDown className="size-4 text-muted-foreground" />
+              </div>
+            </div>
+
+            {/* Option: Style */}
+            <div className="flex flex-col gap-[4px] w-full">
+              <div className="flex items-center justify-center">
+                <p className="text-sm font-medium text-foreground">스타일</p>
+              </div>
+              <div className="bg-background border border-border h-[36px] flex items-center justify-between px-[12px] py-[8px] rounded-[6px] shadow-sm w-full cursor-pointer">
+                <p className="text-sm text-foreground">Vivid (생동감)</p>
+                <ChevronDown className="size-4 text-muted-foreground" />
+              </div>
+            </div>
+
+            {/* Option: Count */}
+            <div className="flex flex-col gap-[8px] w-full">
+              <div className="flex items-center justify-between w-full">
+                <p className="text-sm font-medium text-muted-foreground">생성 개수</p>
+                <p className="text-sm font-medium text-foreground">2</p>
+              </div>
+              <Slider defaultValue={[2]} max={4} step={1} className="w-full" />
+            </div>
+
+            {/* Divider */}
+            <div className="h-px w-full bg-border" />
+
+            {/* Info: Model & Time */}
+            <div className="flex flex-col gap-[8px] w-full">
+              <div className="flex items-center justify-between w-full">
+                <p className="text-sm font-medium text-muted-foreground">모델</p>
+                <p className="text-sm font-medium text-foreground">{selectedSubModel}</p>
+              </div>
+              <div className="flex items-center justify-between w-full">
+                <p className="text-sm font-medium text-muted-foreground">예상 시간</p>
+                <p className="text-sm font-medium text-foreground">15초</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
