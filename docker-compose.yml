@@ -13,6 +13,10 @@ services:
       - /app/node_modules
     environment:
       - VITE_API_BASE_URL=http://localhost:3001
+      - AUTH_SERVICE_URL=http://auth-service:3001
+      - USER_SERVICE_URL=http://user-service:3002
+      - TENANT_SERVICE_URL=http://tenant-service:3003
+      - I18N_SERVICE_URL=http://i18n-service:3006
     depends_on:
       - auth-service
       - i18n-service

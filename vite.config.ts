@@ -4,39 +4,47 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [react(), tailwindcss()],
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
+export default defineConfig(({ mode }) => {
+  // Docker 환경에서 실행 시 환경변수 사용, 로컬 실행 시 localhost 사용
+  const authTarget = process.env.AUTH_SERVICE_URL || 'http://localhost:3001';
+  const userTarget = process.env.USER_SERVICE_URL || 'http://localhost:3002';
+  const tenantTarget = process.env.TENANT_SERVICE_URL || 'http://localhost:3003';
+  const i18nTarget = process.env.I18N_SERVICE_URL || 'http://localhost:3006';
+
+  return {
+    plugins: [react(), tailwindcss()],
+    resolve: {
+      alias: {
+        "@": path.resolve(__dirname, "./src"),
+      },
     },
-  },
-  server: {
-    proxy: {
-      '/auth': {
-        target: 'http://localhost:3001',
-        changeOrigin: true,
-      },
-      '/api/users': {
-        target: 'http://localhost:3002',
-        changeOrigin: true,
-      },
-      '/api/roles': {
-        target: 'http://localhost:3002',
-        changeOrigin: true,
-      },
-      '/api/permissions': {
-        target: 'http://localhost:3002',
-        changeOrigin: true,
-      },
-      '/api/tenants': {
-        target: 'http://localhost:3003',
-        changeOrigin: true,
-      },
-      '/api/i18n': {
-        target: 'http://localhost:3006',
-        changeOrigin: true,
-      },
+    server: {
+      proxy: {
+        '/auth': {
+          target: authTarget,
+          changeOrigin: true,
+        },
+        '/api/users': {
+          target: userTarget,
+          changeOrigin: true,
+        },
+        '/api/roles': {
+          target: userTarget,
+          changeOrigin: true,
+        },
+        '/api/permissions': {
+          target: userTarget,
+          changeOrigin: true,
+        },
+        '/api/tenants': {
+          target: tenantTarget,
+          changeOrigin: true,
+        },
+        '/api/i18n': {
+          target: i18nTarget,
+          changeOrigin: true,
+        },
+      }
     }
   }
 })

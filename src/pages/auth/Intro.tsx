@@ -14,6 +14,7 @@ import {
 interface Language {
   code: string
   name: string
+  native_name: string
   is_default: boolean
   flag_emoji: string
   is_active?: boolean
@@ -71,7 +72,7 @@ export default function Intro() {
               <SelectContent>
                 {languages.map(lang => (
                   <SelectItem key={lang.code} value={lang.code}>
-                    {lang.flag_emoji} {lang.name}
+                    {lang.flag_emoji} {lang.native_name}
                   </SelectItem>
                 ))}
               </SelectContent>

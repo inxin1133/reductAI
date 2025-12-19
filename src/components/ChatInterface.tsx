@@ -1,6 +1,6 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
-import { Mic, ChevronDown, Lock, Plus, ChevronLeft, ChevronRight, Settings2, ChevronsRight, ChevronsLeft } from "lucide-react"
+import { Mic, ChevronDown, Lock, Plus, ChevronLeft, ChevronRight, Settings2, ChevronsRight, ChevronsLeft, ChevronsUp, Ellipsis } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import {
@@ -11,6 +11,22 @@ import {
   DropdownMenuLabel, 
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  Drawer,
+  DrawerClose,
+  DrawerContent,
+  DrawerDescription,
+  DrawerFooter,
+  DrawerHeader,
+  DrawerTitle,
+  DrawerTrigger,
+} from "@/components/ui/drawer"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
+
 
 import { IconChatGPT } from "@/components/icons/IconChatGPT"
 import { IconClaude } from "@/components/icons/IconClaude"
@@ -79,6 +95,7 @@ interface AIModelConfig {
   icon: React.ComponentType<{ className?: string }>;
   iconColorClass?: string;
   isLocked?: boolean;
+  status?: 'active' | 'inactive'; // 모델 상태
   models: string[]; // 드롭다운에 표시될 구체적인 모델명 리스트
   category: TabType[]; // 해당 모델이 속한 카테고리
   hasOptions?: boolean; // 옵션 패널 존재 여부
@@ -111,6 +128,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "다재다능하고 안정적인 '표준'이며, 코드와 광범위한 통합에 강합니다.",
     icon: typeof IconChatGPT !== "undefined" ? IconChatGPT : InitialChatGPT,
     category: ['chat', 'code', 'extract'],
+    status: 'active',
     models: [
       "GPT-5.1", "GPT-5.1-mini", "GPT-5-mini", "GPT-4.5", "GPT-4o", "GPT-4o-mini", "GPT-4", "GPT-3.5-turbo", "GPT-3.5-turbo-mini"
     ]
@@ -122,6 +140,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "Google의 최신 멀티모달 모델로, 텍스트와 이미지 처리에 뛰어납니다.",
     icon: typeof IconGemini !== "undefined" ? IconGemini : InitialGemini,
     category: ['chat', 'code', 'extract'],
+    status: 'active',
     models: ["Gemini 1.5 Pro", "Gemini 1.5 Flash", "Gemini 1.0 Pro"]
   },
   {
@@ -132,6 +151,7 @@ const AI_MODELS: AIModelConfig[] = [
     icon: typeof IconClaude !== "undefined" ? IconClaude : InitialClaude,
     isLocked: true,
     category: ['chat', 'code', 'extract'],
+    status: 'active',
     models: ["Claude 3 Opus", "Claude 3 Sonnet", "Claude 3 Haiku"]
   },
   {
@@ -142,6 +162,7 @@ const AI_MODELS: AIModelConfig[] = [
     icon: typeof IconGrok !== "undefined" ? IconGrok : InitialGrok,
     isLocked: true,
     category: ['chat', 'code'],
+    status: 'active',
     models: ["Grok-1", "Grok-2", "Grok-3"]
   },
 
@@ -153,6 +174,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "Nano Banana는 예술적이고 고품질의 이미지를 생성하는 데 특화되어 있습니다.",
     icon: typeof IconGemini !== "undefined" ? IconGemini : InitialGemini,
     category: ['image'],
+    status: 'active',
     models: ["Nano Banana Pro"],
     hasOptions: true
   },
@@ -163,6 +185,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "프롬프트에 충실한 이미지를 생성하며, 편집 기능이 강력합니다.",
     icon: typeof IconChatGPT !== "undefined" ? IconChatGPT : InitialChatGPT,
     category: ['image'],
+    status: 'active',
     models: ["DALL·E 3", "DALL·E 2"],
     hasOptions: true
   },
@@ -173,6 +196,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "오픈소스 기반으로 다양한 스타일과 커스터마이징이 가능합니다.",
     icon: typeof IconStableDiffusion !== "undefined" ? IconStableDiffusion : InitialStableDiffusion,
     category: ['image', 'extract'],
+    status: 'active',
     models: ["SD3", "SDXL 1.0", "SD 1.5"],
     hasOptions: true
   },
@@ -183,6 +207,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "Adobe의 최신 멀티모달 모델로, 텍스트와 이미지 처리에 뛰어납니다.",
     icon: typeof IconFierfly !== "undefined" ? IconFierfly : InitialFierfly,
     category: ['image'],
+    status: 'active',
     models: ["SD3", "SDXL 1.0", "SD 1.5"],
     hasOptions: true
   },
@@ -196,6 +221,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "텍스트에서 고화질의 비디오를 생성하는 혁신적인 모델입니다.",
     icon: typeof IconChatGPT !== "undefined" ? IconChatGPT : InitialChatGPT,
     category: ['video'],
+    status: 'active',
     models: ["Sora 1.0"]
   },
   {
@@ -205,6 +231,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "영상 편집 및 생성에 특화된 전문적인 AI 툴입니다.",
     icon: typeof IconGemini !== "undefined" ? IconGemini : InitialGemini,
     category: ['video'],
+    status: 'active',
     models: ["Veo 1.0", "Veo 2.0", "Veo 3.0"]
   },
   {
@@ -214,6 +241,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "영상 편집 및 생성에 특화된 전문적인 AI 툴입니다.",
     icon: typeof IconRunway !== "undefined" ? IconRunway : InitialRunway,
     category: ['video'],
+    status: 'active',
     models: ["Gen-3 Alpha", "Gen-2"]
   },
   {
@@ -223,6 +251,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "텍스트나 이미지를 통해 생동감 있는 비디오를 만듭니다.",
     icon: typeof IconPika !== "undefined" ? IconPika : InitialPika,
     category: ['video'],
+    status: 'active',
     models: ["Pika 1.0"]
   },
   {
@@ -232,6 +261,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "텍스트나 이미지를 통해 생동감 있는 비디오를 만듭니다.",
     icon: typeof IconStableVideo !== "undefined" ? IconStableVideo : InitialStableVideo,
     category: ['video'],
+    status: 'active',
     models: ["Stable Video 1.0"]
   },
 
@@ -244,6 +274,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "다양한 장르의 음악을 생성하며, 높은 음악성을 자랑합니다.",
     icon: typeof IconUdio !== "undefined" ? IconUdio : InitialUdio,
     category: ['music'],
+    status: 'active',
     models: ["v1"]
   },  
   {
@@ -253,6 +284,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "다양한 장르의 음악을 생성하며, 높은 음악성을 자랑합니다.",
     icon: typeof IconStableAudio !== "undefined" ? IconStableAudio : InitialStableAudio,
     category: ['music'],
+    status: 'active',
     models: ["Stable Audio 1.0"]
   },  
   {
@@ -262,6 +294,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "가사와 스타일을 입력하면 고품질의 노래를 생성합니다.",
     icon: typeof IconGemini !== "undefined" ? IconGemini : InitialGemini,
     category: ['music'],
+    status: 'active',
     models: ["MusicLM 1.0"]
   },
   {
@@ -271,6 +304,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "가사와 스타일을 입력하면 고품질의 노래를 생성합니다.",
     icon: typeof IconChatGPT !== "undefined" ? IconChatGPT : InitialChatGPT,
     category: ['music'],
+    status: 'active',
     models: ["Jukebox 1.0"]
   },
 
@@ -283,6 +317,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "가장 자연스럽고 감정 표현이 풍부한 음성 합성 AI입니다.",
     icon: typeof IconElevenlabs !== "undefined" ? IconElevenlabs : InitialElevenlabs,
     category: ['voice'],
+    status: 'active',
     models: ["Multilingual v2", "Turbo v2"]
   },
   {
@@ -292,6 +327,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "가장 자연스럽고 감정 표현이 풍부한 음성 합성 AI입니다.",
     icon: typeof IconPolly !== "undefined" ? IconPolly : InitialPolly,
     category: ['voice'],
+    status: 'active',
     models: ["Polly 1.0"]
   },
   {
@@ -301,6 +337,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "가장 자연스럽고 감정 표현이 풍부한 음성 합성 AI입니다.",
     icon: typeof IconPlayai !== "undefined" ? IconPlayai : InitialPlayai,
     category: ['voice'],
+    status: 'active',
     models: ["PlayAI 1.0"]
   },
   {
@@ -310,6 +347,7 @@ const AI_MODELS: AIModelConfig[] = [
     description: "가장 자연스럽고 감정 표현이 풍부한 음성 합성 AI입니다.",
     icon: typeof IconGemini !== "undefined" ? IconGemini : InitialGemini,
     category: ['voice'],
+    status: 'active',
     models: ["Cloud Text-to-Speech 1.0"]
   },  
   
@@ -321,7 +359,8 @@ const AI_MODELS: AIModelConfig[] = [
     description: "코딩에 최적화된 AI 페어 프로그래머입니다.",
     icon: IconCopilot,
     category: ['code'],
-    models: ["Copilot Enterprise"]
+    status: 'inactive',
+    models: ["Enterprise", "Enterprise Pro"]
   }
 ];
 
@@ -345,7 +384,7 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
 
   // 현재 탭에 맞는 모델 리스트 필터링
   const currentTabModels = React.useMemo(() => {
-    return AI_MODELS.filter(model => model.category.includes(selectedTab));
+    return AI_MODELS.filter(model => model.category.includes(selectedTab) && model.status !== 'inactive');
   }, [selectedTab]);
 
   // 스크롤 상태 업데이트 함수
@@ -384,8 +423,8 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
   // 탭 변경 시 호출되는 함수
   const handleTabChange = (tab: TabType) => {
     setSelectedTab(tab);
-    // 탭 변경 시 해당 탭의 첫 번째 모델을 자동으로 선택
-    const firstModel = AI_MODELS.find(model => model.category.includes(tab));
+    // 탭 변경 시 해당 탭의 첫 번째 모델을 자동으로 선택 (inactive 모델 제외)
+    const firstModel = AI_MODELS.find(model => model.category.includes(tab) && model.status !== 'inactive');
     if (firstModel) {
       handleModelSelect(firstModel.id);
     }
@@ -395,7 +434,7 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
   const currentModelConfig = React.useMemo(() => {
     return AI_MODELS.find(m => m.id === selectedModelId && m.category.includes(selectedTab)) 
       || currentTabModels[0] 
-      || AI_MODELS[0];
+      || AI_MODELS.find(m => m.status !== 'inactive');
   }, [selectedModelId, selectedTab, currentTabModels]);
 
 
@@ -412,6 +451,68 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
       setSelectedSubModel(defaultModel);
     }
   };
+
+  // 공통 옵션 UI 컴포넌트
+  const OptionPanelContent = () => (
+    <div className="flex flex-col gap-[16px] w-full max-w-[360px]">
+      {/* Option: Size */}
+      <div className="flex flex-col gap-[4px] w-full">
+        <div className="flex items-center justify-start">
+          <p className="text-sm font-medium text-foreground">크기</p>
+        </div>
+        <div className="bg-background border border-border h-[36px] flex items-center justify-between px-[12px] py-[8px] rounded-[6px] shadow-sm w-full cursor-pointer">
+          <p className="text-sm text-foreground">1024x1024 (Square)</p>
+          <ChevronDown className="size-4 text-muted-foreground" />
+        </div>
+      </div>
+
+      {/* Option: Quality */}
+      <div className="flex flex-col gap-[4px] w-full">
+        <div className="flex items-center justify-start">
+          <p className="text-sm font-medium text-foreground">품질</p>
+        </div>
+        <div className="bg-background border border-border h-[36px] flex items-center justify-between px-[12px] py-[8px] rounded-[6px] shadow-sm w-full cursor-pointer">
+          <p className="text-sm text-foreground">일반</p>
+          <ChevronDown className="size-4 text-muted-foreground" />
+        </div>
+      </div>
+
+      {/* Option: Style */}
+      <div className="flex flex-col gap-[4px] w-full">
+        <div className="flex items-center justify-start">
+          <p className="text-sm font-medium text-foreground">스타일</p>
+        </div>
+        <div className="bg-background border border-border h-[36px] flex items-center justify-between px-[12px] py-[8px] rounded-[6px] shadow-sm w-full cursor-pointer">
+          <p className="text-sm text-foreground">Vivid (생동감)</p>
+          <ChevronDown className="size-4 text-muted-foreground" />
+        </div>
+      </div>
+
+      {/* Option: Count */}
+      <div className="flex flex-col gap-[8px] w-full">
+        <div className="flex items-center justify-start w-full">
+          <p className="text-sm font-medium text-muted-foreground">생성 개수</p>
+          <p className="text-sm font-medium text-foreground">2</p>
+        </div>
+        <Slider defaultValue={[2]} max={4} step={1} className="w-full" />
+      </div>
+
+      {/* Divider */}
+      <div className="h-px w-full bg-border" />
+
+      {/* Info: Model & Time */}
+      <div className="flex flex-col gap-[8px] w-full">
+        <div className="flex items-center justify-between w-full">
+          <p className="text-sm font-medium text-muted-foreground">모델</p>
+          <p className="text-sm font-medium text-foreground">{selectedSubModel}</p>
+        </div>
+        <div className="flex items-center justify-between w-full">
+          <p className="text-sm font-medium text-muted-foreground">예상 시간</p>
+          <p className="text-sm font-medium text-foreground">15초</p>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="flex flex-row gap-4 items-end justify-center w-full">
@@ -463,11 +564,11 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
             </div>
           </div>
 
-          {/* AI Models Grid */}
+          {/* AI Models Grid - 모델 그리드 */}
           <div className="relative w-full group">
-            {/* Left Arrow Button */}
+            {/* Left Arrow Button - 왼쪽 화살표 버튼 */}
             {showLeftArrow && (
-              <div className="absolute left-0 top-1/2 -translate-y-1/2 z-10 -ml-4">
+              <div className="absolute left-0 top-1/2 -translate-y-1/2 z-10 -ml-4 hidden sm:block">
                  <Button 
                   variant="ghost" 
                   size="icon" 
@@ -479,18 +580,21 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
               </div>
             )}
 
+            {/* Desktop View (sm 이상) */}
             <div 
               ref={scrollContainerRef}
-              className="flex gap-4 items-start relative w-full overflow-x-auto pb-2 scrollbar-hide snap-x"
+              className="hidden sm:flex gap-4 items-start relative w-full overflow-x-auto pb-2 scrollbar-hide snap-x"
               onScroll={handleScroll}
               style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
             >
+              
+              {/* AI Models Grid Items - 모델 그리드 아이템 */}
               {currentTabModels.map((model) => (
                 <div 
                   key={model.id}
                   onClick={() => handleModelSelect(model.id)}
                   className={cn(
-                    "box-border flex flex-col min-w-[180px] w-[180px] gap-2 items-center overflow-hidden p-4 relative rounded-[8px] shrink-0 cursor-pointer transition-all border snap-start",
+                    "box-border flex flex-col min-w-[160px] max-w-[188px] w-full gap-2 items-center overflow-hidden p-4 relative rounded-[8px] shrink-0 cursor-pointer transition-all border snap-start",
                     selectedModelId === model.id 
                       ? "bg-accent border-primary text-primary-foreground" // 선택됨
                       : "bg-card border-border hover:bg-accent/50" // 선택되지 않음
@@ -529,9 +633,55 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
               ))}
             </div>
 
-            {/* Right Arrow Button */}
+            {/* Mobile View (sm 미만) */}
+            <div className="sm:hidden flex flex-row gap-2 items-center justify-start w-full overflow-x-auto pb-2 scrollbar-hide">
+              {currentTabModels.map((model) => (
+                 <div 
+                   key={model.id}
+                   onClick={() => handleModelSelect(model.id)}
+                   className={cn(
+                     "box-border flex flex-col min-w-[100px] max-w-[140px] w-full gap-1 items-center overflow-hidden p-2 rounded-[8px] cursor-pointer transition-all border snap-start",
+                     selectedModelId === model.id 
+                       ? "bg-accent border-primary text-primary-foreground" // 선택됨
+                       : "bg-card border-border hover:bg-accent/50" // 선택되지 않음
+                   )}
+                 >
+                 
+                   <div className="flex w-full items-start justify-between">
+                       <div className={cn(
+                         "box-border flex gap-[10px] items-center justify-center relative rounded-[4px] shrink-0 size-[32px]",
+                         selectedModelId === model.id ? "bg-primary" : "bg-muted border border-border"
+                       )}>              
+                       <model.icon className={cn(
+                         "relative shrink-0 size-[24px]",
+                         selectedModelId === model.id && model.iconColorClass ? model.iconColorClass : ""
+                       )} />                             
+                     </div>
+                     
+                     <div className="flex flex-col items-center justify-center relative shrink-0">
+                       {selectedModelId === model.id ? (
+                           <div className="border border-ring rounded-full shadow-sm shrink-0 size-[16px] relative flex items-center justify-center">
+                             <div className="size-[8px] rounded-full bg-primary" />
+                           </div>
+                       ) : (
+                           <div className="bg-background border border-border rounded-full shadow-sm shrink-0 size-[16px]" />
+                       )}
+                       {model.isLocked && <Lock className="size-3 text-muted-foreground mt-1 shrink-0" />}
+                     </div>
+                   </div>
+                   
+                   <div className="flex w-full flex-col items-start relative shrink-0 mt-2">
+                     <div className="flex w-full justify-between items-center">
+                         <p className="font-medium text-card-foreground text-[14px] truncate">{model.name}</p>                  
+                     </div>
+                   </div>
+                 </div>
+              ))}
+            </div>
+
+            {/* Right Arrow Button - 오른쪽 화살표 버튼 */}
             {showRightArrow && (
-              <div className="absolute right-0 top-1/2 -translate-y-1/2 z-10 -mr-4">
+              <div className="absolute right-0 top-1/2 -translate-y-1/2 z-10 -mr-4 hidden sm:block">
                 <Button 
                   variant="ghost" 
                   size="icon" 
@@ -543,6 +693,7 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
               </div>
             )}
           </div>
+          
 
           {/* Content Area: Chat/Option Container */}
           <div className="flex gap-[16px] items-start relative shrink-0 w-full">
@@ -562,10 +713,7 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
               {/* Search Bar & Actions - 검색창 및 액션 */}
               {currentModelConfig && (
                 <div className="bg-background border border-border box-border flex flex-col gap-[10px] items-start justify-between pb-[12px] pt-[16px] px-[16px] relative rounded-[24px] shadow-sm shrink-0 w-full h-full">
-                  <div className="flex flex-col gap-[10px] items-start justify-center relative shrink-0 w-full">
-                    <p className="font-medium text-muted-foreground text-[14px] w-full">
-                      무엇이든 상상하는 이미지를 자유롭게 서술해보세요
-                    </p>
+                  <div className="flex flex-col gap-[10px] items-start justify-center relative shrink-0 w-full">                    
                     <input 
                       type="text" 
                       placeholder={`${currentModelConfig.name}에게 무엇이든 물어보세요`} 
@@ -609,19 +757,81 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
               )}
               
               {/* Example Badges (Optional) - 예시 뱃지 */}
-              <div className="flex flex-wrap gap-[4px] items-start relative shrink-0 w-full">
-                {['우주를 여행하는 고양이, 디지털 아트', '미래도시의 석양, 사이버펑크 스타일'].map((badge) => (
-                  <div key={badge} className="bg-secondary px-[10px] py-[2px] rounded-[8px] cursor-pointer hover:bg-secondary/80">
-                    <p className="text-[12px] font-medium text-secondary-foreground">{badge}</p>
+              <div className="flex gap-2 items-start w-full relative">
+                
+                <div className="flex gap-2 items-start sm:w-full flex-wrap">
+                  {['우주를 여행하는 고양이, 디지털 아트', '미래도시의 석양, 사이버펑크 스타일','초현실적인 인물 그림', '미술관 내부 그림', '아이들이 그린 그림'].map((badge) => (
+                    <div key={badge} className="hidden sm:block bg-secondary px-[10px] py-[2px] rounded-[8px] cursor-pointer hover:bg-secondary/80">
+                      <p className="text-[12px] font-medium text-secondary-foreground">{badge}</p>
+                    </div>
+                  ))}
+                  
+                  {/* Mobile Only: Ellipsis Button with Popover */}
+                  <div className="sm:hidden block">
+                     <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="h-9 w-9 p-0">
+                          <Ellipsis className="size-4" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent 
+                        align="start" 
+                        side="top"
+                        sideOffset={5}
+                        className="w-[300px] p-2 flex flex-wrap gap-2"
+                      >
+                         {['우주를 여행하는 고양이, 디지털 아트', '미래도시의 석양, 사이버펑크 스타일','초현실적인 인물 그림', '미술관 내부 그림', '아이들이 그린 그림'].map((badge) => (
+                          <div key={badge} className="bg-secondary px-[10px] py-[2px] rounded-[8px] cursor-pointer hover:bg-secondary/80">
+                            <p className="text-[12px] font-medium text-secondary-foreground">{badge}</p>
+                          </div>
+                        ))}
+                      </PopoverContent>
+                    </Popover>
                   </div>
-                ))}
+                </div>
+
+                {/* 패널 축소 + 모바일 화면 (Drawer Trigger) */}
+                {currentModelConfig?.hasOptions && (
+                  <div className="lg:hidden sm:w-[360px] w-full">
+                    <Drawer>
+                      <DrawerTrigger asChild>
+                        <div className="bg-card border border-border flex gap-2 items-center p-2 rounded-[8px] w-full cursor-pointer hover:bg-accent/50 transition-colors">                  
+                          <Settings2 className="size-4" />
+                          <p className="text-sm font-medium text-card-foreground truncate text-ellipsis line-clamp-1 w-full">1024x1024 일반 Vivid 2</p>                    
+                          <div className="size-[16px] flex items-center justify-center relative shrink-0">
+                            <ChevronsUp className="size-4" />
+                          </div>
+                        </div>
+                      </DrawerTrigger>
+                      <DrawerContent>
+                        <DrawerHeader>
+                          <DrawerTitle>이미지 설정</DrawerTitle>
+                          <DrawerDescription>
+                            모델 생성 옵션을 설정합니다.
+                          </DrawerDescription>
+                        </DrawerHeader>
+                        <div className="p-4 pb-0 w-full flex justify-center">
+                          <OptionPanelContent />
+                        </div>
+                        <DrawerFooter>
+                          <DrawerClose asChild>
+                            <div className="w-full flex  items-center justify-center">
+                               <Button variant="outline" className="w-full max-w-[360px]">확인</Button>
+                            </div>
+                          </DrawerClose>
+                        </DrawerFooter>
+                      </DrawerContent>
+                    </Drawer>
+                  </div>
+                )}
+
               </div>
             </div>
 
-            {/* Compact Option Panel (Trigger) - Inside Main Container - 패널 축소되었을 때 확장 트리거 */}
+            {/* Compact Option Panel (Trigger) - Inside Main Container - 패널 축소되었을 때 확장 트리거 (데스크탑 전용) */}
             {currentModelConfig?.hasOptions && !isOptionExpanded && (
               <div 
-                className="bg-card border border-border flex flex-col gap-2 items-center p-[16px] rounded-[8px] max-w-[200px] w-full min-w-[120px] cursor-pointer hover:bg-accent/50 transition-colors"
+                className="hidden lg:flex bg-card border border-border flex-col gap-2 items-center p-[16px] rounded-[8px] max-w-[200px] w-full min-w-[120px] cursor-pointer hover:bg-accent/50 transition-colors"
                 onClick={() => setIsOptionExpanded(true)}
               >
                 <div className="flex items-center w-full gap-[10px]">
@@ -635,7 +845,7 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
 
                 <div className="flex items-center justify-start w-full gap-2">
                   <p className="text-[14px] text-muted-foreground whitespace-nowrap">크기</p>
-                  <p className="text-[14px] font-medium text-foreground line-clamp-1 text-ellipsis w-full">1024x1024 (Square) sdf</p>
+                  <p className="text-[14px] font-medium text-foreground line-clamp-1 text-ellipsis w-full">1024x1024 (Square)</p>
                 </div>
                 <div className="flex items-center justify-start w-full gap-2">
                   <p className="text-[14px] text-muted-foreground whitespace-nowrap">품질</p>
@@ -649,19 +859,15 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
                   <p className="text-[14px] text-muted-foreground whitespace-nowrap">생성 개수</p>
                   <p className="text-[14px] font-medium text-foreground line-clamp-1 text-ellipsis w-full">2</p>
                 </div>
-
-
               </div>
             )}
-
-
           </div>
         </div>
       </div>
 
-      {/* Expanded Panel (Outside Main Container) - 패널 확장되었을 때 영역 */}
+      {/* Expanded Panel (Outside Main Container) - 패널 확장되었을 때 영역 (데스크탑 전용) */}
       {currentModelConfig?.hasOptions && isOptionExpanded && (
-        <div className="bg-card border border-border flex flex-col gap-[16px] items-start p-[16px] rounded-[8px] relative shrink-0 w-[260px] animate-in fade-in slide-in-from-left-4 duration-300">
+        <div className="hidden lg:flex bg-card border border-border flex-col gap-[16px] items-start p-[16px] rounded-[8px] relative shrink-0 w-[260px] animate-in fade-in slide-in-from-left-4 duration-300">
           
           <div className="flex items-center gap-[10px] w-full cursor-pointer"
           onClick={() => setIsOptionExpanded(false)}>
@@ -675,64 +881,7 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
               </div>            
           </div>
 
-          <div className="flex flex-col gap-[16px] w-full">
-            {/* Option: Size */}
-            <div className="flex flex-col gap-[4px] w-full">
-              <div className="flex items-center justify-center">
-                <p className="text-sm font-medium text-foreground">크기</p>
-              </div>
-              <div className="bg-background border border-border h-[36px] flex items-center justify-between px-[12px] py-[8px] rounded-[6px] shadow-sm w-full cursor-pointer">
-                <p className="text-sm text-foreground">1024x1024 (Square)</p>
-                <ChevronDown className="size-4 text-muted-foreground" />
-              </div>
-            </div>
-
-            {/* Option: Quality */}
-            <div className="flex flex-col gap-[4px] w-full">
-              <div className="flex items-center justify-center">
-                <p className="text-sm font-medium text-foreground">품질</p>
-              </div>
-              <div className="bg-background border border-border h-[36px] flex items-center justify-between px-[12px] py-[8px] rounded-[6px] shadow-sm w-full cursor-pointer">
-                <p className="text-sm text-foreground">일반</p>
-                <ChevronDown className="size-4 text-muted-foreground" />
-              </div>
-            </div>
-
-            {/* Option: Style */}
-            <div className="flex flex-col gap-[4px] w-full">
-              <div className="flex items-center justify-center">
-                <p className="text-sm font-medium text-foreground">스타일</p>
-              </div>
-              <div className="bg-background border border-border h-[36px] flex items-center justify-between px-[12px] py-[8px] rounded-[6px] shadow-sm w-full cursor-pointer">
-                <p className="text-sm text-foreground">Vivid (생동감)</p>
-                <ChevronDown className="size-4 text-muted-foreground" />
-              </div>
-            </div>
-
-            {/* Option: Count */}
-            <div className="flex flex-col gap-[8px] w-full">
-              <div className="flex items-center justify-between w-full">
-                <p className="text-sm font-medium text-muted-foreground">생성 개수</p>
-                <p className="text-sm font-medium text-foreground">2</p>
-              </div>
-              <Slider defaultValue={[2]} max={4} step={1} className="w-full" />
-            </div>
-
-            {/* Divider */}
-            <div className="h-px w-full bg-border" />
-
-            {/* Info: Model & Time */}
-            <div className="flex flex-col gap-[8px] w-full">
-              <div className="flex items-center justify-between w-full">
-                <p className="text-sm font-medium text-muted-foreground">모델</p>
-                <p className="text-sm font-medium text-foreground">{selectedSubModel}</p>
-              </div>
-              <div className="flex items-center justify-between w-full">
-                <p className="text-sm font-medium text-muted-foreground">예상 시간</p>
-                <p className="text-sm font-medium text-foreground">15초</p>
-              </div>
-            </div>
-          </div>
+          <OptionPanelContent />
         </div>
       )}
     </div>
