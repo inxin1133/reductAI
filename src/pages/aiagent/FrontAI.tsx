@@ -4,12 +4,28 @@ import { UserHeader } from "@/components/UserHeader"
 import { useNavigate } from "react-router-dom"
 import { useRef } from "react"
 import { ChatInterface } from "@/components/ChatInterface"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
-
+interface Language {
+  code: string
+  name: string
+  native_name: string
+  is_default: boolean
+  flag_emoji: string
+  is_active?: boolean
+}
 
 export default function FrontAI() {
   const navigate = useNavigate()
   const alertShownRef = useRef(false)
+  const [languages, setLanguages] = React.useState<Language[]>([]);
+  const [currentLang, setCurrentLang] = React.useState("");
 
   // 토큰이 없거나 만료된 경우 접근 차단 및 경고 표시
   React.useEffect(() => {
@@ -34,10 +50,29 @@ export default function FrontAI() {
     alertShownRef.current = false
   }, [navigate])
 
+  React.useEffect(() => {
+    const fetchLanguages = async () => {
+      try {
+        const res = await fetch("/api/i18n/languages");
+        if (res.ok) {
+          const data = await res.json();
+          const activeLangs = (data || []).filter((l: Language) => l.is_active !== false);
+          setLanguages(activeLangs);
+          
+          if (activeLangs.length > 0) {
+            const def = activeLangs.find((l: Language) => l.is_default)?.code || activeLangs[0].code;
+            setCurrentLang(def);
+          }
+        }
+      } catch (error) {
+        console.error("Failed to fetch languages:", error);
+      }
+    };
+    fetchLanguages();
+  }, []);
+
   return (
     <div className="bg-background relative w-full h-screen overflow-hidden flex font-sans">
-      
-      
       
       {/* Sidebar (GNB) */}
       <Sidebar />
@@ -46,7 +81,21 @@ export default function FrontAI() {
       {/* Main Content - 메인 컨텐츠 시작 */}
       <div className="flex-1 flex flex-col h-full w-full bg-background relative">
         {/* Top Bar */}
-        <UserHeader />
+        <UserHeader>
+           {/* 언어 선택 컴포넌트 */}
+           <Select value={currentLang} onValueChange={setCurrentLang}>
+             <SelectTrigger className="w-[120px] h-9 bg-background">
+               <SelectValue placeholder="언어 선택" />
+             </SelectTrigger>
+             <SelectContent>
+               {languages.map(lang => (
+                 <SelectItem key={lang.code} value={lang.code}>
+                   {lang.flag_emoji} {lang.native_name}
+                 </SelectItem>
+               ))}
+             </SelectContent>
+           </Select>
+        </UserHeader>
 
         {/* Main Body - 메인 바디 */}        
         <div className="flex flex-[1_0_0] flex-col gap-[40px] items-center justify-center p-[24px] relative shrink-0 w-full">

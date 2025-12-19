@@ -2,6 +2,7 @@ import { Outlet, createBrowserRouter, RouterProvider, useLocation } from "react-
 import { useEffect } from "react";
 import Intro from "./pages/auth/Intro";
 import FrontAI from "./pages/aiagent/FrontAI";
+import Timeline from "./pages/aiagent/Timeline";
 import AdminLogin from "./pages/admin/AdminLogin";
 import AdminLayout from "./pages/admin/AdminLayout";
 import AdminDashboard from "./pages/admin/AdminDashboard";
@@ -38,6 +39,10 @@ const router = createBrowserRouter([
       {
         path: "/front-ai",
         element: <FrontAI />,
+      },
+      {
+        path: "/timeline",
+        element: <Timeline />,
       },
       {
         path: "/admin/login",

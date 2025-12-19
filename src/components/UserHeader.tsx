@@ -1,19 +1,26 @@
 import { useTheme } from "@/hooks/useTheme"
-import { Eclipse, ChevronDown } from "lucide-react"
+import { Eclipse } from "lucide-react"
+import { cn } from "@/lib/utils"
 
-export function UserHeader() {
+interface UserHeaderProps {
+  className?: string;
+  children?: React.ReactNode;
+  leftContent?: React.ReactNode;
+}
+
+export function UserHeader({ className, children, leftContent }: UserHeaderProps) {
   const { toggleTheme } = useTheme()
 
   return (
-    <div className="h-[60px] flex items-center px-6 gap-4 shrink-0 border-b border-border/10">
+    <div className={cn("h-[60px] flex items-center px-6 gap-4 shrink-0 border-b border-border/10", className)}>
+       {/* Left Content (e.g., Sidebar Toggle) */}
+       {leftContent}
+
        <div className="flex-1" />
-       <div className="bg-background border border-border flex items-center justify-between px-3 py-2 rounded-md shadow-sm w-[120px] h-9">
-          <span className="text-sm text-muted-foreground">한국어</span>
-          <ChevronDown className="size-4 relative shrink-0" />
-       </div>
-       <div className="flex gap-[10px] items-center justify-end relative shrink-0">
-          <ChevronDown className="size-full" />
-       </div>
+       
+       {/* Center/Custom Content (e.g., Language Selector, Action Buttons) */}
+       {children}
+       
        <div 
          className="size-4 relative shrink-0 flex items-center justify-center cursor-pointer"
          onClick={toggleTheme}
@@ -23,4 +30,3 @@ export function UserHeader() {
     </div>
   )
 }
-

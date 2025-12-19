@@ -21,7 +21,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useState, useEffect, useRef } from "react"
-import { useNavigate } from "react-router-dom"
+import { useLocation, useNavigate } from "react-router-dom"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
@@ -34,6 +34,7 @@ type SidebarProps = {
 
 export function Sidebar({ className }: SidebarProps) {
   const navigate = useNavigate()
+  const location = useLocation()
   const [isOpen, setIsOpen] = useState(true)
   const [isProfileOpen, setIsProfileOpen] = useState(false)
   const [isPersonalOpen, setIsPersonalOpen] = useState(true)
@@ -46,6 +47,10 @@ export function Sidebar({ className }: SidebarProps) {
   const [isMobileProfileOpen, setIsMobileProfileOpen] = useState(false)
 
   const { theme } = useTheme()
+
+  // 현재 페이지에 따라 GNB 메뉴 활성화 표시를 결정
+  const isFrontAIActive = location.pathname.startsWith("/front-ai")
+  const isTimelineActive = location.pathname.startsWith("/timeline")
 
   useEffect(() => {
     const checkMobile = () => {
@@ -239,11 +244,29 @@ export function Sidebar({ className }: SidebarProps) {
         <div className="flex-1 overflow-y-auto p-2 bg-background">
            {/* 메인 메뉴 */}
            <div className="flex flex-col gap-1 mb-2">
-             <div className="flex items-center gap-2 p-2 h-8 rounded-md bg-accent text-accent-foreground font-medium border border-border/10 cursor-pointer">
+             <div 
+               className={cn(
+                 "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                 isFrontAIActive ? "bg-accent text-accent-foreground font-medium border border-border/10" : "hover:bg-accent/50"
+               )}
+               onClick={() => {
+                 setIsMobileMenuOpen(false)
+                 navigate('/front-ai')
+               }}
+             >
                <div className="size-5 flex items-center justify-center"><Bot className="size-full" /></div>
                <span className="text-base text-foreground">프론트AI</span>
              </div>
-             <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer">
+             <div 
+               className={cn(
+                 "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                 isTimelineActive ? "bg-accent text-accent-foreground font-medium border border-border/10" : "hover:bg-accent/50"
+               )}
+               onClick={() => {
+                 setIsMobileMenuOpen(false)
+                 navigate('/timeline')
+               }}
+             >
                <div className="size-5 flex items-center justify-center"><Clock className="size-full" /></div>
                <span className="text-base text-foreground">타임라인</span>
              </div>
@@ -393,13 +416,27 @@ export function Sidebar({ className }: SidebarProps) {
 
       {/* Menu Items - 메뉴 아이템 */}
       <div className="flex flex-col p-2 gap-1">
-         <div className={cn("flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer", !isOpen && "justify-center", "bg-accent")}>
+         <div 
+           className={cn(
+             "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+             !isOpen && "justify-center",
+             isFrontAIActive ? "bg-accent" : "hover:bg-accent/50"
+           )}
+           onClick={() => navigate('/front-ai')}
+         >
            <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
              <Bot className="size-full" />
            </div>
            {isOpen && <span className="text-sm text-sidebar-foreground">프론트AI</span>}
          </div>
-         <div className={cn("flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50", !isOpen && "justify-center")}>
+         <div
+          className={cn(
+            "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+            !isOpen && "justify-center",
+            isTimelineActive ? "bg-accent" : "hover:bg-accent/50"
+          )}
+          onClick={() => navigate('/timeline')}
+         >
            <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
              <Clock className="size-full" />
            </div>

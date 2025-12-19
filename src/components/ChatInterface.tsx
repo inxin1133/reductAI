@@ -1,6 +1,6 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
-import { Mic, ChevronDown, Lock, Plus, ChevronLeft, ChevronRight, Settings2, ChevronsRight, ChevronsLeft, ChevronsUp, Ellipsis, ArrowUp } from "lucide-react"
+import { Mic, ChevronDown, Lock, Plus, ChevronLeft, ChevronRight, Settings2, ChevronsRight, ChevronsLeft, ChevronsUp, Ellipsis, ArrowUp, MessageSquare } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import {
@@ -79,6 +79,12 @@ function PaidToken({ className }: PaidTokenProps) {
 interface ChatInterfaceProps {
   // Future props for user/permission control can be added here
   className?: string;
+  /**
+   * 화면 사용 맥락에 따라 UI 밀도를 조절합니다.
+   * - default: FrontAI에서 쓰는 기본(확장) UI
+   * - compact: Timeline 하단 패널처럼 요약 컨트롤 + 필요 시 펼쳐서 선택하는 UI
+   */
+  variant?: "default" | "compact";
 }
 
 // AI 모델 타입 정의
@@ -364,7 +370,9 @@ const AI_MODELS: AIModelConfig[] = [
   }
 ];
 
-export function ChatInterface({ className }: ChatInterfaceProps) {
+export function ChatInterface({ className, variant = "default" }: ChatInterfaceProps) {
+  const isCompact = variant === "compact";
+
   // 선택된 탭 상태 관리
   const [selectedTab, setSelectedTab] = React.useState<TabType>('chat');
 
@@ -384,6 +392,9 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
 
   // Input Focus State
   const [isInputFocused, setIsInputFocused] = React.useState(false);
+
+  // compact 모드에서: 상단(토큰/탭/모델선택) 영역을 팝오버로 펼쳐서 선택할 수 있게 함
+  const [isCompactPanelOpen, setIsCompactPanelOpen] = React.useState(false);
 
   // 현재 탭에 맞는 모델 리스트 필터링
   const currentTabModels = React.useMemo(() => {
@@ -405,6 +416,15 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
     window.addEventListener('resize', updateScrollButtons);
     return () => window.removeEventListener('resize', updateScrollButtons);
   }, [currentTabModels, updateScrollButtons]);
+
+  // compact 팝오버가 열릴 때 스크롤 버튼 상태를 즉시 계산
+  React.useEffect(() => {
+    if (!isCompact) return;
+    if (!isCompactPanelOpen) return;
+    // DOM이 그려진 다음 계산되도록 한 틱 뒤에 실행
+    const t = window.setTimeout(() => updateScrollButtons(), 0);
+    return () => window.clearTimeout(t);
+  }, [isCompact, isCompactPanelOpen, updateScrollButtons]);
 
   const handleScroll = () => {
     updateScrollButtons();
@@ -517,185 +537,246 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
     </div>
   );
 
+  // Mode Tabs UI - (default 화면 및 compact 팝오버 내부에서 재사용)
+  const ModeTabs = () => (
+    <div className="flex flex-col gap-[10px] items-start relative shrink-0 w-full">
+      <div className="bg-muted box-border flex h-[36px] items-center justify-center p-[3px] relative rounded-[8px] shrink-0 w-full">
+        <div 
+          className={cn(
+            "box-border flex flex-[1_0_0] flex-col gap-[10px] h-[29px] items-center justify-center px-[8px] py-[4px] relative rounded-[6px] shrink-0 cursor-pointer transition-colors",
+            selectedTab === 'chat' ? "bg-background border border-border shadow-sm" : "hover:bg-background/50"
+          )}
+          onClick={() => handleTabChange('chat')}
+        >
+          <p className={cn("font-medium leading-[20px] text-[14px]", selectedTab === 'chat' ? "text-foreground" : "text-muted-foreground")}>채팅</p>
+        </div>
+        {['이미지', '영상', '음악', '음성', '추출', '코드'].map((tabLabel) => {
+          // 한글 라벨을 내부 TabType으로 매핑
+          const tabMap:Record<string, TabType> = {
+            '추출': 'extract',
+            '이미지': 'image',
+            '영상': 'video',
+            '음악': 'music',
+            '음성': 'voice',
+            '코드': 'code'
+          };
+          const tabKey = tabMap[tabLabel];
+
+          return (
+            <div 
+              key={tabLabel} 
+              className={cn(
+                "box-border flex flex-[1_0_0] flex-col gap-[10px] h-[29px] items-center justify-center px-[8px] py-[4px] relative rounded-[6px] shrink-0 cursor-pointer transition-colors",
+                selectedTab === tabKey ? "bg-background border border-border shadow-sm" : "hover:bg-background/50"
+              )}
+              onClick={() => handleTabChange(tabKey)}
+            >
+              <p className={cn("font-medium leading-[20px] text-[14px]", selectedTab === tabKey ? "text-foreground" : "text-muted-foreground")}>{tabLabel}</p>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  // Model Grid UI - (default 화면 및 compact 팝오버 내부에서 재사용)
+  const ModelGrid = () => (
+    <div className="relative w-full group">
+      {/* Left Arrow Button - 왼쪽 화살표 버튼 */}
+      {showLeftArrow && (
+        <div className="absolute left-0 top-1/2 -translate-y-1/2 z-10 -ml-4 hidden sm:block">
+           <Button 
+            variant="ghost" 
+            size="icon" 
+            className="rounded-full bg-background shadow-md border hover:bg-accent h-8 w-8"
+            onClick={scrollLeft}
+          >
+             <ChevronLeft className="h-4 w-4" />
+           </Button>
+        </div>
+      )}
+
+      {/* Desktop View (sm 이상) */}
+      <div 
+        ref={scrollContainerRef}
+        className="hidden sm:flex gap-4 items-start relative w-full overflow-x-auto pb-2 scrollbar-hide snap-x"
+        onScroll={handleScroll}
+        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+      >
+        {/* AI Models Grid Items - 모델 그리드 아이템 */}
+        {currentTabModels.map((model) => (
+          <div 
+            key={model.id}
+            onClick={() => handleModelSelect(model.id)}
+            className={cn(
+              "box-border flex flex-col min-w-[160px] max-w-[188px] w-full gap-2 items-center overflow-hidden p-4 relative rounded-[8px] shrink-0 cursor-pointer transition-all border snap-start",
+              selectedModelId === model.id 
+                ? "bg-accent border-primary text-primary-foreground" // 선택됨
+                : "bg-card border-border hover:bg-accent/50" // 선택되지 않음
+            )}
+          >
+            <div className="flex w-full items-start justify-between">
+               <div className={cn(
+                "box-border flex gap-[10px] items-center justify-center relative rounded-[4px] shrink-0 size-[32px]",
+                selectedModelId === model.id ? "bg-primary" : "bg-muted border border-border"
+              )}>              
+                <model.icon className={cn(
+                  "relative shrink-0 size-[24px]",
+                  selectedModelId === model.id && model.iconColorClass ? model.iconColorClass : ""
+                )} />              
+              </div>
+              
+              <div className="flex flex-col items-center justify-center relative shrink-0">
+                {selectedModelId === model.id ? (
+                    <div className="border border-ring rounded-full shadow-sm shrink-0 size-[16px] relative flex items-center justify-center">
+                      <div className="size-[8px] rounded-full bg-primary" />
+                    </div>
+                ) : (
+                    <div className="bg-background border border-border rounded-full shadow-sm shrink-0 size-[16px]" />
+                )}
+              </div>
+            </div>
+            
+            <div className="flex w-full flex-col items-start relative shrink-0 mt-2">
+              <div className="flex w-full justify-between items-center">
+                 <p className="font-medium text-card-foreground text-[14px] truncate">{model.name}</p>
+                 {model.isLocked && <Lock className="size-3 text-muted-foreground ml-1 shrink-0" />}
+              </div>
+              <p className="font-normal text-muted-foreground text-[14px] line-clamp-1 w-full text-left">{model.provider}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Mobile View (sm 미만) */}
+      <div className="sm:hidden flex flex-row gap-2 items-center justify-start w-full overflow-x-auto pb-2 scrollbar-hide">
+        {currentTabModels.map((model) => (
+           <div 
+             key={model.id}
+             onClick={() => handleModelSelect(model.id)}
+             className={cn(
+               "box-border flex flex-col min-w-[110px] max-w-[140px] w-full gap-1 items-center overflow-hidden p-2 rounded-[8px] cursor-pointer transition-all border snap-start",
+               selectedModelId === model.id 
+                 ? "bg-accent border-primary text-primary-foreground" // 선택됨
+                 : "bg-card border-border hover:bg-accent/50" // 선택되지 않음
+             )}
+           >
+             <div className="flex w-full items-start justify-between">
+                 <div className={cn(
+                   "box-border flex gap-[10px] items-center justify-center relative rounded-[4px] shrink-0 size-[32px]",
+                   selectedModelId === model.id ? "bg-primary" : "bg-muted border border-border"
+                 )}>              
+                 <model.icon className={cn(
+                   "relative shrink-0 size-[24px]",
+                   selectedModelId === model.id && model.iconColorClass ? model.iconColorClass : ""
+                 )} />                             
+               </div>
+               
+               <div className="flex flex-col items-center justify-center relative shrink-0">
+                 {selectedModelId === model.id ? (
+                     <div className="border border-ring rounded-full shadow-sm shrink-0 size-[16px] relative flex items-center justify-center">
+                       <div className="size-[8px] rounded-full bg-primary" />
+                     </div>
+                 ) : (
+                     <div className="bg-background border border-border rounded-full shadow-sm shrink-0 size-[16px]" />
+                 )}
+                 {model.isLocked && <Lock className="size-3 text-muted-foreground mt-1 shrink-0" />}
+               </div>
+             </div>
+             
+             <div className="flex w-full flex-col items-start relative shrink-0 mt-2">
+               <div className="flex w-full justify-between items-center">
+                   <p className="font-medium text-card-foreground text-[14px] truncate">{model.name}</p>                  
+               </div>
+             </div>
+           </div>
+        ))}
+      </div>
+
+      {/* Right Arrow Button - 오른쪽 화살표 버튼 */}
+      {showRightArrow && (
+        <div className="absolute right-0 top-1/2 -translate-y-1/2 z-10 -mr-4 hidden sm:block">
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            className="rounded-full bg-background shadow-md border hover:bg-accent h-8 w-8"
+            onClick={scrollRight}
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="flex flex-row gap-4 items-end justify-center w-full">
       <div className={`flex flex-col gap-[16px] items-center relative shrink-0 w-full max-w-[800px] ${className || ''}`}>
         
-        {/* Token Display - 토큰 디스플레이 */}
-        <div className="w-full flex items-center gap-4">
-          <PaidToken />
-        </div>
+        {/* Token Display - 토큰 디스플레이 (compact 모드에서는 팝오버 내부로 이동) */}
+        {!isCompact && (
+          <div className="w-full flex items-center gap-4">
+            <PaidToken />
+          </div>
+        )}
         
         <div className="flex flex-col gap-[16px] items-start relative shrink-0 w-full">
-          {/* Mode Tabs */}
-          <div className="flex flex-col gap-[10px] items-start relative shrink-0 w-full">
-            <div className="bg-muted box-border flex h-[36px] items-center justify-center p-[3px] relative rounded-[8px] shrink-0 w-full">
-              <div 
-                className={cn(
-                  "box-border flex flex-[1_0_0] flex-col gap-[10px] h-[29px] items-center justify-center px-[8px] py-[4px] relative rounded-[6px] shrink-0 cursor-pointer transition-colors",
-                  selectedTab === 'chat' ? "bg-background border border-border shadow-sm" : "hover:bg-background/50"
-                )}
-                onClick={() => handleTabChange('chat')}
-              >
-                <p className={cn("font-medium leading-[20px] text-[14px]", selectedTab === 'chat' ? "text-foreground" : "text-muted-foreground")}>채팅</p>
-              </div>
-              {['이미지', '영상', '음악', '음성', '추출', '코드'].map((tabLabel) => {
-                // 한글 라벨을 내부 TabType으로 매핑
-                const tabMap:Record<string, TabType> = {
-                  '추출': 'extract',
-                  '이미지': 'image',
-                  '영상': 'video',
-                  '음악': 'music',
-                  '음성': 'voice',
-                  '코드': 'code'
-                };
-                const tabKey = tabMap[tabLabel];
+          {/* default: 상단 탭/모델 그리드 노출, compact: 요약 컨트롤 바 + 팝오버로 선택 */}
+          {!isCompact ? (
+            <>
+              <ModeTabs />
+              <ModelGrid />
+            </>
+          ) : (
+            <Popover open={isCompactPanelOpen} onOpenChange={setIsCompactPanelOpen}>
+              <PopoverTrigger asChild>
+                {/* Timeline 스타일 요약 컨트롤 바 */}
+                <div className="flex items-center gap-2 px-4 cursor-pointer select-none w-full">
+                  <ChevronRight className={cn("size-6 transition-transform", isCompactPanelOpen ? "rotate-90" : "")} />
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <div className="flex items-center gap-1">
+                      <MessageSquare className="size-4" />
+                      <span className="text-sm">언어</span>
+                    </div>
 
-                return (
-                  <div 
-                    key={tabLabel} 
-                    className={cn(
-                      "box-border flex flex-[1_0_0] flex-col gap-[10px] h-[29px] items-center justify-center px-[8px] py-[4px] relative rounded-[6px] shrink-0 cursor-pointer transition-colors",
-                      selectedTab === tabKey ? "bg-background border border-border shadow-sm" : "hover:bg-background/50"
+                    {/* 현재 선택된 모델(브랜드) 표시 */}
+                    {currentModelConfig && (
+                      <div className="flex items-center gap-1">
+                        <div className={cn("size-4 rounded-full bg-primary flex items-center justify-center")}>
+                          <currentModelConfig.icon className="size-3 text-primary-foreground" />
+                        </div>
+                        <span className="text-sm">{currentModelConfig.name}</span>
+                      </div>
                     )}
-                    onClick={() => handleTabChange(tabKey)}
-                  >
-                    <p className={cn("font-medium leading-[20px] text-[14px]", selectedTab === tabKey ? "text-foreground" : "text-muted-foreground")}>{tabLabel}</p>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
 
-          {/* AI Models Grid - 모델 그리드 */}
-          <div className="relative w-full group">
-            {/* Left Arrow Button - 왼쪽 화살표 버튼 */}
-            {showLeftArrow && (
-              <div className="absolute left-0 top-1/2 -translate-y-1/2 z-10 -ml-4 hidden sm:block">
-                 <Button 
-                  variant="ghost" 
-                  size="icon" 
-                  className="rounded-full bg-background shadow-md border hover:bg-accent h-8 w-8"
-                  onClick={scrollLeft}
-                >
-                   <ChevronLeft className="h-4 w-4" />
-                 </Button>
-              </div>
-            )}
-
-            {/* Desktop View (sm 이상) */}
-            <div 
-              ref={scrollContainerRef}
-              className="hidden sm:flex gap-4 items-start relative w-full overflow-x-auto pb-2 scrollbar-hide snap-x"
-              onScroll={handleScroll}
-              style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-            >
-              
-              {/* AI Models Grid Items - 모델 그리드 아이템 */}
-              {currentTabModels.map((model) => (
-                <div 
-                  key={model.id}
-                  onClick={() => handleModelSelect(model.id)}
-                  className={cn(
-                    "box-border flex flex-col min-w-[160px] max-w-[188px] w-full gap-2 items-center overflow-hidden p-4 relative rounded-[8px] shrink-0 cursor-pointer transition-all border snap-start",
-                    selectedModelId === model.id 
-                      ? "bg-accent border-primary text-primary-foreground" // 선택됨
-                      : "bg-card border-border hover:bg-accent/50" // 선택되지 않음
-                  )}
-                >
-                  <div className="flex w-full items-start justify-between">
-                     <div className={cn(
-                      "box-border flex gap-[10px] items-center justify-center relative rounded-[4px] shrink-0 size-[32px]",
-                      selectedModelId === model.id ? "bg-primary" : "bg-muted border border-border"
-                    )}>              
-                      <model.icon className={cn(
-                        "relative shrink-0 size-[24px]",
-                        selectedModelId === model.id && model.iconColorClass ? model.iconColorClass : ""
-                      )} />              
+                    {/* 토큰 정보(요약) */}
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium">개인:Pro</span>
+                      <div className="bg-primary px-1 py-0.5 rounded-full">
+                        <span className="text-xs text-primary-foreground font-medium">20.000</span>
+                      </div>
                     </div>
-                    
-                    <div className="flex flex-col items-center justify-center relative shrink-0">
-                      {selectedModelId === model.id ? (
-                          <div className="border border-ring rounded-full shadow-sm shrink-0 size-[16px] relative flex items-center justify-center">
-                            <div className="size-[8px] rounded-full bg-primary" />
-                          </div>
-                      ) : (
-                          <div className="bg-background border border-border rounded-full shadow-sm shrink-0 size-[16px]" />
-                      )}
-                    </div>
-                  </div>
-                  
-                  <div className="flex w-full flex-col items-start relative shrink-0 mt-2">
-                    <div className="flex w-full justify-between items-center">
-                       <p className="font-medium text-card-foreground text-[14px] truncate">{model.name}</p>
-                       {model.isLocked && <Lock className="size-3 text-muted-foreground ml-1 shrink-0" />}
-                    </div>
-                    <p className="font-normal text-muted-foreground text-[14px] line-clamp-1 w-full text-left">{model.provider}</p>
                   </div>
                 </div>
-              ))}
-            </div>
+              </PopoverTrigger>
 
-            {/* Mobile View (sm 미만) */}
-            <div className="sm:hidden flex flex-row gap-2 items-center justify-start w-full overflow-x-auto pb-2 scrollbar-hide">
-              {currentTabModels.map((model) => (
-                 <div 
-                   key={model.id}
-                   onClick={() => handleModelSelect(model.id)}
-                   className={cn(
-                     "box-border flex flex-col min-w-[110px] max-w-[140px] w-full gap-1 items-center overflow-hidden p-2 rounded-[8px] cursor-pointer transition-all border snap-start",
-                     selectedModelId === model.id 
-                       ? "bg-accent border-primary text-primary-foreground" // 선택됨
-                       : "bg-card border-border hover:bg-accent/50" // 선택되지 않음
-                   )}
-                 >
-                 
-                   <div className="flex w-full items-start justify-between">
-                       <div className={cn(
-                         "box-border flex gap-[10px] items-center justify-center relative rounded-[4px] shrink-0 size-[32px]",
-                         selectedModelId === model.id ? "bg-primary" : "bg-muted border border-border"
-                       )}>              
-                       <model.icon className={cn(
-                         "relative shrink-0 size-[24px]",
-                         selectedModelId === model.id && model.iconColorClass ? model.iconColorClass : ""
-                       )} />                             
-                     </div>
-                     
-                     <div className="flex flex-col items-center justify-center relative shrink-0">
-                       {selectedModelId === model.id ? (
-                           <div className="border border-ring rounded-full shadow-sm shrink-0 size-[16px] relative flex items-center justify-center">
-                             <div className="size-[8px] rounded-full bg-primary" />
-                           </div>
-                       ) : (
-                           <div className="bg-background border border-border rounded-full shadow-sm shrink-0 size-[16px]" />
-                       )}
-                       {model.isLocked && <Lock className="size-3 text-muted-foreground mt-1 shrink-0" />}
-                     </div>
-                   </div>
-                   
-                   <div className="flex w-full flex-col items-start relative shrink-0 mt-2">
-                     <div className="flex w-full justify-between items-center">
-                         <p className="font-medium text-card-foreground text-[14px] truncate">{model.name}</p>                  
-                     </div>
-                   </div>
-                 </div>
-              ))}
-            </div>
-
-            {/* Right Arrow Button - 오른쪽 화살표 버튼 */}
-            {showRightArrow && (
-              <div className="absolute right-0 top-1/2 -translate-y-1/2 z-10 -mr-4 hidden sm:block">
-                <Button 
-                  variant="ghost" 
-                  size="icon" 
-                  className="rounded-full bg-background shadow-md border hover:bg-accent h-8 w-8"
-                  onClick={scrollRight}
-                >
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
-              </div>
-            )}
-          </div>
+              <PopoverContent
+                align="start"
+                side="top"
+                sideOffset={8}
+                className="w-[min(832px,calc(100vw-2rem))] p-4"
+              >
+                <div className="flex flex-col gap-4">
+                  {/* compact 모드에서는 여기서 토큰/탭/모델 선택을 한 번에 처리 */}
+                  <PaidToken />
+                  <ModeTabs />
+                  <div className="max-h-[320px] overflow-y-auto pr-1">
+                    <ModelGrid />
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
+          )}
           
 
           {/* Content Area: Chat/Option Container */}
@@ -703,8 +784,8 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
             
             {/* Main Content (Chat/Input Area) */}
             <div className="flex flex-[1_0_0] flex-col gap-[16px] items-start h-full relative shrink-0">
-              {/* Description - 선택된 모델 설명 */}
-              {currentModelConfig && (
+              {/* Description - 선택된 모델 설명 (compact에서는 생략) */}
+              {!isCompact && currentModelConfig && (
                 <div className="flex gap-[10px] items-center justify-start w-full">
                   <p className="font-medium leading-[20px] text-card-foreground text-[14px] whitespace-nowrap">{currentModelConfig.name}</p>
                   <p className="font-normal leading-[20px] text-muted-foreground text-[14px] line-clamp-1 text-ellipsis overflow-hidden">
@@ -719,7 +800,7 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
                   <div className="flex flex-col gap-[10px] items-start justify-center relative shrink-0 w-full">                    
                     <input 
                       type="text" 
-                      placeholder={`${currentModelConfig.name}에게 무엇이든 물어보세요`} 
+                      placeholder={isCompact ? "무엇이든 물어보세요" : `${currentModelConfig.name}에게 무엇이든 물어보세요`} 
                       className="w-full border-none outline-none text-[16px] placeholder:text-muted-foreground bg-transparent"
                       onFocus={() => setIsInputFocused(true)}
                       onBlur={() => setIsInputFocused(false)}
@@ -727,43 +808,56 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
                   </div>
                   <div className="flex gap-[16px] items-center relative shrink-0 w-full mt-auto">
                     <div className="flex flex-[1_0_0] gap-[10px] items-center relative shrink-0">
-                      <div className="relative shrink-0 size-[24px] cursor-pointer hover:opacity-70 flex items-center justify-center">
-                          <Plus className="size-full" />
-                      </div>
-                    </div>                  
-                    
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" className="h-[36px] rounded-[8px] gap-2 px-4" disabled={currentModelConfig.isLocked}>
-                          {selectedSubModel}
-                          <ChevronDown className="size-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent className="w-56" align="start">
-                        <DropdownMenuLabel>모델 선택</DropdownMenuLabel>
-                        <DropdownMenuGroup>
-                          {currentModelConfig.models.map((subModel) => (
-                            <DropdownMenuItem 
-                              key={subModel}
-                              onClick={() => setSelectedSubModel(subModel)}
-                            >
-                              {subModel}
-                            </DropdownMenuItem>
-                          ))}
-                        </DropdownMenuGroup>     
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-
-                    
-                      {isInputFocused ? (
-                        <div className="bg-primary rounded-full size-[28px] flex items-center justify-center cursor-pointer">
-                        <ArrowUp className="text-primary-foreground size-[24px]" />
+                      {isCompact ? (
+                        <div className="size-6 rounded-full border border-border flex items-center justify-center cursor-pointer hover:bg-accent/50 transition-colors">
+                          <Plus className="size-4" />
                         </div>
                       ) : (
-                        <div className="size-[28px] flex items-center justify-center cursor-pointer">
-                        <Mic className="text-primary size-[24px]" /> 
+                        <div className="relative shrink-0 size-[24px] cursor-pointer hover:opacity-70 flex items-center justify-center">
+                          <Plus className="size-full" />
                         </div>
                       )}
+                    </div>                  
+                    
+                    {/* compact 모드: '빠른 모드' 버튼만 노출(상세 선택은 상단 팝오버에서 처리) */}
+                    {!isCompact ? (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" className="h-[36px] rounded-[8px] gap-2 px-4" disabled={currentModelConfig.isLocked}>
+                            {selectedSubModel}
+                            <ChevronDown className="size-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent className="w-56" align="start">
+                          <DropdownMenuLabel>모델 선택</DropdownMenuLabel>
+                          <DropdownMenuGroup>
+                            {currentModelConfig.models.map((subModel) => (
+                              <DropdownMenuItem 
+                                key={subModel}
+                                onClick={() => setSelectedSubModel(subModel)}
+                              >
+                                {subModel}
+                              </DropdownMenuItem>
+                            ))}
+                          </DropdownMenuGroup>     
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    ) : (
+                      <div className="px-4 py-2 rounded-lg border border-border cursor-pointer hover:bg-accent/50 transition-colors flex items-center gap-2">
+                        <span className="text-sm">빠른 모드</span>
+                        <ChevronDown className="size-4" />
+                      </div>
+                    )}
+
+                    {isInputFocused ? (
+                      <div className="bg-primary rounded-full size-[28px] flex items-center justify-center cursor-pointer">
+                        <ArrowUp className="text-primary-foreground size-[24px]" />
+                      </div>
+                    ) : (
+                      <div className={cn(isCompact ? "size-7 rounded-full flex items-center justify-center cursor-pointer" : "size-[28px] flex items-center justify-center cursor-pointer")}>
+                        <Mic className={cn(isCompact ? "size-4" : "text-primary size-[24px]")} /> 
+                      </div>
+                    )}
                     
                   </div>
                 </div>
@@ -772,39 +866,50 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
               {/* Example Badges (Optional) - 예시 뱃지 */}
               <div className="flex gap-2 items-start w-full relative">
                 
-                <div className="flex gap-2 items-start lg:w-full flex-wrap">
-                  {['우주를 여행하는 고양이, 디지털 아트', '미래도시의 석양, 사이버펑크 스타일','초현실적인 인물 그림', '미술관 내부 그림', '아이들이 그린 그림'].map((badge) => (
-                    <div key={badge} className="hidden lg:block bg-secondary px-[10px] py-[2px] rounded-[8px] cursor-pointer hover:bg-secondary/80">
-                      <p className="text-[12px] font-medium text-secondary-foreground">{badge}</p>
+                {!isCompact ? (
+                  <div className="flex gap-2 items-start lg:w-full flex-wrap">
+                    {['우주를 여행하는 고양이, 디지털 아트', '미래도시의 석양, 사이버펑크 스타일','초현실적인 인물 그림', '미술관 내부 그림', '아이들이 그린 그림'].map((badge) => (
+                      <div key={badge} className="hidden lg:block bg-secondary px-[10px] py-[2px] rounded-[8px] cursor-pointer hover:bg-secondary/80">
+                        <p className="text-[12px] font-medium text-secondary-foreground">{badge}</p>
+                      </div>
+                    ))}
+                    
+                    {/* Mobile Only: Ellipsis Button with Popover  */}
+                    <div className="lg:hidden block">
+                       <Popover>
+                        <PopoverTrigger asChild>
+                          <Button variant="outline" className="h-9 w-9 p-0">
+                            <Ellipsis className="size-4" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent 
+                          align="start" 
+                          side="top"
+                          sideOffset={5}
+                          className="w-[300px] p-2 flex flex-wrap gap-2"
+                        >
+                           {['우주를 여행하는 고양이, 디지털 아트', '미래도시의 석양, 사이버펑크 스타일','초현실적인 인물 그림', '미술관 내부 그림', '아이들이 그린 그림'].map((badge) => (
+                            <div key={badge} className="bg-secondary px-[10px] py-[2px] rounded-[8px] cursor-pointer hover:bg-secondary/80">
+                              <p className="text-[12px] font-medium text-secondary-foreground">{badge}</p>
+                            </div>
+                          ))}
+                        </PopoverContent>
+                      </Popover>
                     </div>
-                  ))}
-                  
-                  {/* Mobile Only: Ellipsis Button with Popover  */}
-                  <div className="lg:hidden block">
-                     <Popover>
-                      <PopoverTrigger asChild>
-                        <Button variant="outline" className="h-9 w-9 p-0">
-                          <Ellipsis className="size-4" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent 
-                        align="start" 
-                        side="top"
-                        sideOffset={5}
-                        className="w-[300px] p-2 flex flex-wrap gap-2"
-                      >
-                         {['우주를 여행하는 고양이, 디지털 아트', '미래도시의 석양, 사이버펑크 스타일','초현실적인 인물 그림', '미술관 내부 그림', '아이들이 그린 그림'].map((badge) => (
-                          <div key={badge} className="bg-secondary px-[10px] py-[2px] rounded-[8px] cursor-pointer hover:bg-secondary/80">
-                            <p className="text-[12px] font-medium text-secondary-foreground">{badge}</p>
-                          </div>
-                        ))}
-                      </PopoverContent>
-                    </Popover>
                   </div>
-                </div>
+                ) : (
+                  // compact 모드: Timeline 예시처럼 2개만 항상 노출
+                  <div className="flex gap-2 items-start flex-wrap">
+                    {['심층 리서치를 작성해줘', '잘 생각해줘'].map((badge) => (
+                      <div key={badge} className="bg-secondary px-2.5 py-0.5 rounded-lg cursor-pointer hover:bg-secondary/80">
+                        <span className="text-xs font-medium text-secondary-foreground">{badge}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {/* 패널 축소 + 모바일 화면 (Drawer Trigger) */}
-                {currentModelConfig?.hasOptions && (
+                {!isCompact && currentModelConfig?.hasOptions && (
                   <div className="xl:hidden lg:w-[420px] w-full">
                     <Drawer>
                       <DrawerTrigger asChild>
@@ -842,7 +947,7 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
             </div>
 
             {/* Compact Option Panel (Trigger) - Inside Main Container - 패널 축소되었을 때 확장 트리거 (데스크탑 전용) */}
-            {currentModelConfig?.hasOptions && !isOptionExpanded && (
+            {!isCompact && currentModelConfig?.hasOptions && !isOptionExpanded && (
               <div 
                 className="hidden xl:flex bg-card border border-border flex-col gap-2 items-center p-[16px] rounded-[8px] max-w-[200px] w-full min-w-[120px] cursor-pointer hover:bg-accent/50 transition-colors"
                 onClick={() => setIsOptionExpanded(true)}
@@ -879,7 +984,7 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
       </div>
 
       {/* Expanded Panel (Outside Main Container) - 패널 확장되었을 때 영역 (데스크탑 전용) */}
-      {currentModelConfig?.hasOptions && isOptionExpanded && (
+      {!isCompact && currentModelConfig?.hasOptions && isOptionExpanded && (
         <div className="hidden xl:flex bg-card border border-border flex-col gap-[16px] items-start p-[16px] rounded-[8px] relative shrink-0 w-[260px] animate-in fade-in slide-in-from-left-4 duration-300">
           
           <div className="flex items-center gap-[10px] w-full cursor-pointer"
