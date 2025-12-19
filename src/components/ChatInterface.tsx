@@ -1,6 +1,6 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
-import { Mic, ChevronDown, Lock, Plus, ChevronLeft, ChevronRight, Settings2, ChevronsRight, ChevronsLeft, ChevronsUp, Ellipsis } from "lucide-react"
+import { Mic, ChevronDown, Lock, Plus, ChevronLeft, ChevronRight, Settings2, ChevronsRight, ChevronsLeft, ChevronsUp, Ellipsis, ArrowUp } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import {
@@ -360,7 +360,7 @@ const AI_MODELS: AIModelConfig[] = [
     icon: IconCopilot,
     category: ['code'],
     status: 'inactive',
-    models: ["Enterprise", "Enterprise Pro"]
+    models: ["Copilot Enterprise", "Copilot Enterprise Pro"]
   }
 ];
 
@@ -381,6 +381,9 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
   const [showLeftArrow, setShowLeftArrow] = React.useState(false);
   const [showRightArrow, setShowRightArrow] = React.useState(false);
+
+  // Input Focus State
+  const [isInputFocused, setIsInputFocused] = React.useState(false);
 
   // 현재 탭에 맞는 모델 리스트 필터링
   const currentTabModels = React.useMemo(() => {
@@ -640,7 +643,7 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
                    key={model.id}
                    onClick={() => handleModelSelect(model.id)}
                    className={cn(
-                     "box-border flex flex-col min-w-[100px] max-w-[140px] w-full gap-1 items-center overflow-hidden p-2 rounded-[8px] cursor-pointer transition-all border snap-start",
+                     "box-border flex flex-col min-w-[110px] max-w-[140px] w-full gap-1 items-center overflow-hidden p-2 rounded-[8px] cursor-pointer transition-all border snap-start",
                      selectedModelId === model.id 
                        ? "bg-accent border-primary text-primary-foreground" // 선택됨
                        : "bg-card border-border hover:bg-accent/50" // 선택되지 않음
@@ -718,6 +721,8 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
                       type="text" 
                       placeholder={`${currentModelConfig.name}에게 무엇이든 물어보세요`} 
                       className="w-full border-none outline-none text-[16px] placeholder:text-muted-foreground bg-transparent"
+                      onFocus={() => setIsInputFocused(true)}
+                      onBlur={() => setIsInputFocused(false)}
                     />
                   </div>
                   <div className="flex gap-[16px] items-center relative shrink-0 w-full mt-auto">
@@ -729,7 +734,7 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
                     
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button variant="outline" className="h-[36px] rounded-[8px] gap-2 px-4" disabled={currentModelConfig.isLocked}>
+                        <Button variant="ghost" className="h-[36px] rounded-[8px] gap-2 px-4" disabled={currentModelConfig.isLocked}>
                           {selectedSubModel}
                           <ChevronDown className="size-4" />
                         </Button>
@@ -749,9 +754,17 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
                       </DropdownMenuContent>
                     </DropdownMenu>
 
-                    <div className="bg-primary rounded-full size-[28px] flex items-center justify-center cursor-pointer">
-                       <Mic className="text-primary-foreground size-[16px]" /> 
-                    </div>
+                    
+                      {isInputFocused ? (
+                        <div className="bg-primary rounded-full size-[28px] flex items-center justify-center cursor-pointer">
+                        <ArrowUp className="text-primary-foreground size-[24px]" />
+                        </div>
+                      ) : (
+                        <div className="size-[28px] flex items-center justify-center cursor-pointer">
+                        <Mic className="text-primary size-[24px]" /> 
+                        </div>
+                      )}
+                    
                   </div>
                 </div>
               )}
@@ -759,15 +772,15 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
               {/* Example Badges (Optional) - 예시 뱃지 */}
               <div className="flex gap-2 items-start w-full relative">
                 
-                <div className="flex gap-2 items-start sm:w-full flex-wrap">
+                <div className="flex gap-2 items-start lg:w-full flex-wrap">
                   {['우주를 여행하는 고양이, 디지털 아트', '미래도시의 석양, 사이버펑크 스타일','초현실적인 인물 그림', '미술관 내부 그림', '아이들이 그린 그림'].map((badge) => (
-                    <div key={badge} className="hidden sm:block bg-secondary px-[10px] py-[2px] rounded-[8px] cursor-pointer hover:bg-secondary/80">
+                    <div key={badge} className="hidden lg:block bg-secondary px-[10px] py-[2px] rounded-[8px] cursor-pointer hover:bg-secondary/80">
                       <p className="text-[12px] font-medium text-secondary-foreground">{badge}</p>
                     </div>
                   ))}
                   
-                  {/* Mobile Only: Ellipsis Button with Popover */}
-                  <div className="sm:hidden block">
+                  {/* Mobile Only: Ellipsis Button with Popover  */}
+                  <div className="lg:hidden block">
                      <Popover>
                       <PopoverTrigger asChild>
                         <Button variant="outline" className="h-9 w-9 p-0">
@@ -792,7 +805,7 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
 
                 {/* 패널 축소 + 모바일 화면 (Drawer Trigger) */}
                 {currentModelConfig?.hasOptions && (
-                  <div className="lg:hidden sm:w-[360px] w-full">
+                  <div className="xl:hidden lg:w-[420px] w-full">
                     <Drawer>
                       <DrawerTrigger asChild>
                         <div className="bg-card border border-border flex gap-2 items-center p-2 rounded-[8px] w-full cursor-pointer hover:bg-accent/50 transition-colors">                  
@@ -831,7 +844,7 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
             {/* Compact Option Panel (Trigger) - Inside Main Container - 패널 축소되었을 때 확장 트리거 (데스크탑 전용) */}
             {currentModelConfig?.hasOptions && !isOptionExpanded && (
               <div 
-                className="hidden lg:flex bg-card border border-border flex-col gap-2 items-center p-[16px] rounded-[8px] max-w-[200px] w-full min-w-[120px] cursor-pointer hover:bg-accent/50 transition-colors"
+                className="hidden xl:flex bg-card border border-border flex-col gap-2 items-center p-[16px] rounded-[8px] max-w-[200px] w-full min-w-[120px] cursor-pointer hover:bg-accent/50 transition-colors"
                 onClick={() => setIsOptionExpanded(true)}
               >
                 <div className="flex items-center w-full gap-[10px]">
@@ -867,7 +880,7 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
 
       {/* Expanded Panel (Outside Main Container) - 패널 확장되었을 때 영역 (데스크탑 전용) */}
       {currentModelConfig?.hasOptions && isOptionExpanded && (
-        <div className="hidden lg:flex bg-card border border-border flex-col gap-[16px] items-start p-[16px] rounded-[8px] relative shrink-0 w-[260px] animate-in fade-in slide-in-from-left-4 duration-300">
+        <div className="hidden xl:flex bg-card border border-border flex-col gap-[16px] items-start p-[16px] rounded-[8px] relative shrink-0 w-[260px] animate-in fade-in slide-in-from-left-4 duration-300">
           
           <div className="flex items-center gap-[10px] w-full cursor-pointer"
           onClick={() => setIsOptionExpanded(false)}>

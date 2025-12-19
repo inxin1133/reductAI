@@ -87,7 +87,7 @@ export default function Intro() {
         </div>
 
         {/* Main Content */}
-        <div className="box-border flex flex-[1_0_0] flex-col gap-[40px] items-center justify-center pb-[24px] pt-[12px] px-[24px] relative shrink-0 w-full">
+        <div className="box-border flex flex-[1_0_0] flex-col gap-[40px] items-center justify-center p-[24px] relative shrink-0 w-full">
           {/* Intro Text Section */}
           <div className="flex flex-col gap-[16px] items-start justify-center relative shrink-0 w-full max-w-[800px]">
             <div className="flex items-start relative shrink-0 w-full">
