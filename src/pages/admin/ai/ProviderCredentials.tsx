@@ -51,7 +51,7 @@ interface ProviderCredential {
   credential_name: string
   // ⚠️ 백엔드에서는 반드시 암호화 저장해야 합니다. (schema_models.sql 참고)
   // - API 연동 시: 서버가 평문을 내려주지 않으므로 api_key_masked만 내려옵니다.
-  // - localStorage fallback 시: 데모/개발 편의를 위해 api_key를 저장합니다(운영에서는 금지).
+  // - localStorage fallback 시: 보안을 위해 평문을 저장하지 않고(last4/masked만 저장), 수정 시에는 API Key를 재입력하도록 합니다.
   api_key?: string
   api_key_masked?: string | null
   api_key_last4?: string | null
@@ -133,7 +133,24 @@ function loadCredentialsFromLocalStorage(): ProviderCredential[] {
   }
   try {
     const parsed = JSON.parse(raw)
-    if (Array.isArray(parsed)) return parsed as ProviderCredential[]
+    if (Array.isArray(parsed)) {
+      // 보안상 과거 데이터에 api_key(평문)가 남아있다면 제거하고 last4/masked로 치환
+      const sanitized = (parsed as ProviderCredential[]).map((c) => {
+        if (c.api_key) {
+          const last4 = c.api_key.slice(-4)
+          return {
+            ...c,
+            api_key: undefined,
+            api_key_last4: c.api_key_last4 || last4,
+            api_key_masked: c.api_key_masked || `••••••••••${last4}`,
+          }
+        }
+        return c
+      })
+      // 로컬 저장소도 정리(한 번만)
+      localStorage.setItem(LOCAL_STORAGE_CREDENTIALS_KEY, JSON.stringify(sanitized))
+      return sanitized
+    }
   } catch {
     // ignore
   }
@@ -434,10 +451,14 @@ export default function ProviderCredentials() {
       if (editingCredential) {
         const next = credentials.map((c) => {
           if (c.id !== editingCredential.id) return c
+          const nextLast4 = apiKeyInput.trim() ? apiKeyInput.trim().slice(-4) : (c.api_key_last4 || null)
           return {
             ...c,
             ...basePayload,
-            api_key: apiKeyInput.trim() ? apiKeyInput.trim() : c.api_key,
+            // localStorage fallback에서는 평문 api_key를 저장하지 않습니다.
+            api_key: undefined,
+            api_key_last4: apiKeyInput.trim() ? nextLast4 : c.api_key_last4,
+            api_key_masked: apiKeyInput.trim() ? `••••••••••${nextLast4}` : c.api_key_masked,
             updated_at: nowIso(),
           } as ProviderCredential
         })
@@ -455,10 +476,14 @@ export default function ProviderCredentials() {
 
       // Create (fallback)
       const t = nowIso()
+      const last4 = apiKeyInput.trim().slice(-4)
       const created: ProviderCredential = {
         id: safeUuid(),
         ...basePayload,
-        api_key: apiKeyInput.trim(),
+        // localStorage fallback에서는 평문 api_key를 저장하지 않습니다.
+        api_key: undefined,
+        api_key_last4: last4,
+        api_key_masked: `••••••••••${last4}`,
         created_at: t,
         updated_at: t,
       }

@@ -3,6 +3,9 @@ import cors from "cors"
 import dotenv from "dotenv"
 import providersRoutes from "./routes/providersRoutes"
 import credentialsRoutes from "./routes/credentialsRoutes"
+import modelsRoutes from "./routes/modelsRoutes"
+import tenantTypeModelAccessRoutes from "./routes/tenantTypeModelAccessRoutes"
+import { ensureAiAccessSchema } from "./services/schemaBootstrap"
 
 dotenv.config()
 
@@ -16,12 +19,22 @@ app.use(express.json())
 // - Admin 화면에서 사용하는 설정 API
 app.use("/api/ai/providers", providersRoutes)
 app.use("/api/ai/credentials", credentialsRoutes)
+app.use("/api/ai/models", modelsRoutes)
+app.use("/api/ai/model-access-by-type", tenantTypeModelAccessRoutes)
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "ai-agent-service" })
 })
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
+  // 서비스 부팅 시 필요한 테이블이 없으면 생성
+  // (운영에서는 migration 적용 권장)
+  try {
+    await ensureAiAccessSchema()
+    console.log("ai-agent-service schema bootstrap ok")
+  } catch (e) {
+    console.error("ai-agent-service schema bootstrap failed:", e)
+  }
   console.log(`ai-agent-service running on port ${PORT}`)
 })
 

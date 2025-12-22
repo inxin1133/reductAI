@@ -16,6 +16,8 @@ import RoleManager from "./pages/admin/users/RoleManager";
 import TenantManager from "./pages/admin/tenants/TenantManager";
 import Providers from "./pages/admin/ai/Providers";
 import ProviderCredentials from "./pages/admin/ai/ProviderCredentials";
+import ModelManager from "./pages/admin/ai/ModelManager";
+import TenantTypeModelAccess from "./pages/admin/ai/TenantTypeModelAccess";
 
 // Dynamic title per section (User/Admin) - 동적으로 섹션별 타이틀 설정
 function TitleLayout() {
@@ -93,6 +95,14 @@ const router = createBrowserRouter([
           {
             path: "ai/credentials",
             element: <ProviderCredentials />,
+          },
+          {
+            path: "ai/models",
+            element: <ModelManager />,
+          },
+          {
+            path: "ai/model-access",
+            element: <TenantTypeModelAccess />,
           },
         ],
       },

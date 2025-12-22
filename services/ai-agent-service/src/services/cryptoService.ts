@@ -25,6 +25,19 @@ export function encryptApiKey(plain: string) {
   return token
 }
 
-// 현재 Admin 화면에서는 복호화가 필요하지 않아서 decrypt는 노출하지 않습니다.
+// 모델 동기화/시뮬레이터에서는 외부 Provider 호출을 위해 복호화가 필요합니다.
+export function decryptApiKey(token: string) {
+  const key = key32()
+  const [ivB64, tagB64, encB64] = token.split(".")
+  if (!ivB64 || !tagB64 || !encB64) throw new Error("INVALID_ENCRYPTED_FORMAT")
+
+  const iv = Buffer.from(ivB64, "base64")
+  const tag = Buffer.from(tagB64, "base64")
+  const enc = Buffer.from(encB64, "base64")
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv)
+  decipher.setAuthTag(tag)
+  const dec = Buffer.concat([decipher.update(enc), decipher.final()])
+  return dec.toString("utf8")
+}
 
 
