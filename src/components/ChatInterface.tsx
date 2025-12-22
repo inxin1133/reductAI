@@ -85,6 +85,26 @@ interface ChatInterfaceProps {
    * - compact: Timeline 하단 패널처럼 요약 컨트롤 + 필요 시 펼쳐서 선택하는 UI
    */
   variant?: "default" | "compact";
+  /**
+   * 상위 컴포넌트(Timeline 등)에서 채팅 메시지 리스트를 렌더링하기 위한 콜백입니다.
+   * - user/assistant 메시지를 각각 전달합니다.
+   */
+  onMessage?: (msg: { role: "user" | "assistant"; content: string; providerSlug?: string; model?: string }) => void;
+  /**
+   * submitMode
+   * - send: 내부에서 /api/ai/chat 호출까지 수행 (기본)
+   * - emit: 전송(payload emit)만 하고 실제 호출은 상위에서 수행 (FrontAI→Timeline 이동용)
+   */
+  submitMode?: "send" | "emit";
+  /**
+   * submitMode="emit"일 때 호출되는 콜백입니다.
+   * FrontAI에서 Timeline으로 이동할 때, 초기 질문/모델 정보를 넘기기 위해 사용합니다.
+   */
+  onSubmit?: (payload: { input: string; providerSlug: string; model: string }) => void;
+  /**
+   * 외부에서 초기 모델 선택을 강제하고 싶을 때 사용합니다. (예: FrontAI에서 선택한 모델을 Timeline으로 전달)
+   */
+  initialSelectedModel?: string;
 }
 
 // AI 모델 타입 정의
@@ -370,7 +390,14 @@ const AI_MODELS: AIModelConfig[] = [
   }
 ];
 
-export function ChatInterface({ className, variant = "default" }: ChatInterfaceProps) {
+export function ChatInterface({
+  className,
+  variant = "default",
+  onMessage,
+  submitMode = "send",
+  onSubmit,
+  initialSelectedModel,
+}: ChatInterfaceProps) {
   const isCompact = variant === "compact";
 
   // 선택된 탭 상태 관리
@@ -380,7 +407,8 @@ export function ChatInterface({ className, variant = "default" }: ChatInterfaceP
   const [selectedModelId, setSelectedModelId] = React.useState<AIModelId>('chatgpt');
   
   // 선택된 하위 모델(버전) 상태 관리
-  const [selectedSubModel, setSelectedSubModel] = React.useState<string>("GPT-4o");
+  // 실제 API에 전달되는 model id 문자열을 저장합니다. (예: gpt-4o, gpt-4.1-mini 등)
+  const [selectedSubModel, setSelectedSubModel] = React.useState<string>("gpt-4o");
 
   // 옵션 패널 확장 상태 관리
   const [isOptionExpanded, setIsOptionExpanded] = React.useState(true);
@@ -392,9 +420,56 @@ export function ChatInterface({ className, variant = "default" }: ChatInterfaceP
 
   // Input Focus State
   const [isInputFocused, setIsInputFocused] = React.useState(false);
+  // 입력값 상태
+  const [prompt, setPrompt] = React.useState("");
+  // 한글 IME 조합 입력 중 Enter 전송이 중복으로 발생하는 것을 방지하기 위한 플래그
+  const isComposingRef = React.useRef(false);
 
   // compact 모드에서: 상단(토큰/탭/모델선택) 영역을 팝오버로 펼쳐서 선택할 수 있게 함
   const [isCompactPanelOpen, setIsCompactPanelOpen] = React.useState(false);
+
+  // OpenAI 모델 목록(DB 연동) - Admin에서 관리/동기화한 ai_models 기반
+  const [openAiModelOptions, setOpenAiModelOptions] = React.useState<string[]>([]);
+
+  React.useEffect(() => {
+    const controller = new AbortController();
+
+    // 최소한의 응답 타입 정의 (필요한 필드만 사용)
+    type ProviderRow = { id: string; slug?: string | null; name?: string | null };
+    type ModelRow = { model_id: string; status?: string | null; is_available?: boolean | null; model_type?: string | null };
+
+    const fetchOpenAiModels = async () => {
+      try {
+        // 1) Provider 목록에서 openai provider_id 찾기
+        const pRes = await fetch("/api/ai/providers", { signal: controller.signal });
+        const providers = (await pRes.json().catch(() => [])) as ProviderRow[];
+        const openai = Array.isArray(providers)
+          ? providers.find((p) => p?.slug === "openai" || p?.name === "openai")
+          : null;
+        const providerId = openai?.id;
+        if (!providerId) return;
+
+        // 2) 해당 provider의 text 모델 목록 조회
+        const qs = new URLSearchParams({
+          provider_id: String(providerId),
+          model_type: "text",
+          status: "active",
+          is_available: "true",
+        });
+        const mRes = await fetch(`/api/ai/models?${qs.toString()}`, { signal: controller.signal });
+        const models = (await mRes.json().catch(() => [])) as ModelRow[];
+        const ids = Array.isArray(models)
+          ? Array.from(new Set(models.map((m) => m?.model_id).filter(Boolean)))
+          : [];
+        setOpenAiModelOptions(ids);
+      } catch {
+        // 백엔드/DB 준비 전에는 기존 UI만 동작하도록 조용히 무시
+      }
+    };
+
+    void fetchOpenAiModels();
+    return () => controller.abort();
+  }, []);
 
   // 현재 탭에 맞는 모델 리스트 필터링
   const currentTabModels = React.useMemo(() => {
@@ -459,6 +534,98 @@ export function ChatInterface({ className, variant = "default" }: ChatInterfaceP
       || currentTabModels[0] 
       || AI_MODELS.find(m => m.status !== 'inactive');
   }, [selectedModelId, selectedTab, currentTabModels]);
+
+  // OpenAI 모델 선택 시, DB에서 받아온 모델 목록이 있으면 그 목록을 우선 사용
+  const subModelOptions = React.useMemo(() => {
+    if (currentModelConfig?.id === "chatgpt" && openAiModelOptions.length > 0) return openAiModelOptions;
+    return currentModelConfig?.models || [];
+  }, [currentModelConfig, openAiModelOptions]);
+
+  // 옵션 리스트가 바뀌면 현재 선택값이 유효한지 보정
+  React.useEffect(() => {
+    if (!subModelOptions.length) return;
+    if (!subModelOptions.includes(selectedSubModel)) {
+      setSelectedSubModel(subModelOptions[0]);
+    }
+  }, [subModelOptions, selectedSubModel]);
+
+  // 외부에서 초기 모델을 전달받은 경우 우선 적용 (가능한 옵션에 포함될 때만)
+  React.useEffect(() => {
+    if (!initialSelectedModel) return;
+    if (!subModelOptions.length) return;
+    if (subModelOptions.includes(initialSelectedModel)) {
+      setSelectedSubModel(initialSelectedModel);
+    }
+  }, [initialSelectedModel, subModelOptions]);
+
+  // 메시지 전송 (ai-agent-service의 DB/credential 기반으로 실행)
+  const handleSend = React.useCallback(async (overrideInput?: string) => {
+    const input = (overrideInput ?? prompt).trim();
+    if (!input) return;
+
+    // 현재는 ChatGPT(OpenAI) 키만 보유한 상태라고 했으므로 openai 우선 연동
+    const providerSlug =
+      currentModelConfig?.provider === "OpenAI" || currentModelConfig?.id === "chatgpt"
+        ? "openai"
+        : undefined;
+
+    if (!providerSlug) {
+      alert("현재는 ChatGPT(OpenAI) 모델만 연동되어 있습니다. (추후 확장 예정)");
+      return;
+    }
+
+    const model = selectedSubModel;
+
+    onMessage?.({ role: "user", content: input, providerSlug, model });
+    setPrompt("");
+
+    // FrontAI→Timeline 전환처럼 "전송만 emit"하고 실제 호출은 상위에서 처리하는 모드
+    if (submitMode === "emit") {
+      onSubmit?.({ input, providerSlug, model });
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider_slug: providerSlug,
+          model,
+          input,
+          max_tokens: 512,
+        }),
+      })
+
+      // 404 HTML(Cannot POST ...) 같이 JSON이 아닌 응답도 있을 수 있어 text 기반으로 안전 파싱합니다.
+      const raw = await res.text()
+      let json: Record<string, unknown> = {}
+      try {
+        json = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
+      } catch {
+        json = {}
+      }
+
+      if (!res.ok) {
+        const parsed = json as { message?: unknown; details?: unknown }
+        const msg = (parsed?.message ? String(parsed.message) : "") || raw || "AI 응답 실패"
+        const details = parsed?.details ? `\n${String(parsed.details)}` : ""
+        throw new Error(`${msg}${details}`)
+      }
+
+      const okJson = json as { output_text?: unknown }
+      onMessage?.({ role: "assistant", content: String(okJson?.output_text || ""), providerSlug, model })
+    } catch (e: unknown) {
+      console.error(e);
+      const msg = e instanceof Error ? e.message : String(e);
+      onMessage?.({
+        role: "assistant",
+        content: `오류가 발생했습니다.\n${msg}`,
+        providerSlug,
+        model,
+      });
+    }
+  }, [prompt, currentModelConfig, selectedSubModel, onMessage, submitMode, onSubmit]);
 
 
   // 모델 변경 핸들러
@@ -779,10 +946,10 @@ export function ChatInterface({ className, variant = "default" }: ChatInterfaceP
           )}
           
 
-          {/* Content Area: Chat/Option Container */}
+          {/* Content Area: Chat/Option Container - 채팅 내용 및 옵션 컨테이너 */}
           <div className="flex gap-[16px] items-start relative shrink-0 w-full">
             
-            {/* Main Content (Chat/Input Area) */}
+            {/* Main Content (Chat/Input Area) - 채팅 내용 및 입력 영역 */}
             <div className="flex flex-[1_0_0] flex-col gap-[16px] items-start h-full relative shrink-0">
               {/* Description - 선택된 모델 설명 (compact에서는 생략) */}
               {!isCompact && currentModelConfig && (
@@ -802,6 +969,25 @@ export function ChatInterface({ className, variant = "default" }: ChatInterfaceP
                       type="text" 
                       placeholder={isCompact ? "무엇이든 물어보세요" : `${currentModelConfig.name}에게 무엇이든 물어보세요`} 
                       className="w-full border-none outline-none text-[16px] placeholder:text-muted-foreground bg-transparent"
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      onKeyDown={(e) => {
+                        // IME 조합 중 Enter는 '전송'이 아니라 '조합 확정'으로 사용되므로 전송 금지
+                        if (e.key === "Enter" && (e.nativeEvent as { isComposing?: boolean })?.isComposing) return
+                        if (e.key === "Enter" && isComposingRef.current) return
+
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          // 상태(prompt) 업데이트 타이밍 이슈를 피하려고 현재 input 값을 직접 사용
+                          void handleSend(e.currentTarget.value);
+                        }
+                      }}
+                      onCompositionStart={() => {
+                        isComposingRef.current = true
+                      }}
+                      onCompositionEnd={() => {
+                        isComposingRef.current = false
+                      }}
                       onFocus={() => setIsInputFocused(true)}
                       onBlur={() => setIsInputFocused(false)}
                     />
@@ -819,38 +1005,35 @@ export function ChatInterface({ className, variant = "default" }: ChatInterfaceP
                       )}
                     </div>                  
                     
-                    {/* compact 모드: '빠른 모드' 버튼만 노출(상세 선택은 상단 팝오버에서 처리) */}
-                    {!isCompact ? (
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" className="h-[36px] rounded-[8px] gap-2 px-4" disabled={currentModelConfig.isLocked}>
-                            {selectedSubModel}
-                            <ChevronDown className="size-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent className="w-56" align="start">
-                          <DropdownMenuLabel>모델 선택</DropdownMenuLabel>
-                          <DropdownMenuGroup>
-                            {currentModelConfig.models.map((subModel) => (
-                              <DropdownMenuItem 
-                                key={subModel}
-                                onClick={() => setSelectedSubModel(subModel)}
-                              >
-                                {subModel}
-                              </DropdownMenuItem>
-                            ))}
-                          </DropdownMenuGroup>     
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    ) : (
-                      <div className="px-4 py-2 rounded-lg border border-border cursor-pointer hover:bg-accent/50 transition-colors flex items-center gap-2">
-                        <span className="text-sm">빠른 모드</span>
-                        <ChevronDown className="size-4" />
-                      </div>
-                    )}
+                    {/* 모델 선택 (default/compact 모두 가능) */}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant={isCompact ? "outline" : "ghost"}
+                          className={cn(isCompact ? "h-[36px] rounded-lg gap-2 px-3" : "h-[36px] rounded-[8px] gap-2 px-4")}
+                          disabled={currentModelConfig.isLocked}
+                        >
+                          {selectedSubModel}
+                          <ChevronDown className="size-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent className="w-56" align="start">
+                        <DropdownMenuLabel>모델 선택</DropdownMenuLabel>
+                        <DropdownMenuGroup>
+                          {subModelOptions.map((subModel) => (
+                            <DropdownMenuItem
+                              key={subModel}
+                              onClick={() => setSelectedSubModel(subModel)}
+                            >
+                              {subModel}
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuGroup>
+                      </DropdownMenuContent>  
+                    </DropdownMenu>
 
                     {isInputFocused ? (
-                      <div className="bg-primary rounded-full size-[28px] flex items-center justify-center cursor-pointer">
+                      <div className="bg-primary rounded-full size-[28px] flex items-center justify-center cursor-pointer" onClick={() => void handleSend()}>
                         <ArrowUp className="text-primary-foreground size-[24px]" />
                       </div>
                     ) : (

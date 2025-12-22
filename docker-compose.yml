@@ -127,7 +127,11 @@ services:
     ports:
       - "3007:3007"
     volumes:
-      - ./services/ai-agent-service/src:/app/src
+      # 개발 편의: dist 기반(start) 대신 src 기반(dev)으로 실행해서
+      # 라우트 추가/수정(예: /api/ai/chat)이 즉시 반영되도록 합니다.
+      - ./services/ai-agent-service:/app
+      - /app/node_modules
+    command: npm run dev
     environment:
       - PORT=3007
       - POSTGRES_USER=${POSTGRES_USER}

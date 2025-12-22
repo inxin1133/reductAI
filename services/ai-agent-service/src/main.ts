@@ -5,7 +5,9 @@ import providersRoutes from "./routes/providersRoutes"
 import credentialsRoutes from "./routes/credentialsRoutes"
 import modelsRoutes from "./routes/modelsRoutes"
 import tenantTypeModelAccessRoutes from "./routes/tenantTypeModelAccessRoutes"
-import { ensureAiAccessSchema } from "./services/schemaBootstrap"
+import { ensureAiAccessSchema, ensureTimelineSchema } from "./services/schemaBootstrap"
+import chatRoutes from "./routes/chatRoutes"
+import timelineRoutes from "./routes/timelineRoutes"
 
 dotenv.config()
 
@@ -21,6 +23,8 @@ app.use("/api/ai/providers", providersRoutes)
 app.use("/api/ai/credentials", credentialsRoutes)
 app.use("/api/ai/models", modelsRoutes)
 app.use("/api/ai/model-access-by-type", tenantTypeModelAccessRoutes)
+app.use("/api/ai/chat", chatRoutes)
+app.use("/api/ai/timeline", timelineRoutes)
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "ai-agent-service" })
@@ -31,6 +35,7 @@ app.listen(PORT, async () => {
   // (운영에서는 migration 적용 권장)
   try {
     await ensureAiAccessSchema()
+    await ensureTimelineSchema()
     console.log("ai-agent-service schema bootstrap ok")
   } catch (e) {
     console.error("ai-agent-service schema bootstrap failed:", e)

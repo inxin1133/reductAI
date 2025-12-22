@@ -5,50 +5,426 @@ import { Button } from "@/components/ui/button"
 import { Copy, Volume2, Repeat, ChevronsLeft, PencilLine, GalleryVerticalEnd } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ChatInterface } from "@/components/ChatInterface"
+import { useLocation, useNavigate } from "react-router-dom"
 
 
-import { IconChatGPT } from "@/components/icons/IconChatGPT"
+/**
+ * Timeline(대화 히스토리) 저장 정책
+ * - ai-agent-service(DB) 기반으로 저장/조회합니다.
+ * - 이유: 브라우저(localStorage)만 쓰면 기기/브라우저가 바뀌면 히스토리가 사라지고,
+ *   특정 환경(스토리지 차단 등)에서는 저장 자체가 실패할 수 있습니다.
+ * - 개발/데모 편의를 위해: 서버가 죽어있을 때만 localStorage fallback을 사용합니다.
+ */
 
-// 더미 데이터: 사이드바 히스토리 메뉴
-const HISTORY_MENU = [
-  "CMA 설명",
-  "이모지 사용 방법",
-  "Test 확인 요청",
-  "API 인증키",
-  "AI 추천 질문 10가지"
-]
+type ChatRole = "user" | "assistant"
+
+type TimelineMessage = {
+  id: string
+  role: ChatRole
+  content: string
+  model?: string
+  createdAt: string // ISO
+}
+
+type TimelineConversation = {
+  id: string
+  title: string
+  createdAt: string // ISO
+  updatedAt: string // ISO (최근 대화 정렬 기준)
+  messages: TimelineMessage[]
+}
+
+type TimelineNavState = {
+  initial?: { input: string; providerSlug: string; model: string }
+}
+
+function nowIso() {
+  return new Date().toISOString()
+}
+
+function safeUuid() {
+  try {
+    return crypto.randomUUID()
+  } catch {
+    return `id_${Math.random().toString(16).slice(2)}_${Date.now()}`
+  }
+}
+
+function makeAutoTitleFromPrompt(input: string) {
+  // 제목 자동 생성 규칙(간단 버전)
+  // - 첫 줄 기준
+  // - 너무 길면 잘라서 ... 처리
+  const firstLine = (input || "").split("\n")[0]?.trim() || "새 대화"
+  const trimmed = firstLine.replace(/\s+/g, " ")
+  const max = 24
+  if (trimmed.length <= max) return trimmed
+  return `${trimmed.slice(0, max)}…`
+}
+
+const TIMELINE_API_BASE = "/api/ai/timeline"
+
+function storageKeyForUser() {
+  // "접속한 계정" 기준 분리 저장
+  const userId = localStorage.getItem("user_id") || "anon"
+  return `timeline_conversations_v1:${userId}`
+}
+
+function loadConversations(): TimelineConversation[] {
+  const raw = localStorage.getItem(storageKeyForUser())
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw) as TimelineConversation[]
+    if (!Array.isArray(parsed)) return []
+    return parsed
+  } catch {
+    return []
+  }
+}
+
+function saveConversations(next: TimelineConversation[]) {
+  localStorage.setItem(storageKeyForUser(), JSON.stringify(next))
+}
+
+function sortByRecent(convs: TimelineConversation[]) {
+  return [...convs].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+}
 
 export default function Timeline() {
+  const location = useLocation()
+  const navigate = useNavigate()
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
+  const [conversations, setConversations] = React.useState<TimelineConversation[]>([])
+  const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null)
+  const [messages, setMessages] = React.useState<Array<{ role: "user" | "assistant"; content: string; model?: string }>>([]);
+
+  // FrontAI에서 넘어온 "첫 질문"을 1회만 자동 실행하기 위한 ref
+  const initialRanRef = React.useRef(false)
+  // 현재 대화에서 마지막으로 사용한 모델을 유지하여 ChatInterface 드롭다운 초기값으로 사용합니다.
+  const [stickySelectedModel, setStickySelectedModel] = React.useState<string | undefined>(undefined)
+
+  const initial = (location.state as TimelineNavState | null)?.initial
+
+  // 보안: Timeline은 사용자별 히스토리를 다루므로 로그인(토큰)이 없으면 접근 불가
+  React.useEffect(() => {
+    const token = localStorage.getItem("token")
+    const expiresAt = Number(localStorage.getItem("token_expires_at") || 0)
+    const isExpired = !expiresAt || Date.now() > expiresAt
+    if (!token || isExpired) {
+      localStorage.removeItem("token")
+      localStorage.removeItem("token_expires_at")
+      localStorage.removeItem("user_email")
+      localStorage.removeItem("user_id")
+      navigate("/", { replace: true })
+    }
+  }, [navigate])
+
+  // Timeline API는 JWT에서 userId를 추출하므로, 클라이언트는 Authorization 헤더만 보내면 됩니다.
+  const authHeaders = React.useCallback((): HeadersInit => {
+    const token = localStorage.getItem("token")
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  }, [])
+
+  const fetchThreads = React.useCallback(async () => {
+    const res = await fetch(`${TIMELINE_API_BASE}/threads`, { headers: { ...authHeaders() } })
+    if (!res.ok) throw new Error("THREADS_FETCH_FAILED")
+    const rows = (await res.json().catch(() => [])) as Array<{
+      id: string
+      title: string
+      created_at: string
+      updated_at: string
+    }>
+    return rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      messages: [],
+    })) as TimelineConversation[]
+  }, [authHeaders])
+
+  const fetchMessages = React.useCallback(async (threadId: string) => {
+    const res = await fetch(`${TIMELINE_API_BASE}/threads/${threadId}/messages`, { headers: { ...authHeaders() } })
+    if (!res.ok) throw new Error("MESSAGES_FETCH_FAILED")
+    const rows = (await res.json().catch(() => [])) as Array<{
+      id: string
+      role: ChatRole
+      content: string
+      metadata?: Record<string, unknown> | null
+      created_at: string
+      message_order?: number
+    }>
+    return rows.map((m) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      model: typeof m.metadata?.model === "string" ? (m.metadata.model as string) : undefined,
+      createdAt: m.created_at,
+    })) as TimelineMessage[]
+  }, [authHeaders])
+
+  const createThreadFromFirstMessage = React.useCallback(async (firstMessage: string) => {
+    // [중요] title을 클라이언트에서 결정하지 않고, 서버(OpenAI)가 요약/키워드 기반 제목을 생성하도록 위임합니다.
+    // model도 함께 넘겨주면 conversation.model_id 매핑이 정확해집니다.
+    const selectedModel = stickySelectedModel || (initial?.model ?? "")
+    const res = await fetch(`${TIMELINE_API_BASE}/threads`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ first_message: firstMessage, model: selectedModel || null }),
+    })
+    if (!res.ok) throw new Error("THREAD_CREATE_FAILED")
+    const row = (await res.json()) as { id: string; title: string; created_at: string; updated_at: string }
+    return {
+      id: row.id,
+      title: row.title,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      messages: [],
+    } as TimelineConversation
+  }, [authHeaders, initial?.model, stickySelectedModel])
+
+  const addMessage = React.useCallback(async (threadId: string, msg: { role: ChatRole; content: string; model?: string }) => {
+    const res = await fetch(`${TIMELINE_API_BASE}/threads/${threadId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ role: msg.role, content: msg.content, model: msg.model ?? null }),
+    })
+    if (!res.ok) throw new Error("MESSAGE_ADD_FAILED")
+    return true
+  }, [authHeaders])
+
+  // 0) 최초 진입 시 "서버(DB)"에서 대화 목록을 로드하고, "가장 최근 대화"를 자동으로 선택합니다.
+  React.useEffect(() => {
+    const run = async () => {
+      try {
+        const loaded = sortByRecent(await fetchThreads())
+        setConversations(loaded)
+
+        // FrontAI에서 넘어온 initial이 없으면, 최근 대화를 자동으로 열어줍니다.
+        if (!initial && loaded.length > 0) {
+          setActiveConversationId(loaded[0].id)
+          const msgs = await fetchMessages(loaded[0].id)
+          setMessages(msgs.map(m => ({ role: m.role, content: m.content, model: m.model })))
+          const lastModel = [...msgs].reverse().find(m => m.model)?.model
+          setStickySelectedModel(lastModel)
+        }
+      } catch (e) {
+        // 서버가 아직 준비되지 않았거나 접속 실패 시 localStorage fallback
+        const loaded = sortByRecent(loadConversations())
+        setConversations(loaded)
+        if (!initial && loaded.length > 0) {
+          setActiveConversationId(loaded[0].id)
+          setMessages(loaded[0].messages.map(m => ({ role: m.role, content: m.content, model: m.model })))
+          const lastModel = [...loaded[0].messages].reverse().find(m => m.model)?.model
+          setStickySelectedModel(lastModel)
+        }
+        console.warn("[Timeline] threads API 실패로 localStorage fallback 사용:", e)
+      }
+    }
+    void run()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 대화 선택 시 메시지/모델 동기화
+  React.useEffect(() => {
+    if (!activeConversationId) return
+    const run = async () => {
+      try {
+        const msgs = await fetchMessages(activeConversationId)
+        setMessages(msgs.map(m => ({ role: m.role, content: m.content, model: m.model })))
+        const lastModel = [...msgs].reverse().find(m => m.model)?.model
+        setStickySelectedModel(lastModel)
+      } catch {
+        // fallback: localStorage 데이터로 표시
+        const conv = conversations.find(c => c.id === activeConversationId)
+        if (!conv) return
+        setMessages(conv.messages.map(m => ({ role: m.role, content: m.content, model: m.model })))
+        const lastModel = [...conv.messages].reverse().find(m => m.model)?.model
+        setStickySelectedModel(lastModel)
+      }
+    }
+    void run()
+  }, [activeConversationId, conversations, fetchMessages])
+
+  // 공통: 현재 대화에 메시지 1개를 추가하고 (서버 우선) 저장합니다.
+  const appendToActiveConversation = React.useCallback((msg: { role: ChatRole; content: string; model?: string }) => {
+    const run = async () => {
+      try {
+        let activeId = activeConversationId
+
+        // 활성 스레드가 없으면, "첫 질문" 기준으로 서버에 스레드를 생성합니다.
+        if (!activeId) {
+          // 첫 메시지(주로 user 질문)를 서버에 전달하여
+          // OpenAI가 "요약/키워드" 기반 제목을 생성하도록 합니다.
+          const created = await createThreadFromFirstMessage(msg.content)
+          activeId = created.id
+          setActiveConversationId(created.id)
+          setConversations((prev) => sortByRecent([created, ...prev]))
+        }
+
+        await addMessage(activeId, msg)
+
+        // 저장 성공 후: 목록을 다시 갱신(최근순 유지)
+        const refreshed = sortByRecent(await fetchThreads())
+        setConversations(refreshed)
+        setActiveConversationId(activeId)
+        setStickySelectedModel(msg.model || stickySelectedModel)
+      } catch (e) {
+        // 서버 실패 시 localStorage fallback
+        setConversations((prev) => {
+          const t = nowIso()
+          let activeId = activeConversationId
+          let next = [...prev]
+          if (!activeId) {
+            const newId = safeUuid()
+            const title = msg.role === "user" ? makeAutoTitleFromPrompt(msg.content) : "새 대화"
+            const created: TimelineConversation = { id: newId, title, createdAt: t, updatedAt: t, messages: [] }
+            next = [created, ...next]
+            activeId = newId
+            setActiveConversationId(newId)
+          }
+          const idx = next.findIndex((c) => c.id === activeId)
+          if (idx < 0) return prev
+          const toAdd: TimelineMessage = { id: safeUuid(), role: msg.role, content: msg.content, model: msg.model, createdAt: t }
+          next[idx] = { ...next[idx], updatedAt: t, messages: [...next[idx].messages, toAdd] }
+          const sorted = sortByRecent(next)
+          saveConversations(sorted)
+          setActiveConversationId(activeId)
+          setStickySelectedModel(msg.model || stickySelectedModel)
+          return sorted
+        })
+        console.warn("[Timeline] append API 실패로 localStorage fallback 사용:", e)
+      }
+    }
+    void run()
+  }, [activeConversationId, stickySelectedModel, addMessage, createThreadFromFirstMessage, fetchThreads])
+
+  React.useEffect(() => {
+    if (!initial) return
+    if (initialRanRef.current) return
+    initialRanRef.current = true
+
+    // [중요] history state 정리(consume)
+    // FrontAI → Timeline으로 이동할 때 navigate(state)를 통해 초기 질문을 넘겼습니다.
+    // 이 state는 브라우저 히스토리 엔트리에 "그대로" 남기 때문에,
+    // 사용자가 뒤로가기/앞으로가기/리로드 등으로 Timeline에 다시 들어오면
+    // 같은 initial 값이 다시 들어와 "자동 전송"이 반복될 수 있습니다.
+    //
+    // 이를 막기 위해: initial을 한 번 읽어서 처리하기 시작한 즉시,
+    // Timeline의 현재 URL 엔트리를 replace로 덮어쓰되 state를 비워줍니다.
+    // - URL은 그대로(/timeline), state만 제거됩니다.
+    // - replace=true 이므로 히스토리 엔트리가 추가되지 않고 현재 엔트리만 갱신됩니다.
+    navigate(location.pathname, { replace: true, state: {} })
+
+    // 1) FrontAI의 질문을 기준으로 서버(DB)에 새 스레드를 만들고 제목을 자동 생성합니다.
+    // - 이 스레드가 좌측 "타임라인 목록"에 표시되는 단위입니다.
+    // - 이후 메시지(user/assistant)를 이 스레드에 계속 append 합니다.
+    const run = async () => {
+      try {
+        const thread = await createThreadFromFirstMessage(initial.input)
+
+        // 스레드를 활성화 + 목록 반영
+        setActiveConversationId(thread.id)
+        setStickySelectedModel(initial.model)
+
+        const refreshed = sortByRecent(await fetchThreads())
+        setConversations(refreshed)
+
+        // 2) 유저 메시지를 서버/화면에 저장
+        setMessages([{ role: "user", content: initial.input, model: initial.model }])
+        await addMessage(thread.id, { role: "user", content: initial.input, model: initial.model })
+
+        // 3) 실제 AI 응답 생성(/api/ai/chat) 후 assistant 메시지를 서버/화면에 저장
+        const res = await fetch("/api/ai/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            provider_slug: initial.providerSlug,
+            model: initial.model,
+            input: initial.input,
+            max_tokens: 512,
+          }),
+        })
+
+        const raw = await res.text()
+        let json: Record<string, unknown> = {}
+        try {
+          json = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
+        } catch {
+          json = {}
+        }
+
+        if (!res.ok) {
+          const parsed = json as { message?: unknown; details?: unknown }
+          const msg = (parsed?.message ? String(parsed.message) : "") || raw || "AI 응답 실패"
+          const details = parsed?.details ? `\n${String(parsed.details)}` : ""
+          throw new Error(`${msg}${details}`)
+        }
+
+        const okJson = json as { output_text?: unknown }
+        const out = String(okJson?.output_text || "")
+        setMessages((prev) => [...prev, { role: "assistant", content: out, model: initial.model }])
+        await addMessage(thread.id, { role: "assistant", content: out, model: initial.model })
+
+        // 4) updated_at이 갱신되었으므로 목록을 다시 받아 "최근 대화가 위"를 확실히 보장합니다.
+        const refreshed2 = sortByRecent(await fetchThreads())
+        setConversations(refreshed2)
+      } catch (e) {
+        // 서버가 준비되지 않은 상황에서는 localStorage fallback로 동작 유지
+        console.warn("[Timeline] initial flow API 실패로 localStorage fallback 사용:", e)
+
+        const t = nowIso()
+        const newConversationId = safeUuid()
+        const title = makeAutoTitleFromPrompt(initial.input)
+        const created: TimelineConversation = { id: newConversationId, title, createdAt: t, updatedAt: t, messages: [] }
+        const userMsg: TimelineMessage = { id: safeUuid(), role: "user", content: initial.input, model: initial.model, createdAt: t }
+
+        const next = sortByRecent([{ ...created, messages: [userMsg] }, ...loadConversations()])
+        saveConversations(next)
+        setConversations(next)
+        setActiveConversationId(newConversationId)
+        setStickySelectedModel(initial.model)
+        setMessages([{ role: "user", content: initial.input, model: initial.model }])
+      }
+    }
+
+    void run()
+  }, [initial, navigate, location.pathname, createThreadFromFirstMessage, fetchThreads, addMessage])
 
   return (
     <div className="bg-background relative w-full h-screen overflow-hidden flex font-sans">
       {/* Global Sidebar */}
       <Sidebar />
 
-      {/* Main Content Area */}
+      {/* Main Content Area - 메인 컨텐츠 시작 */}
       <div className="flex-1 flex flex-row h-full w-full bg-background relative">
         
-        {/* Timeline Sidebar (Local) */}
+        {/* Timeline Sidebar (Local) - 타임라인 사이드바 (로컬) */}
         {isSidebarOpen && (
           <div className="w-[200px] border-r border-border h-full flex flex-col px-2 py-4 bg-background shrink-0">
              <div className="flex flex-col gap-1 w-full">
-               {HISTORY_MENU.map((item, index) => (
+               {conversations.length === 0 ? (
+                 <div className="px-2 py-2 text-xs text-muted-foreground">
+                   저장된 대화가 없습니다.
+                 </div>
+               ) : (
+                 conversations.map((c) => (
                  <div 
-                   key={index}
+                   key={c.id}
                    className={cn(
                      "flex items-center px-2 py-2 rounded-md cursor-pointer hover:bg-accent/50 transition-colors w-full h-8",
-                     index === 0 ? "bg-accent" : "" // 첫 번째 아이템 활성화 상태 예시
+                     c.id === activeConversationId ? "bg-accent" : ""
                    )}
+                   onClick={() => setActiveConversationId(c.id)}
                  >
-                   <p className="text-sm text-foreground truncate w-full">{item}</p>
+                   <p className="text-sm text-foreground truncate w-full">{c.title}</p>
                  </div>
-               ))}
+                 ))
+               )}
              </div>
           </div>
         )}
 
-        {/* Chat Content Area */}
+        {/* Chat Content Area - 채팅 내용 및 입력 영역 */}
         <div className="flex-1 flex flex-col h-full relative">
            {/* Header */}
            <UserHeader 
@@ -78,95 +454,64 @@ export default function Timeline() {
 
            {/* Chat Messages Scroll Area */}
            <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-4 items-center">
-             
-             {/* User Question */}
-             <div className="w-full max-w-[800px] flex justify-end">
-               <div className="flex items-end gap-2 lg:w-full">
-
-                 <div className="flex lg:flex-row flex-col-reverse gap-4 w-full justify-end items-end lg:items-start">
-                    <div className="bg-secondary p-3 rounded-lg max-w-[720px]">
-                      <p className="text-base text-primary whitespace-pre-wrap">CMA에 대해 자세히 설명 부탁해</p>
-                    </div>
-                    {/* User Avatar */}
-                    <div className="size-6 bg-teal-500 rounded-[4px] flex items-center justify-center shrink-0">
-                      <span className="text-white text-sm font-bold">김</span>
-                    </div>
+             {/* Messages */}
+             <div className="w-full max-w-[800px] flex flex-col gap-6">
+               {messages.length === 0 ? (
+                 <div className="text-sm text-muted-foreground text-center py-10">
+                   질문을 입력하면 이 영역에 답변이 표시됩니다.
                  </div>
-               </div>
-             </div>
-
-             {/* AI Answer */}
-             <div className="w-full max-w-[800px] flex lg:flex-row flex-col  justify-start gap-4">
-                {/* AI Avatar */}
-                <div className="size-6 bg-primary rounded-[4px] flex items-center justify-center shrink-0">
-                  <div className="size-4 flex items-center justify-center relative">
-                      <IconChatGPT className="size-full text-primary-foreground" />
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-4 max-w-[720px]">
-                   <div className="text-base text-primary whitespace-pre-wrap">
-                     <p>좋아요 😊</p>
-                     <p>“CMA”는 문맥에 따라 의미가 조금 달라질 수 있는데,</p>
-                     <p>보통 금융/투자 분야에서 많이 쓰이는 용어로는 **“Cash Management Account (현금 관리 계좌)”**를 뜻합니다.</p>
-                     <p>혹시 다른 분야(예: 부동산 CMA, 마케팅 CMA 등)를 말하는 것인지요?</p>
-                     <p>우선 가장 일반적인 금융 CMA 기준으로 자세히 설명드릴게요.</p>
-                   </div>
-                   
-                   <div className="h-px w-full bg-border" />
-
-                   <div className="flex flex-col gap-1">
-                     <p className="text-lg font-semibold">🏦 주요 특징</p>
-                     
-                     <div className="w-full border border-border rounded-md overflow-hidden">
-                       {/* Table Header/Row 1 */}
-                       <div className="flex border-b border-border bg-muted/50">
-                         <div className="w-[150px] p-2 font-bold text-sm border-r border-border">구분</div>
-                         <div className="flex-1 p-2 font-bold text-sm">설명</div>
-                       </div>
-                       {/* Rows */}
-                       <div className="flex border-b border-border">
-                         <div className="w-[150px] p-2 font-medium text-sm border-r border-border">운용 주체</div>
-                         <div className="flex-1 p-2 text-sm">주로 증권사 (미래에셋, 삼성, 한국투자, NH, 키움 등)</div>
-                       </div>
-                       <div className="flex border-b border-border">
-                         <div className="w-[150px] p-2 font-medium text-sm border-r border-border">기본 구조</div>
-                         <div className="flex-1 p-2 text-sm">고객이 넣은 돈을 단기 금융상품(예: RP, MMF 등) 으로 자동 투자</div>
-                       </div>
-                       <div className="flex border-b border-border">
-                         <div className="w-[150px] p-2 font-medium text-sm border-r border-border">예금자보호 여부</div>
-                         <div className="flex-1 p-2 text-sm">❌ 보호되지 않음 (은행 예금과 달리 투자상품이기 때문)</div>
-                       </div>
-                       <div className="flex border-b border-border">
-                         <div className="w-[150px] p-2 font-medium text-sm border-r border-border">출금 및 결제 기능</div>
-                         <div className="flex-1 p-2 text-sm">✔️ 체크카드/이체/자동이체/공과금 납부 등 가능</div>
-                       </div>
-                       <div className="flex border-b border-border">
-                         <div className="w-[150px] p-2 font-medium text-sm border-r border-border">이자(수익)</div>
-                         <div className="flex-1 p-2 text-sm">매일 운용 상품에 따라 하루 단위 수익 발생</div>
-                       </div>
-                       <div className="flex">
-                         <div className="w-[150px] p-2 font-medium text-sm border-r border-border">가입 대상</div>
-                         <div className="flex-1 p-2 text-sm">누구나 (개인/법인 모두 가능)</div>
+               ) : (
+                 messages.map((m, idx) => (
+                   m.role === "user" ? (
+                     <div key={idx} className="w-full flex justify-end">
+                       <div className="flex items-end gap-2 lg:w-full">
+                         <div className="flex lg:flex-row flex-col-reverse gap-4 w-full justify-end items-end lg:items-start">
+                           <div className="bg-secondary p-3 rounded-lg max-w-[720px]">
+                             <p className="text-base text-primary whitespace-pre-wrap">{m.content}</p>
+                           </div>
+                           <div className="size-6 bg-teal-500 rounded-[4px] flex items-center justify-center shrink-0">
+                             <span className="text-white text-sm font-bold">김</span>
+                           </div>
+                         </div>
                        </div>
                      </div>
-                   </div>
-
-                   {/* Action Buttons */}
-                   <div className="flex gap-3 items-center">
-                     <Copy className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
-                     <Volume2 className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
-                     <Repeat className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
-                     <span className="text-sm text-card-foreground">모델: GPT-4o</span>
-                   </div>
-                </div>
+                   ) : (
+                     <div key={idx} className="w-full flex lg:flex-row flex-col justify-start gap-4">
+                       <div className="size-6 bg-primary rounded-[4px] flex items-center justify-center shrink-0">
+                         <span className="text-primary-foreground text-sm font-bold">AI</span>
+                       </div>
+                       <div className="flex flex-col gap-4 max-w-[720px]">
+                         <div className="text-base text-primary whitespace-pre-wrap">
+                           {m.content}
+                         </div>
+                         <div className="flex gap-3 items-center">
+                           <Copy className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
+                           <Volume2 className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
+                           <Repeat className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
+                           <span className="text-sm text-card-foreground">모델: {m.model || "-"}</span>
+                         </div>
+                       </div>
+                     </div>
+                   )
+                 ))
+               )}
              </div>
 
            </div>
 
            {/* Bottom Panel - Timeline 하단 패널 (ChatInterface compact 모드로 대체) */}
            <div className="p-4 flex flex-col items-center gap-2 w-full">
-             <ChatInterface variant="compact" />
+             <ChatInterface
+               variant="compact"
+               // 대화 선택 시 마지막 모델을 초기값으로 반영합니다.
+               initialSelectedModel={stickySelectedModel}
+               onMessage={(msg) => {
+                 // 1) 화면에 표시
+                 setMessages((prev) => [...prev, { role: msg.role, content: msg.content, model: msg.model }])
+                 // 2) localStorage(대화 히스토리)에 저장
+                 appendToActiveConversation({ role: msg.role, content: msg.content, model: msg.model })
+               }}
+             />
            </div>
         </div>
       </div>

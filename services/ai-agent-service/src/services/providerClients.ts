@@ -4,6 +4,20 @@ import { decryptApiKey } from "./cryptoService"
 
 type ProviderSlug = "openai" | "anthropic" | "google"
 
+// OpenAI base URL은 Admin에서 잘못 입력될 수 있어 방어적으로 정규화합니다.
+// 예) https://api.openai.com/v1/chat/completions → https://api.openai.com/v1
+function normalizeOpenAiBaseUrl(input: string) {
+  const cleaned = (input || "")
+    .trim()
+    // 가끔 복사/붙여넣기 과정에서 들어오는 zero-width space 제거
+    .replace(/\u200b/g, "")
+    .replace(/\/+$/g, "")
+
+  if (!cleaned) return ""
+  if (cleaned.endsWith("/chat/completions")) return cleaned.replace(/\/chat\/completions$/, "")
+  return cleaned
+}
+
 export async function getProviderAuth(providerId: string) {
   // 공용 credential(system tenant) 중 default 우선으로 선택
   const systemTenantId = await ensureSystemTenantId()
@@ -35,7 +49,8 @@ export async function getProviderBase(providerId: string) {
 }
 
 export async function openaiListModels(apiBaseUrl: string, apiKey: string) {
-  const base = apiBaseUrl || "https://api.openai.com/v1"
+  const normalized = normalizeOpenAiBaseUrl(apiBaseUrl)
+  const base = normalized || "https://api.openai.com/v1"
   const res = await fetch(`${base.replace(/\/$/, "")}/models`, {
     headers: { Authorization: `Bearer ${apiKey}` },
   })
@@ -58,7 +73,8 @@ export async function anthropicListModels(apiKey: string) {
 }
 
 export async function openaiSimulateChat(args: { apiBaseUrl: string; apiKey: string; model: string; input: string; maxTokens: number }) {
-  const base = args.apiBaseUrl || "https://api.openai.com/v1"
+  const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl)
+  const base = normalized || "https://api.openai.com/v1"
   const res = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: {

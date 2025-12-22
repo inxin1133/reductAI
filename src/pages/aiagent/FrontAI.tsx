@@ -101,7 +101,17 @@ export default function FrontAI() {
         {/* Main Body - 메인 바디 */}        
         <div className="flex flex-[1_0_0] flex-col gap-[40px] items-center justify-center p-[24px] relative shrink-0 w-full">
           
-          <ChatInterface />
+          <ChatInterface
+            // FrontAI에서는 "첫 질문 시작"만 하고, 실제 대화는 Timeline에서 이어가도록 합니다.
+            submitMode="emit"
+            onSubmit={({ input, providerSlug, model }) => {
+              navigate("/timeline", {
+                state: {
+                  initial: { input, providerSlug, model },
+                },
+              })
+            }}
+          />
 
         </div>
       </div>
