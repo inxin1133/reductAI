@@ -12,7 +12,7 @@ export function UserHeader({ className, children, leftContent }: UserHeaderProps
   const { toggleTheme } = useTheme()
 
   return (
-    <div className={cn("h-[60px] flex items-center px-6 gap-4 shrink-0 border-b border-border/10", className)}>
+    <div className={cn("h-[60px] w-full flex items-center px-6 gap-4 shrink-0 border-b border-border/10", className)}>
        {/* Left Content (e.g., Sidebar Toggle) */}
        {leftContent}
 

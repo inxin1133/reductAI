@@ -49,7 +49,8 @@ export const adminMenuGroups: MenuGroup[] = [
         title: "AI 서비스", 
         icon: Bot, 
         items: [
-          { title: "AI 제공업체(Providers)" },
+          { title: "AI 제공업체(Providers)", href: "/admin/ai/providers" },
+          { title: "AI API Key(Credentials)", href: "/admin/ai/credentials" },
           { title: "AI 모델 관리" },
           { title: "모델 라우팅 규칙" },
           { title: "모델 접근 권한" },

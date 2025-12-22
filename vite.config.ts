@@ -10,6 +10,7 @@ export default defineConfig(({ mode }) => {
   const userTarget = process.env.USER_SERVICE_URL || 'http://localhost:3002';
   const tenantTarget = process.env.TENANT_SERVICE_URL || 'http://localhost:3003';
   const i18nTarget = process.env.I18N_SERVICE_URL || 'http://localhost:3006';
+  const aiAgentTarget = process.env.AI_AGENT_SERVICE_URL || 'http://localhost:3007';
 
   return {
     plugins: [react(), tailwindcss()],
@@ -42,6 +43,10 @@ export default defineConfig(({ mode }) => {
         },
         '/api/i18n': {
           target: i18nTarget,
+          changeOrigin: true,
+        },
+        '/api/ai': {
+          target: aiAgentTarget,
           changeOrigin: true,
         },
       }

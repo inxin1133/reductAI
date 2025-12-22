@@ -95,6 +95,7 @@ export default function FrontAI() {
                ))}
              </SelectContent>
            </Select>
+           
         </UserHeader>
 
         {/* Main Body - 메인 바디 */}        
