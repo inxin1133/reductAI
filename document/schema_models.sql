@@ -401,7 +401,8 @@ CREATE TABLE model_messages (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     conversation_id UUID NOT NULL REFERENCES model_conversations(id) ON DELETE CASCADE,
     role VARCHAR(50) NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'function', 'tool')),
-    content TEXT NOT NULL, -- 메시지 내용
+    content JSONB NOT NULL, -- 메시지 내용(JSON)
+    summary TEXT, -- 메시지 요약(표시/검색용)
     function_name VARCHAR(255), -- 함수 이름 (role이 function인 경우)
     function_call_id VARCHAR(255), -- 함수 호출 ID
     input_tokens INTEGER DEFAULT 0, -- 입력 토큰 수
@@ -420,6 +421,7 @@ COMMENT ON COLUMN model_messages.id IS '메시지의 고유 식별자 (UUID)';
 COMMENT ON COLUMN model_messages.conversation_id IS '대화 세션 ID (model_conversations 테이블 참조)';
 COMMENT ON COLUMN model_messages.role IS '메시지 역할: system(시스템), user(사용자), assistant(어시스턴트), function(함수), tool(도구)';
 COMMENT ON COLUMN model_messages.content IS '메시지 내용';
+COMMENT ON COLUMN model_messages.summary IS '메시지 요약(표시/검색용)';
 COMMENT ON COLUMN model_messages.function_name IS '함수 이름 (role이 function인 경우)';
 COMMENT ON COLUMN model_messages.function_call_id IS '함수 호출 ID (함수 호출 추적용)';
 COMMENT ON COLUMN model_messages.input_tokens IS '입력 토큰 수';

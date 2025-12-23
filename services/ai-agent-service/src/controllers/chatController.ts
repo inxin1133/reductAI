@@ -46,6 +46,7 @@ export async function chatCompletion(req: Request, res: Response) {
         provider_slug,
         model,
         output_text: out.output_text,
+        raw: out.raw,
       })
     }
 
@@ -61,6 +62,7 @@ export async function chatCompletion(req: Request, res: Response) {
         provider_slug,
         model,
         output_text: out.output_text,
+        raw: out.raw,
       })
     }
 

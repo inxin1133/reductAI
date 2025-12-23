@@ -89,7 +89,17 @@ interface ChatInterfaceProps {
    * 상위 컴포넌트(Timeline 등)에서 채팅 메시지 리스트를 렌더링하기 위한 콜백입니다.
    * - user/assistant 메시지를 각각 전달합니다.
    */
-  onMessage?: (msg: { role: "user" | "assistant"; content: string; providerSlug?: string; model?: string }) => void;
+  onMessage?: (msg: {
+    role: "user" | "assistant" | "tool";
+    // 화면 표시용 텍스트(기존 UI와의 호환 유지)
+    content: string;
+    // DB 저장용 JSON payload (model_messages.content로 저장)
+    contentJson?: unknown;
+    // DB 저장용 summary (model_messages.summary로 저장)
+    summary?: string;
+    providerSlug?: string;
+    model?: string;
+  }) => void;
   /**
    * submitMode
    * - send: 내부에서 /api/ai/chat 호출까지 수행 (기본)
@@ -431,6 +441,26 @@ export function ChatInterface({
   // OpenAI 모델 목록(DB 연동) - Admin에서 관리/동기화한 ai_models 기반
   const [openAiModelOptions, setOpenAiModelOptions] = React.useState<string[]>([]);
 
+  const clampText = React.useCallback((input: string, max: number) => {
+    const s = String(input || "").replace(/\s+/g, " ").trim()
+    if (s.length <= max) return s
+    // max 이내를 엄격히 지키기 위해 …를 붙이지 않습니다.
+    return s.slice(0, max)
+  }, [])
+
+  const userSummary = React.useCallback((input: string) => {
+    // 규칙 1) user 메시지 → 그대로 요약, 50자 이내
+    return clampText(input, 50)
+  }, [clampText])
+
+  const assistantSummary = React.useCallback((input: string) => {
+    // 규칙 2) assistant 메시지 → 핵심 1문장, 100자 이내, 마침표 1개
+    const cleaned = String(input || "").replace(/\s+/g, " ").trim()
+    const withoutDots = cleaned.replace(/\./g, "")
+    const head = clampText(withoutDots, 99) // + "." = 100자 이내
+    return head ? `${head}.` : "요약."
+  }, [clampText])
+
   React.useEffect(() => {
     const controller = new AbortController();
 
@@ -576,7 +606,15 @@ export function ChatInterface({
 
     const model = selectedSubModel;
 
-    onMessage?.({ role: "user", content: input, providerSlug, model });
+    // user 메시지: content는 화면 표시용 텍스트, contentJson은 DB 저장용 JSON
+    onMessage?.({
+      role: "user",
+      content: input,
+      contentJson: { text: input },
+      summary: userSummary(input),
+      providerSlug,
+      model,
+    });
     setPrompt("");
 
     // FrontAI→Timeline 전환처럼 "전송만 emit"하고 실제 호출은 상위에서 처리하는 모드
@@ -614,18 +652,29 @@ export function ChatInterface({
       }
 
       const okJson = json as { output_text?: unknown }
-      onMessage?.({ role: "assistant", content: String(okJson?.output_text || ""), providerSlug, model })
+      const outText = String(okJson?.output_text || "")
+      // assistant 메시지: contentJson에는 AI 응답 JSON 전체를 저장합니다.
+      onMessage?.({
+        role: "assistant",
+        content: outText,
+        contentJson: json,
+        summary: assistantSummary(outText),
+        providerSlug,
+        model,
+      })
     } catch (e: unknown) {
       console.error(e);
       const msg = e instanceof Error ? e.message : String(e);
       onMessage?.({
         role: "assistant",
         content: `오류가 발생했습니다.\n${msg}`,
+        contentJson: { error: true, message: msg },
+        summary: assistantSummary(msg),
         providerSlug,
         model,
       });
     }
-  }, [prompt, currentModelConfig, selectedSubModel, onMessage, submitMode, onSubmit]);
+  }, [prompt, currentModelConfig, selectedSubModel, onMessage, submitMode, onSubmit, userSummary, assistantSummary]);
 
 
   // 모델 변경 핸들러

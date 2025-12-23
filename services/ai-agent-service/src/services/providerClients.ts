@@ -75,24 +75,143 @@ export async function anthropicListModels(apiKey: string) {
 export async function openaiSimulateChat(args: { apiBaseUrl: string; apiKey: string; model: string; input: string; maxTokens: number }) {
   const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl)
   const base = normalized || "https://api.openai.com/v1"
-  const res = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${args.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
+  const apiRoot = base.replace(/\/$/, "")
+
+  // OpenAI 모델별로 파라미터/엔드포인트 호환성이 달라질 수 있어 방어적으로 처리합니다.
+  // - 일부 최신 모델(GPT-5 계열)은 chat/completions에서 max_tokens를 거부하고 max_completion_tokens를 요구합니다.
+  // - 일부 모델은 chat 모델이 아니어서 /v1/chat/completions 자체를 거부할 수 있습니다 → /v1/responses로 fallback.
+
+  async function postJson(url: string, body: unknown) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${args.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    })
+    const json = await res.json().catch(() => ({}))
+    return { res, json }
+  }
+
+  function extractTextFromChatCompletions(json: any) {
+    return json?.choices?.[0]?.message?.content ?? ""
+  }
+
+  function extractTextFromResponses(json: any) {
+    // responses API는 포맷이 환경/버전에 따라 달라질 수 있어 여러 케이스를 흡수합니다.
+    if (typeof json?.output_text === "string") return json.output_text
+    const output = Array.isArray(json?.output) ? json.output : []
+    for (const item of output) {
+      const content = Array.isArray(item?.content) ? item.content : []
+      for (const c of content) {
+        if (typeof c?.text === "string") return c.text
+        if (typeof c?.output_text === "string") return c.output_text
+      }
+    }
+    return ""
+  }
+
+  function responsesBody() {
+    return {
+      model: args.model,
+      input: args.input,
+      // responses API에서는 max_output_tokens 사용
+      max_output_tokens: args.maxTokens,
+      // GPT-5 계열은 reasoning 토큰을 과도하게 소모할 수 있어 기본 effort를 낮춥니다.
+      reasoning: { effort: "low" },
+      // 텍스트 출력 우선
+      text: { verbosity: "low" },
+    }
+  }
+
+  // GPT-5 계열은 환경에 따라 chat/completions에서 content가 비어있는 경우가 있어
+  // responses API를 우선 사용합니다. (실패 시 chat/completions로 fallback)
+  const preferResponses = /^gpt-5/i.test((args.model || "").trim())
+
+  if (preferResponses) {
+    const r0 = await postJson(`${apiRoot}/responses`, responsesBody())
+    if (r0.res.ok) {
+      const text = extractTextFromResponses(r0.json)
+      // reasoning만 나오고 텍스트가 비어있으면 1회 더(토큰 여유) 재시도
+      if (!text && r0.json?.incomplete_details?.reason === "max_output_tokens") {
+        const rRetry = await postJson(`${apiRoot}/responses`, { ...responsesBody(), max_output_tokens: Math.max(args.maxTokens, 1024) })
+        if (rRetry.res.ok) return { raw: rRetry.json, output_text: extractTextFromResponses(rRetry.json) }
+      }
+      return { raw: r0.json, output_text: text }
+    }
+    // responses가 막혀있거나 미지원이면 chat/completions로 fallback
+  }
+
+  // 1) 우선 chat/completions 시도 (max_completion_tokens 우선)
+  {
+    const { res, json } = await postJson(`${apiRoot}/chat/completions`, {
       model: args.model,
       messages: [{ role: "user", content: args.input }],
-      max_tokens: args.maxTokens,
-    }),
-  })
-  const json = await res.json().catch(() => ({}))
-  if (!res.ok) {
+      // 최신 모델은 max_tokens 대신 max_completion_tokens를 요구할 수 있음
+      max_completion_tokens: args.maxTokens,
+    })
+
+    if (res.ok) {
+      const text = extractTextFromChatCompletions(json)
+      // 일부 모델은 chat/completions에서 content가 비어있을 수 있어 responses로 1회 fallback
+      if (!text && !preferResponses) {
+        const r2 = await postJson(`${apiRoot}/responses`, responsesBody())
+        if (r2.res.ok) return { raw: r2.json, output_text: extractTextFromResponses(r2.json) }
+      }
+      return { raw: json, output_text: text }
+    }
+
+    const errMsg = JSON.stringify(json || {})
+    const isNotChatModel =
+      res.status === 404 &&
+      /not a chat model|not supported in the v1\/chat\/completions/i.test(errMsg)
+    const isUnsupportedMaxCompletion =
+      res.status === 400 && /max_completion_tokens/i.test(errMsg) && /unsupported|unknown/i.test(errMsg)
+
+    // (구형 모델 대비) max_completion_tokens가 거부되면 max_tokens로 1회 재시도
+    if (isUnsupportedMaxCompletion) {
+      const retry = await postJson(`${apiRoot}/chat/completions`, {
+        model: args.model,
+        messages: [{ role: "user", content: args.input }],
+        max_tokens: args.maxTokens,
+      })
+      if (retry.res.ok) {
+        return { raw: retry.json, output_text: extractTextFromChatCompletions(retry.json) }
+      }
+      throw new Error(`OPENAI_SIMULATE_FAILED_${retry.res.status}:${JSON.stringify(retry.json)}`)
+    }
+
+    // chat 모델이 아니라면 responses API로 fallback
+    if (isNotChatModel) {
+      const r2 = await postJson(`${apiRoot}/responses`, responsesBody())
+      if (!r2.res.ok) throw new Error(`OPENAI_SIMULATE_FAILED_${r2.res.status}:${JSON.stringify(r2.json)}`)
+      return { raw: r2.json, output_text: extractTextFromResponses(r2.json) }
+    }
+
+    // max_tokens 거부(특히 GPT-5) 등은 responses로 재시도하는 편이 안전합니다.
+    const isUnsupportedMaxTokens =
+      res.status === 400 && /max_tokens/i.test(errMsg) && /Use 'max_completion_tokens' instead/i.test(errMsg)
+
+    if (isUnsupportedMaxTokens) {
+      // 동일 엔드포인트 재시도: max_completion_tokens만으로 다시 호출
+      const retry = await postJson(`${apiRoot}/chat/completions`, {
+        model: args.model,
+        messages: [{ role: "user", content: args.input }],
+        max_completion_tokens: args.maxTokens,
+      })
+      if (retry.res.ok) {
+        return { raw: retry.json, output_text: extractTextFromChatCompletions(retry.json) }
+      }
+
+      // 그래도 실패하면 responses로 fallback
+      const r2 = await postJson(`${apiRoot}/responses`, responsesBody())
+      if (!r2.res.ok) throw new Error(`OPENAI_SIMULATE_FAILED_${r2.res.status}:${JSON.stringify(r2.json)}`)
+      return { raw: r2.json, output_text: extractTextFromResponses(r2.json) }
+    }
+
     throw new Error(`OPENAI_SIMULATE_FAILED_${res.status}:${JSON.stringify(json)}`)
   }
-  const text = json?.choices?.[0]?.message?.content ?? ""
-  return { raw: json, output_text: text }
 }
 
 export async function anthropicSimulateChat(args: { apiKey: string; model: string; input: string; maxTokens: number }) {

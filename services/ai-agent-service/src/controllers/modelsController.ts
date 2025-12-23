@@ -205,20 +205,22 @@ export async function updateModel(req: Request, res: Response) {
 }
 
 // 삭제는 soft delete로 처리 (status+is_available)
-export async function softDeleteModel(req: Request, res: Response) {
+// 삭제: hard delete (DB에서 실제 삭제)
+export async function deleteModel(req: Request, res: Response) {
   try {
     const { id } = req.params
-    const result = await query(
-      `UPDATE ai_models
-       SET status = 'inactive', is_available = FALSE, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1
-       RETURNING id`,
-      [id]
-    )
+    const result = await query(`DELETE FROM ai_models WHERE id = $1 RETURNING id`, [id])
     if (result.rows.length === 0) return res.status(404).json({ message: "Model not found" })
-    res.json({ ok: true })
-  } catch (error) {
-    console.error("softDeleteModel error:", error)
+    res.json({ ok: true, deleted_id: result.rows[0].id })
+  } catch (error: any) {
+    // FK 참조 등으로 삭제 불가한 경우(예: model_conversations.model_id)
+    if (error?.code === "23503") {
+      return res.status(409).json({
+        message: "Model is in use and cannot be deleted",
+        details: "대화 기록 등 다른 테이블에서 참조 중인 모델은 삭제할 수 없습니다. (먼저 참조를 제거하거나 모델을 비활성화하세요.)",
+      })
+    }
+    console.error("deleteModel error:", error)
     res.status(500).json({ message: "Failed to delete model" })
   }
 }

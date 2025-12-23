@@ -16,7 +16,7 @@ import { useLocation, useNavigate } from "react-router-dom"
  * - 개발/데모 편의를 위해: 서버가 죽어있을 때만 localStorage fallback을 사용합니다.
  */
 
-type ChatRole = "user" | "assistant"
+type ChatRole = "user" | "assistant" | "tool"
 
 type TimelineMessage = {
   id: string
@@ -56,12 +56,43 @@ function makeAutoTitleFromPrompt(input: string) {
   // - 너무 길면 잘라서 ... 처리
   const firstLine = (input || "").split("\n")[0]?.trim() || "새 대화"
   const trimmed = firstLine.replace(/\s+/g, " ")
-  const max = 24
+  // 요구사항: 15자 이내(한글 기준)
+  const max = 15
   if (trimmed.length <= max) return trimmed
-  return `${trimmed.slice(0, max)}…`
+  // 15자 이내를 엄격히 지키기 위해 …를 붙이지 않습니다.
+  return trimmed.slice(0, max)
 }
 
 const TIMELINE_API_BASE = "/api/ai/timeline"
+
+function clampText(input: string, max: number) {
+  const s = String(input || "").replace(/\s+/g, " ").trim()
+  if (s.length <= max) return s
+  return s.slice(0, max)
+}
+
+function userSummary(input: string) {
+  // 규칙 1) user 메시지 → 그대로 요약, 50자 이내
+  return clampText(input, 50)
+}
+
+function assistantSummary(input: string) {
+  // 규칙 2) assistant 메시지 → 핵심 1문장, 100자 이내, 마침표 1개
+  const cleaned = String(input || "").replace(/\s+/g, " ").trim()
+  const withoutDots = cleaned.replace(/\./g, "")
+  const head = clampText(withoutDots, 99)
+  return head ? `${head}.` : "요약."
+}
+
+function extractTextFromJsonContent(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!content || typeof content !== "object") return ""
+  const c = content as Record<string, unknown>
+  if (typeof c.text === "string") return c.text
+  if (typeof c.output_text === "string") return c.output_text
+  if (typeof c.input === "string") return c.input
+  return ""
+}
 
 function storageKeyForUser() {
   // "접속한 계정" 기준 분리 저장
@@ -95,7 +126,7 @@ export default function Timeline() {
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
   const [conversations, setConversations] = React.useState<TimelineConversation[]>([])
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null)
-  const [messages, setMessages] = React.useState<Array<{ role: "user" | "assistant"; content: string; model?: string }>>([]);
+  const [messages, setMessages] = React.useState<Array<{ role: ChatRole; content: string; model?: string }>>([]);
 
   // FrontAI에서 넘어온 "첫 질문"을 1회만 자동 실행하기 위한 ref
   const initialRanRef = React.useRef(false)
@@ -148,7 +179,8 @@ export default function Timeline() {
     const rows = (await res.json().catch(() => [])) as Array<{
       id: string
       role: ChatRole
-      content: string
+      content: unknown
+      summary?: string | null
       metadata?: Record<string, unknown> | null
       created_at: string
       message_order?: number
@@ -156,7 +188,7 @@ export default function Timeline() {
     return rows.map((m) => ({
       id: m.id,
       role: m.role,
-      content: m.content,
+      content: extractTextFromJsonContent(m.content) || "",
       model: typeof m.metadata?.model === "string" ? (m.metadata.model as string) : undefined,
       createdAt: m.created_at,
     })) as TimelineMessage[]
@@ -182,11 +214,17 @@ export default function Timeline() {
     } as TimelineConversation
   }, [authHeaders, initial?.model, stickySelectedModel])
 
-  const addMessage = React.useCallback(async (threadId: string, msg: { role: ChatRole; content: string; model?: string }) => {
+  const addMessage = React.useCallback(async (threadId: string, msg: { role: ChatRole; content: string; contentJson?: unknown; summary?: string; model?: string }) => {
     const res = await fetch(`${TIMELINE_API_BASE}/threads/${threadId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ role: msg.role, content: msg.content, model: msg.model ?? null }),
+      body: JSON.stringify({
+        role: msg.role,
+        // DB 저장용 JSON content (없으면 {text: ...}로 보존)
+        content: msg.contentJson ?? { text: msg.content },
+        summary: msg.summary ?? (msg.role === "assistant" ? assistantSummary(msg.content) : userSummary(msg.content)),
+        model: msg.model ?? null,
+      }),
     })
     if (!res.ok) throw new Error("MESSAGE_ADD_FAILED")
     return true
@@ -246,7 +284,7 @@ export default function Timeline() {
   }, [activeConversationId, conversations, fetchMessages])
 
   // 공통: 현재 대화에 메시지 1개를 추가하고 (서버 우선) 저장합니다.
-  const appendToActiveConversation = React.useCallback((msg: { role: ChatRole; content: string; model?: string }) => {
+  const appendToActiveConversation = React.useCallback((msg: { role: ChatRole; content: string; contentJson?: unknown; summary?: string; model?: string }) => {
     const run = async () => {
       try {
         let activeId = activeConversationId
@@ -331,7 +369,13 @@ export default function Timeline() {
 
         // 2) 유저 메시지를 서버/화면에 저장
         setMessages([{ role: "user", content: initial.input, model: initial.model }])
-        await addMessage(thread.id, { role: "user", content: initial.input, model: initial.model })
+        await addMessage(thread.id, {
+          role: "user",
+          content: initial.input,
+          contentJson: { text: initial.input },
+          summary: userSummary(initial.input),
+          model: initial.model,
+        })
 
         // 3) 실제 AI 응답 생성(/api/ai/chat) 후 assistant 메시지를 서버/화면에 저장
         const res = await fetch("/api/ai/chat", {
@@ -363,7 +407,13 @@ export default function Timeline() {
         const okJson = json as { output_text?: unknown }
         const out = String(okJson?.output_text || "")
         setMessages((prev) => [...prev, { role: "assistant", content: out, model: initial.model }])
-        await addMessage(thread.id, { role: "assistant", content: out, model: initial.model })
+        await addMessage(thread.id, {
+          role: "assistant",
+          content: out,
+          contentJson: json,
+          summary: assistantSummary(out),
+          model: initial.model,
+        })
 
         // 4) updated_at이 갱신되었으므로 목록을 다시 받아 "최근 대화가 위"를 확실히 보장합니다.
         const refreshed2 = sortByRecent(await fetchThreads())
@@ -509,7 +559,13 @@ export default function Timeline() {
                  // 1) 화면에 표시
                  setMessages((prev) => [...prev, { role: msg.role, content: msg.content, model: msg.model }])
                  // 2) localStorage(대화 히스토리)에 저장
-                 appendToActiveConversation({ role: msg.role, content: msg.content, model: msg.model })
+                 appendToActiveConversation({
+                   role: msg.role,
+                   content: msg.content,
+                   contentJson: msg.contentJson,
+                   summary: msg.summary,
+                   model: msg.model,
+                 })
                }}
              />
            </div>

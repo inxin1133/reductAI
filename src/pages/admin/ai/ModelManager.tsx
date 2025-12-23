@@ -79,6 +79,10 @@ async function tryFetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Pr
   return (await res.json()) as T
 }
 
+function errorMessage(e: unknown) {
+  return e instanceof Error ? e.message : String(e)
+}
+
 export default function ModelManager() {
   const { setAction } = useAdminHeaderActionContext()
 
@@ -310,8 +314,8 @@ export default function ModelManager() {
 
       setIsDialogOpen(false)
       await fetchModels()
-    } catch (e: any) {
-      alert(`저장 실패: ${e?.message || "알 수 없는 오류"}`)
+    } catch (e: unknown) {
+      alert(`저장 실패: ${errorMessage(e) || "알 수 없는 오류"}`)
       console.error(e)
     } finally {
       setIsSaving(false)
@@ -319,7 +323,18 @@ export default function ModelManager() {
   }
 
   const handleDelete = async (m: AIModel) => {
-    if (!confirm(`정말 삭제(비활성화)하시겠습니까?\n- ${m.provider_display_name || ""} / ${m.display_name}`)) return
+    const ok = confirm(
+      [
+        "이 모델을 DB에서 영구 삭제합니다.",
+        "- 복구할 수 없습니다.",
+        "- 이미 대화 기록(model_conversations 등)에 연결된 모델은 삭제가 실패할 수 있습니다.",
+        "",
+        `대상: ${m.provider_display_name || ""} / ${m.display_name} (${m.model_id})`,
+        "",
+        "계속하려면 '확인'을 눌러주세요.",
+      ].join("\n")
+    )
+    if (!ok) return
     try {
       await fetch(`${MODELS_API_URL}/${m.id}`, { method: "DELETE", headers: { ...authHeaders() } })
       await fetchModels()
@@ -346,8 +361,8 @@ export default function ModelManager() {
       )
       alert(`동기화 완료 (${result.provider_slug})\n- total: ${result.total}\n- inserted: ${result.inserted}\n- updated: ${result.updated}`)
       await fetchModels()
-    } catch (e: any) {
-      alert(`동기화 실패: ${e?.message || "알 수 없는 오류"}\n(해당 provider의 공용 credential이 등록되어 있어야 합니다.)`)
+    } catch (e: unknown) {
+      alert(`동기화 실패: ${errorMessage(e) || "알 수 없는 오류"}\n(해당 provider의 공용 credential이 등록되어 있어야 합니다.)`)
       console.error(e)
     } finally {
       setIsSyncing(false)
@@ -377,8 +392,8 @@ export default function ModelManager() {
         }),
       })
       setSimOutput(result.output_text || "")
-    } catch (e: any) {
-      setSimError(e?.message || "시뮬레이터 실행 실패")
+    } catch (e: unknown) {
+      setSimError(errorMessage(e) || "시뮬레이터 실행 실패")
       console.error(e)
     } finally {
       setSimRunning(false)
@@ -665,12 +680,22 @@ export default function ModelManager() {
 
             <div className="grid grid-cols-4 items-start gap-4">
               <Label className="text-right pt-2">capabilities</Label>
-              <Textarea className="col-span-3 font-mono text-xs min-h-[110px]" value={capabilitiesText} onChange={(e) => setCapabilitiesText(e.target.value)} />
+              <div className="col-span-3 space-y-1">
+                <Textarea className="font-mono text-xs min-h-[110px]" value={capabilitiesText} onChange={(e) => setCapabilitiesText(e.target.value)} />
+                <p className="text-xs text-muted-foreground">
+                  예) <span className="font-mono">["chat","vision","tool_calling"]</span> (JSON 배열)
+                </p>
+              </div>
             </div>
 
             <div className="grid grid-cols-4 items-start gap-4">
               <Label className="text-right pt-2">metadata</Label>
-              <Textarea className="col-span-3 font-mono text-xs min-h-[110px]" value={metadataText} onChange={(e) => setMetadataText(e.target.value)} />
+              <div className="col-span-3 space-y-1">
+                <Textarea className="font-mono text-xs min-h-[110px]" value={metadataText} onChange={(e) => setMetadataText(e.target.value)} />
+                <p className="text-xs text-muted-foreground">
+                  예) <span className="font-mono">{"{"}"family":"gpt-5","tier":"mini","source":"manual_preset"{"}"}</span> (JSON 객체)
+                </p>
+              </div>
             </div>
           </div>
 

@@ -47,12 +47,7 @@ export async function ensureAiAccessSchema() {
 export async function ensureTimelineSchema() {
   await query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`)
 
-  // ✅ 레거시 테이블 정리
-  // 과거에 임시로 사용하던 ai_chat_threads / ai_chat_messages는 더 이상 사용하지 않습니다.
-  // - 이미 데이터가 있다면 운영에서는 마이그레이션 후 삭제하는 것을 권장하지만,
-  //   본 프로젝트에서는 사용하지 않으므로 안전하게 존재할 경우 DROP 합니다.
-  await query(`DROP TABLE IF EXISTS ai_chat_messages CASCADE;`)
-  await query(`DROP TABLE IF EXISTS ai_chat_threads CASCADE;`)
+  
 
   // ✅ 기존 스키마(schema_models.sql)의 model_conversations/model_messages를 사용합니다.
   // - 다른 AI 기능(라우팅/토큰 집계/사용 로그 등)과 연결되는 확장성이 높기 때문입니다.
@@ -81,7 +76,8 @@ export async function ensureTimelineSchema() {
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
       conversation_id UUID NOT NULL REFERENCES model_conversations(id) ON DELETE CASCADE,
       role VARCHAR(50) NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'function', 'tool')),
-      content TEXT NOT NULL,
+      content JSONB NOT NULL,
+      summary TEXT,
       function_name VARCHAR(255),
       function_call_id VARCHAR(255),
       input_tokens INTEGER DEFAULT 0,
@@ -90,6 +86,59 @@ export async function ensureTimelineSchema() {
       metadata JSONB DEFAULT '{}',
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
+  `)
+
+  // 🔧 스키마 마이그레이션 (기존 content TEXT -> JSONB, summary 컬럼 추가)
+  // - 기존 텍스트 데이터는 JSONB로 직접 캐스팅할 수 없으므로 {text: "..."} 형태로 보존합니다.
+  // - 운영 환경에서는 정식 마이그레이션 도구 사용을 권장합니다.
+  await query(`
+    DO $$
+    DECLARE
+      content_type TEXT;
+    BEGIN
+      -- summary 컬럼 추가(없으면)
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_messages'
+          AND column_name = 'summary'
+      ) THEN
+        ALTER TABLE model_messages ADD COLUMN summary TEXT;
+      END IF;
+
+      -- content 컬럼 타입 확인
+      SELECT data_type INTO content_type
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'model_messages'
+        AND column_name = 'content'
+      LIMIT 1;
+
+      -- content가 TEXT이면 안전하게 JSONB로 변환
+      IF content_type = 'text' THEN
+        -- 임시 컬럼 추가
+        IF NOT EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'model_messages'
+            AND column_name = 'content_jsonb'
+        ) THEN
+          ALTER TABLE model_messages ADD COLUMN content_jsonb JSONB;
+        END IF;
+
+        -- 기존 텍스트를 {text: "..."} 형태로 보존
+        UPDATE model_messages
+        SET content_jsonb = jsonb_build_object('text', content)
+        WHERE content_jsonb IS NULL;
+
+        -- 기존 content(TEXT) 제거 후 rename
+        ALTER TABLE model_messages DROP COLUMN content;
+        ALTER TABLE model_messages RENAME COLUMN content_jsonb TO content;
+        ALTER TABLE model_messages ALTER COLUMN content SET NOT NULL;
+      END IF;
+    END $$;
   `)
 
   await query(`CREATE INDEX IF NOT EXISTS idx_model_conversations_user_id ON model_conversations(user_id);`)

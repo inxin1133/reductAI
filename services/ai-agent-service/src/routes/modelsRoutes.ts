@@ -4,7 +4,7 @@ import {
   getModel,
   createModel,
   updateModel,
-  softDeleteModel,
+  deleteModel,
   syncModels,
   simulateModel,
 } from "../controllers/modelsController"
@@ -20,7 +20,7 @@ router.get("/", getModels)
 router.get("/:id", getModel)
 router.post("/", createModel)
 router.put("/:id", updateModel)
-router.delete("/:id", softDeleteModel) // 운영 안정성을 위해 soft delete로 처리
+router.delete("/:id", deleteModel)
 
 export default router
 

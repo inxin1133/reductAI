@@ -8,15 +8,64 @@ import { ensureSystemTenantId } from "../services/systemTenantService"
 // - 프론트(Timeline 좌측 목록/메시지 영역)에서 사용합니다.
 // - 보안 강화를 위해: JWT에서 userId를 추출해서 user별로 저장/조회합니다.
 
-type Role = "user" | "assistant"
+type Role = "user" | "assistant" | "tool" | "system"
+
+function clampText(input: string, max: number) {
+  const s = String(input || "").replace(/\s+/g, " ").trim()
+  if (s.length <= max) return s
+  // max 이내를 엄격히 지키기 위해 …를 붙이지 않습니다.
+  return s.slice(0, max)
+}
+
+function assistantSummaryOneSentence(input: string) {
+  // 규칙:
+  // - 핵심 1문장, 100자 이내
+  // - 마침표 1개
+  const cleaned = String(input || "").replace(/\s+/g, " ").trim()
+  const withoutDots = cleaned.replace(/\./g, "")
+  const head = clampText(withoutDots, 99) // + "." = 100자 이내 보장
+  return head ? `${head}.` : "요약."
+}
+
+function extractTextFromJsonContent(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!content || typeof content !== "object") return ""
+  const c = content as Record<string, unknown>
+  // common patterns
+  if (typeof c.text === "string") return c.text
+  if (typeof c.output_text === "string") return c.output_text
+  if (typeof c.input === "string") return c.input
+  // ai-agent-service /api/ai/chat 응답 형태
+  if (typeof c.output_text === "string") return c.output_text
+  return ""
+}
+
+function normalizeJsonContent(content: unknown) {
+  if (content && typeof content === "object") return content as Record<string, unknown>
+  if (typeof content === "string") return { text: content }
+  return { value: content }
+}
+
+function deriveSummary(args: { role: Role; content: unknown; toolName?: string }) {
+  const role = args.role
+  if (role === "tool") {
+    const name = (args.toolName || "").trim()
+    return name ? `도구 호출: ${name}` : "도구 호출: unknown"
+  }
+  if (role === "assistant") return assistantSummaryOneSentence(extractTextFromJsonContent(args.content))
+  // user/system
+  return clampText(extractTextFromJsonContent(args.content), 50)
+}
 
 function normalizeTitle(s: string) {
   const trimmed = (s || "").replace(/\s+/g, " ").trim()
   if (!trimmed) return "새 대화"
   // 너무 길면 잘라서 UI 안정성 확보
-  const max = 40
+  // 요구사항: 15자 이내(한글 기준)
+  const max = 15
   if (trimmed.length <= max) return trimmed
-  return `${trimmed.slice(0, max)}…`
+  // 15자 이내를 엄격히 지키기 위해 …를 붙이지 않습니다.
+  return trimmed.slice(0, max)
 }
 
 function fallbackTitleFromPrompt(input: string) {
@@ -39,12 +88,12 @@ async function generateTitleByOpenAi(firstMessage: string) {
     const prompt = [
       "다음 사용자 질문을 보고 '대화 타임라인'에 표시할 제목을 만들어줘.",
       "- 한국어로 자연스럽게",
-      "- 12~24자 내외의 짧은 제목",
-      "- 핵심 키워드 2~4개를 뽑아서 함께 제시",
+      "- 15자 이내",
+      "- 키워드/부연설명 없이 제목만",
       "- 반드시 JSON으로만 출력",
       "",
       "출력 형식:",
-      '{"title":"...","keywords":["...","..."]}',
+      '{"title":"..."}',
       "",
       `사용자 질문: ${firstMessage}`,
     ].join("\n")
@@ -58,13 +107,8 @@ async function generateTitleByOpenAi(firstMessage: string) {
     })
 
     const raw = out.output_text || ""
-    const parsed = JSON.parse(raw) as { title?: string; keywords?: string[] }
-    const title = normalizeTitle(parsed?.title || "")
-    const keywords = Array.isArray(parsed?.keywords) ? parsed.keywords.map(k => String(k)).filter(Boolean).slice(0, 4) : []
-
-    // UI 표시: "제목 · 키워드1,키워드2"
-    if (keywords.length > 0) return normalizeTitle(`${title} · ${keywords.join(",")}`)
-    return title
+    const parsed = JSON.parse(raw) as { title?: string }
+    return normalizeTitle(parsed?.title || "")
   } catch (e) {
     console.warn("[Timeline] title generation fallback:", e)
     return fallbackTitleFromPrompt(firstMessage)
@@ -178,7 +222,7 @@ export async function listMessages(req: Request, res: Response) {
     if (owns.rows.length === 0) return res.status(404).json({ message: "Thread not found" })
 
     const result = await query(
-      `SELECT id, conversation_id, role, content, metadata, message_order, created_at
+      `SELECT id, conversation_id, role, content, summary, metadata, message_order, created_at
        FROM model_messages
        WHERE conversation_id = $1
        ORDER BY message_order ASC`,
@@ -197,12 +241,20 @@ export async function addMessage(req: Request, res: Response) {
     const { id } = req.params
     const userId = (req as AuthedRequest).userId
     const tenantId = await ensureSystemTenantId()
-    const body = (req.body as unknown as { role?: Role; content?: string; model?: string | null }) || {}
+    const body = (req.body as unknown as {
+      role?: Role
+      content?: unknown
+      summary?: string | null
+      model?: string | null
+      tool_name?: string | null
+    }) || {}
     const role = body.role
     const content = body.content
+    const summaryIn = body.summary ?? null
     const model = body.model ?? null
+    const toolName = body.tool_name ?? null
 
-    if (!role || !content) {
+    if (!role || content === undefined || content === null) {
       return res.status(400).json({ message: "role and content are required" })
     }
 
@@ -222,13 +274,19 @@ export async function addMessage(req: Request, res: Response) {
     const nextOrder = Number(ord.rows?.[0]?.next_order || 1)
 
     // model_messages는 별도 model 컬럼이 없으므로 metadata에 저장합니다.
-    const metadata = { ...(model ? { model } : {}) }
+    const metadata = { ...(model ? { model } : {}), ...(toolName ? { tool_name: toolName } : {}) }
+
+    const normalizedContent = normalizeJsonContent(content)
+    const summary =
+      typeof summaryIn === "string" && summaryIn.trim()
+        ? (role === "assistant" ? assistantSummaryOneSentence(summaryIn) : clampText(summaryIn, role === "user" ? 50 : 100))
+        : deriveSummary({ role, content: normalizedContent, toolName: toolName || undefined })
 
     const insert = await query(
-      `INSERT INTO model_messages (conversation_id, role, content, message_order, metadata)
-       VALUES ($1, $2, $3, $4, $5::jsonb)
-       RETURNING id, conversation_id, role, content, metadata, message_order, created_at`,
-      [id, role, content, nextOrder, JSON.stringify(metadata)]
+      `INSERT INTO model_messages (conversation_id, role, content, summary, message_order, metadata)
+       VALUES ($1, $2, $3::jsonb, $4, $5, $6::jsonb)
+       RETURNING id, conversation_id, role, content, summary, metadata, message_order, created_at`,
+      [id, role, JSON.stringify(normalizedContent), summary, nextOrder, JSON.stringify(metadata)]
     )
 
     // 최근순 정렬을 위해 updated_at 갱신
