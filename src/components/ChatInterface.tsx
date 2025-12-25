@@ -461,6 +461,108 @@ export function ChatInterface({
     return head ? `${head}.` : "요약."
   }, [clampText])
 
+  type LlmBlock =
+    | { type: "markdown"; markdown: string }
+    | { type: "code"; language: string; code: string }
+    | { type: "table"; headers: string[]; rows: string[][] }
+
+  type LlmBlockResponse = {
+    title: string
+    summary: string
+    blocks: LlmBlock[]
+  }
+
+  const formatInstructionForChatTab = React.useCallback((userPrompt: string) => {
+    // 중요: 코드 펜스( ``` )를 instruction 문자열에 넣지 않습니다.
+    // 모델에게 "JSON만 출력"을 강하게 요구합니다.
+    const schema = [
+      "{",
+      '  "title": "string",',
+      '  "summary": "string",',
+      '  "blocks": [',
+      '    { "type": "markdown", "markdown": "## 제목\\n- 항목" },',
+      '    { "type": "code", "language": "java", "code": "System.out.println(\\"hi\\");" },',
+      '    { "type": "table", "headers": ["컬럼1","컬럼2"], "rows": [["A","B"],["C","D"]] }',
+      "  ]",
+      "}",
+    ].join("\n")
+
+    const rules = [
+      "너는 이제부터 아래 스키마의 JSON 객체만 출력해야 한다.",
+      "JSON 외의 어떤 텍스트도 출력하지 마라.",
+      "출력은 반드시 '{' 로 시작하고 '}' 로 끝나는 단일 JSON이어야 한다.",
+      "출력에 백틱(`) 또는 코드펜스(예: ``` 또는 ```json)를 절대로 포함하지 마라.",
+      "규칙:",
+      "- JSON만 출력",
+      "- code 블록의 code 필드에는 코드만 그대로 넣고, 코드 펜스 같은 마크다운 문법은 절대 넣지 마라",
+      "- table 블록은 headers/rows만 사용한다",
+      "- markdown은 markdown 블록에서만 사용한다",
+    ].join("\n")
+
+    return [rules, "", "스키마:", schema, "", "사용자 요청:", userPrompt].join("\n")
+  }, [])
+
+  const parseBlockJson = React.useCallback((text: string): { parsed?: LlmBlockResponse; displayText: string } => {
+    let raw = (text || "").trim()
+
+    // 모델이 실수로 ```json ... ``` 같은 펜스를 붙이는 경우가 있어 제거합니다.
+    if (raw.startsWith("```")) {
+      const firstNl = raw.indexOf("\n")
+      const lastFence = raw.lastIndexOf("```")
+      if (firstNl > -1 && lastFence > firstNl) {
+        raw = raw.slice(firstNl + 1, lastFence).trim()
+      }
+    }
+
+    // 앞뒤에 잡텍스트가 섞여도 {..}만 추출해서 파싱 시도
+    const firstBrace = raw.indexOf("{")
+    const lastBrace = raw.lastIndexOf("}")
+    if (firstBrace > -1 && lastBrace > firstBrace) {
+      raw = raw.slice(firstBrace, lastBrace + 1)
+    }
+
+    if (!raw.startsWith("{")) return { displayText: text }
+    try {
+      const obj = JSON.parse(raw) as Partial<LlmBlockResponse>
+      if (!obj || typeof obj !== "object") return { displayText: text }
+      if (!Array.isArray(obj.blocks)) return { displayText: text }
+      const title = typeof obj.title === "string" ? obj.title : ""
+      const summary = typeof obj.summary === "string" ? obj.summary : ""
+      const blocks = obj.blocks as LlmBlock[]
+
+      // UI 표시용(간단): title/summary + markdown/code/table을 텍스트로 풀어줌
+      const out: string[] = []
+      if (title) out.push(title)
+      if (summary) out.push(summary)
+      for (const b of blocks) {
+        if (b?.type === "markdown" && "markdown" in b && typeof b.markdown === "string") {
+          out.push(b.markdown)
+        } else if (b?.type === "code") {
+          const lang = typeof b.language === "string" ? b.language : ""
+          const code = typeof b.code === "string" ? b.code : ""
+          out.push(`[code:${lang || "plain"}]\n${code}`)
+        } else if (b?.type === "table") {
+          const headers = Array.isArray(b.headers) ? b.headers.map(String) : []
+          const rows = Array.isArray(b.rows) ? b.rows : []
+          out.push(
+            `[table]\n${headers.join(" | ")}\n${rows
+              .map((r) => (Array.isArray(r) ? r.map(String).join(" | ") : ""))
+              .join("\n")}`
+          )
+        }
+      }
+
+      const parsed: LlmBlockResponse = {
+        title,
+        summary,
+        blocks,
+      }
+      return { parsed, displayText: out.filter(Boolean).join("\n\n") || text }
+    } catch {
+      return { displayText: text }
+    }
+  }, [])
+
   React.useEffect(() => {
     const controller = new AbortController();
 
@@ -624,14 +726,18 @@ export function ChatInterface({
     }
 
     try {
+      const structuredInput = selectedTab === "chat" ? formatInstructionForChatTab(input) : input
+      const maxTokens = selectedTab === "chat" ? 2048 : 512
       const res = await fetch("/api/ai/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           provider_slug: providerSlug,
           model,
-          input,
-          max_tokens: 512,
+          input: structuredInput,
+          // 서버 레벨 JSON 스키마 강제(채팅 탭)
+          ...(selectedTab === "chat" ? { output_format: "block_json" } : {}),
+          max_tokens: maxTokens,
         }),
       })
 
@@ -653,12 +759,13 @@ export function ChatInterface({
 
       const okJson = json as { output_text?: unknown }
       const outText = String(okJson?.output_text || "")
-      // assistant 메시지: contentJson에는 AI 응답 JSON 전체를 저장합니다.
+      const parsed = selectedTab === "chat" ? parseBlockJson(outText) : { parsed: undefined, displayText: outText }
+      // assistant 메시지: contentJson에는 "블록 JSON"을 저장합니다. (파싱 실패 시 raw 응답 저장)
       onMessage?.({
         role: "assistant",
-        content: outText,
-        contentJson: json,
-        summary: assistantSummary(outText),
+        content: parsed.displayText,
+        contentJson: parsed.parsed ?? { text: outText },
+        summary: assistantSummary(parsed.parsed?.summary || outText),
         providerSlug,
         model,
       })
@@ -674,7 +781,7 @@ export function ChatInterface({
         model,
       });
     }
-  }, [prompt, currentModelConfig, selectedSubModel, onMessage, submitMode, onSubmit, userSummary, assistantSummary]);
+  }, [prompt, currentModelConfig, selectedSubModel, onMessage, submitMode, onSubmit, userSummary, assistantSummary, selectedTab, formatInstructionForChatTab, parseBlockJson]);
 
 
   // 모델 변경 핸들러

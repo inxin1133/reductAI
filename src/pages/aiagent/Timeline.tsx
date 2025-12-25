@@ -5,6 +5,9 @@ import { Button } from "@/components/ui/button"
 import { Copy, Volume2, Repeat, ChevronsLeft, PencilLine, GalleryVerticalEnd } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ChatInterface } from "@/components/ChatInterface"
+import { Markdown } from "@/components/Markdown"
+import { CodeBlock } from "@/components/CodeBlock"
+import { BlockTable } from "@/components/BlockTable"
 import { useLocation, useNavigate } from "react-router-dom"
 
 
@@ -22,6 +25,7 @@ type TimelineMessage = {
   id: string
   role: ChatRole
   content: string
+  contentJson?: unknown
   model?: string
   createdAt: string // ISO
 }
@@ -91,6 +95,34 @@ function extractTextFromJsonContent(content: unknown): string {
   if (typeof c.text === "string") return c.text
   if (typeof c.output_text === "string") return c.output_text
   if (typeof c.input === "string") return c.input
+  // block-json 형태(title/summary/blocks) 렌더링
+  const title = typeof c.title === "string" ? c.title : ""
+  const summary = typeof c.summary === "string" ? c.summary : ""
+  const blocks = Array.isArray(c.blocks) ? (c.blocks as Array<Record<string, unknown>>) : []
+  if (title || summary || blocks.length) {
+    const out: string[] = []
+    if (title) out.push(title)
+    if (summary) out.push(summary)
+    for (const b of blocks) {
+      const t = typeof b.type === "string" ? b.type : ""
+      if (t === "markdown" && typeof b.markdown === "string") {
+        out.push(String(b.markdown))
+      } else if (t === "code") {
+        const lang = typeof b.language === "string" ? b.language : "plain"
+        const code = typeof b.code === "string" ? b.code : ""
+        out.push(`[code:${lang}]\n${code}`)
+      } else if (t === "table") {
+        const headers = Array.isArray(b.headers) ? (b.headers as unknown[]).map(String) : []
+        const rows = Array.isArray(b.rows) ? (b.rows as unknown[]) : []
+        out.push(
+          `[table]\n${headers.join(" | ")}\n${rows
+            .map((r) => (Array.isArray(r) ? (r as unknown[]).map(String).join(" | ") : ""))
+            .join("\n")}`
+        )
+      }
+    }
+    return out.filter(Boolean).join("\n\n")
+  }
   return ""
 }
 
@@ -120,13 +152,71 @@ function sortByRecent(convs: TimelineConversation[]) {
   return [...convs].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
 }
 
+function formatInstructionForChatTab(userPrompt: string) {
+  // ChatInterface와 동일한 규칙(초기 메시지도 동일 포맷으로 받기 위함)
+  const schema = [
+    "{",
+    '  "title": "string",',
+    '  "summary": "string",',
+    '  "blocks": [',
+    '    { "type": "markdown", "markdown": "## 제목\\n- 항목" },',
+    '    { "type": "code", "language": "java", "code": "System.out.println(\\"hi\\");" },',
+    '    { "type": "table", "headers": ["컬럼1","컬럼2"], "rows": [["A","B"],["C","D"]] }',
+    "  ]",
+    "}",
+  ].join("\n")
+
+  const rules = [
+    "너는 이제부터 아래 스키마의 JSON 객체만 출력해야 한다.",
+    "JSON 외의 어떤 텍스트도 출력하지 마라.",
+    "출력은 반드시 '{' 로 시작하고 '}' 로 끝나는 단일 JSON이어야 한다.",
+    "출력에 백틱(`) 또는 코드펜스(예: ``` 또는 ```json)를 절대로 포함하지 마라.",
+    "규칙:",
+    "- JSON만 출력",
+    "- code 블록의 code 필드에는 코드만 그대로 넣고, 코드 펜스 같은 마크다운 문법은 절대 넣지 마라",
+    "- table 블록은 headers/rows만 사용한다",
+    "- markdown은 markdown 블록에서만 사용한다",
+  ].join("\n")
+
+  return [rules, "", "스키마:", schema, "", "사용자 요청:", userPrompt].join("\n")
+}
+
+function parseBlockJson(text: string): { parsed?: unknown; displayText: string; extractedSummary?: string } {
+  let raw = (text || "").trim()
+  if (raw.startsWith("```")) {
+    const firstNl = raw.indexOf("\n")
+    const lastFence = raw.lastIndexOf("```")
+    if (firstNl > -1 && lastFence > firstNl) {
+      raw = raw.slice(firstNl + 1, lastFence).trim()
+    }
+  }
+  const firstBrace = raw.indexOf("{")
+  const lastBrace = raw.lastIndexOf("}")
+  if (firstBrace > -1 && lastBrace > firstBrace) {
+    raw = raw.slice(firstBrace, lastBrace + 1)
+  }
+  if (!raw.startsWith("{")) return { displayText: text }
+  try {
+    const obj = JSON.parse(raw) as Record<string, unknown>
+    if (!obj || typeof obj !== "object") return { displayText: text }
+    const title = typeof obj.title === "string" ? obj.title : ""
+    const summary = typeof obj.summary === "string" ? obj.summary : ""
+    const out: string[] = []
+    if (title) out.push(title)
+    if (summary) out.push(summary)
+    return { parsed: obj, displayText: out.filter(Boolean).join("\n\n") || text, extractedSummary: summary }
+  } catch {
+    return { displayText: text }
+  }
+}
+
 export default function Timeline() {
   const location = useLocation()
   const navigate = useNavigate()
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
   const [conversations, setConversations] = React.useState<TimelineConversation[]>([])
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null)
-  const [messages, setMessages] = React.useState<Array<{ role: ChatRole; content: string; model?: string }>>([]);
+  const [messages, setMessages] = React.useState<Array<{ role: ChatRole; content: string; contentJson?: unknown; model?: string }>>([]);
 
   // FrontAI에서 넘어온 "첫 질문"을 1회만 자동 실행하기 위한 ref
   const initialRanRef = React.useRef(false)
@@ -189,6 +279,7 @@ export default function Timeline() {
       id: m.id,
       role: m.role,
       content: extractTextFromJsonContent(m.content) || "",
+      contentJson: m.content,
       model: typeof m.metadata?.model === "string" ? (m.metadata.model as string) : undefined,
       createdAt: m.created_at,
     })) as TimelineMessage[]
@@ -241,7 +332,7 @@ export default function Timeline() {
         if (!initial && loaded.length > 0) {
           setActiveConversationId(loaded[0].id)
           const msgs = await fetchMessages(loaded[0].id)
-          setMessages(msgs.map(m => ({ role: m.role, content: m.content, model: m.model })))
+          setMessages(msgs.map(m => ({ role: m.role, content: m.content, contentJson: m.contentJson, model: m.model })))
           const lastModel = [...msgs].reverse().find(m => m.model)?.model
           setStickySelectedModel(lastModel)
         }
@@ -268,7 +359,7 @@ export default function Timeline() {
     const run = async () => {
       try {
         const msgs = await fetchMessages(activeConversationId)
-        setMessages(msgs.map(m => ({ role: m.role, content: m.content, model: m.model })))
+        setMessages(msgs.map(m => ({ role: m.role, content: m.content, contentJson: m.contentJson, model: m.model })))
         const lastModel = [...msgs].reverse().find(m => m.model)?.model
         setStickySelectedModel(lastModel)
       } catch {
@@ -368,7 +459,7 @@ export default function Timeline() {
         setConversations(refreshed)
 
         // 2) 유저 메시지를 서버/화면에 저장
-        setMessages([{ role: "user", content: initial.input, model: initial.model }])
+        setMessages([{ role: "user", content: initial.input, contentJson: { text: initial.input }, model: initial.model }])
         await addMessage(thread.id, {
           role: "user",
           content: initial.input,
@@ -384,8 +475,9 @@ export default function Timeline() {
           body: JSON.stringify({
             provider_slug: initial.providerSlug,
             model: initial.model,
-            input: initial.input,
-            max_tokens: 512,
+            input: formatInstructionForChatTab(initial.input),
+            output_format: "block_json",
+            max_tokens: 2048,
           }),
         })
 
@@ -406,12 +498,13 @@ export default function Timeline() {
 
         const okJson = json as { output_text?: unknown }
         const out = String(okJson?.output_text || "")
-        setMessages((prev) => [...prev, { role: "assistant", content: out, model: initial.model }])
+        const parsed = parseBlockJson(out)
+        setMessages((prev) => [...prev, { role: "assistant", content: parsed.displayText, contentJson: parsed.parsed ?? { text: out }, model: initial.model }])
         await addMessage(thread.id, {
           role: "assistant",
-          content: out,
-          contentJson: json,
-          summary: assistantSummary(out),
+          content: parsed.displayText,
+          contentJson: parsed.parsed ?? { text: out },
+          summary: assistantSummary(parsed.extractedSummary || out),
           model: initial.model,
         })
 
@@ -433,7 +526,7 @@ export default function Timeline() {
         setConversations(next)
         setActiveConversationId(newConversationId)
         setStickySelectedModel(initial.model)
-        setMessages([{ role: "user", content: initial.input, model: initial.model }])
+        setMessages([{ role: "user", content: initial.input, contentJson: { text: initial.input }, model: initial.model }])
       }
     }
 
@@ -531,9 +624,53 @@ export default function Timeline() {
                          <span className="text-primary-foreground text-sm font-bold">AI</span>
                        </div>
                        <div className="flex flex-col gap-4 max-w-[720px]">
-                         <div className="text-base text-primary whitespace-pre-wrap">
-                           {m.content}
-                         </div>
+                        <div className="text-base text-primary whitespace-pre-wrap space-y-3">
+                          {(() => {
+                            const c = m.contentJson
+                            if (c && typeof c === "object") {
+                              const obj = c as Record<string, unknown>
+                              const blocks = Array.isArray(obj.blocks) ? (obj.blocks as Array<Record<string, unknown>>) : null
+                              if (blocks && blocks.length > 0) {
+                                return (
+                                  <div className="space-y-3">
+                                    {blocks.map((b, bIdx) => {
+                                      const type = typeof b.type === "string" ? b.type : ""
+                                      if (type === "markdown" && typeof b.markdown === "string") {
+                                        return (
+                                          <Markdown
+                                            key={bIdx}
+                                            markdown={String(b.markdown)}
+                                            className="prose prose-sm max-w-none"
+                                          />
+                                        )
+                                      }
+                                      if (type === "code" && typeof b.code === "string") {
+                                        return (
+                                          <CodeBlock
+                                            key={bIdx}
+                                            language={typeof b.language === "string" ? b.language : undefined}
+                                            code={String(b.code)}
+                                          />
+                                        )
+                                      }
+                                      if (type === "table") {
+                                        const headers = Array.isArray(b.headers) ? (b.headers as unknown[]).map(String) : []
+                                        const rows = Array.isArray(b.rows)
+                                          ? (b.rows as unknown[]).map((r) =>
+                                              Array.isArray(r) ? (r as unknown[]).map(String) : []
+                                            )
+                                          : []
+                                        return <BlockTable key={bIdx} headers={headers} rows={rows as string[][]} />
+                                      }
+                                      return null
+                                    })}
+                                  </div>
+                                )
+                              }
+                            }
+                            return <>{m.content}</>
+                          })()}
+                        </div>
                          <div className="flex gap-3 items-center">
                            <Copy className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
                            <Volume2 className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
@@ -557,7 +694,7 @@ export default function Timeline() {
                initialSelectedModel={stickySelectedModel}
                onMessage={(msg) => {
                  // 1) 화면에 표시
-                 setMessages((prev) => [...prev, { role: msg.role, content: msg.content, model: msg.model }])
+                 setMessages((prev) => [...prev, { role: msg.role, content: msg.content, contentJson: msg.contentJson, model: msg.model }])
                  // 2) localStorage(대화 히스토리)에 저장
                  appendToActiveConversation({
                    role: msg.role,

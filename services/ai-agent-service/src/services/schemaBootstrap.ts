@@ -148,4 +148,87 @@ export async function ensureTimelineSchema() {
   await query(`CREATE INDEX IF NOT EXISTS idx_model_messages_order ON model_messages(conversation_id, message_order);`)
 }
 
+/**
+ * Model usage logs schema
+ * - Admin "모델 사용 로그"에서 조회하는 테이블을 서비스 부팅 시 보장합니다.
+ * - 본 프로젝트의 공식 스키마(document/schema_models.sql)의 일부를 필요한 최소 형태로 반영합니다.
+ */
+export async function ensureModelUsageLogsSchema() {
+  await query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`)
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS model_usage_logs (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+      model_id UUID NOT NULL REFERENCES ai_models(id) ON DELETE RESTRICT,
+      credential_id UUID REFERENCES provider_api_credentials(id) ON DELETE SET NULL,
+      service_id UUID REFERENCES services(id) ON DELETE SET NULL,
+      token_usage_log_id UUID REFERENCES token_usage_logs(id) ON DELETE SET NULL,
+      feature_name VARCHAR(100) NOT NULL,
+      request_id VARCHAR(255) UNIQUE,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      total_tokens INTEGER NOT NULL,
+      input_cost DECIMAL(10, 6) DEFAULT 0,
+      output_cost DECIMAL(10, 6) DEFAULT 0,
+      total_cost DECIMAL(10, 6) DEFAULT 0,
+      currency VARCHAR(3) DEFAULT 'USD',
+      response_time_ms INTEGER,
+      status VARCHAR(50) NOT NULL CHECK (status IN ('success', 'failure', 'error', 'timeout', 'rate_limited')),
+      error_code VARCHAR(100),
+      error_message TEXT,
+      request_data JSONB,
+      response_data JSONB,
+      model_parameters JSONB,
+      ip_address INET,
+      user_agent TEXT,
+      metadata JSONB DEFAULT '{}',
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+  `)
+
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_tenant_id ON model_usage_logs(tenant_id);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_user_id ON model_usage_logs(user_id);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_model_id ON model_usage_logs(model_id);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_credential_id ON model_usage_logs(credential_id);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_service_id ON model_usage_logs(service_id);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_feature_name ON model_usage_logs(feature_name);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_status ON model_usage_logs(status);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_created_at ON model_usage_logs(created_at);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_tenant_date ON model_usage_logs(tenant_id, created_at DESC);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_request_id ON model_usage_logs(request_id) WHERE request_id IS NOT NULL;`)
+}
+
+/**
+ * Model routing rules schema
+ * - Admin "모델 라우팅 규칙"에서 관리하는 테이블을 서비스 부팅 시 보장합니다.
+ */
+export async function ensureModelRoutingRulesSchema() {
+  await query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`)
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS model_routing_rules (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      rule_name VARCHAR(255) NOT NULL,
+      priority INTEGER NOT NULL DEFAULT 0,
+      conditions JSONB NOT NULL,
+      target_model_id UUID NOT NULL REFERENCES ai_models(id) ON DELETE RESTRICT,
+      fallback_model_id UUID REFERENCES ai_models(id) ON DELETE SET NULL,
+      is_active BOOLEAN DEFAULT TRUE,
+      metadata JSONB DEFAULT '{}',
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(tenant_id, rule_name)
+    );
+  `)
+
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_routing_rules_tenant_id ON model_routing_rules(tenant_id);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_routing_rules_target_model_id ON model_routing_rules(target_model_id);`)
+  await query(
+    `CREATE INDEX IF NOT EXISTS idx_model_routing_rules_priority ON model_routing_rules(tenant_id, priority DESC) WHERE is_active = TRUE;`
+  )
+}
+
 

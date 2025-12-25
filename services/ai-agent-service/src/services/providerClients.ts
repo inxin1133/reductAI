@@ -4,6 +4,62 @@ import { decryptApiKey } from "./cryptoService"
 
 type ProviderSlug = "openai" | "anthropic" | "google"
 
+type OpenAiJsonSchema = {
+  name: string
+  schema: Record<string, unknown>
+  strict?: boolean
+}
+
+function openAiBlockJsonSchema(): OpenAiJsonSchema {
+  // LLM block response schema (server-level enforcement)
+  return {
+    name: "llm_block_response",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["title", "summary", "blocks"],
+      properties: {
+        title: { type: "string" },
+        summary: { type: "string" },
+        blocks: {
+          type: "array",
+          items: {
+            oneOf: [
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["type", "markdown"],
+                properties: { type: { const: "markdown" }, markdown: { type: "string" } },
+              },
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["type", "language", "code"],
+                properties: {
+                  type: { const: "code" },
+                  language: { type: "string" },
+                  code: { type: "string" },
+                },
+              },
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["type", "headers", "rows"],
+                properties: {
+                  type: { const: "table" },
+                  headers: { type: "array", items: { type: "string" } },
+                  rows: { type: "array", items: { type: "array", items: { type: "string" } } },
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  }
+}
+
 // OpenAI base URL은 Admin에서 잘못 입력될 수 있어 방어적으로 정규화합니다.
 // 예) https://api.openai.com/v1/chat/completions → https://api.openai.com/v1
 function normalizeOpenAiBaseUrl(input: string) {
@@ -22,7 +78,7 @@ export async function getProviderAuth(providerId: string) {
   // 공용 credential(system tenant) 중 default 우선으로 선택
   const systemTenantId = await ensureSystemTenantId()
   const res = await query(
-    `SELECT api_key_encrypted, endpoint_url, organization_id
+    `SELECT id, api_key_encrypted, endpoint_url, organization_id
      FROM provider_api_credentials
      WHERE tenant_id = $1 AND provider_id = $2 AND is_active = TRUE
      ORDER BY is_default DESC, created_at DESC
@@ -33,6 +89,7 @@ export async function getProviderAuth(providerId: string) {
   const row = res.rows[0]
   const apiKey = decryptApiKey(row.api_key_encrypted)
   return {
+    credentialId: row.id as string,
     apiKey,
     endpointUrl: row.endpoint_url as string | null,
     organizationId: row.organization_id as string | null,
@@ -72,7 +129,14 @@ export async function anthropicListModels(apiKey: string) {
   return (json?.data || []) as Array<{ id: string }>
 }
 
-export async function openaiSimulateChat(args: { apiBaseUrl: string; apiKey: string; model: string; input: string; maxTokens: number }) {
+export async function openaiSimulateChat(args: {
+  apiBaseUrl: string
+  apiKey: string
+  model: string
+  input: string
+  maxTokens: number
+  outputFormat?: "block_json"
+}) {
   const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl)
   const base = normalized || "https://api.openai.com/v1"
   const apiRoot = base.replace(/\/$/, "")
@@ -113,6 +177,7 @@ export async function openaiSimulateChat(args: { apiBaseUrl: string; apiKey: str
   }
 
   function responsesBody() {
+    const schema = args.outputFormat === "block_json" ? openAiBlockJsonSchema() : null
     return {
       model: args.model,
       input: args.input,
@@ -120,9 +185,86 @@ export async function openaiSimulateChat(args: { apiBaseUrl: string; apiKey: str
       max_output_tokens: args.maxTokens,
       // GPT-5 계열은 reasoning 토큰을 과도하게 소모할 수 있어 기본 effort를 낮춥니다.
       reasoning: { effort: "low" },
-      // 텍스트 출력 우선
+      // 서버 레벨 JSON 강제 (가능한 경우)
+      ...(schema
+        ? {
+            // 기본: json_schema (가능한 모델/계정에서 가장 강력한 강제)
+            response_format: {
+              type: "json_schema",
+              json_schema: {
+                name: schema.name,
+                schema: schema.schema,
+                strict: schema.strict !== false,
+              },
+            },
+            text: {
+              format: {
+                type: "json_schema",
+                name: schema.name,
+                schema: schema.schema,
+                strict: schema.strict !== false,
+              },
+            },
+          }
+        : {
+            // 텍스트 출력 우선
+            text: { verbosity: "low" },
+          }),
+    }
+  }
+
+  function responsesBodyJsonObject() {
+    // json_schema가 미지원일 때의 차선책: JSON object만 강제 (형식/필드 규칙은 프롬프트로)
+    return {
+      model: args.model,
+      input: args.input,
+      max_output_tokens: args.maxTokens,
+      reasoning: { effort: "low" },
+      response_format: { type: "json_object" },
       text: { verbosity: "low" },
     }
+  }
+
+  function responsesBodyPlain() {
+    // 최후의 차선책: 포맷 파라미터 없이 responses를 호출 (프롬프트로 JSON-only 유도)
+    return {
+      model: args.model,
+      input: args.input,
+      max_output_tokens: args.maxTokens,
+      reasoning: { effort: "low" },
+      text: { verbosity: "low" },
+    }
+  }
+
+  async function tryResponsesWithNonEmptyText(bodies: Array<unknown>) {
+    for (const body of bodies) {
+      const r = await postJson(`${apiRoot}/responses`, body)
+      if (!r.res.ok) continue
+      const text = extractTextFromResponses(r.json)
+      const truncated = r.json?.incomplete_details?.reason === "max_output_tokens"
+
+      // 토큰 제한으로 잘린 경우: 1회 더 큰 토큰으로 재시도해서 "완성본"을 우선 반환
+      if (truncated) {
+        const bigger = Math.min(Math.max(args.maxTokens, 2048), 4096)
+        const retry = await postJson(`${apiRoot}/responses`, { ...(body as any), max_output_tokens: bigger })
+        if (retry.res.ok) {
+          const t2 = extractTextFromResponses(retry.json)
+          if (t2 && t2.length >= (text || "").length) {
+            return { ok: true as const, raw: retry.json, output_text: t2 }
+          }
+        }
+      }
+
+      if (text) return { ok: true as const, raw: r.json, output_text: text }
+    }
+    return { ok: false as const }
+  }
+
+  // outputFormat이 있는 경우: 서버 레벨 강제를 위해 responses API를 우선 사용합니다.
+  if (args.outputFormat === "block_json") {
+    const tried = await tryResponsesWithNonEmptyText([responsesBody(), responsesBodyJsonObject(), responsesBodyPlain()])
+    if (tried.ok) return { raw: tried.raw, output_text: tried.output_text }
+    // responses가 미지원/차단이면 chat/completions로 fallback (프롬프트 기반 + json_object)
   }
 
   // GPT-5 계열은 환경에 따라 chat/completions에서 content가 비어있는 경우가 있어
@@ -130,39 +272,44 @@ export async function openaiSimulateChat(args: { apiBaseUrl: string; apiKey: str
   const preferResponses = /^gpt-5/i.test((args.model || "").trim())
 
   if (preferResponses) {
-    const r0 = await postJson(`${apiRoot}/responses`, responsesBody())
-    if (r0.res.ok) {
-      const text = extractTextFromResponses(r0.json)
-      // reasoning만 나오고 텍스트가 비어있으면 1회 더(토큰 여유) 재시도
-      if (!text && r0.json?.incomplete_details?.reason === "max_output_tokens") {
-        const rRetry = await postJson(`${apiRoot}/responses`, { ...responsesBody(), max_output_tokens: Math.max(args.maxTokens, 1024) })
-        if (rRetry.res.ok) return { raw: rRetry.json, output_text: extractTextFromResponses(rRetry.json) }
-      }
-      return { raw: r0.json, output_text: text }
-    }
+    const tried = await tryResponsesWithNonEmptyText([responsesBody(), responsesBodyJsonObject(), responsesBodyPlain()])
+    if (tried.ok) return { raw: tried.raw, output_text: tried.output_text }
     // responses가 막혀있거나 미지원이면 chat/completions로 fallback
   }
 
   // 1) 우선 chat/completions 시도 (max_completion_tokens 우선)
   {
+    const schema = args.outputFormat === "block_json" ? openAiBlockJsonSchema() : null
+
     const { res, json } = await postJson(`${apiRoot}/chat/completions`, {
       model: args.model,
       messages: [{ role: "user", content: args.input }],
       // 최신 모델은 max_tokens 대신 max_completion_tokens를 요구할 수 있음
       max_completion_tokens: args.maxTokens,
+      ...(schema
+        ? {
+            response_format: {
+              // chat/completions 호환성: json_schema가 미지원인 경우가 있어 json_object를 사용합니다.
+              // 스키마 강제는 responses에서 수행하고, 여기서는 "유효한 JSON" 강제 용도로 사용합니다.
+              type: "json_object",
+            },
+          }
+        : {}),
     })
 
     if (res.ok) {
       const text = extractTextFromChatCompletions(json)
       // 일부 모델은 chat/completions에서 content가 비어있을 수 있어 responses로 1회 fallback
-      if (!text && !preferResponses) {
-        const r2 = await postJson(`${apiRoot}/responses`, responsesBody())
-        if (r2.res.ok) return { raw: r2.json, output_text: extractTextFromResponses(r2.json) }
+      if (!text) {
+        const tried = await tryResponsesWithNonEmptyText([responsesBody(), responsesBodyJsonObject(), responsesBodyPlain()])
+        if (tried.ok) return { raw: tried.raw, output_text: tried.output_text }
       }
       return { raw: json, output_text: text }
     }
 
     const errMsg = JSON.stringify(json || {})
+    const isUnsupportedResponseFormat =
+      res.status === 400 && /(response_format|json_schema|Invalid schema|unsupported)/i.test(errMsg)
     const isNotChatModel =
       res.status === 404 &&
       /not a chat model|not supported in the v1\/chat\/completions/i.test(errMsg)
@@ -175,6 +322,7 @@ export async function openaiSimulateChat(args: { apiBaseUrl: string; apiKey: str
         model: args.model,
         messages: [{ role: "user", content: args.input }],
         max_tokens: args.maxTokens,
+        ...(schema ? { response_format: { type: "json_object" } } : {}),
       })
       if (retry.res.ok) {
         return { raw: retry.json, output_text: extractTextFromChatCompletions(retry.json) }
@@ -187,6 +335,17 @@ export async function openaiSimulateChat(args: { apiBaseUrl: string; apiKey: str
       const r2 = await postJson(`${apiRoot}/responses`, responsesBody())
       if (!r2.res.ok) throw new Error(`OPENAI_SIMULATE_FAILED_${r2.res.status}:${JSON.stringify(r2.json)}`)
       return { raw: r2.json, output_text: extractTextFromResponses(r2.json) }
+    }
+
+    // response_format 자체가 모델/계정에서 미지원이면: response_format 제거하고 재시도(프롬프트 기반 fallback)
+    if (schema && isUnsupportedResponseFormat) {
+      const retry = await postJson(`${apiRoot}/chat/completions`, {
+        model: args.model,
+        messages: [{ role: "user", content: args.input }],
+        max_completion_tokens: args.maxTokens,
+      })
+      if (retry.res.ok) return { raw: retry.json, output_text: extractTextFromChatCompletions(retry.json) }
+      throw new Error(`OPENAI_SIMULATE_FAILED_${retry.res.status}:${JSON.stringify(retry.json)}`)
     }
 
     // max_tokens 거부(특히 GPT-5) 등은 responses로 재시도하는 편이 안전합니다.

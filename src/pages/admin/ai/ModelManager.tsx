@@ -91,6 +91,7 @@ export default function ModelManager() {
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
+  const [rowSaving, setRowSaving] = useState<Record<string, boolean>>({})
 
   // 필터
   const [providerFilter, setProviderFilter] = useState<string>("all")
@@ -344,6 +345,22 @@ export default function ModelManager() {
     }
   }
 
+  const patchModelRow = async (id: string, patch: Partial<Pick<AIModel, "status" | "is_available">>) => {
+    setRowSaving((p) => ({ ...p, [id]: true }))
+    try {
+      await tryFetchJson(`${MODELS_API_URL}/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify(patch),
+      })
+      // 로컬 반영(즉시 UI 반영) + 서버값 재조회(정합성)
+      setModels((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)))
+      await fetchModels()
+    } finally {
+      setRowSaving((p) => ({ ...p, [id]: false }))
+    }
+  }
+
   const handleSync = async () => {
     if (providerFilter === "all") {
       alert("동기화할 제공업체를 먼저 선택해주세요. (Provider 필터)")
@@ -397,19 +414,6 @@ export default function ModelManager() {
       console.error(e)
     } finally {
       setSimRunning(false)
-    }
-  }
-
-  const statusBadge = (s: ModelStatus) => {
-    switch (s) {
-      case "active":
-        return <Badge className="bg-green-100 text-green-800 hover:bg-green-100">Active</Badge>
-      case "inactive":
-        return <Badge variant="secondary">Inactive</Badge>
-      case "deprecated":
-        return <Badge className="bg-yellow-100 text-yellow-800 hover:bg-yellow-100">Deprecated</Badge>
-      case "beta":
-        return <Badge className="bg-purple-100 text-purple-800 hover:bg-purple-100">Beta</Badge>
     }
   }
 
@@ -541,8 +545,34 @@ export default function ModelManager() {
                   <TableCell>
                     <Badge variant="secondary">{m.model_type}</Badge>
                   </TableCell>
-                  <TableCell>{statusBadge(m.status)}</TableCell>
-                  <TableCell>{m.is_available ? <Badge>Yes</Badge> : <Badge variant="secondary">No</Badge>}</TableCell>
+                  <TableCell>
+                    <Select
+                      value={m.status}
+                      onValueChange={(v: ModelStatus) => void patchModelRow(m.id, { status: v })}
+                      disabled={!!rowSaving[m.id]}
+                    >
+                      <SelectTrigger className="h-8 w-[140px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(["active", "inactive", "deprecated", "beta"] as ModelStatus[]).map((s) => (
+                          <SelectItem key={s} value={s}>
+                            {s}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={!!m.is_available}
+                        onCheckedChange={(checked) => void patchModelRow(m.id, { is_available: checked })}
+                        disabled={!!rowSaving[m.id]}
+                      />
+                      <span className="text-xs text-muted-foreground">{m.is_available ? "Yes" : "No"}</span>
+                    </div>
+                  </TableCell>
                   <TableCell>{m.is_default ? <Badge>Yes</Badge> : <span className="text-xs text-muted-foreground">-</span>}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{m.context_window ?? "-"}</TableCell>
                   <TableCell className="text-right">
