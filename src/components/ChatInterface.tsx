@@ -914,7 +914,7 @@ export function ChatInterface({
             className="rounded-full bg-background shadow-md border hover:bg-accent h-8 w-8"
             onClick={scrollLeft}
           >
-             <ChevronLeft className="h-4 w-4" />
+             <ChevronLeft className="h-4 w-4" /> 
            </Button>
         </div>
       )}
@@ -1051,11 +1051,18 @@ export function ChatInterface({
               <ModelGrid />
             </>
           ) : (
-            <Popover open={isCompactPanelOpen} onOpenChange={setIsCompactPanelOpen}>
-              <PopoverTrigger asChild>
-                {/* Timeline 스타일 요약 컨트롤 바 */}
-                <div className="flex items-center gap-2 px-4 cursor-pointer select-none w-full">
-                  <ChevronRight className={cn("size-6 transition-transform", isCompactPanelOpen ? "rotate-90" : "")} />
+            
+            // compact 모드에서: 상단(토큰/탭/모델선택) 영역을 팝오버로 펼쳐서 선택할 수 있게 함
+            <div className="w-full">
+              {/* (닫힘 상태) Timeline 스타일 요약 컨트롤 바 (Accordion Trigger) */}
+              {!isCompactPanelOpen && (
+                <button
+                  type="button"
+                  className="flex items-center gap-2 px-4 cursor-pointer select-none w-full text-left"
+                  aria-expanded={isCompactPanelOpen}
+                  onClick={() => setIsCompactPanelOpen(true)}
+                >
+                  <ChevronRight className={cn("size-5 transition-transform", isCompactPanelOpen ? "rotate-90" : "")} />
                   <div className="flex items-center gap-3 flex-wrap">
                     <div className="flex items-center gap-1">
                       <MessageSquare className="size-4" />
@@ -1080,25 +1087,41 @@ export function ChatInterface({
                       </div>
                     </div>
                   </div>
-                </div>
-              </PopoverTrigger>
+                </button>
+              )}
 
-              <PopoverContent
-                align="start"
-                side="top"
-                sideOffset={8}
-                className="w-[min(832px,calc(100vw-2rem))] p-4"
+              {/* (열림 상태) Accordion Content - 토큰/탭/모델 선택 팝오버 */}
+              <div
+                className={cn(
+                  "overflow-hidden transition-[max-height,opacity] duration-200 ease-out",
+                  isCompactPanelOpen ? "max-h-[520px]" : "max-h-0 opacity-0 mt-0 pointer-events-none"
+                )}
               >
-                <div className="flex flex-col gap-4">
-                  {/* compact 모드에서는 여기서 토큰/탭/모델 선택을 한 번에 처리 */}
-                  <PaidToken />
-                  <ModeTabs />
-                  <div className="max-h-[320px] overflow-y-auto pr-1">
-                    <ModelGrid />
+                <div className="w-full">
+                  <div className="flex flex-col gap-4">
+                      {/* 열림 상태에서: ChevronDown 클릭 시 닫힘 상태로 전환 */}
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="inline-flex items-center justify-center rounded-md hover:bg-accent/60 transition-colors p-1"
+                          aria-label="접기"
+                          onClick={() => setIsCompactPanelOpen(false)}
+                        >
+                          <ChevronDown className="size-5" />
+                        </button>
+                        <PaidToken />
+                      </div>
+                    {/* compact 모드에서는 여기서 토큰/탭/모델 선택을 한 번에 처리 */}
+                    
+                    <ModeTabs />
+                    <div className="max-h-[320px] overflow-y-auto">
+                      <ModelGrid />
+                    </div>
                   </div>
                 </div>
-              </PopoverContent>
-            </Popover>
+
+              </div>
+            </div>
           )}
           
 
@@ -1204,57 +1227,48 @@ export function ChatInterface({
               
               {/* Example Badges (Optional) - 예시 뱃지 */}
               <div className="flex gap-2 items-start w-full relative">
-                
-                {!isCompact ? (
-                  <div className="flex gap-2 items-start lg:w-full flex-wrap">
-                    {['우주를 여행하는 고양이, 디지털 아트', '미래도시의 석양, 사이버펑크 스타일','초현실적인 인물 그림', '미술관 내부 그림', '아이들이 그린 그림'].map((badge) => (
-                      <div key={badge} className="hidden lg:block bg-secondary px-[10px] py-[2px] rounded-[8px] cursor-pointer hover:bg-secondary/80">
+                {/* Default/Compact 동일 UI: Desktop은 뱃지 노출, Mobile은 ... 팝오버로 노출 */}
+                <div className="flex gap-2 items-start lg:w-full flex-wrap">
+                  {["우주를 여행하는 고양이, 디지털 아트", "미래도시의 석양, 사이버펑크 스타일", "초현실적인 인물 그림", "미술관 내부 그림", "아이들이 그린 그림"].map(
+                    (badge) => (
+                      <div
+                        key={badge}
+                        className="hidden lg:block bg-secondary px-[10px] py-[2px] rounded-[8px] cursor-pointer hover:bg-secondary/80"
+                      >
                         <p className="text-[12px] font-medium text-secondary-foreground">{badge}</p>
                       </div>
-                    ))}
-                    
-                    {/* Mobile Only: Ellipsis Button with Popover  */}
-                    <div className="lg:hidden block">
-                       <Popover>
-                        <PopoverTrigger asChild>
-                          <Button variant="outline" className="h-9 w-9 p-0">
-                            <Ellipsis className="size-4" />
-                          </Button>
-                        </PopoverTrigger>
-                        <PopoverContent 
-                          align="start" 
-                          side="top"
-                          sideOffset={5}
-                          className="w-[300px] p-2 flex flex-wrap gap-2"
-                        >
-                           {['우주를 여행하는 고양이, 디지털 아트', '미래도시의 석양, 사이버펑크 스타일','초현실적인 인물 그림', '미술관 내부 그림', '아이들이 그린 그림'].map((badge) => (
+                    )
+                  )}
+
+                  {/* Mobile Only: Ellipsis Button with Popover */}
+                  <div className="lg:hidden block">
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="h-9 w-9 p-0">
+                          <Ellipsis className="size-4" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="start" side="top" sideOffset={5} className="w-[300px] p-2 flex flex-wrap gap-2">
+                        {["우주를 여행하는 고양이, 디지털 아트", "미래도시의 석양, 사이버펑크 스타일", "초현실적인 인물 그림", "미술관 내부 그림", "아이들이 그린 그림"].map(
+                          (badge) => (
                             <div key={badge} className="bg-secondary px-[10px] py-[2px] rounded-[8px] cursor-pointer hover:bg-secondary/80">
                               <p className="text-[12px] font-medium text-secondary-foreground">{badge}</p>
                             </div>
-                          ))}
-                        </PopoverContent>
-                      </Popover>
-                    </div>
+                          )
+                        )}
+                      </PopoverContent>
+                    </Popover>
                   </div>
-                ) : (
-                  // compact 모드: Timeline 예시처럼 2개만 항상 노출
-                  <div className="flex gap-2 items-start flex-wrap">
-                    {['심층 리서치를 작성해줘', '잘 생각해줘'].map((badge) => (
-                      <div key={badge} className="bg-secondary px-2.5 py-0.5 rounded-lg cursor-pointer hover:bg-secondary/80">
-                        <span className="text-xs font-medium text-secondary-foreground">{badge}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                </div>
 
-                {/* 패널 축소 + 모바일 화면 (Drawer Trigger) */}
-                {!isCompact && currentModelConfig?.hasOptions && (
-                  <div className="xl:hidden lg:w-[420px] w-full">
+                {/* 옵션 패널 트리거 - Default와 Compact 동일 UI */}
+                {currentModelConfig?.hasOptions && (
+                  <div className="w-full lg:w-[420px]">
                     <Drawer>
                       <DrawerTrigger asChild>
-                        <div className="bg-card border border-border flex gap-2 items-center p-2 rounded-[8px] w-full cursor-pointer hover:bg-accent/50 transition-colors">                  
+                        <div className="bg-card border border-border flex gap-2 items-center p-2 rounded-[8px] w-full cursor-pointer hover:bg-accent/50 transition-colors">
                           <Settings2 className="size-4" />
-                          <p className="text-sm font-medium text-card-foreground truncate text-ellipsis line-clamp-1 w-full">1024x1024 일반 Vivid 2</p>                    
+                          <p className="text-sm font-medium text-card-foreground truncate text-ellipsis line-clamp-1 w-full">1024x1024 일반 Vivid 2</p>
                           <div className="size-[16px] flex items-center justify-center relative shrink-0">
                             <ChevronsUp className="size-4" />
                           </div>
@@ -1273,7 +1287,7 @@ export function ChatInterface({
                         <DrawerFooter>
                           <DrawerClose asChild>
                             <div className="w-full flex  items-center justify-center">
-                               <Button variant="outline" className="w-full max-w-[360px]">확인</Button>
+                              <Button variant="outline" className="w-full max-w-[360px]">확인</Button>
                             </div>
                           </DrawerClose>
                         </DrawerFooter>

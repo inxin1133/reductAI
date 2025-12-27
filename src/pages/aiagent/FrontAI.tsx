@@ -79,7 +79,7 @@ export default function FrontAI() {
 
 
       {/* Main Content - 메인 컨텐츠 시작 */}
-      <div className="flex-1 flex flex-col h-full w-full bg-background relative">
+      <div className="flex-1 flex flex-col h-full w-full bg-background relative pt-[56px] md:pt-0">
         {/* Top Bar */}
         <UserHeader>
            {/* 언어 선택 컴포넌트 */}

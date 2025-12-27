@@ -8,8 +8,44 @@ import { ChatInterface } from "@/components/ChatInterface"
 import { Markdown } from "@/components/Markdown"
 import { CodeBlock } from "@/components/CodeBlock"
 import { BlockTable } from "@/components/BlockTable"
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import { useLocation, useNavigate } from "react-router-dom"
 
+
+/**
+ * Timeline Sidebar List Component
+ * - 렌더링 최적화 및 재사용을 위해 분리
+ */
+function TimelineSidebarList({
+  conversations,
+  activeConversationId,
+  onSelect,
+}: {
+  conversations: TimelineConversation[]
+  activeConversationId: string | null
+  onSelect: (id: string) => void
+}) {
+  return (
+    <div className="flex flex-col gap-1 w-full">
+      {conversations.length === 0 ? (
+        <div className="px-2 py-2 text-xs text-muted-foreground">저장된 대화가 없습니다.</div>
+      ) : (
+        conversations.map((c) => (
+          <div
+            key={c.id}
+            className={cn(
+              "flex items-center px-2 py-2 rounded-md cursor-pointer hover:bg-accent/50 transition-colors w-full h-8",
+              c.id === activeConversationId ? "bg-accent" : ""
+            )}
+            onClick={() => onSelect(c.id)}
+          >
+            <p className="text-sm text-foreground truncate w-full">{c.title}</p>
+          </div>
+        ))
+      )}
+    </div>
+  )
+}
 
 /**
  * Timeline(대화 히스토리) 저장 정책
@@ -213,7 +249,8 @@ function parseBlockJson(text: string): { parsed?: unknown; displayText: string; 
 export default function Timeline() {
   const location = useLocation()
   const navigate = useNavigate()
-  const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = React.useState(true)
+  const [isMobile, setIsMobile] = React.useState(false)
   const [conversations, setConversations] = React.useState<TimelineConversation[]>([])
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null)
   const [messages, setMessages] = React.useState<Array<{ role: ChatRole; content: string; contentJson?: unknown; model?: string }>>([]);
@@ -224,6 +261,29 @@ export default function Timeline() {
   const [stickySelectedModel, setStickySelectedModel] = React.useState<string | undefined>(undefined)
 
   const initial = (location.state as TimelineNavState | null)?.initial
+
+  // 모바일 화면에서는 타임라인(로컬) 사이드바를 기본적으로 축소(닫힘) 상태로 유지합니다.
+  // - 모바일: 닫힘(false)
+  // - 데스크탑: 열림(true)
+  React.useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return
+    const mq = window.matchMedia("(max-width: 767px)")
+
+    const apply = () => {
+      const mobile = mq.matches
+      setIsMobile(mobile)
+      setIsSidebarOpen(!mobile)
+    }
+
+    apply()
+    // Safari 구버전 호환
+    if (typeof mq.addEventListener === "function") {
+      mq.addEventListener("change", apply)
+      return () => mq.removeEventListener("change", apply)
+    }
+    mq.addListener(apply)
+    return () => mq.removeListener(apply)
+  }, [])
 
   // 보안: Timeline은 사용자별 히스토리를 다루므로 로그인(토큰)이 없으면 접근 불가
   React.useEffect(() => {
@@ -534,69 +594,107 @@ export default function Timeline() {
   }, [initial, navigate, location.pathname, createThreadFromFirstMessage, fetchThreads, addMessage])
 
   return (
-    <div className="bg-background relative w-full h-screen overflow-hidden flex font-sans">
+    <div className="bg-background w-full h-screen overflow-hidden flex font-sans">
       {/* Global Sidebar */}
       <Sidebar />
 
       {/* Main Content Area - 메인 컨텐츠 시작 */}
-      <div className="flex-1 flex flex-row h-full w-full bg-background relative">
+      <div className="flex-1 flex flex-row h-full w-full bg-background relative pt-[56px] md:pt-0">
         
         {/* Timeline Sidebar (Local) - 타임라인 사이드바 (로컬) */}
         {isSidebarOpen && (
-          <div className="w-[200px] border-r border-border h-full flex flex-col px-2 py-4 bg-background shrink-0">
-             <div className="flex flex-col gap-1 w-full">
-               {conversations.length === 0 ? (
-                 <div className="px-2 py-2 text-xs text-muted-foreground">
-                   저장된 대화가 없습니다.
-                 </div>
-               ) : (
-                 conversations.map((c) => (
-                 <div 
-                   key={c.id}
-                   className={cn(
-                     "flex items-center px-2 py-2 rounded-md cursor-pointer hover:bg-accent/50 transition-colors w-full h-8",
-                     c.id === activeConversationId ? "bg-accent" : ""
-                   )}
-                   onClick={() => setActiveConversationId(c.id)}
-                 >
-                   <p className="text-sm text-foreground truncate w-full">{c.title}</p>
-                 </div>
-                 ))
-               )}
-             </div>
-          </div>
+          <>
+            {/* Mobile: backdrop (컨텐츠를 덮는 오버레이 형태) */}
+            {isMobile && (
+              <div
+                className="fixed inset-0 top-[56px] z-30 bg-black/30"
+                onClick={() => setIsSidebarOpen(false)}
+              />
+            )}
+
+            <div
+              className={cn(
+                "border-r border-border h-full flex flex-col px-2 py-4 bg-background shrink-0",
+                isMobile ? "fixed top-[56px] left-0 bottom-0 z-40 w-[240px] shadow-lg" : "w-[200px]"
+              )}
+            >
+              <TimelineSidebarList
+                conversations={conversations}
+                activeConversationId={activeConversationId}
+                onSelect={(id) => {
+                  setActiveConversationId(id)
+                  // 모바일 오버레이에서는 선택 후 닫아주어 컨텐츠를 바로 볼 수 있게 합니다.
+                  if (isMobile) setIsSidebarOpen(false)
+                }}
+              />
+            </div>
+          </>
         )}
 
         {/* Chat Content Area - 채팅 내용 및 입력 영역 */}
-        <div className="flex-1 flex flex-col h-full relative">
+        <div className="flex-1 flex flex-col h-full relative w-full">
            {/* Header */}
            <UserHeader 
              leftContent={
-               <div className="flex items-center">
-                 <Button 
-                   variant="ghost" 
-                   size="icon" 
-                   className="size-4 p-0 hover:bg-transparent"
-                   onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-                 >
-                   {isSidebarOpen ? (
+               <div className="flex items-end">
+                 {/* Sidebar Toggle Button (HoverCard for preview when closed) */}
+                 {isSidebarOpen ? (
+                   <Button
+                     variant="ghost"
+                     size="icon"
+                     className="size-4 p-0 hover:bg-transparent"
+                     onClick={() => setIsSidebarOpen(false)}
+                   >
                      <ChevronsLeft className="size-4" />
+                   </Button>
+                 ) : (
+                   // 모바일에서는 hover가 없으므로: 클릭 시 오버레이 사이드바를 열기만 합니다.
+                   isMobile ? (
+                     <Button
+                       variant="ghost"
+                       size="icon"
+                       className="size-4 p-0 hover:bg-transparent"
+                       onClick={() => setIsSidebarOpen(true)}
+                     >
+                       <GalleryVerticalEnd className="size-4" />
+                     </Button>
                    ) : (
-                     <GalleryVerticalEnd className="size-4" />
-                   )}
-                 </Button>
+                     <HoverCard openDelay={0} closeDelay={100}>
+                       <HoverCardTrigger asChild>
+                         <Button
+                           variant="ghost"
+                           size="icon"
+                           className="size-4 p-0 hover:bg-transparent"
+                           onClick={() => setIsSidebarOpen(true)}
+                         >
+                           <GalleryVerticalEnd className="size-4" />
+                         </Button>
+                       </HoverCardTrigger>
+                       <HoverCardContent side="right" align="start" className="w-[200px] p-2">
+                         <TimelineSidebarList
+                           conversations={conversations}
+                           activeConversationId={activeConversationId}
+                           onSelect={(id) => {
+                             setActiveConversationId(id)
+                             setIsSidebarOpen(true)
+                           }}
+                         />
+                       </HoverCardContent>
+                     </HoverCard>
+                   )
+                 )}
                </div>
              }
            >
              {/* Header Center Button: Page Save & Edit */}
-             <div className="bg-background border border-border flex items-center justify-center gap-[6px] px-3 h-[32px] rounded-lg shadow-sm cursor-pointer hover:bg-accent/50 transition-colors">
+             <div className="bg-background border border-border flex items-center justify-center gap-[6px] px-3  h-[32px] rounded-lg shadow-sm cursor-pointer hover:bg-accent/50 transition-colors">
                <PencilLine className="size-4" />
                <span className="text-sm font-medium">페이지 저장 및 편집</span>
              </div>
            </UserHeader>
 
            {/* Chat Messages Scroll Area */}
-           <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-4 items-center">
+           <div className="overflow-y-auto p-6 flex flex-col w-full gap-4 items-center">
              {/* Messages */}
              <div className="w-full max-w-[800px] flex flex-col gap-6">
                {messages.length === 0 ? (
