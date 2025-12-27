@@ -1,4 +1,5 @@
 import { query } from "../config/db"
+import { ensureSystemTenantId } from "./systemTenantService"
 
 // ⚠️ 운영에서는 별도의 마이그레이션 도구를 사용하는 것을 권장합니다.
 // 현재 프로젝트는 서비스 내부에서 최소한의 테이블 존재 여부를 보장하는 방식으로 구현합니다.
@@ -6,6 +7,37 @@ export async function ensureAiAccessSchema() {
   // uuid-ossp 확장 (uuid_generate_v4 사용을 위해)
   // 일부 환경에서는 미설치일 수 있어 방어적으로 생성합니다.
   await query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`)
+
+  // ai_providers.display_name -> ai_providers.product_name (안전한 컬럼 rename)
+  // - 기존 DB 호환을 위해 존재 여부를 확인한 후 rename 합니다.
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'ai_providers'
+      ) THEN
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'ai_providers'
+            AND column_name = 'display_name'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'ai_providers'
+            AND column_name = 'product_name'
+        ) THEN
+          ALTER TABLE ai_providers RENAME COLUMN display_name TO product_name;
+        END IF;
+      END IF;
+    END $$;
+  `)
 
   // 테넌트 유형별 모델 접근권한 테이블
   await query(`
@@ -81,6 +113,7 @@ export async function ensureTimelineSchema() {
       function_name VARCHAR(255),
       function_call_id VARCHAR(255),
       input_tokens INTEGER DEFAULT 0,
+      cached_input_tokens INTEGER DEFAULT 0,
       output_tokens INTEGER DEFAULT 0,
       message_order INTEGER NOT NULL,
       metadata JSONB DEFAULT '{}',
@@ -105,6 +138,17 @@ export async function ensureTimelineSchema() {
           AND column_name = 'summary'
       ) THEN
         ALTER TABLE model_messages ADD COLUMN summary TEXT;
+      END IF;
+
+      -- cached_input_tokens 컬럼 추가(없으면)
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_messages'
+          AND column_name = 'cached_input_tokens'
+      ) THEN
+        ALTER TABLE model_messages ADD COLUMN cached_input_tokens INTEGER DEFAULT 0;
       END IF;
 
       -- content 컬럼 타입 확인
@@ -168,9 +212,11 @@ export async function ensureModelUsageLogsSchema() {
       feature_name VARCHAR(100) NOT NULL,
       request_id VARCHAR(255) UNIQUE,
       input_tokens INTEGER NOT NULL DEFAULT 0,
+      cached_input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       total_tokens INTEGER NOT NULL,
       input_cost DECIMAL(10, 6) DEFAULT 0,
+      cached_input_cost DECIMAL(10, 6) DEFAULT 0,
       output_cost DECIMAL(10, 6) DEFAULT 0,
       total_cost DECIMAL(10, 6) DEFAULT 0,
       currency VARCHAR(3) DEFAULT 'USD',
@@ -186,6 +232,39 @@ export async function ensureModelUsageLogsSchema() {
       metadata JSONB DEFAULT '{}',
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
+  `)
+
+  // 기존 DB 마이그레이션: cached_input_* 컬럼 추가
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'model_usage_logs'
+      ) THEN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'model_usage_logs'
+            AND column_name = 'cached_input_tokens'
+        ) THEN
+          ALTER TABLE model_usage_logs ADD COLUMN cached_input_tokens INTEGER NOT NULL DEFAULT 0;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'model_usage_logs'
+            AND column_name = 'cached_input_cost'
+        ) THEN
+          ALTER TABLE model_usage_logs ADD COLUMN cached_input_cost DECIMAL(10, 6) DEFAULT 0;
+        END IF;
+      END IF;
+    END $$;
   `)
 
   await query(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_tenant_id ON model_usage_logs(tenant_id);`)
@@ -211,6 +290,8 @@ export async function ensureModelRoutingRulesSchema() {
     CREATE TABLE IF NOT EXISTS model_routing_rules (
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
       tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      scope_type VARCHAR(20) NOT NULL DEFAULT 'TENANT' CHECK (scope_type IN ('GLOBAL', 'ROLE', 'TENANT')),
+      scope_id UUID NULL,
       rule_name VARCHAR(255) NOT NULL,
       priority INTEGER NOT NULL DEFAULT 0,
       conditions JSONB NOT NULL,
@@ -219,9 +300,69 @@ export async function ensureModelRoutingRulesSchema() {
       is_active BOOLEAN DEFAULT TRUE,
       metadata JSONB DEFAULT '{}',
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(tenant_id, rule_name)
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
+  `)
+
+  // scope 확장 마이그레이션 (기존 row는 TENANT 스코프로 tenant_id -> scope_id)
+  await query(`
+    DO $$
+    BEGIN
+      -- 1) scope 확장 컬럼 추가
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_routing_rules'
+          AND column_name = 'scope_type'
+      ) THEN
+        ALTER TABLE model_routing_rules
+          ADD COLUMN scope_type VARCHAR(20) NOT NULL DEFAULT 'TENANT'
+            CHECK (scope_type IN ('GLOBAL', 'ROLE', 'TENANT'));
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_routing_rules'
+          AND column_name = 'scope_id'
+      ) THEN
+        ALTER TABLE model_routing_rules ADD COLUMN scope_id UUID NULL;
+      END IF;
+
+      -- 2) 기존 row들은 TENANT 스코프로 마이그레이션 (tenant_id -> scope_id)
+      UPDATE model_routing_rules
+      SET scope_type = 'TENANT'
+      WHERE scope_type IS NULL;
+
+      UPDATE model_routing_rules
+      SET scope_id = tenant_id
+      WHERE scope_type = 'TENANT' AND scope_id IS NULL;
+
+      -- 3) scope 무결성 체크 (없으면 추가)
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_scope_id_required'
+      ) THEN
+        ALTER TABLE model_routing_rules
+        ADD CONSTRAINT chk_scope_id_required
+        CHECK (
+          (scope_type = 'GLOBAL' AND scope_id IS NULL)
+          OR (scope_type IN ('ROLE','TENANT') AND scope_id IS NOT NULL)
+        );
+      END IF;
+
+      -- 4) unique 제약 확장
+      ALTER TABLE model_routing_rules
+      DROP CONSTRAINT IF EXISTS model_routing_rules_tenant_id_rule_name_key;
+    END $$;
+  `)
+
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_model_routing_rules_scope_rule_name
+    ON model_routing_rules(scope_type, scope_id, rule_name);
   `)
 
   await query(`CREATE INDEX IF NOT EXISTS idx_model_routing_rules_tenant_id ON model_routing_rules(tenant_id);`)
@@ -229,6 +370,241 @@ export async function ensureModelRoutingRulesSchema() {
   await query(
     `CREATE INDEX IF NOT EXISTS idx_model_routing_rules_priority ON model_routing_rules(tenant_id, priority DESC) WHERE is_active = TRUE;`
   )
+}
+
+/**
+ * Prompt templates schema
+ * - Admin "프롬프트 템플릿"에서 관리하는 테이블을 서비스 부팅 시 보장합니다.
+ */
+export async function ensurePromptTemplatesSchema() {
+  await query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`)
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS prompt_templates (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      name VARCHAR(100) NOT NULL,
+      purpose VARCHAR(50) NOT NULL,
+      body JSONB NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      is_active BOOLEAN DEFAULT TRUE,
+      metadata JSONB DEFAULT '{}',
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(tenant_id, name, version)
+    );
+  `)
+
+  await query(`CREATE INDEX IF NOT EXISTS idx_prompt_templates_tenant_id ON prompt_templates(tenant_id);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_prompt_templates_purpose ON prompt_templates(tenant_id, purpose);`)
+  await query(
+    `CREATE INDEX IF NOT EXISTS idx_prompt_templates_is_active ON prompt_templates(tenant_id, is_active) WHERE is_active = TRUE;`
+  )
+
+  // 기존 DB 마이그레이션: 컬럼 추가(필요 시)
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'prompt_templates'
+      ) THEN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'prompt_templates'
+            AND column_name = 'metadata'
+        ) THEN
+          ALTER TABLE prompt_templates ADD COLUMN metadata JSONB DEFAULT '{}'::jsonb;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'prompt_templates'
+            AND column_name = 'updated_at'
+        ) THEN
+          ALTER TABLE prompt_templates ADD COLUMN updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+        END IF;
+      END IF;
+    END $$;
+  `)
+
+  // ai_models.prompt_template_id (prompt_templates 연결) 추가/보장
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'ai_models'
+      ) AND EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'prompt_templates'
+      ) THEN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'ai_models'
+            AND column_name = 'prompt_template_id'
+        ) THEN
+          ALTER TABLE ai_models ADD COLUMN prompt_template_id UUID;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint
+          WHERE conname = 'fk_ai_models_prompt_template_id'
+        ) THEN
+          ALTER TABLE ai_models
+          ADD CONSTRAINT fk_ai_models_prompt_template_id
+          FOREIGN KEY (prompt_template_id) REFERENCES prompt_templates(id) ON DELETE SET NULL;
+        END IF;
+      END IF;
+    END $$;
+  `)
+}
+
+/**
+ * Response schemas schema
+ * - 모델 출력 계약(JSON schema)을 DB에서 관리합니다.
+ */
+export async function ensureResponseSchemasSchema() {
+  await query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`)
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS response_schemas (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      name VARCHAR(100) NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      strict BOOLEAN NOT NULL DEFAULT TRUE,
+      schema JSONB NOT NULL,
+      description TEXT,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (tenant_id, name, version)
+    );
+  `)
+
+  await query(`CREATE INDEX IF NOT EXISTS idx_response_schemas_tenant_id ON response_schemas(tenant_id);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_response_schemas_name ON response_schemas(tenant_id, name);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_response_schemas_is_active ON response_schemas(tenant_id, is_active) WHERE is_active = TRUE;`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_response_schemas_schema_gin ON response_schemas USING GIN (schema);`)
+
+  // 기본 계약 seed: block_json v1 (system tenant)
+  // - 모델이 선택만 하면 즉시 response_format(json_schema) 강제에 사용할 수 있도록 미리 넣습니다.
+  try {
+    const tenantId = await ensureSystemTenantId()
+    const blockJsonV1 = {
+      type: "object",
+      additionalProperties: false,
+      required: ["title", "summary", "blocks"],
+      properties: {
+        title: { type: "string" },
+        summary: { type: "string" },
+        blocks: {
+          type: "array",
+          items: {
+            oneOf: [
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["type", "markdown"],
+                properties: { type: { const: "markdown" }, markdown: { type: "string" } },
+              },
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["type", "language", "code"],
+                properties: {
+                  type: { const: "code" },
+                  language: { type: "string" },
+                  code: { type: "string" },
+                },
+              },
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["type", "headers", "rows"],
+                properties: {
+                  type: { const: "table" },
+                  headers: { type: "array", items: { type: "string" } },
+                  rows: { type: "array", items: { type: "array", items: { type: "string" } } },
+                },
+              },
+            ],
+          },
+        },
+      },
+    }
+
+    await query(
+      `
+      INSERT INTO response_schemas
+        (tenant_id, name, version, strict, schema, description, is_active)
+      VALUES
+        ($1, 'block_json', 1, TRUE, $2::jsonb, '기본 블록 JSON 출력 계약 (title/summary/blocks)', TRUE)
+      ON CONFLICT (tenant_id, name, version)
+      DO UPDATE SET
+        strict = EXCLUDED.strict,
+        schema = EXCLUDED.schema,
+        description = EXCLUDED.description,
+        is_active = EXCLUDED.is_active,
+        updated_at = CURRENT_TIMESTAMP
+      `,
+      [tenantId, JSON.stringify(blockJsonV1)]
+    )
+  } catch (e) {
+    console.warn("[response-schemas] seed failed:", e)
+  }
+
+  // ai_models.response_schema_id (response_schemas 연결) 추가/보장
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'ai_models'
+      ) AND EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'response_schemas'
+      ) THEN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'ai_models'
+            AND column_name = 'response_schema_id'
+        ) THEN
+          ALTER TABLE ai_models ADD COLUMN response_schema_id UUID;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint
+          WHERE conname = 'fk_ai_models_response_schema_id'
+        ) THEN
+          ALTER TABLE ai_models
+          ADD CONSTRAINT fk_ai_models_response_schema_id
+          FOREIGN KEY (response_schema_id) REFERENCES response_schemas(id) ON DELETE SET NULL;
+        END IF;
+      END IF;
+    END $$;
+  `)
 }
 
 

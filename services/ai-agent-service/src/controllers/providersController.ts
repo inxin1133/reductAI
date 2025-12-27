@@ -8,7 +8,7 @@ export async function getProviders(_req: Request, res: Response) {
   try {
     const result = await query(
       `SELECT 
-        id, name, display_name, slug, description, website_url, api_base_url, documentation_url,
+        id, name, product_name, slug, description, website_url, api_base_url, documentation_url,
         status, is_verified, metadata, created_at, updated_at
       FROM ai_providers
       ORDER BY created_at DESC`
@@ -26,7 +26,7 @@ export async function getProvider(req: Request, res: Response) {
     const { id } = req.params
     const result = await query(
       `SELECT 
-        id, name, display_name, slug, description, website_url, api_base_url, documentation_url,
+        id, name, product_name, slug, description, website_url, api_base_url, documentation_url,
         status, is_verified, metadata, created_at, updated_at
       FROM ai_providers
       WHERE id = $1`,
@@ -45,7 +45,7 @@ export async function createProvider(req: Request, res: Response) {
   try {
     const {
       name,
-      display_name,
+      product_name,
       slug,
       description = null,
       website_url = null,
@@ -56,7 +56,7 @@ export async function createProvider(req: Request, res: Response) {
       metadata = {},
     }: {
       name: string
-      display_name: string
+      product_name: string
       slug: string
       description?: string | null
       website_url?: string | null
@@ -67,21 +67,21 @@ export async function createProvider(req: Request, res: Response) {
       metadata?: Record<string, unknown>
     } = req.body
 
-    if (!name || !display_name || !slug) {
-      return res.status(400).json({ message: "name, display_name, slug are required" })
+    if (!name || !product_name || !slug) {
+      return res.status(400).json({ message: "name, product_name, slug are required" })
     }
 
     const result = await query(
       `INSERT INTO ai_providers
-        (name, display_name, slug, description, website_url, api_base_url, documentation_url, status, is_verified, metadata)
+        (name, product_name, slug, description, website_url, api_base_url, documentation_url, status, is_verified, metadata)
       VALUES
         ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
       RETURNING 
-        id, name, display_name, slug, description, website_url, api_base_url, documentation_url,
+        id, name, product_name, slug, description, website_url, api_base_url, documentation_url,
         status, is_verified, metadata, created_at, updated_at`,
       [
         name,
-        display_name,
+        product_name,
         slug,
         description,
         website_url,
@@ -110,7 +110,7 @@ export async function updateProvider(req: Request, res: Response) {
     const { id } = req.params
     const {
       name,
-      display_name,
+      product_name,
       slug,
       description = null,
       website_url = null,
@@ -121,7 +121,7 @@ export async function updateProvider(req: Request, res: Response) {
       metadata,
     }: {
       name?: string
-      display_name?: string
+      product_name?: string
       slug?: string
       description?: string | null
       website_url?: string | null
@@ -136,7 +136,7 @@ export async function updateProvider(req: Request, res: Response) {
     const result = await query(
       `UPDATE ai_providers SET
         name = COALESCE($2, name),
-        display_name = COALESCE($3, display_name),
+        product_name = COALESCE($3, product_name),
         slug = COALESCE($4, slug),
         description = COALESCE($5, description),
         website_url = COALESCE($6, website_url),
@@ -148,12 +148,12 @@ export async function updateProvider(req: Request, res: Response) {
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $1
       RETURNING 
-        id, name, display_name, slug, description, website_url, api_base_url, documentation_url,
+        id, name, product_name, slug, description, website_url, api_base_url, documentation_url,
         status, is_verified, metadata, created_at, updated_at`,
       [
         id,
         name ?? null,
-        display_name ?? null,
+        product_name ?? null,
         slug ?? null,
         description,
         website_url,

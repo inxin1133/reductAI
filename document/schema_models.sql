@@ -24,7 +24,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE ai_providers (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name VARCHAR(100) NOT NULL UNIQUE, -- 예: 'openai', 'anthropic', 'google', 'cohere'
-    display_name VARCHAR(255) NOT NULL, -- 예: 'OpenAI', 'Anthropic', 'Google AI'
+    product_name VARCHAR(255) NOT NULL, -- 예: 'Chat GPT', 'Claude', 'Gemini'
     slug VARCHAR(100) NOT NULL UNIQUE,
     description TEXT,
     website_url VARCHAR(500),
@@ -43,7 +43,7 @@ CREATE INDEX idx_ai_providers_status ON ai_providers(status);
 COMMENT ON TABLE ai_providers IS 'AI 제공업체 정보를 관리하는 테이블';
 COMMENT ON COLUMN ai_providers.id IS '제공업체의 고유 식별자 (UUID)';
 COMMENT ON COLUMN ai_providers.name IS '제공업체 이름 (내부 식별용, 예: openai, anthropic)';
-COMMENT ON COLUMN ai_providers.display_name IS '제공업체 표시 이름 (예: OpenAI, Anthropic)';
+COMMENT ON COLUMN ai_providers.product_name IS '제공업체 제품명/표시 이름 (예: Chat GPT, Claude, Gemini)';
 COMMENT ON COLUMN ai_providers.slug IS '제공업체의 고유 식별 문자열';
 COMMENT ON COLUMN ai_providers.description IS '제공업체 설명';
 COMMENT ON COLUMN ai_providers.website_url IS '제공업체 웹사이트 URL';
@@ -78,6 +78,8 @@ CREATE TABLE ai_models (
     status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'deprecated', 'beta')),
     released_at DATE, -- 모델 출시일
     deprecated_at DATE, -- 모델 사용 중단일
+    prompt_template_id UUID REFERENCES prompt_templates(id) ON DELETE SET NULL, -- 모델 기본 프롬프트 템플릿(선택)
+    response_schema_id UUID REFERENCES response_schemas(id) ON DELETE SET NULL, -- 모델 출력 계약(JSON schema)(선택)
     metadata JSONB DEFAULT '{}', -- 추가 정보 (예: 파라미터 범위, 제한사항)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -110,6 +112,8 @@ COMMENT ON COLUMN ai_models.is_default IS '기본 모델 여부 (같은 타입 �
 COMMENT ON COLUMN ai_models.status IS '모델 상태: active(활성), inactive(비활성), deprecated(사용 중단), beta(베타)';
 COMMENT ON COLUMN ai_models.released_at IS '모델 출시일';
 COMMENT ON COLUMN ai_models.deprecated_at IS '모델 사용 중단일';
+COMMENT ON COLUMN ai_models.prompt_template_id IS '모델 기본 프롬프트 템플릿 ID (prompt_templates 참조)';
+COMMENT ON COLUMN ai_models.response_schema_id IS '모델 출력 계약(JSON schema) ID (response_schemas 참조)';
 COMMENT ON COLUMN ai_models.metadata IS '모델의 추가 메타데이터 (JSON 형식, 예: 파라미터 범위, 제한사항)';
 COMMENT ON COLUMN ai_models.created_at IS '모델 등록 시각';
 COMMENT ON COLUMN ai_models.updated_at IS '모델 정보 최종 수정 시각';
@@ -222,9 +226,11 @@ CREATE TABLE model_usage_logs (
     feature_name VARCHAR(100) NOT NULL, -- 사용한 기능 (예: 'chat', 'completion', 'embedding')
     request_id VARCHAR(255) UNIQUE, -- 요청 ID (추적용)
     input_tokens INTEGER NOT NULL DEFAULT 0, -- 입력 토큰 수
+    cached_input_tokens INTEGER NOT NULL DEFAULT 0, -- 캐시 히트 입력 토큰 수
     output_tokens INTEGER NOT NULL DEFAULT 0, -- 출력 토큰 수
     total_tokens INTEGER NOT NULL, -- 총 토큰 수 (input + output)
     input_cost DECIMAL(10, 6) DEFAULT 0, -- 입력 토큰 비용
+    cached_input_cost DECIMAL(10, 6) DEFAULT 0, -- 캐시 히트 입력 토큰 비용
     output_cost DECIMAL(10, 6) DEFAULT 0, -- 출력 토큰 비용
     total_cost DECIMAL(10, 6) DEFAULT 0, -- 총 비용
     currency VARCHAR(3) DEFAULT 'USD',
@@ -264,9 +270,11 @@ COMMENT ON COLUMN model_usage_logs.token_usage_log_id IS '토큰 사용 로그 I
 COMMENT ON COLUMN model_usage_logs.feature_name IS '사용한 기능 이름 (예: chat, completion, embedding, image_generation)';
 COMMENT ON COLUMN model_usage_logs.request_id IS '요청 ID (요청 추적용, 고유값)';
 COMMENT ON COLUMN model_usage_logs.input_tokens IS '입력 토큰 수';
+COMMENT ON COLUMN model_usage_logs.cached_input_tokens IS '캐시 히트 입력 토큰 수';
 COMMENT ON COLUMN model_usage_logs.output_tokens IS '출력 토큰 수';
 COMMENT ON COLUMN model_usage_logs.total_tokens IS '총 토큰 수 (input_tokens + output_tokens)';
 COMMENT ON COLUMN model_usage_logs.input_cost IS '입력 토큰 비용';
+COMMENT ON COLUMN model_usage_logs.cached_input_cost IS '캐시 히트 입력 토큰 비용';
 COMMENT ON COLUMN model_usage_logs.output_cost IS '출력 토큰 비용';
 COMMENT ON COLUMN model_usage_logs.total_cost IS '총 비용 (input_cost + output_cost)';
 COMMENT ON COLUMN model_usage_logs.currency IS '통화 코드';
@@ -323,6 +331,8 @@ COMMENT ON COLUMN model_performance_metrics.created_at IS '메트릭 생성 시�
 CREATE TABLE model_routing_rules (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    scope_type VARCHAR(20) NOT NULL DEFAULT 'TENANT' CHECK (scope_type IN ('GLOBAL', 'ROLE', 'TENANT')),
+    scope_id UUID NULL,
     rule_name VARCHAR(255) NOT NULL,
     priority INTEGER NOT NULL DEFAULT 0, -- 규칙 우선순위 (높을수록 우선)
     conditions JSONB NOT NULL, -- 조건 (예: {"feature": "chat", "max_tokens": 1000})
@@ -331,17 +341,32 @@ CREATE TABLE model_routing_rules (
     is_active BOOLEAN DEFAULT TRUE,
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(tenant_id, rule_name)
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX idx_model_routing_rules_tenant_id ON model_routing_rules(tenant_id);
 CREATE INDEX idx_model_routing_rules_target_model_id ON model_routing_rules(target_model_id);
 CREATE INDEX idx_model_routing_rules_priority ON model_routing_rules(tenant_id, priority DESC) WHERE is_active = TRUE;
 
+-- scope 무결성: TENANT면 scope_id 필수, GLOBAL이면 scope_id NULL 권장
+ALTER TABLE model_routing_rules
+ADD CONSTRAINT chk_scope_id_required
+CHECK (
+  (scope_type = 'GLOBAL' AND scope_id IS NULL)
+  OR (scope_type IN ('ROLE','TENANT') AND scope_id IS NOT NULL)
+);
+
+-- (중요) unique 제약 확장
+-- 기존: UNIQUE(tenant_id, rule_name)
+-- 목표: UNIQUE(scope_type, scope_id, rule_name)
+CREATE UNIQUE INDEX uq_model_routing_rules_scope_rule_name
+ON model_routing_rules(scope_type, scope_id, rule_name);
+
 COMMENT ON TABLE model_routing_rules IS '모델 라우팅 규칙을 관리하는 테이블. 조건에 따라 자동으로 모델을 선택합니다.';
 COMMENT ON COLUMN model_routing_rules.id IS '라우팅 규칙의 고유 식별자 (UUID)';
 COMMENT ON COLUMN model_routing_rules.tenant_id IS '테넌트 ID (tenants 테이블 참조)';
+COMMENT ON COLUMN model_routing_rules.scope_type IS '규칙 적용 스코프: GLOBAL(전역), ROLE(역할), TENANT(테넌트)';
+COMMENT ON COLUMN model_routing_rules.scope_id IS '스코프 식별자 (GLOBAL이면 NULL, ROLE/TENANT면 UUID 필수)';
 COMMENT ON COLUMN model_routing_rules.rule_name IS '규칙 이름';
 COMMENT ON COLUMN model_routing_rules.priority IS '규칙 우선순위 (높을수록 우선 적용)';
 COMMENT ON COLUMN model_routing_rules.conditions IS '라우팅 조건 (JSON 형식, 예: {"feature": "chat", "max_tokens": {"$lt": 1000}, "language": "ko"})';
@@ -351,6 +376,82 @@ COMMENT ON COLUMN model_routing_rules.is_active IS '규칙 활성화 여부';
 COMMENT ON COLUMN model_routing_rules.metadata IS '규칙의 추가 메타데이터 (JSON 형식)';
 COMMENT ON COLUMN model_routing_rules.created_at IS '규칙 생성 시각';
 COMMENT ON COLUMN model_routing_rules.updated_at IS '규칙 최종 수정 시각';
+
+-- ============================================
+-- 7.1 PROMPT TEMPLATES (프롬프트 템플릿)
+-- ============================================
+-- 목적(purpose)에 따라 재사용 가능한 프롬프트/Responses API 요청 바디를 저장합니다.
+-- - body: Responses API body(JSON). 예: {"model":"gpt-4.1-mini","input":[...],"text":{"format":...}}
+-- - 운영에서는 tenant scope 확장/버전 정책 등을 요구사항에 맞게 보강하세요.
+
+CREATE TABLE prompt_templates (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    name VARCHAR(100) NOT NULL, -- 템플릿 이름(식별자)
+    purpose VARCHAR(50) NOT NULL, -- documentation, chat, code, summary 등
+    body JSONB NOT NULL, -- Responses API body(JSON)
+    version INTEGER NOT NULL DEFAULT 1,
+    is_active BOOLEAN DEFAULT TRUE,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(tenant_id, name, version)
+);
+
+CREATE INDEX idx_prompt_templates_tenant_id ON prompt_templates(tenant_id);
+CREATE INDEX idx_prompt_templates_purpose ON prompt_templates(tenant_id, purpose);
+CREATE INDEX idx_prompt_templates_is_active ON prompt_templates(tenant_id, is_active) WHERE is_active = TRUE;
+
+COMMENT ON TABLE prompt_templates IS '프롬프트/Responses API 요청 바디 템플릿을 저장하는 테이블';
+COMMENT ON COLUMN prompt_templates.id IS '템플릿의 고유 식별자 (UUID)';
+COMMENT ON COLUMN prompt_templates.tenant_id IS '테넌트 ID (tenants 테이블 참조)';
+COMMENT ON COLUMN prompt_templates.name IS '템플릿 이름';
+COMMENT ON COLUMN prompt_templates.purpose IS '템플릿 목적(예: documentation, chat, code, summary)';
+COMMENT ON COLUMN prompt_templates.body IS 'Responses API body(JSON)';
+COMMENT ON COLUMN prompt_templates.version IS '템플릿 버전(정수)';
+COMMENT ON COLUMN prompt_templates.is_active IS '활성 템플릿 여부';
+COMMENT ON COLUMN prompt_templates.metadata IS '추가 메타데이터(JSON)';
+COMMENT ON COLUMN prompt_templates.created_at IS '생성 시각';
+COMMENT ON COLUMN prompt_templates.updated_at IS '최종 수정 시각';
+
+-- ============================================
+-- 7.2 RESPONSE SCHEMAS (출력 계약 / JSON Schema)
+-- ============================================
+-- 모델 출력 형식을 "계약(contract)"으로 관리합니다.
+-- 예: name="block_json", schema={...}, strict=true
+-- 모델 연결은 ai_models.response_schema_id 로 합니다.
+
+CREATE TABLE response_schemas (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    name VARCHAR(100) NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    strict BOOLEAN NOT NULL DEFAULT TRUE,
+    schema JSONB NOT NULL,
+    description TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (tenant_id, name, version)
+);
+
+CREATE INDEX idx_response_schemas_tenant_id ON response_schemas(tenant_id);
+CREATE INDEX idx_response_schemas_name ON response_schemas(tenant_id, name);
+CREATE INDEX idx_response_schemas_is_active ON response_schemas(tenant_id, is_active) WHERE is_active = TRUE;
+-- JSONB 조회 가속(특정 키 검색이 필요할 경우)
+CREATE INDEX idx_response_schemas_schema_gin ON response_schemas USING GIN (schema);
+
+COMMENT ON TABLE response_schemas IS '모델 출력 형식(JSON Schema 기반 계약)을 관리하는 테이블';
+COMMENT ON COLUMN response_schemas.id IS '출력 계약의 고유 식별자 (UUID)';
+COMMENT ON COLUMN response_schemas.tenant_id IS '테넌트 ID (tenants 테이블 참조)';
+COMMENT ON COLUMN response_schemas.name IS '계약 이름 (예: block_json)';
+COMMENT ON COLUMN response_schemas.version IS '계약 버전 (정수)';
+COMMENT ON COLUMN response_schemas.strict IS 'OpenAI json_schema strict 여부';
+COMMENT ON COLUMN response_schemas.schema IS 'JSON Schema 본문(JSON 객체)';
+COMMENT ON COLUMN response_schemas.description IS '설명';
+COMMENT ON COLUMN response_schemas.is_active IS '활성 여부';
+COMMENT ON COLUMN response_schemas.created_at IS '생성 시각';
+COMMENT ON COLUMN response_schemas.updated_at IS '최종 수정 시각';
 
 -- ============================================
 -- 8. MODEL CONVERSATIONS (모델 대화 세션)
@@ -406,6 +507,7 @@ CREATE TABLE model_messages (
     function_name VARCHAR(255), -- 함수 이름 (role이 function인 경우)
     function_call_id VARCHAR(255), -- 함수 호출 ID
     input_tokens INTEGER DEFAULT 0, -- 입력 토큰 수
+    cached_input_tokens INTEGER DEFAULT 0, -- 캐시 히트 입력 토큰 수
     output_tokens INTEGER DEFAULT 0, -- 출력 토큰 수
     message_order INTEGER NOT NULL, -- 메시지 순서
     metadata JSONB DEFAULT '{}',
@@ -425,6 +527,7 @@ COMMENT ON COLUMN model_messages.summary IS '메시지 요약(표시/검색용)'
 COMMENT ON COLUMN model_messages.function_name IS '함수 이름 (role이 function인 경우)';
 COMMENT ON COLUMN model_messages.function_call_id IS '함수 호출 ID (함수 호출 추적용)';
 COMMENT ON COLUMN model_messages.input_tokens IS '입력 토큰 수';
+COMMENT ON COLUMN model_messages.cached_input_tokens IS '캐시 히트 입력 토큰 수';
 COMMENT ON COLUMN model_messages.output_tokens IS '출력 토큰 수';
 COMMENT ON COLUMN model_messages.message_order IS '메시지 순서 (대화 내에서의 순서)';
 COMMENT ON COLUMN model_messages.metadata IS '메시지의 추가 메타데이터 (JSON 형식)';
@@ -520,7 +623,7 @@ COMMENT ON FUNCTION calculate_model_usage_cost IS '모델 사용 비용을 계�
 -- ============================================
 
 -- Default AI providers
-INSERT INTO ai_providers (name, display_name, slug, description, api_base_url, status, is_verified) VALUES
+INSERT INTO ai_providers (name, product_name, slug, description, api_base_url, status, is_verified) VALUES
     ('openai', 'OpenAI', 'openai', 'OpenAI provides GPT models including GPT-4, GPT-3.5, and embeddings', 'https://api.openai.com/v1', 'active', TRUE),
     ('anthropic', 'Anthropic', 'anthropic', 'Anthropic provides Claude models including Claude 3 Opus, Sonnet, and Haiku', 'https://api.anthropic.com/v1', 'active', TRUE),
     ('google', 'Google AI', 'google', 'Google provides Gemini models and PaLM', 'https://generativelanguage.googleapis.com/v1', 'active', TRUE),
@@ -528,82 +631,7 @@ INSERT INTO ai_providers (name, display_name, slug, description, api_base_url, s
     ('mistral', 'Mistral AI', 'mistral', 'Mistral AI provides high-performance language models', 'https://api.mistral.ai/v1', 'active', TRUE)
 ON CONFLICT (slug) DO NOTHING;
 
--- Default AI models (example - actual models should be added based on current availability)
--- Note: Prices are approximate and should be updated based on current pricing
-INSERT INTO ai_models (provider_id, name, model_id, display_name, model_type, context_window, input_token_cost_per_1k, output_token_cost_per_1k, status, is_default) 
-SELECT 
-    p.id,
-    'gpt-4-turbo',
-    'gpt-4-turbo-preview',
-    'GPT-4 Turbo',
-    'text',
-    128000,
-    0.01,
-    0.03,
-    'active',
-    TRUE
-FROM ai_providers p WHERE p.slug = 'openai'
-ON CONFLICT (provider_id, model_id) DO NOTHING;
 
-INSERT INTO ai_models (provider_id, name, model_id, display_name, model_type, context_window, input_token_cost_per_1k, output_token_cost_per_1k, status, is_default) 
-SELECT 
-    p.id,
-    'gpt-3.5-turbo',
-    'gpt-3.5-turbo',
-    'GPT-3.5 Turbo',
-    'text',
-    16385,
-    0.0005,
-    0.0015,
-    'active',
-    FALSE
-FROM ai_providers p WHERE p.slug = 'openai'
-ON CONFLICT (provider_id, model_id) DO NOTHING;
-
-INSERT INTO ai_models (provider_id, name, model_id, display_name, model_type, context_window, input_token_cost_per_1k, output_token_cost_per_1k, status, is_default) 
-SELECT 
-    p.id,
-    'claude-3-opus',
-    'claude-3-opus-20240229',
-    'Claude 3 Opus',
-    'text',
-    200000,
-    0.015,
-    0.075,
-    'active',
-    TRUE
-FROM ai_providers p WHERE p.slug = 'anthropic'
-ON CONFLICT (provider_id, model_id) DO NOTHING;
-
-INSERT INTO ai_models (provider_id, name, model_id, display_name, model_type, context_window, input_token_cost_per_1k, output_token_cost_per_1k, status, is_default) 
-SELECT 
-    p.id,
-    'claude-3-sonnet',
-    'claude-3-sonnet-20240229',
-    'Claude 3 Sonnet',
-    'text',
-    200000,
-    0.003,
-    0.015,
-    'active',
-    FALSE
-FROM ai_providers p WHERE p.slug = 'anthropic'
-ON CONFLICT (provider_id, model_id) DO NOTHING;
-
-INSERT INTO ai_models (provider_id, name, model_id, display_name, model_type, context_window, input_token_cost_per_1k, output_token_cost_per_1k, status, is_default) 
-SELECT 
-    p.id,
-    'gemini-pro',
-    'gemini-pro',
-    'Gemini Pro',
-    'text',
-    32768,
-    0.0005,
-    0.0015,
-    'active',
-    TRUE
-FROM ai_providers p WHERE p.slug = 'google'
-ON CONFLICT (provider_id, model_id) DO NOTHING;
 
 -- ============================================
 -- 13. INTEGRATION WITH TOKEN SYSTEM

@@ -5,11 +5,20 @@ import providersRoutes from "./routes/providersRoutes"
 import credentialsRoutes from "./routes/credentialsRoutes"
 import modelsRoutes from "./routes/modelsRoutes"
 import tenantTypeModelAccessRoutes from "./routes/tenantTypeModelAccessRoutes"
-import { ensureAiAccessSchema, ensureModelRoutingRulesSchema, ensureModelUsageLogsSchema, ensureTimelineSchema } from "./services/schemaBootstrap"
+import {
+  ensureAiAccessSchema,
+  ensureModelRoutingRulesSchema,
+  ensureModelUsageLogsSchema,
+  ensurePromptTemplatesSchema,
+  ensureResponseSchemasSchema,
+  ensureTimelineSchema,
+} from "./services/schemaBootstrap"
 import chatRoutes from "./routes/chatRoutes"
 import timelineRoutes from "./routes/timelineRoutes"
 import usageLogsRoutes from "./routes/usageLogsRoutes"
 import routingRulesRoutes from "./routes/routingRulesRoutes"
+import promptTemplatesRoutes from "./routes/promptTemplatesRoutes"
+import responseSchemasRoutes from "./routes/responseSchemasRoutes"
 
 dotenv.config()
 
@@ -29,6 +38,8 @@ app.use("/api/ai/chat", chatRoutes)
 app.use("/api/ai/timeline", timelineRoutes)
 app.use("/api/ai/usage-logs", usageLogsRoutes)
 app.use("/api/ai/routing-rules", routingRulesRoutes)
+app.use("/api/ai/prompt-templates", promptTemplatesRoutes)
+app.use("/api/ai/response-schemas", responseSchemasRoutes)
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "ai-agent-service" })
@@ -42,6 +53,8 @@ app.listen(PORT, async () => {
     await ensureTimelineSchema()
     await ensureModelUsageLogsSchema()
     await ensureModelRoutingRulesSchema()
+    await ensurePromptTemplatesSchema()
+    await ensureResponseSchemasSchema()
     console.log("ai-agent-service schema bootstrap ok")
   } catch (e) {
     console.error("ai-agent-service schema bootstrap failed:", e)

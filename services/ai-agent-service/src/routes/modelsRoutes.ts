@@ -5,14 +5,12 @@ import {
   createModel,
   updateModel,
   deleteModel,
-  syncModels,
   simulateModel,
 } from "../controllers/modelsController"
 
 const router = express.Router()
 
-// 동기화/시뮬레이터 (동적 라우트(:id)보다 위에 있어야 함)
-router.post("/sync", syncModels)
+// 시뮬레이터 (동적 라우트(:id)보다 위에 있어야 함)
 router.post("/simulate", simulateModel)
 
 // AI 모델 관리

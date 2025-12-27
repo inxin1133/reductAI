@@ -39,7 +39,7 @@ type AccessLevel = "standard" | "premium" | "enterprise"
 interface Model {
   id: string
   provider_id: string
-  provider_display_name?: string
+  provider_product_name?: string
   provider_slug?: string
   display_name: string
   model_id: string
@@ -53,7 +53,7 @@ interface Credential {
   id: string
   provider_id: string
   credential_name: string
-  provider_display_name?: string
+  provider_product_name?: string
   provider_slug?: string
   is_active: boolean
   is_default: boolean
@@ -82,7 +82,7 @@ interface TypeModelAccessRow {
   model_api_id?: string
   model_type?: string
   context_window?: number | null
-  provider_display_name?: string
+  provider_product_name?: string
   provider_slug?: string
   credential_name?: string | null
 }
@@ -159,7 +159,7 @@ export default function TenantTypeModelAccess() {
       id: String(c.id || ""),
       provider_id: String(c.provider_id || ""),
       credential_name: String(c.credential_name || ""),
-      provider_display_name: typeof c.provider_display_name === "string" ? c.provider_display_name : undefined,
+      provider_product_name: typeof c.provider_product_name === "string" ? c.provider_product_name : undefined,
       provider_slug: typeof c.provider_slug === "string" ? c.provider_slug : undefined,
       is_active: Boolean(c.is_active),
       is_default: Boolean(c.is_default),
@@ -199,7 +199,7 @@ export default function TenantTypeModelAccess() {
     const q = search.trim().toLowerCase()
     if (!q) return rows
     return rows.filter((r) => {
-      const hay = `${r.provider_display_name || ""} ${r.provider_slug || ""} ${r.model_display_name || ""} ${r.model_api_id || ""} ${r.status} ${r.access_level}`.toLowerCase()
+      const hay = `${r.provider_product_name || ""} ${r.provider_slug || ""} ${r.model_display_name || ""} ${r.model_api_id || ""} ${r.status} ${r.access_level}`.toLowerCase()
       return hay.includes(q)
     })
   }, [rows, search])
@@ -325,7 +325,7 @@ export default function TenantTypeModelAccess() {
   }
 
   const handleDelete = async (row: TypeModelAccessRow) => {
-    if (!confirm(`정말 삭제하시겠습니까?\n- ${row.provider_display_name || ""} / ${row.model_display_name || row.model_id}`)) return
+    if (!confirm(`정말 삭제하시겠습니까?\n- ${row.provider_product_name || ""} / ${row.model_display_name || row.model_id}`)) return
     try {
       await fetch(`${TYPE_MODEL_ACCESS_API_URL}/${row.id}`, { method: "DELETE", headers: { ...authHeaders() } })
       await fetchRows(selectedType)
@@ -428,7 +428,7 @@ export default function TenantTypeModelAccess() {
                     <Badge variant="outline" className="font-mono text-xs">
                       {r.provider_slug || "-"}
                     </Badge>
-                    <div className="text-xs text-muted-foreground">{r.provider_display_name || ""}</div>
+                    <div className="text-xs text-muted-foreground">{r.provider_product_name || ""}</div>
                   </TableCell>
                   <TableCell>{statusBadge(r.status)}</TableCell>
                   <TableCell>
@@ -489,7 +489,7 @@ export default function TenantTypeModelAccess() {
                 <SelectContent>
                   {models.map((m) => (
                     <SelectItem key={m.id} value={m.id}>
-                      {m.provider_display_name} / {m.display_name} ({m.model_type})
+                      {m.provider_product_name} / {m.display_name} ({m.model_type})
                     </SelectItem>
                   ))}
                 </SelectContent>

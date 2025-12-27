@@ -32,6 +32,8 @@ import { Loader2, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react"
 
 type RoutingRule = {
   id: string
+  scope_type?: "GLOBAL" | "ROLE" | "TENANT"
+  scope_id?: string | null
   rule_name: string
   priority: number
   conditions: Record<string, unknown>
@@ -51,7 +53,7 @@ type AiModel = {
   id: string
   display_name: string
   model_id: string
-  provider_display_name?: string
+  provider_product_name?: string
   provider_slug?: string
   status: string
   is_available: boolean
@@ -68,8 +70,31 @@ type ListResponse = {
 const RULES_API = "/api/ai/routing-rules"
 const MODELS_API = "/api/ai/models"
 
-function nowIso() {
-  return new Date().toISOString()
+type ScopeType = "GLOBAL" | "ROLE" | "TENANT"
+type ScopeTypeFilter = "all" | ScopeType
+
+function errorMessage(e: unknown) {
+  return e instanceof Error ? e.message : String(e)
+}
+
+function jsonErrorMessage(json: unknown): string | null {
+  if (!json || typeof json !== "object") return null
+  const rec = json as Record<string, unknown>
+  return typeof rec.message === "string" ? rec.message : null
+}
+
+function parseScopeType(v: unknown): ScopeType {
+  const s = typeof v === "string" ? v.trim().toUpperCase() : ""
+  return s === "GLOBAL" || s === "ROLE" || s === "TENANT" ? (s as ScopeType) : "TENANT"
+}
+
+function parseScopeTypeFilter(v: unknown): ScopeTypeFilter {
+  if (v === "all") return "all"
+  return parseScopeType(v)
+}
+
+function parseActiveFilter(v: unknown): "all" | "true" | "false" {
+  return v === "all" || v === "true" || v === "false" ? v : "all"
 }
 
 function safeParseJsonObject(text: string): Record<string, unknown> {
@@ -100,6 +125,7 @@ export default function ModelRoutingRules() {
 
   const [q, setQ] = useState("")
   const [isActiveFilter, setIsActiveFilter] = useState<"all" | "true" | "false">("all")
+  const [scopeTypeFilter, setScopeTypeFilter] = useState<ScopeTypeFilter>("all")
   const [page, setPage] = useState(0)
   const limit = 50
 
@@ -110,6 +136,8 @@ export default function ModelRoutingRules() {
   const [ruleName, setRuleName] = useState("")
   const [priority, setPriority] = useState(0)
   const [isActive, setIsActive] = useState(true)
+  const [scopeType, setScopeType] = useState<ScopeType>("TENANT")
+  const [scopeId, setScopeId] = useState<string>("")
   const [targetModelId, setTargetModelId] = useState<string>("")
   const [fallbackModelId, setFallbackModelId] = useState<string>("__none__")
   const [conditionsText, setConditionsText] = useState<string>(pretty({ feature: "chat" }))
@@ -121,8 +149,9 @@ export default function ModelRoutingRules() {
     params.set("offset", String(page * limit))
     if (q.trim()) params.set("q", q.trim())
     if (isActiveFilter !== "all") params.set("is_active", isActiveFilter)
+    if (scopeTypeFilter !== "all") params.set("scope_type", scopeTypeFilter)
     return params.toString()
-  }, [isActiveFilter, limit, page, q])
+  }, [isActiveFilter, limit, page, q, scopeTypeFilter])
 
   async function fetchModels() {
     setModelsLoading(true)
@@ -160,6 +189,8 @@ export default function ModelRoutingRules() {
     setRuleName("")
     setPriority(0)
     setIsActive(true)
+    setScopeType("TENANT")
+    setScopeId("")
     setTargetModelId("")
     setFallbackModelId("__none__")
     setConditionsText(pretty({ feature: "chat" }))
@@ -176,6 +207,8 @@ export default function ModelRoutingRules() {
     setRuleName(r.rule_name)
     setPriority(Number(r.priority || 0))
     setIsActive(Boolean(r.is_active))
+    setScopeType(parseScopeType(r.scope_type))
+    setScopeId(typeof r.scope_id === "string" ? r.scope_id : "")
     setTargetModelId(r.target_model_id)
     setFallbackModelId(r.fallback_model_id ? String(r.fallback_model_id) : "__none__")
     setConditionsText(pretty(r.conditions || {}))
@@ -192,7 +225,14 @@ export default function ModelRoutingRules() {
     if (Object.keys(conditions).length === 0) return alert("conditions는 JSON object여야 합니다.")
     const metadata = safeParseJsonObject(metadataText)
 
+    if (scopeType === "ROLE") {
+      const sid = scopeId.trim()
+      if (!sid) return alert("ROLE 스코프에서는 scope_id(UUID)를 입력해 주세요.")
+    }
+
     const payload = {
+      scope_type: scopeType,
+      scope_id: scopeType === "GLOBAL" ? null : scopeType === "TENANT" ? null : scopeId.trim(),
       rule_name: name,
       priority,
       is_active: isActive,
@@ -212,13 +252,13 @@ export default function ModelRoutingRules() {
         body: JSON.stringify(payload),
       })
       const json = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(String((json as any)?.message || "저장 실패"))
+      if (!res.ok) throw new Error(jsonErrorMessage(json) || "저장 실패")
       setOpen(false)
       resetForm()
       await fetchRules()
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e)
-      alert(String(e?.message || e))
+      alert(errorMessage(e))
     }
   }
 
@@ -230,11 +270,11 @@ export default function ModelRoutingRules() {
         body: JSON.stringify({ is_active: next }),
       })
       const json = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(String((json as any)?.message || "수정 실패"))
+      if (!res.ok) throw new Error(jsonErrorMessage(json) || "수정 실패")
       await fetchRules()
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e)
-      alert(String(e?.message || e))
+      alert(errorMessage(e))
     }
   }
 
@@ -244,17 +284,16 @@ export default function ModelRoutingRules() {
     try {
       const res = await fetch(`${RULES_API}/${r.id}`, { method: "DELETE" })
       const json = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(String((json as any)?.message || "삭제 실패"))
+      if (!res.ok) throw new Error(jsonErrorMessage(json) || "삭제 실패")
       await fetchRules()
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e)
-      alert(String(e?.message || e))
+      alert(errorMessage(e))
     }
   }
 
   useEffect(() => {
     fetchModels()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -296,10 +335,27 @@ export default function ModelRoutingRules() {
           className="w-[280px]"
         />
         <Select
+          value={scopeTypeFilter}
+          onValueChange={(v) => {
+            setPage(0)
+            setScopeTypeFilter(parseScopeTypeFilter(v))
+          }}
+        >
+          <SelectTrigger className="w-[180px]">
+            <SelectValue placeholder="스코프(전체)" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">스코프(전체)</SelectItem>
+            <SelectItem value="GLOBAL">GLOBAL</SelectItem>
+            <SelectItem value="ROLE">ROLE</SelectItem>
+            <SelectItem value="TENANT">TENANT</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select
           value={isActiveFilter}
           onValueChange={(v) => {
             setPage(0)
-            setIsActiveFilter(v as any)
+            setIsActiveFilter(parseActiveFilter(v))
           }}
         >
           <SelectTrigger className="w-[180px]">
@@ -319,6 +375,7 @@ export default function ModelRoutingRules() {
             <TableRow>
               <TableHead className="min-w-[200px]">규칙</TableHead>
               <TableHead className="text-right">Priority</TableHead>
+              <TableHead className="min-w-[160px]">Scope</TableHead>
               <TableHead>활성</TableHead>
               <TableHead className="min-w-[260px]">Target</TableHead>
               <TableHead className="min-w-[260px]">Fallback</TableHead>
@@ -330,14 +387,14 @@ export default function ModelRoutingRules() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={9} className="py-8 text-center text-muted-foreground">
                   <Loader2 className="h-4 w-4 inline-block animate-spin mr-2" />
                   로딩 중...
                 </TableCell>
               </TableRow>
             ) : rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
                   등록된 라우팅 규칙이 없습니다.
                 </TableCell>
               </TableRow>
@@ -349,6 +406,14 @@ export default function ModelRoutingRules() {
                     <div className="text-xs text-muted-foreground font-mono">{r.id}</div>
                   </TableCell>
                   <TableCell className="text-right font-mono">{r.priority}</TableCell>
+                  <TableCell>
+                    <div className="flex flex-col">
+                      <span className="font-mono text-xs">{r.scope_type || "TENANT"}</span>
+                      <span className="text-xs text-muted-foreground font-mono">
+                        {r.scope_type === "GLOBAL" ? "-" : r.scope_id ? String(r.scope_id).slice(0, 8) + "…" : "-"}
+                      </span>
+                    </div>
+                  </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <Switch checked={r.is_active} onCheckedChange={(v) => toggleActive(r, v)} />
@@ -441,6 +506,34 @@ export default function ModelRoutingRules() {
                 type="number"
                 value={priority}
                 onChange={(e) => setPriority(Number(e.target.value || 0))}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>스코프(scope_type)</Label>
+              <Select value={scopeType} onValueChange={(v) => setScopeType(parseScopeType(v))}>
+                <SelectTrigger>
+                  <SelectValue placeholder="스코프 선택" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="TENANT">TENANT</SelectItem>
+                  <SelectItem value="ROLE">ROLE</SelectItem>
+                  <SelectItem value="GLOBAL">GLOBAL</SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="text-xs text-muted-foreground">
+                - TENANT: scope_id는 서버에서 tenant_id로 자동 지정<br />
+                - ROLE: scope_id(UUID) 입력 필요<br />
+                - GLOBAL: scope_id는 NULL
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>스코프 ID(scope_id)</Label>
+              <Input
+                value={scopeType === "TENANT" || scopeType === "GLOBAL" ? "" : scopeId}
+                onChange={(e) => setScopeId(e.target.value)}
+                placeholder={scopeType === "ROLE" ? "UUID (ROLE scope_id)" : "-"}
+                disabled={scopeType !== "ROLE"}
               />
             </div>
 

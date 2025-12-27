@@ -136,6 +136,8 @@ export async function openaiSimulateChat(args: {
   input: string
   maxTokens: number
   outputFormat?: "block_json"
+  templateBody?: Record<string, unknown> | null
+  responseSchema?: OpenAiJsonSchema | null
 }) {
   const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl)
   const base = normalized || "https://api.openai.com/v1"
@@ -176,9 +178,22 @@ export async function openaiSimulateChat(args: {
     return ""
   }
 
+  function deepMerge(a: any, b: any): any {
+    // b wins. arrays are replaced.
+    if (Array.isArray(a) || Array.isArray(b)) return b ?? a
+    if (!a || typeof a !== "object") return b
+    if (!b || typeof b !== "object") return b
+    const out: Record<string, unknown> = { ...(a as Record<string, unknown>) }
+    for (const [k, v] of Object.entries(b as Record<string, unknown>)) {
+      const av = (out as any)[k]
+      ;(out as any)[k] = deepMerge(av, v)
+    }
+    return out
+  }
+
   function responsesBody() {
-    const schema = args.outputFormat === "block_json" ? openAiBlockJsonSchema() : null
-    return {
+    const schema = args.responseSchema || (args.outputFormat === "block_json" ? openAiBlockJsonSchema() : null)
+    const baseBody = {
       model: args.model,
       input: args.input,
       // responses API에서는 max_output_tokens 사용
@@ -211,6 +226,8 @@ export async function openaiSimulateChat(args: {
             text: { verbosity: "low" },
           }),
     }
+    // templateBody(JSONB)를 base body에 merge (runtime/base wins)
+    return args.templateBody && typeof args.templateBody === "object" ? deepMerge(args.templateBody, baseBody) : baseBody
   }
 
   function responsesBodyJsonObject() {

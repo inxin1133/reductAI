@@ -37,7 +37,7 @@ type ProviderStatus = "active" | "inactive" | "deprecated"
 interface AIProvider {
   id: string
   name: string
-  display_name: string
+  product_name: string
   slug: string
   status: ProviderStatus
   is_verified: boolean
@@ -69,7 +69,7 @@ interface ProviderCredential {
   // 서버 응답(join 결과)에서만 존재할 수 있는 표시용 필드
   tenant_name?: string
   tenant_slug?: string
-  provider_display_name?: string
+  provider_product_name?: string
   provider_slug?: string
 }
 
@@ -101,9 +101,9 @@ async function tryFetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Pr
 
 function seedProviders(): AIProvider[] {
   return [
-    { id: safeUuid(), name: "openai", display_name: "OpenAI", slug: "openai", status: "active", is_verified: true, api_base_url: "https://api.openai.com/v1" },
-    { id: safeUuid(), name: "anthropic", display_name: "Anthropic", slug: "anthropic", status: "active", is_verified: true, api_base_url: "https://api.anthropic.com" },
-    { id: safeUuid(), name: "google", display_name: "Google", slug: "google", status: "active", is_verified: true, api_base_url: "https://generativelanguage.googleapis.com" },
+    { id: safeUuid(), name: "openai", product_name: "OpenAI", slug: "openai", status: "active", is_verified: true, api_base_url: "https://api.openai.com/v1" },
+    { id: safeUuid(), name: "anthropic", product_name: "Anthropic", slug: "anthropic", status: "active", is_verified: true, api_base_url: "https://api.anthropic.com" },
+    { id: safeUuid(), name: "google", product_name: "Google", slug: "google", status: "active", is_verified: true, api_base_url: "https://generativelanguage.googleapis.com" },
   ]
 }
 
@@ -116,7 +116,20 @@ function loadProvidersFromLocalStorage(): AIProvider[] {
   }
   try {
     const parsed = JSON.parse(raw)
-    if (Array.isArray(parsed)) return parsed as AIProvider[]
+    if (Array.isArray(parsed)) {
+      // 과거(localStorage)에 display_name으로 저장된 데이터를 product_name으로 자동 변환
+      const normalized = (parsed as Array<Record<string, unknown>>).map((p) => ({
+        ...(p as any),
+        product_name:
+          typeof (p as any).product_name === "string"
+            ? (p as any).product_name
+            : typeof (p as any).display_name === "string"
+              ? (p as any).display_name
+              : "",
+      })) as AIProvider[]
+      localStorage.setItem(LOCAL_STORAGE_PROVIDERS_KEY, JSON.stringify(normalized))
+      return normalized
+    }
   } catch {
     // ignore
   }
@@ -273,7 +286,7 @@ export default function ProviderCredentials() {
 
   const providerNameById = useMemo(() => {
     const map = new Map<string, string>()
-    providers.forEach((p) => map.set(p.id, p.display_name))
+    providers.forEach((p) => map.set(p.id, p.product_name))
     return map
   }, [providers])
 
@@ -593,7 +606,7 @@ export default function ProviderCredentials() {
                       {c.provider_slug || providerSlugById.get(c.provider_id) || c.provider_id}
                     </Badge>
                     <div className="text-xs text-muted-foreground">
-                      {c.provider_display_name || providerNameById.get(c.provider_id) || ""}
+                      {c.provider_product_name || providerNameById.get(c.provider_id) || ""}
                     </div>
                   </TableCell>
                   <TableCell className="max-w-[220px] truncate" title={c.credential_name}>
@@ -652,7 +665,7 @@ export default function ProviderCredentials() {
                 <SelectContent>
                   {providers.map((p) => (
                     <SelectItem key={p.id} value={p.id}>
-                      {p.display_name} ({p.slug})
+                      {p.product_name} ({p.slug})
                     </SelectItem>
                   ))}
                 </SelectContent>

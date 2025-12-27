@@ -38,7 +38,7 @@ type ModelStatus = "active" | "inactive" | "deprecated" | "beta"
 
 interface Provider {
   id: string
-  display_name: string
+  product_name: string
   slug: string
   status: ProviderStatus
   api_base_url?: string | null
@@ -47,13 +47,15 @@ interface Provider {
 interface AIModel {
   id: string
   provider_id: string
-  provider_display_name?: string
+  provider_product_name?: string
   provider_slug?: string
   name: string
   model_id: string
   display_name: string
   description?: string | null
   model_type: ModelType
+  prompt_template_id?: string | null
+  response_schema_id?: string | null
   capabilities?: unknown
   context_window?: number | null
   max_output_tokens?: number | null
@@ -70,6 +72,8 @@ interface AIModel {
 
 const PROVIDERS_API_URL = "/api/ai/providers"
 const MODELS_API_URL = "/api/ai/models"
+const PROMPT_TEMPLATES_API_URL = "/api/ai/prompt-templates"
+const RESPONSE_SCHEMAS_API_URL = "/api/ai/response-schemas"
 
 async function tryFetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const res = await fetch(input, init)
@@ -88,9 +92,10 @@ export default function ModelManager() {
 
   const [providers, setProviders] = useState<Provider[]>([])
   const [models, setModels] = useState<AIModel[]>([])
+  const [promptTemplates, setPromptTemplates] = useState<Array<{ id: string; name: string; purpose: string; version: number; is_active: boolean }>>([])
+  const [responseSchemas, setResponseSchemas] = useState<Array<{ id: string; name: string; version: number; strict: boolean; is_active: boolean }>>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
-  const [isSyncing, setIsSyncing] = useState(false)
   const [rowSaving, setRowSaving] = useState<Record<string, boolean>>({})
 
   // 필터
@@ -109,6 +114,8 @@ export default function ModelManager() {
     model_id: string
     display_name: string
     model_type: ModelType
+    prompt_template_id: string
+    response_schema_id: string
     description: string
     context_window: string
     max_output_tokens: string
@@ -123,6 +130,8 @@ export default function ModelManager() {
     model_id: "",
     display_name: "",
     model_type: "text",
+    prompt_template_id: "__none__",
+    response_schema_id: "__none__",
     description: "",
     context_window: "",
     max_output_tokens: "",
@@ -154,6 +163,48 @@ export default function ModelManager() {
     if (!formData.provider_id) setFormData((p) => ({ ...p, provider_id: data[0]?.id || "" }))
   }
 
+  const fetchPromptTemplates = async () => {
+    try {
+      const res = await fetch(`${PROMPT_TEMPLATES_API_URL}?limit=200&offset=0&is_active=true`, { headers: { ...authHeaders() } })
+      const json = (await res.json().catch(() => ({}))) as unknown
+      const obj = json as any
+      const rows = Array.isArray(obj?.rows) ? obj.rows : []
+      const normalized = rows
+        .map((r: any) => ({
+          id: String(r?.id || ""),
+          name: String(r?.name || ""),
+          purpose: String(r?.purpose || ""),
+          version: Number(r?.version || 1),
+          is_active: Boolean(r?.is_active),
+        }))
+        .filter((r: any) => r.id && r.name)
+      setPromptTemplates(normalized)
+    } catch {
+      setPromptTemplates([])
+    }
+  }
+
+  const fetchResponseSchemas = async () => {
+    try {
+      const res = await fetch(`${RESPONSE_SCHEMAS_API_URL}?limit=200&offset=0&is_active=true`, { headers: { ...authHeaders() } })
+      const json = (await res.json().catch(() => ({}))) as unknown
+      const obj = json as any
+      const rows = Array.isArray(obj?.rows) ? obj.rows : []
+      const normalized = rows
+        .map((r: any) => ({
+          id: String(r?.id || ""),
+          name: String(r?.name || ""),
+          version: Number(r?.version || 1),
+          strict: Boolean(r?.strict),
+          is_active: Boolean(r?.is_active),
+        }))
+        .filter((r: any) => r.id && r.name)
+      setResponseSchemas(normalized)
+    } catch {
+      setResponseSchemas([])
+    }
+  }
+
   const fetchModels = async () => {
     const params = new URLSearchParams()
     if (providerFilter !== "all") params.set("provider_id", providerFilter)
@@ -170,6 +221,8 @@ export default function ModelManager() {
       setIsLoading(true)
       try {
         await fetchProviders()
+        await fetchPromptTemplates()
+        await fetchResponseSchemas()
         await fetchModels()
       } finally {
         setIsLoading(false)
@@ -188,7 +241,7 @@ export default function ModelManager() {
     const q = search.trim().toLowerCase()
     if (!q) return models
     return models.filter((m) => {
-      const hay = `${m.provider_display_name || ""} ${m.provider_slug || ""} ${m.display_name} ${m.model_id}`.toLowerCase()
+      const hay = `${m.provider_product_name || ""} ${m.provider_slug || ""} ${m.display_name} ${m.model_id}`.toLowerCase()
       return hay.includes(q)
     })
   }, [models, search])
@@ -200,6 +253,8 @@ export default function ModelManager() {
       model_id: "",
       display_name: "",
       model_type: "text",
+      prompt_template_id: "__none__",
+      response_schema_id: "__none__",
       description: "",
       context_window: "",
       max_output_tokens: "",
@@ -236,6 +291,8 @@ export default function ModelManager() {
       model_id: m.model_id,
       display_name: m.display_name,
       model_type: m.model_type,
+      prompt_template_id: m.prompt_template_id ? String(m.prompt_template_id) : "__none__",
+      response_schema_id: m.response_schema_id ? String(m.response_schema_id) : "__none__",
       description: m.description || "",
       context_window: m.context_window?.toString() ?? "",
       max_output_tokens: m.max_output_tokens?.toString() ?? "",
@@ -287,6 +344,8 @@ export default function ModelManager() {
         display_name: formData.display_name.trim(),
         description: formData.description.trim() || null,
         model_type: formData.model_type,
+        prompt_template_id: formData.prompt_template_id === "__none__" ? null : formData.prompt_template_id,
+        response_schema_id: formData.response_schema_id === "__none__" ? null : formData.response_schema_id,
         capabilities: JSON.parse(capabilitiesText || "[]"),
         context_window: formData.context_window ? Number(formData.context_window) : null,
         max_output_tokens: formData.max_output_tokens ? Number(formData.max_output_tokens) : null,
@@ -330,7 +389,7 @@ export default function ModelManager() {
         "- 복구할 수 없습니다.",
         "- 이미 대화 기록(model_conversations 등)에 연결된 모델은 삭제가 실패할 수 있습니다.",
         "",
-        `대상: ${m.provider_display_name || ""} / ${m.display_name} (${m.model_id})`,
+        `대상: ${m.provider_product_name || ""} / ${m.display_name} (${m.model_id})`,
         "",
         "계속하려면 '확인'을 눌러주세요.",
       ].join("\n")
@@ -358,31 +417,6 @@ export default function ModelManager() {
       await fetchModels()
     } finally {
       setRowSaving((p) => ({ ...p, [id]: false }))
-    }
-  }
-
-  const handleSync = async () => {
-    if (providerFilter === "all") {
-      alert("동기화할 제공업체를 먼저 선택해주세요. (Provider 필터)")
-      return
-    }
-    setIsSyncing(true)
-    try {
-      const result = await tryFetchJson<{ ok: boolean; total: number; inserted: number; updated: number; provider_slug: string }>(
-        `${MODELS_API_URL}/sync`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...authHeaders() },
-          body: JSON.stringify({ provider_id: providerFilter }),
-        }
-      )
-      alert(`동기화 완료 (${result.provider_slug})\n- total: ${result.total}\n- inserted: ${result.inserted}\n- updated: ${result.updated}`)
-      await fetchModels()
-    } catch (e: unknown) {
-      alert(`동기화 실패: ${errorMessage(e) || "알 수 없는 오류"}\n(해당 provider의 공용 credential이 등록되어 있어야 합니다.)`)
-      console.error(e)
-    } finally {
-      setIsSyncing(false)
     }
   }
 
@@ -422,7 +456,7 @@ export default function ModelManager() {
       <div className="flex items-center justify-between">
         <div>
           <p className="text-muted-foreground">
-            AI 모델 카탈로그를 관리하고, 제공업체 API로부터 모델 목록을 동기화하며, 선택한 모델로 테스트(시뮬레이터)를 실행할 수 있습니다.
+            AI 모델 카탈로그를 관리하고, 선택한 모델로 테스트(시뮬레이터)를 실행할 수 있습니다.
           </p>
         </div>
       </div>
@@ -437,7 +471,7 @@ export default function ModelManager() {
               <SelectItem value="all">All Providers</SelectItem>
               {providers.map((p) => (
                 <SelectItem key={p.id} value={p.id}>
-                  {p.display_name} ({p.slug})
+                  {p.product_name} ({p.slug})
                 </SelectItem>
               ))}
             </SelectContent>
@@ -494,10 +528,6 @@ export default function ModelManager() {
           </Button>
         </form>
 
-        <Button variant="outline" onClick={handleSync} disabled={isSyncing}>
-          {isSyncing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCcw className="h-4 w-4 mr-2" />}
-          모델 동기화
-        </Button>
       </div>
 
       <div className="border rounded-md">
@@ -507,6 +537,7 @@ export default function ModelManager() {
               <TableHead>모델</TableHead>
               <TableHead>Provider</TableHead>
               <TableHead>Type</TableHead>
+              <TableHead>Response Schema</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Available</TableHead>
               <TableHead>Default</TableHead>
@@ -517,13 +548,13 @@ export default function ModelManager() {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={8} className="h-24 text-center">
+                <TableCell colSpan={9} className="h-24 text-center">
                   <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                 </TableCell>
               </TableRow>
             ) : filteredModels.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="h-24 text-center">
+                <TableCell colSpan={9} className="h-24 text-center">
                   등록된 모델이 없습니다.
                 </TableCell>
               </TableRow>
@@ -540,10 +571,31 @@ export default function ModelManager() {
                     <Badge variant="outline" className="font-mono text-xs">
                       {m.provider_slug || "-"}
                     </Badge>
-                    <div className="text-xs text-muted-foreground">{m.provider_display_name || ""}</div>
+                    <div className="text-xs text-muted-foreground">{m.provider_product_name || ""}</div>
                   </TableCell>
                   <TableCell>
                     <Badge variant="secondary">{m.model_type}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Select
+                      value={m.response_schema_id || "__none__"}
+                      onValueChange={(v) => void patchModelRow(m.id, { response_schema_id: v === "__none__" ? null : v })}
+                      disabled={!!rowSaving[m.id]}
+                    >
+                      <SelectTrigger className="h-8 w-[220px]">
+                        <SelectValue placeholder="(없음)" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">(없음)</SelectItem>
+                        {responseSchemas
+                          .filter((s) => s.is_active)
+                          .map((s) => (
+                            <SelectItem key={s.id} value={s.id}>
+                              {`${s.name} (v${s.version})${s.strict ? " · strict" : ""}`}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
                   </TableCell>
                   <TableCell>
                     <Select
@@ -613,7 +665,7 @@ export default function ModelManager() {
                 <SelectContent>
                   {providers.map((p) => (
                     <SelectItem key={p.id} value={p.id}>
-                      {p.display_name} ({p.slug})
+                      {p.product_name} ({p.slug})
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -642,6 +694,44 @@ export default function ModelManager() {
                       {t}
                     </SelectItem>
                   ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label className="text-right">prompt_template</Label>
+              <Select value={formData.prompt_template_id} onValueChange={(value) => setFormData((p) => ({ ...p, prompt_template_id: value }))}>
+                <SelectTrigger className="col-span-3">
+                  <SelectValue placeholder="(선택) 프롬프트 템플릿" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">(없음)</SelectItem>
+                  {promptTemplates
+                    .filter((t) => t.is_active)
+                    .map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {(t.purpose ? `${t.purpose} · ` : "") + `${t.name} (v${t.version})`}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label className="text-right">response_schema</Label>
+              <Select value={formData.response_schema_id} onValueChange={(value) => setFormData((p) => ({ ...p, response_schema_id: value }))}>
+                <SelectTrigger className="col-span-3">
+                  <SelectValue placeholder="(선택) 출력 계약(JSON schema)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">(없음)</SelectItem>
+                  {responseSchemas
+                    .filter((s) => s.is_active)
+                    .map((s) => (
+                      <SelectItem key={s.id} value={s.id}>
+                        {`${s.name} (v${s.version})${s.strict ? " · strict" : ""}`}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
             </div>
@@ -751,7 +841,7 @@ export default function ModelManager() {
           <div className="space-y-3">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div className="text-sm">
-                <span className="font-medium">{simModel?.provider_display_name || ""}</span>
+                <span className="font-medium">{simModel?.provider_product_name || ""}</span>
                 <span className="mx-2 text-muted-foreground">/</span>
                 <span className="font-medium">{simModel?.display_name || ""}</span>
                 <span className="mx-2 text-muted-foreground">({simModel?.model_id || ""})</span>

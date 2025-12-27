@@ -25,7 +25,7 @@ export function encryptApiKey(plain: string) {
   return token
 }
 
-// 모델 동기화/시뮬레이터에서는 외부 Provider 호출을 위해 복호화가 필요합니다.
+// 시뮬레이터 등 외부 Provider 호출을 위해 복호화가 필요합니다.
 export function decryptApiKey(token: string) {
   const key = key32()
   const [ivB64, tagB64, encB64] = token.split(".")

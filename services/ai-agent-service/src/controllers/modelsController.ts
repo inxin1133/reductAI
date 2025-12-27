@@ -1,6 +1,6 @@
 import { Request, Response } from "express"
 import pool, { query } from "../config/db"
-import { getProviderAuth, getProviderBase, openaiListModels, anthropicListModels, openaiSimulateChat, anthropicSimulateChat } from "../services/providerClients"
+import { getProviderAuth, openaiSimulateChat, anthropicSimulateChat } from "../services/providerClients"
 
 type ModelType = "text" | "image" | "audio" | "video" | "multimodal" | "embedding" | "code"
 type ModelStatus = "active" | "inactive" | "deprecated" | "beta"
@@ -31,7 +31,9 @@ export async function getModels(req: Request, res: Response) {
     }
     if (q) {
       params.push(`%${String(q)}%`)
-      where.push(`(m.display_name ILIKE $${params.length} OR m.model_id ILIKE $${params.length} OR p.display_name ILIKE $${params.length})`)
+      where.push(
+        `(m.display_name ILIKE $${params.length} OR m.model_id ILIKE $${params.length} OR p.product_name ILIKE $${params.length})`
+      )
     }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : ""
@@ -39,12 +41,12 @@ export async function getModels(req: Request, res: Response) {
     const result = await query(
       `SELECT
         m.*,
-        p.display_name AS provider_display_name,
+        p.product_name AS provider_product_name,
         p.slug AS provider_slug
       FROM ai_models m
       JOIN ai_providers p ON p.id = m.provider_id
       ${whereSql}
-      ORDER BY p.display_name ASC, m.display_name ASC`,
+      ORDER BY p.product_name ASC, m.display_name ASC`,
       params
     )
     res.json(result.rows)
@@ -60,7 +62,7 @@ export async function getModel(req: Request, res: Response) {
     const result = await query(
       `SELECT
         m.*,
-        p.display_name AS provider_display_name,
+        p.product_name AS provider_product_name,
         p.slug AS provider_slug
       FROM ai_models m
       JOIN ai_providers p ON p.id = m.provider_id
@@ -85,6 +87,8 @@ export async function createModel(req: Request, res: Response) {
       display_name,
       description = null,
       model_type,
+      prompt_template_id = null,
+      response_schema_id = null,
       capabilities = [],
       context_window = null,
       max_output_tokens = null,
@@ -105,10 +109,10 @@ export async function createModel(req: Request, res: Response) {
 
     const result = await query(
       `INSERT INTO ai_models
-        (provider_id, name, model_id, display_name, description, model_type, capabilities, context_window, max_output_tokens,
+        (provider_id, name, model_id, display_name, description, model_type, prompt_template_id, response_schema_id, capabilities, context_window, max_output_tokens,
          input_token_cost_per_1k, output_token_cost_per_1k, currency, is_available, is_default, status, released_at, deprecated_at, metadata)
        VALUES
-        ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb)
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb)
        RETURNING *`,
       [
         provider_id,
@@ -117,6 +121,8 @@ export async function createModel(req: Request, res: Response) {
         display_name,
         description,
         model_type,
+        prompt_template_id,
+        response_schema_id,
         JSON.stringify(Array.isArray(capabilities) ? capabilities : []),
         context_window,
         max_output_tokens,
@@ -156,18 +162,20 @@ export async function updateModel(req: Request, res: Response) {
         display_name = COALESCE($5, display_name),
         description = COALESCE($6, description),
         model_type = COALESCE($7, model_type),
-        capabilities = COALESCE($8::jsonb, capabilities),
-        context_window = COALESCE($9, context_window),
-        max_output_tokens = COALESCE($10, max_output_tokens),
-        input_token_cost_per_1k = COALESCE($11, input_token_cost_per_1k),
-        output_token_cost_per_1k = COALESCE($12, output_token_cost_per_1k),
-        currency = COALESCE($13, currency),
-        is_available = COALESCE($14, is_available),
-        is_default = COALESCE($15, is_default),
-        status = COALESCE($16, status),
-        released_at = COALESCE($17, released_at),
-        deprecated_at = COALESCE($18, deprecated_at),
-        metadata = COALESCE($19::jsonb, metadata),
+        prompt_template_id = COALESCE($8, prompt_template_id),
+        response_schema_id = COALESCE($9, response_schema_id),
+        capabilities = COALESCE($10::jsonb, capabilities),
+        context_window = COALESCE($11, context_window),
+        max_output_tokens = COALESCE($12, max_output_tokens),
+        input_token_cost_per_1k = COALESCE($13, input_token_cost_per_1k),
+        output_token_cost_per_1k = COALESCE($14, output_token_cost_per_1k),
+        currency = COALESCE($15, currency),
+        is_available = COALESCE($16, is_available),
+        is_default = COALESCE($17, is_default),
+        status = COALESCE($18, status),
+        released_at = COALESCE($19, released_at),
+        deprecated_at = COALESCE($20, deprecated_at),
+        metadata = COALESCE($21::jsonb, metadata),
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $1
       RETURNING *`,
@@ -179,6 +187,8 @@ export async function updateModel(req: Request, res: Response) {
         body.display_name ?? null,
         body.description ?? null,
         body.model_type ?? null,
+        body.prompt_template_id ?? null,
+        body.response_schema_id ?? null,
         body.capabilities ? JSON.stringify(body.capabilities) : null,
         body.context_window ?? null,
         body.max_output_tokens ?? null,
@@ -222,72 +232,6 @@ export async function deleteModel(req: Request, res: Response) {
     }
     console.error("deleteModel error:", error)
     res.status(500).json({ message: "Failed to delete model" })
-  }
-}
-
-// 동기화: provider 기준으로 외부 API에서 모델 목록을 가져와 upsert
-export async function syncModels(req: Request, res: Response) {
-  const client = await pool.connect()
-  try {
-    const { provider_id } = req.body as { provider_id?: string }
-    if (!provider_id) return res.status(400).json({ message: "provider_id is required" })
-
-    const { apiBaseUrl, slug } = await getProviderBase(provider_id)
-    const auth = await getProviderAuth(provider_id)
-
-    let external: Array<{ id: string }> = []
-    if (slug === "openai") {
-      external = await openaiListModels(auth.endpointUrl || apiBaseUrl, auth.apiKey)
-    } else if (slug === "anthropic") {
-      external = await anthropicListModels(auth.apiKey)
-    } else {
-      // google 등은 추후 확장
-      return res.status(400).json({ message: `Sync is not implemented for provider: ${slug}` })
-    }
-
-    const ids = Array.from(new Set(external.map((m) => m.id).filter(Boolean)))
-
-    await client.query("BEGIN")
-
-    let inserted = 0
-    let updated = 0
-
-    for (const modelApiId of ids) {
-      // 기본값은 text 모델로 가정 (추후 관리 화면에서 수정 가능)
-      const upsert = await client.query(
-        `INSERT INTO ai_models
-          (provider_id, name, model_id, display_name, model_type, capabilities, is_available, status, metadata)
-         VALUES
-          ($1,$2,$3,$4,$5,$6::jsonb,TRUE,'active',$7::jsonb)
-         ON CONFLICT (provider_id, model_id) DO UPDATE SET
-          display_name = EXCLUDED.display_name,
-          is_available = TRUE,
-          updated_at = CURRENT_TIMESTAMP
-         RETURNING (xmax = 0) AS inserted`,
-        [
-          provider_id,
-          modelApiId,
-          modelApiId,
-          modelApiId,
-          "text",
-          JSON.stringify(["chat"]),
-          JSON.stringify({ synced: true, source: slug }),
-        ]
-      )
-      const ins = !!upsert.rows?.[0]?.inserted
-      if (ins) inserted += 1
-      else updated += 1
-    }
-
-    await client.query("COMMIT")
-
-    res.json({ ok: true, provider_id, provider_slug: slug, total: ids.length, inserted, updated })
-  } catch (error: any) {
-    await client.query("ROLLBACK")
-    console.error("syncModels error:", error)
-    res.status(500).json({ message: "Failed to sync models", details: String(error?.message || error) })
-  } finally {
-    client.release()
   }
 }
 

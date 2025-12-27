@@ -39,7 +39,7 @@ export async function getTypeModelAccess(req: Request, res: Response) {
         m.model_id AS model_api_id,
         m.model_type,
         m.context_window,
-        p.display_name AS provider_display_name,
+        p.product_name AS provider_product_name,
         p.slug AS provider_slug,
         c.credential_name AS credential_name
       FROM tenant_type_model_access a
@@ -47,7 +47,7 @@ export async function getTypeModelAccess(req: Request, res: Response) {
       JOIN ai_providers p ON p.id = m.provider_id
       LEFT JOIN provider_api_credentials c ON c.id = a.credential_id
       WHERE a.tenant_type = $1
-      ORDER BY a.priority DESC, p.display_name ASC, m.display_name ASC`,
+      ORDER BY a.priority DESC, p.product_name ASC, m.display_name ASC`,
       [tenant_type]
     )
     res.json(result.rows)
@@ -66,7 +66,7 @@ export async function getTypeModelAccessItem(req: Request, res: Response) {
         m.display_name AS model_display_name,
         m.model_id AS model_api_id,
         m.model_type,
-        p.display_name AS provider_display_name,
+        p.product_name AS provider_product_name,
         p.slug AS provider_slug,
         c.credential_name AS credential_name
       FROM tenant_type_model_access a

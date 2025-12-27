@@ -20,6 +20,8 @@ import ModelManager from "./pages/admin/ai/ModelManager";
 import TenantTypeModelAccess from "./pages/admin/ai/TenantTypeModelAccess";
 import ModelUsageLogs from "./pages/admin/ai/ModelUsageLogs";
 import ModelRoutingRules from "./pages/admin/ai/ModelRoutingRules";
+import PromptTemplates from "./pages/admin/ai/PromptTemplates";
+import ResponseSchemas from "./pages/admin/ai/ResponseSchemas";
 
 // Dynamic title per section (User/Admin) - 동적으로 섹션별 타이틀 설정
 function TitleLayout() {
@@ -113,6 +115,14 @@ const router = createBrowserRouter([
           {
             path: "ai/model-routing-rules",
             element: <ModelRoutingRules />,
+          },
+          {
+            path: "ai/prompt-templates",
+            element: <PromptTemplates />,
+          },
+          {
+            path: "ai/response-schemas",
+            element: <ResponseSchemas />,
           },
         ],
       },

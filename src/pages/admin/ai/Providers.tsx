@@ -37,7 +37,7 @@ type ProviderStatus = "active" | "inactive" | "deprecated"
 interface AIProvider {
   id: string
   name: string
-  display_name: string
+  product_name: string
   slug: string
   description?: string | null
   website_url?: string | null
@@ -72,7 +72,7 @@ function seedProviders(): AIProvider[] {
     {
       id: safeUuid(),
       name: "openai",
-      display_name: "OpenAI",
+      product_name: "OpenAI",
       slug: "openai",
       description: "OpenAI API 제공업체",
       website_url: "https://openai.com",
@@ -87,7 +87,7 @@ function seedProviders(): AIProvider[] {
     {
       id: safeUuid(),
       name: "anthropic",
-      display_name: "Anthropic",
+      product_name: "Anthropic",
       slug: "anthropic",
       description: "Claude 모델 제공업체",
       website_url: "https://www.anthropic.com",
@@ -102,7 +102,7 @@ function seedProviders(): AIProvider[] {
     {
       id: safeUuid(),
       name: "google",
-      display_name: "Google",
+      product_name: "Google",
       slug: "google",
       description: "Gemini 모델 제공업체",
       website_url: "https://ai.google.dev",
@@ -126,7 +126,20 @@ function loadFromLocalStorage(): AIProvider[] {
   }
   try {
     const parsed = JSON.parse(raw)
-    if (Array.isArray(parsed)) return parsed as AIProvider[]
+    if (Array.isArray(parsed)) {
+      // 과거(localStorage)에 display_name으로 저장된 데이터를 product_name으로 자동 변환
+      const normalized = (parsed as Array<Record<string, unknown>>).map((p) => ({
+        ...(p as any),
+        product_name:
+          typeof (p as any).product_name === "string"
+            ? (p as any).product_name
+            : typeof (p as any).display_name === "string"
+              ? (p as any).display_name
+              : "",
+      })) as AIProvider[]
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(normalized))
+      return normalized
+    }
   } catch {
     // 파싱 실패 시 초기화
   }
@@ -163,7 +176,7 @@ export default function Providers() {
   const [metadataText, setMetadataText] = useState<string>("{}")
   const [formData, setFormData] = useState<{
     name: string
-    display_name: string
+    product_name: string
     slug: string
     description: string
     website_url: string
@@ -173,7 +186,7 @@ export default function Providers() {
     is_verified: boolean
   }>({
     name: "",
-    display_name: "",
+    product_name: "",
     slug: "",
     description: "",
     website_url: "",
@@ -213,7 +226,7 @@ export default function Providers() {
     const q = search.trim().toLowerCase()
     if (!q) return providers
     return providers.filter((p) => {
-      const hay = `${p.name} ${p.display_name} ${p.slug} ${p.api_base_url || ""}`.toLowerCase()
+      const hay = `${p.name} ${p.product_name} ${p.slug} ${p.api_base_url || ""}`.toLowerCase()
       return hay.includes(q)
     })
   }, [providers, search])
@@ -222,7 +235,7 @@ export default function Providers() {
     setEditingProvider(null)
     setFormData({
       name: "",
-      display_name: "",
+      product_name: "",
       slug: "",
       description: "",
       website_url: "",
@@ -249,7 +262,7 @@ export default function Providers() {
     setEditingProvider(provider)
     setFormData({
       name: provider.name,
-      display_name: provider.display_name,
+      product_name: provider.product_name,
       slug: provider.slug,
       description: provider.description || "",
       website_url: provider.website_url || "",
@@ -265,7 +278,7 @@ export default function Providers() {
   const validateForm = (nextList: AIProvider[]) => {
     // 필수값 검증
     if (!formData.name.trim()) return "name(내부 이름)을 입력해주세요."
-    if (!formData.display_name.trim()) return "display_name(표시 이름)을 입력해주세요."
+    if (!formData.product_name.trim()) return "product_name(표시 이름)을 입력해주세요."
     if (!formData.slug.trim()) return "slug를 입력해주세요."
 
     // slug 중복 체크 (수정 시 자기 자신 제외)
@@ -295,7 +308,7 @@ export default function Providers() {
       // 서버 우선 저장 시도 (실패 시 localStorage fallback)
       const payload = {
         name: formData.name.trim(),
-        display_name: formData.display_name.trim(),
+        product_name: formData.product_name.trim(),
         slug: formData.slug.trim(),
         description: formData.description.trim() || null,
         website_url: formData.website_url.trim() || null,
@@ -372,7 +385,7 @@ export default function Providers() {
   }
 
   const handleDelete = async (provider: AIProvider) => {
-    if (!confirm(`정말 삭제하시겠습니까?\n- ${provider.display_name} (${provider.slug})`)) return
+    if (!confirm(`정말 삭제하시겠습니까?\n- ${provider.product_name} (${provider.slug})`)) return
 
     try {
       await fetch(`${API_URL}/${provider.id}`, {
@@ -467,7 +480,7 @@ export default function Providers() {
                         <ShieldAlert className="h-4 w-4 text-muted-foreground" />
                       )}
                       <div className="flex flex-col">
-                        <span>{p.display_name}</span>
+                        <span>{p.product_name}</span>
                         <span className="text-xs text-muted-foreground">{p.name}</span>
                       </div>
                     </div>
@@ -532,13 +545,13 @@ export default function Providers() {
             </div>
 
             <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="display_name" className="text-right">
+              <Label htmlFor="product_name" className="text-right">
                 표시 이름
               </Label>
               <Input
-                id="display_name"
-                value={formData.display_name}
-                onChange={(e) => setFormData({ ...formData, display_name: e.target.value })}
+                id="product_name"
+                value={formData.product_name}
+                onChange={(e) => setFormData({ ...formData, product_name: e.target.value })}
                 className="col-span-3"
                 placeholder="예: OpenAI"
               />

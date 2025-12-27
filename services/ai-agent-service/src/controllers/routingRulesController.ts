@@ -19,11 +19,37 @@ function safeJsonb(v: unknown): string {
   return JSON.stringify(v ?? {})
 }
 
+type ScopeType = "GLOBAL" | "ROLE" | "TENANT"
+
+function isUuid(v: unknown): v is string {
+  if (typeof v !== "string") return false
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v)
+}
+
+function normalizeScope(
+  tenantId: string,
+  scope_type: unknown,
+  scope_id: unknown
+): { scope_type: ScopeType; scope_id: string | null } {
+  const stRaw = typeof scope_type === "string" ? scope_type.trim().toUpperCase() : ""
+  const st: ScopeType = stRaw === "GLOBAL" || stRaw === "ROLE" || stRaw === "TENANT" ? (stRaw as ScopeType) : "TENANT"
+
+  if (st === "GLOBAL") return { scope_type: "GLOBAL", scope_id: null }
+  if (st === "TENANT") return { scope_type: "TENANT", scope_id: tenantId }
+
+  // ROLE
+  const sid = typeof scope_id === "string" ? scope_id.trim() : ""
+  if (!isUuid(sid)) throw new Error("INVALID_SCOPE_ID")
+  return { scope_type: "ROLE", scope_id: sid }
+}
+
 export async function listRoutingRules(req: Request, res: Response) {
   try {
     const tenantId = await ensureSystemTenantId()
     const q = typeof req.query.q === "string" ? req.query.q.trim() : ""
     const isActive = typeof req.query.is_active === "string" ? req.query.is_active : ""
+    const scopeTypeQ = typeof req.query.scope_type === "string" ? req.query.scope_type.trim().toUpperCase() : ""
+    const scopeIdQ = typeof req.query.scope_id === "string" ? req.query.scope_id.trim() : ""
 
     const limit = Math.min(Math.max(toInt(req.query.limit, 50), 1), 200)
     const offset = Math.max(toInt(req.query.offset, 0), 0)
@@ -31,6 +57,14 @@ export async function listRoutingRules(req: Request, res: Response) {
     const where: string[] = [`r.tenant_id = $1`]
     const params: any[] = [tenantId]
 
+    if (scopeTypeQ === "GLOBAL" || scopeTypeQ === "ROLE" || scopeTypeQ === "TENANT") {
+      where.push(`r.scope_type = $${params.length + 1}`)
+      params.push(scopeTypeQ)
+    }
+    if (scopeIdQ) {
+      where.push(`r.scope_id = $${params.length + 1}`)
+      params.push(scopeIdQ)
+    }
     if (isActive === "true" || isActive === "false") {
       where.push(`r.is_active = $${params.length + 1}`)
       params.push(isActive === "true")
@@ -48,6 +82,8 @@ export async function listRoutingRules(req: Request, res: Response) {
       `
       SELECT
         r.id,
+        r.scope_type,
+        r.scope_id,
         r.rule_name,
         r.priority,
         r.conditions,
@@ -110,6 +146,8 @@ export async function createRoutingRule(req: Request, res: Response) {
   try {
     const tenantId = await ensureSystemTenantId()
     const {
+      scope_type,
+      scope_id,
       rule_name,
       priority = 0,
       conditions,
@@ -129,16 +167,25 @@ export async function createRoutingRule(req: Request, res: Response) {
       cond.feature = "chat"
     }
 
+    let scope: { scope_type: ScopeType; scope_id: string | null }
+    try {
+      scope = normalizeScope(tenantId, scope_type, scope_id)
+    } catch {
+      return res.status(400).json({ message: "Invalid scope_id (UUID required when scope_type=ROLE)" })
+    }
+
     const result = await query(
       `
       INSERT INTO model_routing_rules
-        (tenant_id, rule_name, priority, conditions, target_model_id, fallback_model_id, is_active, metadata)
+        (tenant_id, scope_type, scope_id, rule_name, priority, conditions, target_model_id, fallback_model_id, is_active, metadata)
       VALUES
-        ($1,$2,$3,$4::jsonb,$5,$6,$7,$8::jsonb)
+        ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10::jsonb)
       RETURNING *
       `,
       [
         tenantId,
+        scope.scope_type,
+        scope.scope_id,
         name,
         Number(priority) || 0,
         safeJsonb(cond),
@@ -152,7 +199,7 @@ export async function createRoutingRule(req: Request, res: Response) {
     return res.status(201).json({ ok: true, row: result.rows[0] })
   } catch (e: any) {
     console.error("createRoutingRule error:", e)
-    if (e?.code === "23505") return res.status(409).json({ message: "Duplicate rule_name (already exists)" })
+    if (e?.code === "23505") return res.status(409).json({ message: "Duplicate rule_name in scope (already exists)" })
     return res.status(500).json({ message: "Failed to create routing rule", details: String(e?.message || e) })
   }
 }
@@ -168,6 +215,20 @@ export async function updateRoutingRule(req: Request, res: Response) {
 
     const fields: string[] = []
     const params: any[] = [tenantId, id]
+
+    // scope: 지원 (부분 업데이트)
+    if (body.scope_type !== undefined || body.scope_id !== undefined) {
+      let scope: { scope_type: ScopeType; scope_id: string | null }
+      try {
+        scope = normalizeScope(tenantId, body.scope_type, body.scope_id)
+      } catch {
+        return res.status(400).json({ message: "Invalid scope_id (UUID required when scope_type=ROLE)" })
+      }
+      params.push(scope.scope_type)
+      fields.push(`scope_type = $${params.length}`)
+      params.push(scope.scope_id)
+      fields.push(`scope_id = $${params.length}`)
+    }
 
     if (body.rule_name !== undefined) {
       params.push(String(body.rule_name || "").trim())
@@ -211,7 +272,7 @@ export async function updateRoutingRule(req: Request, res: Response) {
     return res.json({ ok: true, row: updated.rows[0] })
   } catch (e: any) {
     console.error("updateRoutingRule error:", e)
-    if (e?.code === "23505") return res.status(409).json({ message: "Duplicate rule_name (already exists)" })
+    if (e?.code === "23505") return res.status(409).json({ message: "Duplicate rule_name in scope (already exists)" })
     return res.status(500).json({ message: "Failed to update routing rule", details: String(e?.message || e) })
   }
 }
