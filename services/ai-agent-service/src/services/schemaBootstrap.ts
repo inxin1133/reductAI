@@ -39,6 +39,70 @@ export async function ensureAiAccessSchema() {
     END $$;
   `)
 
+  // ai_providers.logo_key 추가(안전한 컬럼 add)
+  // - 로고는 이미지/바이너리를 DB에 저장하지 않고, "key 문자열"만 저장해 프론트에서 컴포넌트로 매핑합니다.
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'ai_providers'
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'ai_providers'
+          AND column_name = 'logo_key'
+      ) THEN
+        ALTER TABLE ai_providers ADD COLUMN logo_key VARCHAR(100);
+      END IF;
+    END $$;
+  `)
+
+  // ai_models.capabilities 기본값/형태 마이그레이션
+  // - 기존: [] 배열(기능 문자열 리스트) 형태를 많이 사용했음
+  // - 변경: {} 객체 형태를 기본으로 권장(기능 플래그 + limits 같은 설정값까지 담기 위함)
+  // - 기존 배열 데이터는 호환을 위해 { "features": [...] } 형태로 감쌉니다.
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'ai_models'
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'ai_models'
+          AND column_name = 'capabilities'
+      ) THEN
+        -- 기본값을 객체로 변경
+        ALTER TABLE ai_models ALTER COLUMN capabilities SET DEFAULT '{}'::jsonb;
+
+        -- NULL이면 빈 객체로 정규화
+        UPDATE ai_models
+        SET capabilities = '{}'::jsonb
+        WHERE capabilities IS NULL;
+
+        -- 배열이면 객체로 래핑(features)
+        UPDATE ai_models
+        SET capabilities =
+          CASE
+            WHEN jsonb_typeof(capabilities) = 'array' AND jsonb_array_length(capabilities) = 0 THEN '{}'::jsonb
+            WHEN jsonb_typeof(capabilities) = 'array' THEN jsonb_build_object('features', capabilities)
+            ELSE capabilities
+          END
+        WHERE jsonb_typeof(capabilities) = 'array';
+      END IF;
+    END $$;
+  `)
+
   // 테넌트 유형별 모델 접근권한 테이블
   await query(`
     CREATE TABLE IF NOT EXISTS tenant_type_model_access (

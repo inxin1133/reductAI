@@ -31,6 +31,7 @@ import { Badge } from "@/components/ui/badge"
 import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
 import { useEffect as useEffectReact } from "react"
 import { Loader2, Pencil, Plus, Search, Trash2, ShieldCheck, ShieldAlert } from "lucide-react"
+import { ProviderLogo, PROVIDER_LOGO_OPTIONS } from "@/components/icons/providerLogoRegistry"
 
 type ProviderStatus = "active" | "inactive" | "deprecated"
 
@@ -39,6 +40,7 @@ interface AIProvider {
   name: string
   product_name: string
   slug: string
+  logo_key?: string | null
   description?: string | null
   website_url?: string | null
   api_base_url?: string | null
@@ -74,6 +76,7 @@ function seedProviders(): AIProvider[] {
       name: "openai",
       product_name: "OpenAI",
       slug: "openai",
+      logo_key: "chatgpt",
       description: "OpenAI API 제공업체",
       website_url: "https://openai.com",
       api_base_url: "https://api.openai.com/v1",
@@ -89,6 +92,7 @@ function seedProviders(): AIProvider[] {
       name: "anthropic",
       product_name: "Anthropic",
       slug: "anthropic",
+      logo_key: "claude",
       description: "Claude 모델 제공업체",
       website_url: "https://www.anthropic.com",
       api_base_url: "https://api.anthropic.com",
@@ -104,6 +108,7 @@ function seedProviders(): AIProvider[] {
       name: "google",
       product_name: "Google",
       slug: "google",
+      logo_key: "google",
       description: "Gemini 모델 제공업체",
       website_url: "https://ai.google.dev",
       api_base_url: "https://generativelanguage.googleapis.com",
@@ -178,6 +183,7 @@ export default function Providers() {
     name: string
     product_name: string
     slug: string
+    logo_key: string
     description: string
     website_url: string
     api_base_url: string
@@ -188,6 +194,7 @@ export default function Providers() {
     name: "",
     product_name: "",
     slug: "",
+    logo_key: "__none__",
     description: "",
     website_url: "",
     api_base_url: "",
@@ -237,6 +244,7 @@ export default function Providers() {
       name: "",
       product_name: "",
       slug: "",
+      logo_key: "__none__",
       description: "",
       website_url: "",
       api_base_url: "",
@@ -264,6 +272,7 @@ export default function Providers() {
       name: provider.name,
       product_name: provider.product_name,
       slug: provider.slug,
+      logo_key: provider.logo_key || "__none__",
       description: provider.description || "",
       website_url: provider.website_url || "",
       api_base_url: provider.api_base_url || "",
@@ -310,6 +319,7 @@ export default function Providers() {
         name: formData.name.trim(),
         product_name: formData.product_name.trim(),
         slug: formData.slug.trim(),
+        logo_key: formData.logo_key === "__none__" ? null : formData.logo_key,
         description: formData.description.trim() || null,
         website_url: formData.website_url.trim() || null,
         api_base_url: formData.api_base_url.trim() || null,
@@ -447,8 +457,9 @@ export default function Providers() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>표시 이름</TableHead>
+              <TableHead>제품/업체 이름</TableHead>
               <TableHead>Slug</TableHead>
+              <TableHead>Logo</TableHead>
               <TableHead>상태</TableHead>
               <TableHead>Base URL</TableHead>
               <TableHead>검증</TableHead>
@@ -459,13 +470,13 @@ export default function Providers() {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={7} className="h-24 text-center">
+                <TableCell colSpan={8} className="h-24 text-center">
                   <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                 </TableCell>
               </TableRow>
             ) : filteredProviders.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="h-24 text-center">
+                <TableCell colSpan={8} className="h-24 text-center">
                   등록된 제공업체가 없습니다.
                 </TableCell>
               </TableRow>
@@ -480,7 +491,10 @@ export default function Providers() {
                         <ShieldAlert className="h-4 w-4 text-muted-foreground" />
                       )}
                       <div className="flex flex-col">
-                        <span>{p.product_name}</span>
+                        <span className="flex items-center gap-2">
+                          <ProviderLogo logoKey={p.logo_key} className="h-4 w-4 text-muted-foreground" />
+                          {p.product_name}
+                        </span>
                         <span className="text-xs text-muted-foreground">{p.name}</span>
                       </div>
                     </div>
@@ -489,6 +503,9 @@ export default function Providers() {
                     <Badge variant="outline" className="font-mono text-xs">
                       {p.slug}
                     </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <span className="font-mono text-xs text-muted-foreground">{p.logo_key || "-"}</span>
                   </TableCell>
                   <TableCell>{statusBadge(p.status)}</TableCell>
                   <TableCell className="max-w-[360px] truncate" title={p.api_base_url || ""}>
@@ -533,7 +550,7 @@ export default function Providers() {
           <div className="grid gap-4 py-4">
             <div className="grid grid-cols-4 items-center gap-4">
               <Label htmlFor="name" className="text-right">
-                내부 이름
+                업체 이름
               </Label>
               <Input
                 id="name"
@@ -546,7 +563,7 @@ export default function Providers() {
 
             <div className="grid grid-cols-4 items-center gap-4">
               <Label htmlFor="product_name" className="text-right">
-                표시 이름
+                제품 이름
               </Label>
               <Input
                 id="product_name"
@@ -568,6 +585,34 @@ export default function Providers() {
                 className="col-span-3"
                 placeholder="예: openai"
               />
+            </div>
+
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="logo_key" className="text-right">
+                로고
+              </Label>
+              <div className="col-span-3 flex items-center gap-3">
+                <Select value={formData.logo_key} onValueChange={(value) => setFormData({ ...formData, logo_key: value })}>
+                  <SelectTrigger className="w-[260px]">
+                    <SelectValue placeholder="(없음)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">(없음)</SelectItem>
+                    {PROVIDER_LOGO_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <ProviderLogo
+                    logoKey={formData.logo_key === "__none__" ? null : formData.logo_key}
+                    className="h-4 w-4"
+                  />
+                  <span className="font-mono">{formData.logo_key === "__none__" ? "-" : formData.logo_key}</span>
+                </div>
+              </div>
             </div>
 
             <div className="grid grid-cols-4 items-center gap-4">

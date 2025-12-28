@@ -70,8 +70,42 @@ function normalizeOpenAiBaseUrl(input: string) {
     .replace(/\/+$/g, "")
 
   if (!cleaned) return ""
-  if (cleaned.endsWith("/chat/completions")) return cleaned.replace(/\/chat\/completions$/, "")
-  return cleaned
+
+  // 사용자가 "엔드포인트 전체"를 넣는 경우가 많아 base(v1)로 정규화합니다.
+  // - https://api.openai.com            -> https://api.openai.com/v1
+  // - https://api.openai.com/v1/        -> https://api.openai.com/v1
+  // - https://api.openai.com/v1/responses -> https://api.openai.com/v1
+  // - https://api.openai.com/v1/chat/completions -> https://api.openai.com/v1
+  // - https://api.openai.com/chat/completions -> https://api.openai.com/v1 (방어)
+  try {
+    const u = new URL(cleaned)
+
+    // known endpoint suffix trim
+    u.pathname = u.pathname
+      .replace(/\/v1\/chat\/completions$/i, "/v1")
+      .replace(/\/v1\/responses$/i, "/v1")
+      .replace(/\/chat\/completions$/i, "")
+      .replace(/\/responses$/i, "")
+
+    // ensure /v1 for official OpenAI host
+    if (u.host.toLowerCase() === "api.openai.com") {
+      if (!u.pathname || u.pathname === "/" || !u.pathname.toLowerCase().startsWith("/v1")) {
+        u.pathname = "/v1"
+      } else if (u.pathname.toLowerCase() !== "/v1") {
+        // keep only the base prefix for safety
+        u.pathname = "/v1"
+      }
+    }
+
+    // drop any query/hash user might have pasted
+    u.search = ""
+    u.hash = ""
+    return u.toString().replace(/\/+$/g, "")
+  } catch {
+    // non-standard URL: keep best-effort trimming only
+    if (cleaned.endsWith("/chat/completions")) return cleaned.replace(/\/chat\/completions$/, "")
+    return cleaned
+  }
 }
 
 export async function getProviderAuth(providerId: string) {
@@ -344,13 +378,13 @@ export async function openaiSimulateChat(args: {
       if (retry.res.ok) {
         return { raw: retry.json, output_text: extractTextFromChatCompletions(retry.json) }
       }
-      throw new Error(`OPENAI_SIMULATE_FAILED_${retry.res.status}:${JSON.stringify(retry.json)}`)
+      throw new Error(`OPENAI_SIMULATE_FAILED_${retry.res.status}@${apiRoot}:${JSON.stringify(retry.json)}`)
     }
 
     // chat 모델이 아니라면 responses API로 fallback
     if (isNotChatModel) {
       const r2 = await postJson(`${apiRoot}/responses`, responsesBody())
-      if (!r2.res.ok) throw new Error(`OPENAI_SIMULATE_FAILED_${r2.res.status}:${JSON.stringify(r2.json)}`)
+      if (!r2.res.ok) throw new Error(`OPENAI_SIMULATE_FAILED_${r2.res.status}@${apiRoot}:${JSON.stringify(r2.json)}`)
       return { raw: r2.json, output_text: extractTextFromResponses(r2.json) }
     }
 
@@ -362,7 +396,7 @@ export async function openaiSimulateChat(args: {
         max_completion_tokens: args.maxTokens,
       })
       if (retry.res.ok) return { raw: retry.json, output_text: extractTextFromChatCompletions(retry.json) }
-      throw new Error(`OPENAI_SIMULATE_FAILED_${retry.res.status}:${JSON.stringify(retry.json)}`)
+      throw new Error(`OPENAI_SIMULATE_FAILED_${retry.res.status}@${apiRoot}:${JSON.stringify(retry.json)}`)
     }
 
     // max_tokens 거부(특히 GPT-5) 등은 responses로 재시도하는 편이 안전합니다.
@@ -382,11 +416,11 @@ export async function openaiSimulateChat(args: {
 
       // 그래도 실패하면 responses로 fallback
       const r2 = await postJson(`${apiRoot}/responses`, responsesBody())
-      if (!r2.res.ok) throw new Error(`OPENAI_SIMULATE_FAILED_${r2.res.status}:${JSON.stringify(r2.json)}`)
+      if (!r2.res.ok) throw new Error(`OPENAI_SIMULATE_FAILED_${r2.res.status}@${apiRoot}:${JSON.stringify(r2.json)}`)
       return { raw: r2.json, output_text: extractTextFromResponses(r2.json) }
     }
 
-    throw new Error(`OPENAI_SIMULATE_FAILED_${res.status}:${JSON.stringify(json)}`)
+    throw new Error(`OPENAI_SIMULATE_FAILED_${res.status}@${apiRoot}:${JSON.stringify(json)}`)
   }
 }
 

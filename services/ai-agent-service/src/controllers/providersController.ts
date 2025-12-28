@@ -8,7 +8,7 @@ export async function getProviders(_req: Request, res: Response) {
   try {
     const result = await query(
       `SELECT 
-        id, name, product_name, slug, description, website_url, api_base_url, documentation_url,
+        id, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url,
         status, is_verified, metadata, created_at, updated_at
       FROM ai_providers
       ORDER BY created_at DESC`
@@ -26,7 +26,7 @@ export async function getProvider(req: Request, res: Response) {
     const { id } = req.params
     const result = await query(
       `SELECT 
-        id, name, product_name, slug, description, website_url, api_base_url, documentation_url,
+        id, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url,
         status, is_verified, metadata, created_at, updated_at
       FROM ai_providers
       WHERE id = $1`,
@@ -47,6 +47,7 @@ export async function createProvider(req: Request, res: Response) {
       name,
       product_name,
       slug,
+      logo_key = null,
       description = null,
       website_url = null,
       api_base_url = null,
@@ -58,6 +59,7 @@ export async function createProvider(req: Request, res: Response) {
       name: string
       product_name: string
       slug: string
+      logo_key?: string | null
       description?: string | null
       website_url?: string | null
       api_base_url?: string | null
@@ -73,16 +75,17 @@ export async function createProvider(req: Request, res: Response) {
 
     const result = await query(
       `INSERT INTO ai_providers
-        (name, product_name, slug, description, website_url, api_base_url, documentation_url, status, is_verified, metadata)
+        (name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url, status, is_verified, metadata)
       VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
       RETURNING 
-        id, name, product_name, slug, description, website_url, api_base_url, documentation_url,
+        id, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url,
         status, is_verified, metadata, created_at, updated_at`,
       [
         name,
         product_name,
         slug,
+        logo_key,
         description,
         website_url,
         api_base_url,
@@ -112,6 +115,7 @@ export async function updateProvider(req: Request, res: Response) {
       name,
       product_name,
       slug,
+      logo_key,
       description = null,
       website_url = null,
       api_base_url = null,
@@ -123,6 +127,7 @@ export async function updateProvider(req: Request, res: Response) {
       name?: string
       product_name?: string
       slug?: string
+      logo_key?: string | null
       description?: string | null
       website_url?: string | null
       api_base_url?: string | null
@@ -132,29 +137,46 @@ export async function updateProvider(req: Request, res: Response) {
       metadata?: Record<string, unknown>
     } = req.body
 
+    // logo_key는 "미전달/유지", "삭제(NULL)", "설정(문자열)"의 3-state가 필요합니다.
+    // - 기존 update 방식(COALESCE)은 NULL을 "유지"로 취급해 '삭제'가 불가능하므로, sentinel을 사용합니다.
+    const LOGO_KEY_UNSET = "__LOGO_KEY__UNSET__"
+    const LOGO_KEY_CLEAR = "__LOGO_KEY__CLEAR__"
+    const logoKeyParam =
+      typeof logo_key === "undefined"
+        ? LOGO_KEY_UNSET
+        : logo_key === null || logo_key === ""
+          ? LOGO_KEY_CLEAR
+          : logo_key
+
     // 부분 업데이트 지원
     const result = await query(
       `UPDATE ai_providers SET
         name = COALESCE($2, name),
         product_name = COALESCE($3, product_name),
         slug = COALESCE($4, slug),
-        description = COALESCE($5, description),
-        website_url = COALESCE($6, website_url),
-        api_base_url = COALESCE($7, api_base_url),
-        documentation_url = COALESCE($8, documentation_url),
-        status = COALESCE($9, status),
-        is_verified = COALESCE($10, is_verified),
-        metadata = COALESCE($11::jsonb, metadata),
+        logo_key = CASE 
+          WHEN $5 = '${LOGO_KEY_UNSET}' THEN logo_key
+          WHEN $5 = '${LOGO_KEY_CLEAR}' THEN NULL
+          ELSE $5
+        END,
+        description = COALESCE($6, description),
+        website_url = COALESCE($7, website_url),
+        api_base_url = COALESCE($8, api_base_url),
+        documentation_url = COALESCE($9, documentation_url),
+        status = COALESCE($10, status),
+        is_verified = COALESCE($11, is_verified),
+        metadata = COALESCE($12::jsonb, metadata),
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $1
       RETURNING 
-        id, name, product_name, slug, description, website_url, api_base_url, documentation_url,
+        id, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url,
         status, is_verified, metadata, created_at, updated_at`,
       [
         id,
         name ?? null,
         product_name ?? null,
         slug ?? null,
+        logoKeyParam,
         description,
         website_url,
         api_base_url,

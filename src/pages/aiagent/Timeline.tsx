@@ -694,9 +694,9 @@ export default function Timeline() {
            </UserHeader>
 
            {/* Chat Messages Scroll Area */}
-           <div className="overflow-y-auto p-6 flex flex-col w-full gap-4 items-center">
+           <div className="overflow-y-auto p-6 flex flex-col w-full gap-4 items-center h-full">
              {/* Messages */}
-             <div className="w-full max-w-[800px] flex flex-col gap-6">
+             <div className="w-full max-w-[800px] flex flex-col gap-6 ">
                {messages.length === 0 ? (
                  <div className="text-sm text-muted-foreground text-center py-10">
                    질문을 입력하면 이 영역에 답변이 표시됩니다.

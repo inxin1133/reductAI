@@ -5,6 +5,18 @@ import { getProviderAuth, openaiSimulateChat, anthropicSimulateChat } from "../s
 type ModelType = "text" | "image" | "audio" | "video" | "multimodal" | "embedding" | "code"
 type ModelStatus = "active" | "inactive" | "deprecated" | "beta"
 
+function normalizeCapabilities(input: unknown): Record<string, unknown> {
+  // 권장 형태: object
+  // - 기존 호환: 배열이면 { features: [...] }로 감쌉니다.
+  if (Array.isArray(input)) {
+    return input.length ? { features: input } : {}
+  }
+  if (input && typeof input === "object") {
+    return input as Record<string, unknown>
+  }
+  return {}
+}
+
 // 목록 조회
 export async function getModels(req: Request, res: Response) {
   try {
@@ -89,7 +101,7 @@ export async function createModel(req: Request, res: Response) {
       model_type,
       prompt_template_id = null,
       response_schema_id = null,
-      capabilities = [],
+      capabilities = {},
       context_window = null,
       max_output_tokens = null,
       input_token_cost_per_1k = 0,
@@ -123,7 +135,7 @@ export async function createModel(req: Request, res: Response) {
         model_type,
         prompt_template_id,
         response_schema_id,
-        JSON.stringify(Array.isArray(capabilities) ? capabilities : []),
+        JSON.stringify(normalizeCapabilities(capabilities)),
         context_window,
         max_output_tokens,
         input_token_cost_per_1k,
@@ -189,7 +201,7 @@ export async function updateModel(req: Request, res: Response) {
         body.model_type ?? null,
         body.prompt_template_id ?? null,
         body.response_schema_id ?? null,
-        body.capabilities ? JSON.stringify(body.capabilities) : null,
+        body.capabilities !== undefined ? JSON.stringify(normalizeCapabilities(body.capabilities)) : null,
         body.context_window ?? null,
         body.max_output_tokens ?? null,
         body.input_token_cost_per_1k ?? null,
@@ -242,7 +254,7 @@ export async function simulateModel(req: Request, res: Response) {
     if (!model_id || !input) return res.status(400).json({ message: "model_id and input are required" })
 
     const m = await query(
-      `SELECT m.id, m.model_id AS model_api_id, m.provider_id, p.slug AS provider_slug, p.api_base_url
+      `SELECT m.id, m.model_id AS model_api_id, m.provider_id, p.name AS provider_name, p.slug AS provider_slug, p.api_base_url
        FROM ai_models m
        JOIN ai_providers p ON p.id = m.provider_id
        WHERE m.id = $1`,
@@ -252,13 +264,29 @@ export async function simulateModel(req: Request, res: Response) {
     const row = m.rows[0]
 
     const providerId = row.provider_id as string
-    const providerSlug = row.provider_slug as string
+    // provider 라우팅은 "canonical key(openai/anthropic/google)"로 정규화합니다.
+    // - 운영 데이터에서는 ai_providers.name/slug가 다양하게 들어올 수 있어(예: name='OpenAI', slug='openai-chatgpt')
+    //   방어적으로 normalize 합니다.
+    const providerNameRaw = String(row.provider_name || "")
+    const providerSlug = String(row.provider_slug || "")
+    const providerKey = (() => {
+      const n = providerNameRaw.trim().toLowerCase()
+      const s = providerSlug.trim().toLowerCase()
+      const s0 = s.split("-")[0] || s
+      if (n === "openai" || n.includes("openai")) return "openai"
+      if (n === "anthropic" || n.includes("anthropic")) return "anthropic"
+      if (n === "google" || n.includes("google")) return "google"
+      if (s0 === "openai") return "openai"
+      if (s0 === "anthropic") return "anthropic"
+      if (s0 === "google") return "google"
+      return ""
+    })()
     const modelApiId = row.model_api_id as string
     const apiBaseUrl = (row.api_base_url as string | null) || ""
 
     const auth = await getProviderAuth(providerId)
 
-    if (providerSlug === "openai") {
+    if (providerKey === "openai") {
       const out = await openaiSimulateChat({
         apiBaseUrl: auth.endpointUrl || apiBaseUrl,
         apiKey: auth.apiKey,
@@ -266,21 +294,28 @@ export async function simulateModel(req: Request, res: Response) {
         input,
         maxTokens: Number(max_tokens) || 128,
       })
-      return res.json({ ok: true, provider: providerSlug, model_api_id: modelApiId, output_text: out.output_text, raw: out.raw })
+      return res.json({ ok: true, provider: providerKey, provider_slug: providerSlug, model_api_id: modelApiId, output_text: out.output_text, raw: out.raw })
     }
 
-    if (providerSlug === "anthropic") {
+    if (providerKey === "anthropic") {
       const out = await anthropicSimulateChat({
         apiKey: auth.apiKey,
         model: modelApiId,
         input,
         maxTokens: Number(max_tokens) || 128,
       })
-      return res.json({ ok: true, provider: providerSlug, model_api_id: modelApiId, output_text: out.output_text, raw: out.raw })
+      return res.json({ ok: true, provider: providerKey, provider_slug: providerSlug, model_api_id: modelApiId, output_text: out.output_text, raw: out.raw })
     }
 
-    return res.status(400).json({ message: `Simulate is not implemented for provider: ${providerSlug}` })
+    return res.status(400).json({ message: `Simulate is not implemented for provider: ${providerKey || providerSlug}` })
   } catch (error: any) {
+    // 공용 credential 미등록 등은 409로 명확히 내려 프론트에서 원인을 표시하기 쉽게 합니다.
+    if (String(error?.message || error) === "NO_ACTIVE_CREDENTIAL") {
+      return res.status(409).json({
+        message: "No active credential for provider",
+        details: "해당 Provider의 공용 Credential이 등록되어 있어야 시뮬레이터를 실행할 수 있습니다.",
+      })
+    }
     console.error("simulateModel error:", error)
     res.status(500).json({ message: "Failed to simulate model", details: String(error?.message || error) })
   }

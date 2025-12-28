@@ -544,7 +544,7 @@ export default function ModelRoutingRules() {
                 <Badge variant={isActive ? "default" : "secondary"}>{isActive ? "ON" : "OFF"}</Badge>
               </div>
             </div>
-            <div className="space-y-2">
+            <div className="space-y-2 col-span-2">
               <Label>대상 모델(target_model_id)</Label>
               <Select value={targetModelId} onValueChange={(v) => setTargetModelId(v)}>
                 <SelectTrigger>

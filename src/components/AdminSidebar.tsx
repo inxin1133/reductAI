@@ -295,7 +295,7 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
                             key={subIndex} 
                             className={cn(
                               "flex items-center h-9 px-2 rounded-md hover:bg-accent/50 cursor-pointer",
-                              isSubActive(subItem.href) && "bg-accent/50 text-accent-foreground font-medium"
+                              isSubActive(subItem.href) && "bg-accent text-accent-foreground font-medium"
                             )}
                             onClick={() => handleNavigate(subItem.href)}
                           >
@@ -424,8 +424,8 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
                         <div 
                           key={subIndex} 
                           className={cn(
-                            "flex items-center h-7 px-2 rounded-md hover:bg-accent/50 cursor-pointer",
-                            isSubActive(subItem.href) && "bg-accent/50 text-accent-foreground font-medium"
+                            "flex items-center h-7 px-2 rounded-md hover:bg-accent cursor-pointer",
+                            isSubActive(subItem.href) && "bg-accent text-accent-foreground font-medium"
                           )}
                           onClick={() => navigate(subItem.href || '#')}
                         >

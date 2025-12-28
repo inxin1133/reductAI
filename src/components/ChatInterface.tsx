@@ -1082,8 +1082,10 @@ export function ChatInterface({
                     {/* 토큰 정보(요약) */}
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium">개인:Pro</span>
-                      <div className="bg-primary px-1 py-0.5 rounded-full">
-                        <span className="text-xs text-primary-foreground font-medium">20.000</span>
+                      <div className="bg-primary flex flex-col gap-[10px] h-[20px] items-center justify-center px-[4px] py-[2px] rounded-full shrink-0">
+                        <span className="text-xs text-primary-foreground font-medium">                        
+                          20.000
+                        </span>
                       </div>
                     </div>
                   </div>

@@ -26,6 +26,7 @@ CREATE TABLE ai_providers (
     name VARCHAR(100) NOT NULL UNIQUE, -- 예: 'openai', 'anthropic', 'google', 'cohere'
     product_name VARCHAR(255) NOT NULL, -- 예: 'Chat GPT', 'Claude', 'Gemini'
     slug VARCHAR(100) NOT NULL UNIQUE,
+    logo_key VARCHAR(100), -- UI 로고(아이콘) 키: 프론트에서 key -> React 컴포넌트로 매핑 (예: chatgpt, claude, google)
     description TEXT,
     website_url VARCHAR(500),
     api_base_url VARCHAR(500), -- 기본 API 엔드포인트
@@ -45,6 +46,7 @@ COMMENT ON COLUMN ai_providers.id IS '제공업체의 고유 식별자 (UUID)';
 COMMENT ON COLUMN ai_providers.name IS '제공업체 이름 (내부 식별용, 예: openai, anthropic)';
 COMMENT ON COLUMN ai_providers.product_name IS '제공업체 제품명/표시 이름 (예: Chat GPT, Claude, Gemini)';
 COMMENT ON COLUMN ai_providers.slug IS '제공업체의 고유 식별 문자열';
+COMMENT ON COLUMN ai_providers.logo_key IS '프론트 UI에서 표시할 로고(아이콘) 키. 실제 SVG/이미지는 저장하지 않고 key만 저장해 프론트에서 컴포넌트로 매핑합니다.';
 COMMENT ON COLUMN ai_providers.description IS '제공업체 설명';
 COMMENT ON COLUMN ai_providers.website_url IS '제공업체 웹사이트 URL';
 COMMENT ON COLUMN ai_providers.api_base_url IS '기본 API 엔드포인트 URL';
@@ -67,7 +69,7 @@ CREATE TABLE ai_models (
     display_name VARCHAR(255) NOT NULL, -- 표시 이름 (예: 'GPT-4', 'Claude 3 Opus')
     description TEXT,
     model_type VARCHAR(50) NOT NULL CHECK (model_type IN ('text', 'image', 'audio', 'video', 'multimodal', 'embedding', 'code')),
-    capabilities JSONB DEFAULT '[]', -- 지원 기능 목록 (예: ['chat', 'completion', 'function_calling'])
+    capabilities JSONB DEFAULT '{}', -- 모델 지원 기능/제약 메타데이터 (객체 권장) 예: {"supports":{"json_schema":true},"limits":{"max_input_tokens":200000}}
     context_window INTEGER, -- 컨텍스트 윈도우 크기 (토큰 수)
     max_output_tokens INTEGER, -- 최대 출력 토큰 수
     input_token_cost_per_1k DECIMAL(10, 6) DEFAULT 0, -- 입력 토큰당 비용 (1K 토큰 기준)

@@ -87,6 +87,14 @@ function errorMessage(e: unknown) {
   return e instanceof Error ? e.message : String(e)
 }
 
+function normalizeCapabilities(input: unknown): Record<string, unknown> {
+  // 권장 형태: object
+  // - 기존 호환: 배열이면 { features: [...] }로 감쌉니다.
+  if (Array.isArray(input)) return input.length ? { features: input } : {}
+  if (input && typeof input === "object") return input as Record<string, unknown>
+  return {}
+}
+
 export default function ModelManager() {
   const { setAction } = useAdminHeaderActionContext()
 
@@ -107,7 +115,7 @@ export default function ModelManager() {
   // CRUD dialog
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editing, setEditing] = useState<AIModel | null>(null)
-  const [capabilitiesText, setCapabilitiesText] = useState("[]")
+  const [capabilitiesText, setCapabilitiesText] = useState("{}")
   const [metadataText, setMetadataText] = useState("{}")
   const [formData, setFormData] = useState<{
     provider_id: string
@@ -167,17 +175,23 @@ export default function ModelManager() {
     try {
       const res = await fetch(`${PROMPT_TEMPLATES_API_URL}?limit=200&offset=0&is_active=true`, { headers: { ...authHeaders() } })
       const json = (await res.json().catch(() => ({}))) as unknown
-      const obj = json as any
-      const rows = Array.isArray(obj?.rows) ? obj.rows : []
+      const rows =
+        typeof json === "object" && json !== null && "rows" in json && Array.isArray((json as { rows?: unknown }).rows)
+          ? ((json as { rows: unknown[] }).rows as unknown[])
+          : []
+
       const normalized = rows
-        .map((r: any) => ({
-          id: String(r?.id || ""),
-          name: String(r?.name || ""),
-          purpose: String(r?.purpose || ""),
-          version: Number(r?.version || 1),
-          is_active: Boolean(r?.is_active),
-        }))
-        .filter((r: any) => r.id && r.name)
+        .map((r) => {
+          const rr = (r ?? {}) as Record<string, unknown>
+          return {
+            id: String(rr.id || ""),
+            name: String(rr.name || ""),
+            purpose: String(rr.purpose || ""),
+            version: Number(rr.version || 1),
+            is_active: Boolean(rr.is_active),
+          }
+        })
+        .filter((r) => r.id && r.name)
       setPromptTemplates(normalized)
     } catch {
       setPromptTemplates([])
@@ -188,17 +202,23 @@ export default function ModelManager() {
     try {
       const res = await fetch(`${RESPONSE_SCHEMAS_API_URL}?limit=200&offset=0&is_active=true`, { headers: { ...authHeaders() } })
       const json = (await res.json().catch(() => ({}))) as unknown
-      const obj = json as any
-      const rows = Array.isArray(obj?.rows) ? obj.rows : []
+      const rows =
+        typeof json === "object" && json !== null && "rows" in json && Array.isArray((json as { rows?: unknown }).rows)
+          ? ((json as { rows: unknown[] }).rows as unknown[])
+          : []
+
       const normalized = rows
-        .map((r: any) => ({
-          id: String(r?.id || ""),
-          name: String(r?.name || ""),
-          version: Number(r?.version || 1),
-          strict: Boolean(r?.strict),
-          is_active: Boolean(r?.is_active),
-        }))
-        .filter((r: any) => r.id && r.name)
+        .map((r) => {
+          const rr = (r ?? {}) as Record<string, unknown>
+          return {
+            id: String(rr.id || ""),
+            name: String(rr.name || ""),
+            version: Number(rr.version || 1),
+            strict: Boolean(rr.strict),
+            is_active: Boolean(rr.is_active),
+          }
+        })
+        .filter((r) => r.id && r.name)
       setResponseSchemas(normalized)
     } catch {
       setResponseSchemas([])
@@ -265,7 +285,7 @@ export default function ModelManager() {
       is_default: false,
       status: "active",
     })
-    setCapabilitiesText("[]")
+    setCapabilitiesText("{}")
     setMetadataText("{}")
     setIsDialogOpen(true)
   }
@@ -303,15 +323,16 @@ export default function ModelManager() {
       is_default: !!m.is_default,
       status: m.status,
     })
-    setCapabilitiesText(JSON.stringify(m.capabilities ?? [], null, 2))
+    setCapabilitiesText(JSON.stringify(normalizeCapabilities(m.capabilities), null, 2))
     setMetadataText(JSON.stringify(m.metadata ?? {}, null, 2))
     setIsDialogOpen(true)
   }
 
   const validateJson = () => {
     try {
-      const c = JSON.parse(capabilitiesText || "[]")
-      if (!Array.isArray(c)) return "capabilities는 JSON 배열이어야 합니다. 예) [\"chat\",\"vision\"]"
+      const c = JSON.parse(capabilitiesText || "{}") as unknown
+      // 변경 후: capabilities는 object 권장 (supports/limits 등 계층 데이터를 담기 위함)
+      if (c === null || Array.isArray(c) || typeof c !== "object") return "capabilities는 JSON 객체여야 합니다. 예) {}"
     } catch {
       return "capabilities JSON 형식이 올바르지 않습니다."
     }
@@ -346,7 +367,7 @@ export default function ModelManager() {
         model_type: formData.model_type,
         prompt_template_id: formData.prompt_template_id === "__none__" ? null : formData.prompt_template_id,
         response_schema_id: formData.response_schema_id === "__none__" ? null : formData.response_schema_id,
-        capabilities: JSON.parse(capabilitiesText || "[]"),
+        capabilities: normalizeCapabilities(JSON.parse(capabilitiesText || "{}")),
         context_window: formData.context_window ? Number(formData.context_window) : null,
         max_output_tokens: formData.max_output_tokens ? Number(formData.max_output_tokens) : null,
         input_token_cost_per_1k: formData.input_token_cost_per_1k ? Number(formData.input_token_cost_per_1k) : 0,
@@ -396,15 +417,48 @@ export default function ModelManager() {
     )
     if (!ok) return
     try {
-      await fetch(`${MODELS_API_URL}/${m.id}`, { method: "DELETE", headers: { ...authHeaders() } })
+      const res = await fetch(`${MODELS_API_URL}/${m.id}`, { method: "DELETE", headers: { ...authHeaders() } })
+
+      if (!res.ok) {
+        // 서버가 내려준 실패 원인을 가능한 한 그대로 사용자에게 보여줍니다.
+        // - deleteModel()은 FK 제약 등에서 409 + { message, details } 형태로 응답합니다.
+        let message = res.statusText || "삭제 실패"
+        let details = ""
+
+        try {
+          const contentType = res.headers.get("content-type") || ""
+          if (contentType.includes("application/json")) {
+            const data = (await res.json()) as { message?: string; details?: string }
+            if (typeof data?.message === "string" && data.message.trim()) message = data.message
+            if (typeof data?.details === "string" && data.details.trim()) details = data.details
+          } else {
+            const text = (await res.text()).trim()
+            if (text) details = text
+          }
+        } catch {
+          // ignore parse errors
+        }
+
+        alert(
+          [
+            `삭제가 완료되지 않았습니다. (HTTP ${res.status})`,
+            message ? `- 사유: ${message}` : "",
+            details ? `\n${details}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n")
+        )
+        return
+      }
+
       await fetchModels()
     } catch (e) {
       console.error(e)
-      alert("삭제 중 오류가 발생했습니다.")
+      alert(`삭제 중 오류가 발생했습니다.\n${errorMessage(e) || ""}`.trim())
     }
   }
 
-  const patchModelRow = async (id: string, patch: Partial<Pick<AIModel, "status" | "is_available">>) => {
+  const patchModelRow = async (id: string, patch: Partial<Pick<AIModel, "status" | "is_available" | "response_schema_id">>) => {
     setRowSaving((p) => ({ ...p, [id]: true }))
     try {
       await tryFetchJson(`${MODELS_API_URL}/${id}`, {
@@ -433,7 +487,7 @@ export default function ModelManager() {
     setSimOutput("")
     setSimError("")
     try {
-      const result = await tryFetchJson<{ ok: boolean; output_text?: string; details?: string }>(`${MODELS_API_URL}/simulate`, {
+      const res = await fetch(`${MODELS_API_URL}/simulate`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
@@ -442,7 +496,44 @@ export default function ModelManager() {
           max_tokens: Number(simMaxTokens) || 128,
         }),
       })
-      setSimOutput(result.output_text || "")
+
+      const contentType = res.headers.get("content-type") || ""
+      const asJson = async () => (await res.json().catch(() => ({}))) as unknown
+
+      if (!res.ok) {
+        const statusLine = `HTTP ${res.status} ${res.statusText || ""}`.trim()
+        let message = "시뮬레이터 실행 실패"
+        let details = ""
+
+        if (contentType.includes("application/json")) {
+          const data = (await asJson()) as { message?: string; details?: string }
+          if (typeof data?.message === "string" && data.message.trim()) message = data.message
+          if (typeof data?.details === "string" && data.details.trim()) details = data.details
+        } else {
+          const text = (await res.text().catch(() => "")).trim()
+          if (text) details = text
+        }
+
+        // 사용자 친화적인 힌트(자주 발생하는 케이스)
+        const hint =
+          res.status === 401
+            ? "로그인이 필요합니다. (토큰이 없거나 만료됨)"
+            : res.status === 409 && (message.includes("credential") || details.includes("Credential"))
+              ? "해당 Provider의 공용 Credential이 등록되어 있어야 합니다. (Admin > AI 서비스 > Provider Credentials)"
+              : ""
+
+        setSimError([statusLine, message, details, hint].filter(Boolean).join("\n"))
+        return
+      }
+
+      const jsonData = contentType.includes("application/json") ? await asJson() : null
+      const outputText =
+        jsonData && typeof jsonData === "object"
+          ? typeof (jsonData as Record<string, unknown>).output_text === "string"
+            ? String((jsonData as Record<string, unknown>).output_text)
+            : ""
+          : ""
+      setSimOutput(outputText)
     } catch (e: unknown) {
       setSimError(errorMessage(e) || "시뮬레이터 실행 실패")
       console.error(e)
@@ -828,7 +919,7 @@ export default function ModelManager() {
         </DialogContent>
       </Dialog>
 
-      {/* Simulator Dialog */}
+      {/* Simulator Dialog - 모델 시뮬레이터 대화상자 */}
       <Dialog open={isSimOpen} onOpenChange={setIsSimOpen}>
         <DialogContent className="sm:max-w-[820px] max-h-[85vh] overflow-y-auto">
           <DialogHeader>
