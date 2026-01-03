@@ -22,6 +22,7 @@ import ModelUsageLogs from "./pages/admin/ai/ModelUsageLogs";
 import ModelRoutingRules from "./pages/admin/ai/ModelRoutingRules";
 import PromptTemplates from "./pages/admin/ai/PromptTemplates";
 import ResponseSchemas from "./pages/admin/ai/ResponseSchemas";
+import PromptSuggestions from "./pages/admin/ai/PromptSuggestions";
 
 // Dynamic title per section (User/Admin) - 동적으로 섹션별 타이틀 설정
 function TitleLayout() {
@@ -119,6 +120,10 @@ const router = createBrowserRouter([
           {
             path: "ai/prompt-templates",
             element: <PromptTemplates />,
+          },
+          {
+            path: "ai/prompt-suggestions",
+            element: <PromptSuggestions />,
           },
           {
             path: "ai/response-schemas",

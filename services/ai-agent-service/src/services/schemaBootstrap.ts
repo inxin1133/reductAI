@@ -805,4 +805,62 @@ export async function ensureResponseSchemasSchema() {
   `)
 }
 
+/**
+ * Prompt suggestions schema
+ * - 채팅/생성 UI 하단에 노출할 "예시 프롬프트"를 DB에서 관리합니다.
+ */
+export async function ensurePromptSuggestionsSchema() {
+  await query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`)
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS prompt_suggestions (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      scope_type VARCHAR(20) NOT NULL DEFAULT 'TENANT' CHECK (scope_type IN ('GLOBAL','ROLE','TENANT')),
+      scope_id UUID NULL,
+      model_type VARCHAR(50) NULL CHECK (model_type IN ('text','image','audio','music','video','multimodal','embedding','code')),
+      model_id UUID NULL REFERENCES ai_models(id) ON DELETE SET NULL,
+      title VARCHAR(100),
+      text TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      metadata JSONB NOT NULL DEFAULT '{}',
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `)
+
+  // scope 무결성: GLOBAL이면 scope_id NULL, ROLE/TENANT면 scope_id 필수
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'prompt_suggestions'
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_prompt_suggestions_scope_id_required'
+      ) THEN
+        ALTER TABLE prompt_suggestions
+        ADD CONSTRAINT chk_prompt_suggestions_scope_id_required
+        CHECK (
+          (scope_type = 'GLOBAL' AND scope_id IS NULL)
+          OR (scope_type IN ('ROLE','TENANT') AND scope_id IS NOT NULL)
+        );
+      END IF;
+    END $$;
+  `)
+
+  await query(`CREATE INDEX IF NOT EXISTS idx_prompt_suggestions_scope ON prompt_suggestions(scope_type, scope_id);`)
+  await query(
+    `CREATE INDEX IF NOT EXISTS idx_prompt_suggestions_tenant_active ON prompt_suggestions(tenant_id, is_active, sort_order);`
+  )
+  await query(`CREATE INDEX IF NOT EXISTS idx_prompt_suggestions_model ON prompt_suggestions(model_id);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_prompt_suggestions_model_type ON prompt_suggestions(model_type);`)
+}
+
 

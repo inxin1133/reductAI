@@ -10,6 +10,7 @@ import {
   ensureModelRoutingRulesSchema,
   ensureModelUsageLogsSchema,
   ensurePromptTemplatesSchema,
+  ensurePromptSuggestionsSchema,
   ensureResponseSchemasSchema,
   ensureTimelineSchema,
 } from "./services/schemaBootstrap"
@@ -19,6 +20,7 @@ import usageLogsRoutes from "./routes/usageLogsRoutes"
 import routingRulesRoutes from "./routes/routingRulesRoutes"
 import promptTemplatesRoutes from "./routes/promptTemplatesRoutes"
 import responseSchemasRoutes from "./routes/responseSchemasRoutes"
+import promptSuggestionsRoutes from "./routes/promptSuggestionsRoutes"
 
 dotenv.config()
 
@@ -40,6 +42,7 @@ app.use("/api/ai/usage-logs", usageLogsRoutes)
 app.use("/api/ai/routing-rules", routingRulesRoutes)
 app.use("/api/ai/prompt-templates", promptTemplatesRoutes)
 app.use("/api/ai/response-schemas", responseSchemasRoutes)
+app.use("/api/ai/prompt-suggestions", promptSuggestionsRoutes)
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "ai-agent-service" })
@@ -55,6 +58,7 @@ app.listen(PORT, async () => {
     await ensureModelRoutingRulesSchema()
     await ensurePromptTemplatesSchema()
     await ensureResponseSchemasSchema()
+    await ensurePromptSuggestionsSchema()
     console.log("ai-agent-service schema bootstrap ok")
   } catch (e) {
     console.error("ai-agent-service schema bootstrap failed:", e)

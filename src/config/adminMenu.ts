@@ -54,6 +54,7 @@ export const adminMenuGroups: MenuGroup[] = [
           { title: "AI 모델 관리", href: "/admin/ai/models" },
           { title: "모델 접근 권한", href: "/admin/ai/model-access" },
           { title: "프롬프트 템플릿", href: "/admin/ai/prompt-templates" },
+          { title: "예시 프롬프트(Prompt Suggestions)", href: "/admin/ai/prompt-suggestions" },
           { title: "출력 계약(Response Schemas)", href: "/admin/ai/response-schemas" },
           { title: "모델 라우팅 규칙", href: "/admin/ai/model-routing-rules" },                    
           { title: "모델 사용 로그", href: "/admin/ai/model-usage-logs" },          

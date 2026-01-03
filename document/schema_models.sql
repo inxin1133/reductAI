@@ -463,6 +463,62 @@ COMMENT ON COLUMN response_schemas.created_at IS '생성 시각';
 COMMENT ON COLUMN response_schemas.updated_at IS '최종 수정 시각';
 
 -- ============================================
+-- 7.3 PROMPT SUGGESTIONS (채팅/생성 UI 예시 프롬프트)
+-- ============================================
+-- 채팅 입력창 하단 등에서 "클릭하면 입력창에 채워지는" 예시 프롬프트를 관리합니다.
+-- - 탭(모드) 기준으로 노출을 맞추기 위해 model_type을 둡니다. (ai_models.model_type과 동일 enum 권장)
+-- - 특정 모델에만 노출하고 싶으면 model_id를 지정합니다.
+-- - scope_type/scope_id는 라우팅 규칙과 동일한 방식으로 전역/테넌트/역할 등에 따라 노출을 제어하기 위한 확장 포인트입니다.
+
+CREATE TABLE prompt_suggestions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+
+    scope_type VARCHAR(20) NOT NULL DEFAULT 'TENANT' CHECK (scope_type IN ('GLOBAL', 'ROLE', 'TENANT')),
+    scope_id UUID NULL,
+
+    model_type VARCHAR(50) NULL CHECK (model_type IN ('text', 'image', 'audio', 'music', 'video', 'multimodal', 'embedding', 'code')),
+    model_id UUID NULL REFERENCES ai_models(id) ON DELETE SET NULL,
+
+    title VARCHAR(100),
+    text TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    metadata JSONB NOT NULL DEFAULT '{}',
+
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- scope 무결성: TENANT/ROLE이면 scope_id 필수, GLOBAL이면 scope_id NULL 권장
+ALTER TABLE prompt_suggestions
+ADD CONSTRAINT chk_prompt_suggestions_scope_id_required
+CHECK (
+  (scope_type = 'GLOBAL' AND scope_id IS NULL)
+  OR (scope_type IN ('ROLE','TENANT') AND scope_id IS NOT NULL)
+);
+
+CREATE INDEX idx_prompt_suggestions_scope ON prompt_suggestions(scope_type, scope_id);
+CREATE INDEX idx_prompt_suggestions_tenant_active ON prompt_suggestions(tenant_id, is_active, sort_order);
+CREATE INDEX idx_prompt_suggestions_model ON prompt_suggestions(model_id);
+CREATE INDEX idx_prompt_suggestions_model_type ON prompt_suggestions(model_type);
+
+COMMENT ON TABLE prompt_suggestions IS '채팅/생성 UI 하단 등에 표시하는 예시 프롬프트(클릭 시 입력창에 채움)를 관리하는 테이블';
+COMMENT ON COLUMN prompt_suggestions.id IS '예시 프롬프트의 고유 식별자 (UUID)';
+COMMENT ON COLUMN prompt_suggestions.tenant_id IS '테넌트 ID (tenants 테이블 참조)';
+COMMENT ON COLUMN prompt_suggestions.scope_type IS '노출 스코프: GLOBAL(전역), ROLE(역할), TENANT(테넌트)';
+COMMENT ON COLUMN prompt_suggestions.scope_id IS '스코프 식별자 (GLOBAL이면 NULL, ROLE/TENANT면 UUID 필수)';
+COMMENT ON COLUMN prompt_suggestions.model_type IS '모드/탭 기준 모델 타입(선택). ai_models.model_type과 동일 enum 권장';
+COMMENT ON COLUMN prompt_suggestions.model_id IS '특정 모델에만 노출할 때 지정하는 모델 ID (ai_models 참조)';
+COMMENT ON COLUMN prompt_suggestions.title IS 'UI에 표시할 짧은 제목(선택)';
+COMMENT ON COLUMN prompt_suggestions.text IS '클릭 시 채팅 입력창에 채워질 예시 프롬프트 본문';
+COMMENT ON COLUMN prompt_suggestions.sort_order IS '표시 순서(작을수록 위)';
+COMMENT ON COLUMN prompt_suggestions.is_active IS '활성 여부';
+COMMENT ON COLUMN prompt_suggestions.metadata IS '추가 메타데이터(JSON). 예: {"tags":["research"],"lang":"ko"}';
+COMMENT ON COLUMN prompt_suggestions.created_at IS '생성 시각';
+COMMENT ON COLUMN prompt_suggestions.updated_at IS '최종 수정 시각';
+
+-- ============================================
 -- 8. MODEL CONVERSATIONS (모델 대화 세션)
 -- ============================================
 
@@ -632,12 +688,12 @@ COMMENT ON FUNCTION calculate_model_usage_cost IS '모델 사용 비용을 계�
 -- ============================================
 
 -- Default AI providers
-INSERT INTO ai_providers (name, product_name, slug, description, api_base_url, status, is_verified) VALUES
-    ('openai', 'OpenAI', 'openai', 'OpenAI provides GPT models including GPT-4, GPT-3.5, and embeddings', 'https://api.openai.com/v1', 'active', TRUE),
-    ('anthropic', 'Anthropic', 'anthropic', 'Anthropic provides Claude models including Claude 3 Opus, Sonnet, and Haiku', 'https://api.anthropic.com/v1', 'active', TRUE),
-    ('google', 'Google AI', 'google', 'Google provides Gemini models and PaLM', 'https://generativelanguage.googleapis.com/v1', 'active', TRUE),
-    ('cohere', 'Cohere', 'cohere', 'Cohere provides language models and embeddings', 'https://api.cohere.ai/v1', 'active', TRUE),
-    ('mistral', 'Mistral AI', 'mistral', 'Mistral AI provides high-performance language models', 'https://api.mistral.ai/v1', 'active', TRUE)
+INSERT INTO ai_providers (provider_family, name, product_name, slug, description, api_base_url, status, is_verified) VALUES
+    ('openai', 'OpenAI', 'OpenAI', 'openai', 'OpenAI provides GPT models including GPT-4, GPT-3.5, and embeddings', 'https://api.openai.com/v1', 'active', TRUE),
+    ('anthropic', 'Anthropic', 'Anthropic', 'anthropic', 'Anthropic provides Claude models including Claude 3 Opus, Sonnet, and Haiku', 'https://api.anthropic.com/v1', 'active', TRUE),
+    ('google', 'Google', 'Google AI', 'google', 'Google provides Gemini models and PaLM', 'https://generativelanguage.googleapis.com/v1', 'active', TRUE),
+    ('cohere', 'Cohere', 'Cohere', 'cohere', 'Cohere provides language models and embeddings', 'https://api.cohere.ai/v1', 'active', TRUE),
+    ('mistral', 'Mistral', 'Mistral AI', 'mistral', 'Mistral AI provides high-performance language models', 'https://api.mistral.ai/v1', 'active', TRUE)
 ON CONFLICT (slug) DO NOTHING;
 
 
