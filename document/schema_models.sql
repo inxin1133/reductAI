@@ -68,7 +68,7 @@ CREATE TABLE ai_models (
     model_id VARCHAR(255) NOT NULL, -- API에서 사용하는 모델 ID
     display_name VARCHAR(255) NOT NULL, -- 표시 이름 (예: 'GPT-4', 'Claude 3 Opus')
     description TEXT,
-    model_type VARCHAR(50) NOT NULL CHECK (model_type IN ('text', 'image', 'audio', 'video', 'multimodal', 'embedding', 'code')),
+    model_type VARCHAR(50) NOT NULL CHECK (model_type IN ('text', 'image', 'audio', 'music', 'video', 'multimodal', 'embedding', 'code')),
     capabilities JSONB DEFAULT '{}', -- 모델 지원 기능/제약 메타데이터 (객체 권장) 예: {"supports":{"json_schema":true},"limits":{"max_input_tokens":200000}}
     context_window INTEGER, -- 컨텍스트 윈도우 크기 (토큰 수)
     max_output_tokens INTEGER, -- 최대 출력 토큰 수
@@ -80,6 +80,7 @@ CREATE TABLE ai_models (
     status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'deprecated', 'beta')),
     released_at DATE, -- 모델 출시일
     deprecated_at DATE, -- 모델 사용 중단일
+    sort_order INTEGER NOT NULL DEFAULT 0, -- 정렬 순서(작을수록 위): admin에서 드래그로 조정
     prompt_template_id UUID REFERENCES prompt_templates(id) ON DELETE SET NULL, -- 모델 기본 프롬프트 템플릿(선택)
     response_schema_id UUID REFERENCES response_schemas(id) ON DELETE SET NULL, -- 모델 출력 계약(JSON schema)(선택)
     metadata JSONB DEFAULT '{}', -- 추가 정보 (예: 파라미터 범위, 제한사항)
@@ -94,6 +95,7 @@ CREATE INDEX idx_ai_models_model_type ON ai_models(model_type);
 CREATE INDEX idx_ai_models_status ON ai_models(status);
 CREATE INDEX idx_ai_models_is_available ON ai_models(is_available) WHERE is_available = TRUE;
 CREATE INDEX idx_ai_models_is_default ON ai_models(model_type, is_default) WHERE is_default = TRUE;
+CREATE INDEX idx_ai_models_sort_order ON ai_models(model_type, sort_order);
 
 COMMENT ON TABLE ai_models IS 'AI 모델 정보를 관리하는 테이블';
 COMMENT ON COLUMN ai_models.id IS '모델의 고유 식별자 (UUID)';
@@ -102,8 +104,8 @@ COMMENT ON COLUMN ai_models.name IS '모델 이름 (예: gpt-4, claude-3-opus)';
 COMMENT ON COLUMN ai_models.model_id IS 'API에서 사용하는 모델 ID (예: gpt-4-turbo-preview, claude-3-opus-20240229)';
 COMMENT ON COLUMN ai_models.display_name IS '모델 표시 이름 (예: GPT-4 Turbo, Claude 3 Opus)';
 COMMENT ON COLUMN ai_models.description IS '모델 설명';
-COMMENT ON COLUMN ai_models.model_type IS '모델 타입: text(텍스트), image(이미지), audio(오디오), video(비디오), multimodal(멀티모달), embedding(임베딩), code(코드)';
-COMMENT ON COLUMN ai_models.capabilities IS '지원 기능 목록 (JSON 배열, 예: ["chat", "completion", "function_calling", "vision"])';
+COMMENT ON COLUMN ai_models.model_type IS '모델 타입: text(텍스트), image(이미지), audio(오디오), music(음악), video(비디오), multimodal(멀티모달), embedding(임베딩), code(코드)';
+COMMENT ON COLUMN ai_models.capabilities IS '모델 지원 기능/제약 메타데이터 (JSON 객체 권장). 예: {"supports":{"json_schema":true},"limits":{"max_input_tokens":200000}}';
 COMMENT ON COLUMN ai_models.context_window IS '컨텍스트 윈도우 크기 (토큰 수, 예: 128000)';
 COMMENT ON COLUMN ai_models.max_output_tokens IS '최대 출력 토큰 수';
 COMMENT ON COLUMN ai_models.input_token_cost_per_1k IS '입력 토큰당 비용 (1K 토큰 기준, USD)';
@@ -114,6 +116,7 @@ COMMENT ON COLUMN ai_models.is_default IS '기본 모델 여부 (같은 타입 �
 COMMENT ON COLUMN ai_models.status IS '모델 상태: active(활성), inactive(비활성), deprecated(사용 중단), beta(베타)';
 COMMENT ON COLUMN ai_models.released_at IS '모델 출시일';
 COMMENT ON COLUMN ai_models.deprecated_at IS '모델 사용 중단일';
+COMMENT ON COLUMN ai_models.sort_order IS '정렬 순서(작을수록 위). admin에서 드래그로 조정하여 선택 박스 출력 순서에 반영';
 COMMENT ON COLUMN ai_models.prompt_template_id IS '모델 기본 프롬프트 템플릿 ID (prompt_templates 참조)';
 COMMENT ON COLUMN ai_models.response_schema_id IS '모델 출력 계약(JSON schema) ID (response_schemas 참조)';
 COMMENT ON COLUMN ai_models.metadata IS '모델의 추가 메타데이터 (JSON 형식, 예: 파라미터 범위, 제한사항)';

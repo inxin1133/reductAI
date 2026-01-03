@@ -30,10 +30,10 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
 import { useEffect as useEffectReact } from "react"
-import { Loader2, Pencil, Plus, Search, Trash2, RefreshCcw, Play } from "lucide-react"
+import { Loader2, Pencil, Plus, Search, Trash2, RefreshCcw, Play, GripVertical } from "lucide-react"
 
 type ProviderStatus = "active" | "inactive" | "deprecated"
-type ModelType = "text" | "image" | "audio" | "video" | "multimodal" | "embedding" | "code"
+type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 type ModelStatus = "active" | "inactive" | "deprecated" | "beta"
 
 interface Provider {
@@ -65,6 +65,9 @@ interface AIModel {
   is_available: boolean
   is_default: boolean
   status: ModelStatus
+  released_at?: string | null
+  deprecated_at?: string | null
+  sort_order?: number | null
   metadata?: Record<string, unknown> | null
   created_at: string
   updated_at: string
@@ -95,6 +98,14 @@ function normalizeCapabilities(input: unknown): Record<string, unknown> {
   return {}
 }
 
+function asDateInputValue(value: unknown): string {
+  // DATE 컬럼이더라도 환경에 따라 ISO string으로 올 수 있어(타임 포함) 방어적으로 잘라냅니다.
+  if (typeof value !== "string") return ""
+  const s = value.trim()
+  if (!s) return ""
+  return s.length >= 10 ? s.slice(0, 10) : s
+}
+
 export default function ModelManager() {
   const { setAction } = useAdminHeaderActionContext()
 
@@ -105,6 +116,8 @@ export default function ModelManager() {
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [rowSaving, setRowSaving] = useState<Record<string, boolean>>({})
+  const [isReordering, setIsReordering] = useState(false)
+  const [draggingId, setDraggingId] = useState<string | null>(null)
 
   // 필터
   const [providerFilter, setProviderFilter] = useState<string>("all")
@@ -133,6 +146,8 @@ export default function ModelManager() {
     is_available: boolean
     is_default: boolean
     status: ModelStatus
+    released_at: string
+    deprecated_at: string
   }>({
     provider_id: "",
     model_id: "",
@@ -149,6 +164,8 @@ export default function ModelManager() {
     is_available: true,
     is_default: false,
     status: "active",
+    released_at: "",
+    deprecated_at: "",
   })
 
   // 시뮬레이터
@@ -284,6 +301,8 @@ export default function ModelManager() {
       is_available: true,
       is_default: false,
       status: "active",
+      released_at: "",
+      deprecated_at: "",
     })
     setCapabilitiesText("{}")
     setMetadataText("{}")
@@ -322,6 +341,8 @@ export default function ModelManager() {
       is_available: !!m.is_available,
       is_default: !!m.is_default,
       status: m.status,
+      released_at: asDateInputValue(m.released_at),
+      deprecated_at: asDateInputValue(m.deprecated_at),
     })
     setCapabilitiesText(JSON.stringify(normalizeCapabilities(m.capabilities), null, 2))
     setMetadataText(JSON.stringify(m.metadata ?? {}, null, 2))
@@ -376,6 +397,8 @@ export default function ModelManager() {
         is_available: !!formData.is_available,
         is_default: !!formData.is_default,
         status: formData.status,
+        released_at: formData.released_at ? formData.released_at : null,
+        deprecated_at: formData.deprecated_at ? formData.deprecated_at : null,
         metadata: JSON.parse(metadataText || "{}"),
       }
 
@@ -542,6 +565,52 @@ export default function ModelManager() {
     }
   }
 
+  const reorderEnabled = typeFilter !== "all" && providerFilter === "all" && statusFilter === "all" && !search.trim()
+
+  const persistReorder = async (ordered: AIModel[]) => {
+    if (!reorderEnabled) return
+    const ids = ordered.map((m) => m.id).filter(Boolean)
+    if (!ids.length) return
+
+    setIsReordering(true)
+    try {
+      const res = await fetch(`${MODELS_API_URL}/reorder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ model_type: typeFilter, ordered_ids: ids }),
+      })
+      if (!res.ok) {
+        const text = (await res.text().catch(() => "")).trim()
+        alert(`정렬 저장 실패 (HTTP ${res.status})\n${text}`.trim())
+        return
+      }
+      await fetchModels()
+    } finally {
+      setIsReordering(false)
+    }
+  }
+
+  const onDropReorder = async (overId: string) => {
+    if (!reorderEnabled || !draggingId) return
+    if (draggingId === overId) return
+
+    const src = models.find((m) => m.id === draggingId)
+    const dst = models.find((m) => m.id === overId)
+    if (!src || !dst) return
+    if (src.model_type !== dst.model_type) return
+
+    // 현재 화면은 typeFilter로 좁혀진 상태여야 하므로 models 자체가 같은 타입 리스트라고 가정합니다.
+    const from = models.findIndex((m) => m.id === draggingId)
+    const to = models.findIndex((m) => m.id === overId)
+    if (from < 0 || to < 0) return
+
+    const next = [...models]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    setModels(next)
+    await persistReorder(next)
+  }
+
   return (
     <div className="space-y-4 bg-background">
       <div className="flex items-center justify-between">
@@ -576,7 +645,7 @@ export default function ModelManager() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Types</SelectItem>
-              {(["text", "image", "audio", "video", "multimodal", "embedding", "code"] as ModelType[]).map((t) => (
+              {(["text", "image", "audio", "music", "video", "multimodal", "embedding", "code"] as ModelType[]).map((t) => (
                 <SelectItem key={t} value={t}>
                   {t}
                 </SelectItem>
@@ -622,9 +691,21 @@ export default function ModelManager() {
       </div>
 
       <div className="border rounded-md">
+        {!reorderEnabled ? (
+          <div className="px-4 py-2 text-xs text-muted-foreground border-b">
+            정렬(드래그)은 <span className="font-medium">Type을 하나로 선택</span>하고 <span className="font-medium">Provider/Status=All</span>,{" "}
+            <span className="font-medium">검색어 비움</span> 상태에서 가능합니다.
+          </div>
+        ) : (
+          <div className="px-4 py-2 text-xs text-muted-foreground border-b">
+            드래그로 순서를 바꾸면 <span className="font-medium">DB(ai_models.sort_order)</span>에 저장되어, 차후 타입별 모델 선택박스 출력 순서에 재사용됩니다.
+            {isReordering ? <span className="ml-2">저장 중...</span> : null}
+          </div>
+        )}
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-[40px]"></TableHead>
               <TableHead>모델</TableHead>
               <TableHead>Provider</TableHead>
               <TableHead>Type</TableHead>
@@ -632,6 +713,8 @@ export default function ModelManager() {
               <TableHead>Status</TableHead>
               <TableHead>Available</TableHead>
               <TableHead>Default</TableHead>
+              <TableHead>출시일</TableHead>
+              <TableHead>중단일</TableHead>
               <TableHead>Context</TableHead>
               <TableHead className="text-right">관리</TableHead>
             </TableRow>
@@ -639,19 +722,37 @@ export default function ModelManager() {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={9} className="h-24 text-center">
+                <TableCell colSpan={12} className="h-24 text-center">
                   <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                 </TableCell>
               </TableRow>
             ) : filteredModels.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9} className="h-24 text-center">
+                <TableCell colSpan={12} className="h-24 text-center">
                   등록된 모델이 없습니다.
                 </TableCell>
               </TableRow>
             ) : (
               filteredModels.map((m) => (
-                <TableRow key={m.id}>
+                <TableRow
+                  key={m.id}
+                  draggable={reorderEnabled && !isReordering}
+                  onDragStart={() => setDraggingId(m.id)}
+                  onDragEnd={() => setDraggingId(null)}
+                  onDragOver={(e) => {
+                    if (!reorderEnabled || isReordering) return
+                    e.preventDefault()
+                  }}
+                  onDrop={(e) => {
+                    if (!reorderEnabled || isReordering) return
+                    e.preventDefault()
+                    void onDropReorder(m.id)
+                  }}
+                  className={draggingId === m.id ? "opacity-60" : ""}
+                >
+                  <TableCell className="text-muted-foreground">
+                    <GripVertical className={reorderEnabled ? "h-4 w-4 cursor-grab" : "h-4 w-4 opacity-30"} />
+                  </TableCell>
                   <TableCell className="font-medium">
                     <div className="flex flex-col">
                       <span>{m.display_name}</span>
@@ -717,6 +818,8 @@ export default function ModelManager() {
                     </div>
                   </TableCell>
                   <TableCell>{m.is_default ? <Badge>Yes</Badge> : <span className="text-xs text-muted-foreground">-</span>}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{asDateInputValue(m.released_at) || "-"}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{asDateInputValue(m.deprecated_at) || "-"}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{m.context_window ?? "-"}</TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
@@ -780,7 +883,7 @@ export default function ModelManager() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {(["text", "image", "audio", "video", "multimodal", "embedding", "code"] as ModelType[]).map((t) => (
+                  {(["text", "image", "audio", "music", "video", "multimodal", "embedding", "code"] as ModelType[]).map((t) => (
                     <SelectItem key={t} value={t}>
                       {t}
                     </SelectItem>
@@ -856,6 +959,16 @@ export default function ModelManager() {
             <div className="grid grid-cols-4 items-center gap-4">
               <Label className="text-right">max_output_tokens</Label>
               <Input className="col-span-3" type="number" value={formData.max_output_tokens} onChange={(e) => setFormData((p) => ({ ...p, max_output_tokens: e.target.value }))} />
+            </div>
+
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label className="text-right">released_at</Label>
+              <Input className="col-span-3" type="date" value={formData.released_at} onChange={(e) => setFormData((p) => ({ ...p, released_at: e.target.value }))} />
+            </div>
+
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label className="text-right">deprecated_at</Label>
+              <Input className="col-span-3" type="date" value={formData.deprecated_at} onChange={(e) => setFormData((p) => ({ ...p, deprecated_at: e.target.value }))} />
             </div>
 
             <div className="grid grid-cols-4 items-center gap-4">

@@ -103,6 +103,76 @@ export async function ensureAiAccessSchema() {
     END $$;
   `)
 
+  // ai_models.sort_order 추가(드래그 정렬용)
+  // - 타입별 모델 선택 박스 출력 순서를 위해 DB에 저장합니다.
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'ai_models'
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'ai_models'
+          AND column_name = 'sort_order'
+      ) THEN
+        ALTER TABLE ai_models ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+      END IF;
+    END $$;
+  `)
+
+  // 인덱스(존재 시 무시)
+  await query(`CREATE INDEX IF NOT EXISTS idx_ai_models_sort_order ON ai_models(model_type, sort_order);`)
+
+  // ai_models.model_type CHECK 제약 업데이트 (music 추가)
+  // - CREATE TABLE에서 inline CHECK로 생성된 경우 constraint 이름이 자동 생성되어 환경마다 다를 수 있어,
+  //   pg_get_constraintdef로 식별 후 drop → 우리가 관리하는 이름으로 재생성합니다.
+  await query(`
+    DO $$
+    DECLARE
+      c RECORD;
+      has_new BOOLEAN := FALSE;
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'ai_models'
+      ) THEN
+        -- 기존 model_type 체크 제약 drop (자동 생성 이름 포함)
+        FOR c IN
+          SELECT conname, pg_get_constraintdef(oid) AS def
+          FROM pg_constraint
+          WHERE conrelid = 'public.ai_models'::regclass
+            AND contype = 'c'
+        LOOP
+          -- pg_get_constraintdef는 IN 대신 ANY(ARRAY[...]) 형태로 나올 수 있어
+          -- "model_type"을 참조하는 check면 대상으로 봅니다.
+          IF position('model_type' in c.def) > 0 THEN
+            -- 우리가 관리하는 새 제약이면 유지
+            IF c.conname = 'chk_ai_models_model_type' AND c.def LIKE '%music%' THEN
+              has_new := TRUE;
+            ELSE
+              EXECUTE format('ALTER TABLE public.ai_models DROP CONSTRAINT IF EXISTS %I', c.conname);
+            END IF;
+          END IF;
+        END LOOP;
+
+        -- 새 제약이 없으면 추가
+        IF NOT has_new THEN
+          ALTER TABLE public.ai_models
+          ADD CONSTRAINT chk_ai_models_model_type
+          CHECK (model_type IN ('text','image','audio','music','video','multimodal','embedding','code'));
+        END IF;
+      END IF;
+    END $$;
+  `)
+
   // 테넌트 유형별 모델 접근권한 테이블
   await query(`
     CREATE TABLE IF NOT EXISTS tenant_type_model_access (

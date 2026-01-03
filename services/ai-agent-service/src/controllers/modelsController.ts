@@ -1,8 +1,8 @@
 import { Request, Response } from "express"
 import pool, { query } from "../config/db"
-import { getProviderAuth, openaiSimulateChat, anthropicSimulateChat } from "../services/providerClients"
+import { getProviderAuth, openaiSimulateChat, anthropicSimulateChat, googleSimulateChat } from "../services/providerClients"
 
-type ModelType = "text" | "image" | "audio" | "video" | "multimodal" | "embedding" | "code"
+type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 type ModelStatus = "active" | "inactive" | "deprecated" | "beta"
 
 function normalizeCapabilities(input: unknown): Record<string, unknown> {
@@ -58,7 +58,7 @@ export async function getModels(req: Request, res: Response) {
       FROM ai_models m
       JOIN ai_providers p ON p.id = m.provider_id
       ${whereSql}
-      ORDER BY p.product_name ASC, m.display_name ASC`,
+      ORDER BY m.model_type ASC, m.sort_order ASC, p.product_name ASC, m.display_name ASC`,
       params
     )
     res.json(result.rows)
@@ -112,6 +112,7 @@ export async function createModel(req: Request, res: Response) {
       status = "active",
       released_at = null,
       deprecated_at = null,
+      sort_order = null,
       metadata = {},
     }: any = req.body
 
@@ -122,9 +123,9 @@ export async function createModel(req: Request, res: Response) {
     const result = await query(
       `INSERT INTO ai_models
         (provider_id, name, model_id, display_name, description, model_type, prompt_template_id, response_schema_id, capabilities, context_window, max_output_tokens,
-         input_token_cost_per_1k, output_token_cost_per_1k, currency, is_available, is_default, status, released_at, deprecated_at, metadata)
+         input_token_cost_per_1k, output_token_cost_per_1k, currency, is_available, is_default, status, released_at, deprecated_at, sort_order, metadata)
        VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb)
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb)
        RETURNING *`,
       [
         provider_id,
@@ -146,6 +147,11 @@ export async function createModel(req: Request, res: Response) {
         status,
         released_at,
         deprecated_at,
+        typeof sort_order === "number"
+          ? sort_order
+          : (
+              await query(`SELECT COALESCE(MAX(sort_order), 0) AS max FROM ai_models WHERE model_type = $1`, [model_type])
+            ).rows?.[0]?.max + 10,
         JSON.stringify(metadata || {}),
       ]
     )
@@ -187,7 +193,8 @@ export async function updateModel(req: Request, res: Response) {
         status = COALESCE($18, status),
         released_at = COALESCE($19, released_at),
         deprecated_at = COALESCE($20, deprecated_at),
-        metadata = COALESCE($21::jsonb, metadata),
+        sort_order = COALESCE($21, sort_order),
+        metadata = COALESCE($22::jsonb, metadata),
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $1
       RETURNING *`,
@@ -212,6 +219,7 @@ export async function updateModel(req: Request, res: Response) {
         body.status ?? null,
         body.released_at ?? null,
         body.deprecated_at ?? null,
+        typeof body.sort_order === "number" ? body.sort_order : null,
         body.metadata ? JSON.stringify(body.metadata) : null,
       ]
     )
@@ -223,6 +231,50 @@ export async function updateModel(req: Request, res: Response) {
       return res.status(409).json({ message: "Duplicate model_id for provider" })
     }
     res.status(500).json({ message: "Failed to update model" })
+  }
+}
+
+// 순서 변경(드래그 정렬): type 내에서 ordered_ids 순서대로 sort_order 재부여
+export async function reorderModels(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const { model_type, ordered_ids } = (req.body || {}) as { model_type?: string; ordered_ids?: unknown }
+    if (!model_type || !Array.isArray(ordered_ids) || ordered_ids.length === 0) {
+      return res.status(400).json({ message: "model_type and ordered_ids[] are required" })
+    }
+
+    const ids = ordered_ids.map((x) => String(x)).filter(Boolean)
+    if (ids.length !== ordered_ids.length) return res.status(400).json({ message: "ordered_ids contains invalid id" })
+
+    // 해당 type의 모델인지 검증
+    const check = await query(
+      `SELECT COUNT(*)::int AS cnt
+       FROM ai_models
+       WHERE model_type = $1
+         AND id = ANY($2::uuid[])`,
+      [model_type, ids]
+    )
+    if ((check.rows?.[0]?.cnt ?? 0) !== ids.length) {
+      return res.status(400).json({ message: "ordered_ids must all belong to the given model_type" })
+    }
+
+    await client.query("BEGIN")
+    // gap을 둬서 향후 부분 삽입에도 유리하게(10 단위)
+    for (let i = 0; i < ids.length; i++) {
+      await client.query(`UPDATE ai_models SET sort_order = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, [i * 10, ids[i]])
+    }
+    await client.query("COMMIT")
+    res.json({ ok: true, model_type, count: ids.length })
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK")
+    } catch {
+      // ignore
+    }
+    console.error("reorderModels error:", error)
+    res.status(500).json({ message: "Failed to reorder models" })
+  } finally {
+    client.release()
   }
 }
 
@@ -299,6 +351,17 @@ export async function simulateModel(req: Request, res: Response) {
 
     if (providerKey === "anthropic") {
       const out = await anthropicSimulateChat({
+        apiKey: auth.apiKey,
+        model: modelApiId,
+        input,
+        maxTokens: Number(max_tokens) || 128,
+      })
+      return res.json({ ok: true, provider: providerKey, provider_slug: providerSlug, model_api_id: modelApiId, output_text: out.output_text, raw: out.raw })
+    }
+
+    if (providerKey === "google") {
+      const out = await googleSimulateChat({
+        apiBaseUrl: auth.endpointUrl || apiBaseUrl,
         apiKey: auth.apiKey,
         model: modelApiId,
         input,

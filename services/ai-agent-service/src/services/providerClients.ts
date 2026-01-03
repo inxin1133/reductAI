@@ -108,6 +108,26 @@ function normalizeOpenAiBaseUrl(input: string) {
   }
 }
 
+// Google Gemini base URL 정규화
+// - 기본: https://generativelanguage.googleapis.com/v1beta
+// - 사용자가 /models/...:generateContent 같은 전체 엔드포인트를 넣어도 base까지만 잘라냅니다.
+function normalizeGoogleBaseUrl(input: string) {
+  const cleaned = (input || "").trim().replace(/\u200b/g, "").replace(/\/+$/g, "")
+  if (!cleaned) return ""
+  try {
+    const u = new URL(cleaned)
+    u.pathname = u.pathname
+      .replace(/\/v1beta\/models\/.*$/i, "/v1beta")
+      .replace(/\/v1\/models\/.*$/i, "/v1")
+      .replace(/\/models\/.*$/i, "")
+    u.search = ""
+    u.hash = ""
+    return u.toString().replace(/\/+$/g, "")
+  } catch {
+    return cleaned
+  }
+}
+
 export async function getProviderAuth(providerId: string) {
   // 공용 credential(system tenant) 중 default 우선으로 선택
   const systemTenantId = await ensureSystemTenantId()
@@ -161,6 +181,52 @@ export async function anthropicListModels(apiKey: string) {
   if (!res.ok) throw new Error(`ANTHROPIC_LIST_FAILED_${res.status}`)
   const json = await res.json()
   return (json?.data || []) as Array<{ id: string }>
+}
+
+export async function googleSimulateChat(args: { apiBaseUrl: string; apiKey: string; model: string; input: string; maxTokens: number }) {
+  const normalized = normalizeGoogleBaseUrl(args.apiBaseUrl)
+  const base = normalized || "https://generativelanguage.googleapis.com/v1beta"
+  const apiRoot = base.replace(/\/$/, "")
+
+  const url = `${apiRoot}/models/${encodeURIComponent(args.model)}:generateContent`
+
+  const body = {
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: args.input }],
+      },
+    ],
+    generationConfig: {
+      maxOutputTokens: args.maxTokens,
+    },
+  }
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      // Gemini API: either query param key=... or this header
+      "x-goog-api-key": args.apiKey,
+    },
+    body: JSON.stringify(body),
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(`GOOGLE_SIMULATE_FAILED_${res.status}@${apiRoot}:${JSON.stringify(json)}`)
+  }
+
+  // candidates[0].content.parts[].text
+  const parts = json?.candidates?.[0]?.content?.parts
+  const text =
+    Array.isArray(parts) && parts.length
+      ? parts
+          .map((p: any) => (typeof p?.text === "string" ? p.text : ""))
+          .filter(Boolean)
+          .join("")
+      : ""
+
+  return { raw: json, output_text: text }
 }
 
 export async function openaiSimulateChat(args: {
