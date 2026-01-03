@@ -844,10 +844,10 @@ export function ChatInterface({
       </div>
 
       {/* Divider */}
-      <div className="h-px w-full bg-border" />
+      {/* <div className="h-px w-full bg-border" /> */}
 
       {/* Info: Model & Time */}
-      <div className="flex flex-col gap-[8px] w-full">
+      {/* <div className="flex flex-col gap-[8px] w-full">
         <div className="flex items-center justify-between w-full">
           <p className="text-sm font-medium text-muted-foreground">모델</p>
           <p className="text-sm font-medium text-foreground">{selectedSubModel}</p>
@@ -856,7 +856,8 @@ export function ChatInterface({
           <p className="text-sm font-medium text-muted-foreground">예상 시간</p>
           <p className="text-sm font-medium text-foreground">15초</p>
         </div>
-      </div>
+      </div> */}
+
     </div>
   );
 
@@ -1265,7 +1266,7 @@ export function ChatInterface({
 
                 {/* 옵션 패널 트리거 - Default와 Compact 동일 UI */}
                 {currentModelConfig?.hasOptions && (
-                  <div className="w-full lg:w-[420px]">
+                  <div className="w-full lg:w-[420px] xl:hidden block">
                     <Drawer>
                       <DrawerTrigger asChild>
                         <div className="bg-card border border-border flex gap-2 items-center p-2 rounded-[8px] w-full cursor-pointer hover:bg-accent/50 transition-colors">

@@ -291,6 +291,9 @@ export async function ensureTimelineSchema() {
       model_id UUID NOT NULL REFERENCES ai_models(id) ON DELETE RESTRICT,
       title VARCHAR(500),
       system_prompt TEXT,
+      conversation_summary TEXT,
+      conversation_summary_updated_at TIMESTAMP WITH TIME ZONE,
+      conversation_summary_tokens INTEGER DEFAULT 0,
       total_tokens INTEGER DEFAULT 0,
       message_count INTEGER DEFAULT 0,
       status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived', 'deleted')),
@@ -307,7 +310,12 @@ export async function ensureTimelineSchema() {
       conversation_id UUID NOT NULL REFERENCES model_conversations(id) ON DELETE CASCADE,
       role VARCHAR(50) NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'function', 'tool')),
       content JSONB NOT NULL,
+      content_text TEXT,
       summary TEXT,
+      summary_tokens INTEGER DEFAULT 0,
+      importance SMALLINT NOT NULL DEFAULT 0 CHECK (importance BETWEEN 0 AND 3),
+      is_pinned BOOLEAN NOT NULL DEFAULT FALSE,
+      segment_group VARCHAR(50) CHECK (segment_group IN ('normal', 'summary_material', 'retrieved')),
       function_name VARCHAR(255),
       function_call_id VARCHAR(255),
       input_tokens INTEGER DEFAULT 0,
@@ -315,7 +323,8 @@ export async function ensureTimelineSchema() {
       output_tokens INTEGER DEFAULT 0,
       message_order INTEGER NOT NULL,
       metadata JSONB DEFAULT '{}',
-      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
   `)
 
@@ -327,6 +336,134 @@ export async function ensureTimelineSchema() {
     DECLARE
       content_type TEXT;
     BEGIN
+      -- model_conversations: conversation_summary 필드 추가
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_conversations'
+          AND column_name = 'conversation_summary'
+      ) THEN
+        ALTER TABLE model_conversations ADD COLUMN conversation_summary TEXT;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_conversations'
+          AND column_name = 'conversation_summary_updated_at'
+      ) THEN
+        ALTER TABLE model_conversations ADD COLUMN conversation_summary_updated_at TIMESTAMP WITH TIME ZONE;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_conversations'
+          AND column_name = 'conversation_summary_tokens'
+      ) THEN
+        ALTER TABLE model_conversations ADD COLUMN conversation_summary_tokens INTEGER DEFAULT 0;
+      END IF;
+
+      -- model_messages: parent_message_id 추가 + self FK
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_messages'
+          AND column_name = 'parent_message_id'
+      ) THEN
+        ALTER TABLE model_messages ADD COLUMN parent_message_id UUID;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'fk_model_messages_parent_message_id'
+      ) THEN
+        ALTER TABLE model_messages
+        ADD CONSTRAINT fk_model_messages_parent_message_id
+        FOREIGN KEY (parent_message_id) REFERENCES model_messages(id) ON DELETE SET NULL;
+      END IF;
+
+      -- model_messages: content_text 캐시
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_messages'
+          AND column_name = 'content_text'
+      ) THEN
+        ALTER TABLE model_messages ADD COLUMN content_text TEXT;
+      END IF;
+
+      -- model_messages: summary_tokens/importance/is_pinned/segment_group/updated_at
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_messages'
+          AND column_name = 'summary_tokens'
+      ) THEN
+        ALTER TABLE model_messages ADD COLUMN summary_tokens INTEGER DEFAULT 0;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_messages'
+          AND column_name = 'importance'
+      ) THEN
+        ALTER TABLE model_messages ADD COLUMN importance SMALLINT NOT NULL DEFAULT 0;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_model_messages_importance_range'
+      ) THEN
+        ALTER TABLE model_messages
+        ADD CONSTRAINT chk_model_messages_importance_range
+        CHECK (importance BETWEEN 0 AND 3);
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_messages'
+          AND column_name = 'is_pinned'
+      ) THEN
+        ALTER TABLE model_messages ADD COLUMN is_pinned BOOLEAN NOT NULL DEFAULT FALSE;
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_messages'
+          AND column_name = 'segment_group'
+      ) THEN
+        ALTER TABLE model_messages ADD COLUMN segment_group VARCHAR(50);
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_model_messages_segment_group'
+      ) THEN
+        ALTER TABLE model_messages
+        ADD CONSTRAINT chk_model_messages_segment_group
+        CHECK (segment_group IS NULL OR segment_group IN ('normal', 'summary_material', 'retrieved'));
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_messages'
+          AND column_name = 'updated_at'
+      ) THEN
+        ALTER TABLE model_messages ADD COLUMN updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+      END IF;
+
       -- summary 컬럼 추가(없으면)
       IF NOT EXISTS (
         SELECT 1
@@ -388,6 +525,40 @@ export async function ensureTimelineSchema() {
   await query(`CREATE INDEX IF NOT EXISTS idx_model_conversations_updated_at ON model_conversations(tenant_id, updated_at DESC);`)
   await query(`CREATE INDEX IF NOT EXISTS idx_model_messages_conversation_id ON model_messages(conversation_id);`)
   await query(`CREATE INDEX IF NOT EXISTS idx_model_messages_order ON model_messages(conversation_id, message_order);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_messages_parent_message_id ON model_messages(parent_message_id);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_messages_segment_group ON model_messages(conversation_id, segment_group);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_messages_importance ON model_messages(conversation_id, importance DESC);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_messages_is_pinned ON model_messages(conversation_id, is_pinned) WHERE is_pinned = TRUE;`)
+
+  // model_messages.updated_at 자동 갱신 트리거 추가(없으면)
+  // - update_updated_at_column 함수는 메인 스키마에서 생성되지만, 없을 수도 있어 방어적으로 생성합니다.
+  // - (주의) DO $$ ... $$ 내부에서 동일한 $$를 중첩 사용하면 SQL 파싱이 깨질 수 있어, 함수 body는 $fn$으로 분리합니다.
+  await query(`
+    CREATE OR REPLACE FUNCTION update_updated_at_column()
+    RETURNS TRIGGER AS $fn$
+    BEGIN
+      NEW.updated_at = CURRENT_TIMESTAMP;
+      RETURN NEW;
+    END;
+    $fn$ language 'plpgsql';
+  `)
+
+  await query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'update_model_messages_updated_at'
+          AND tgrelid = 'public.model_messages'::regclass
+      ) THEN
+        CREATE TRIGGER update_model_messages_updated_at
+        BEFORE UPDATE ON model_messages
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+      END IF;
+    END $$;
+  `)
 }
 
 /**

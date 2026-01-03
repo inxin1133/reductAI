@@ -529,6 +529,9 @@ CREATE TABLE model_conversations (
     model_id UUID NOT NULL REFERENCES ai_models(id) ON DELETE RESTRICT,
     title VARCHAR(500), -- 대화 제목
     system_prompt TEXT, -- 시스템 프롬프트
+    conversation_summary TEXT, -- 대화 요약(대화 목록/미리보기용)
+    conversation_summary_updated_at TIMESTAMP WITH TIME ZONE, -- 대화 요약 업데이트 시각
+    conversation_summary_tokens INTEGER DEFAULT 0, -- 대화 요약 토큰 수(추적용)
     total_tokens INTEGER DEFAULT 0, -- 총 사용 토큰 수
     message_count INTEGER DEFAULT 0, -- 메시지 수
     status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived', 'deleted')),
@@ -543,6 +546,7 @@ CREATE INDEX idx_model_conversations_user_id ON model_conversations(user_id);
 CREATE INDEX idx_model_conversations_model_id ON model_conversations(model_id);
 CREATE INDEX idx_model_conversations_status ON model_conversations(status);
 CREATE INDEX idx_model_conversations_created_at ON model_conversations(tenant_id, created_at DESC);
+CREATE INDEX idx_model_conversations_updated_at ON model_conversations(tenant_id, updated_at DESC);
 
 COMMENT ON TABLE model_conversations IS 'AI 모델 대화 세션을 관리하는 테이블. 채팅 히스토리를 추적합니다.';
 COMMENT ON COLUMN model_conversations.id IS '대화 세션의 고유 식별자 (UUID)';
@@ -551,6 +555,9 @@ COMMENT ON COLUMN model_conversations.user_id IS '사용자 ID (users 테이블 
 COMMENT ON COLUMN model_conversations.model_id IS '사용한 모델 ID (ai_models 테이블 참조)';
 COMMENT ON COLUMN model_conversations.title IS '대화 제목';
 COMMENT ON COLUMN model_conversations.system_prompt IS '시스템 프롬프트';
+COMMENT ON COLUMN model_conversations.conversation_summary IS '대화 요약(대화 목록/미리보기용)';
+COMMENT ON COLUMN model_conversations.conversation_summary_updated_at IS '대화 요약 업데이트 시각';
+COMMENT ON COLUMN model_conversations.conversation_summary_tokens IS '대화 요약 토큰 수(추적용)';
 COMMENT ON COLUMN model_conversations.total_tokens IS '총 사용 토큰 수';
 COMMENT ON COLUMN model_conversations.message_count IS '메시지 수';
 COMMENT ON COLUMN model_conversations.status IS '대화 상태: active(활성), archived(보관), deleted(삭제)';
@@ -566,9 +573,15 @@ COMMENT ON COLUMN model_conversations.archived_at IS '대화 보관 시각';
 CREATE TABLE model_messages (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     conversation_id UUID NOT NULL REFERENCES model_conversations(id) ON DELETE CASCADE,
+    parent_message_id UUID NULL REFERENCES model_messages(id) ON DELETE SET NULL, -- 스레드/요약 재료 묶음 등 계층 구조 지원
     role VARCHAR(50) NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'function', 'tool')),
     content JSONB NOT NULL, -- 메시지 내용(JSON)
+    content_text TEXT, -- 자주 쓰는 텍스트를 빠르게 꺼내기 위한 캐시(선택)
     summary TEXT, -- 메시지 요약(표시/검색용)
+    summary_tokens INTEGER DEFAULT 0, -- 요약 토큰 수(추적용)
+    importance SMALLINT NOT NULL DEFAULT 0 CHECK (importance BETWEEN 0 AND 3), -- 0(기본)~3(매우 중요)
+    is_pinned BOOLEAN NOT NULL DEFAULT FALSE, -- 고정(핀)
+    segment_group VARCHAR(50) CHECK (segment_group IN ('normal', 'summary_material', 'retrieved')), -- 메시지 그룹(선택)
     function_name VARCHAR(255), -- 함수 이름 (role이 function인 경우)
     function_call_id VARCHAR(255), -- 함수 호출 ID
     input_tokens INTEGER DEFAULT 0, -- 입력 토큰 수
@@ -576,19 +589,30 @@ CREATE TABLE model_messages (
     output_tokens INTEGER DEFAULT 0, -- 출력 토큰 수
     message_order INTEGER NOT NULL, -- 메시지 순서
     metadata JSONB DEFAULT '{}',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX idx_model_messages_conversation_id ON model_messages(conversation_id);
 CREATE INDEX idx_model_messages_role ON model_messages(role);
 CREATE INDEX idx_model_messages_order ON model_messages(conversation_id, message_order);
+CREATE INDEX idx_model_messages_parent_message_id ON model_messages(parent_message_id);
+CREATE INDEX idx_model_messages_segment_group ON model_messages(conversation_id, segment_group);
+CREATE INDEX idx_model_messages_importance ON model_messages(conversation_id, importance DESC);
+CREATE INDEX idx_model_messages_is_pinned ON model_messages(conversation_id, is_pinned) WHERE is_pinned = TRUE;
 
 COMMENT ON TABLE model_messages IS 'AI 모델 대화 메시지를 관리하는 테이블';
 COMMENT ON COLUMN model_messages.id IS '메시지의 고유 식별자 (UUID)';
 COMMENT ON COLUMN model_messages.conversation_id IS '대화 세션 ID (model_conversations 테이블 참조)';
+COMMENT ON COLUMN model_messages.parent_message_id IS '부모 메시지 ID (스레드/요약 재료 묶음 등 계층 구조 지원)';
 COMMENT ON COLUMN model_messages.role IS '메시지 역할: system(시스템), user(사용자), assistant(어시스턴트), function(함수), tool(도구)';
 COMMENT ON COLUMN model_messages.content IS '메시지 내용';
+COMMENT ON COLUMN model_messages.content_text IS '자주 쓰는 텍스트를 빠르게 꺼내기 위한 캐시(선택)';
 COMMENT ON COLUMN model_messages.summary IS '메시지 요약(표시/검색용)';
+COMMENT ON COLUMN model_messages.summary_tokens IS '요약 토큰 수(추적용)';
+COMMENT ON COLUMN model_messages.importance IS '중요도(0~3). 요약/핀/검색에 사용';
+COMMENT ON COLUMN model_messages.is_pinned IS '고정(핀) 여부';
+COMMENT ON COLUMN model_messages.segment_group IS '메시지 그룹(예: normal, summary_material, retrieved)';
 COMMENT ON COLUMN model_messages.function_name IS '함수 이름 (role이 function인 경우)';
 COMMENT ON COLUMN model_messages.function_call_id IS '함수 호출 ID (함수 호출 추적용)';
 COMMENT ON COLUMN model_messages.input_tokens IS '입력 토큰 수';
@@ -597,6 +621,7 @@ COMMENT ON COLUMN model_messages.output_tokens IS '출력 토큰 수';
 COMMENT ON COLUMN model_messages.message_order IS '메시지 순서 (대화 내에서의 순서)';
 COMMENT ON COLUMN model_messages.metadata IS '메시지의 추가 메타데이터 (JSON 형식)';
 COMMENT ON COLUMN model_messages.created_at IS '메시지 생성 시각';
+COMMENT ON COLUMN model_messages.updated_at IS '메시지 최종 수정 시각';
 
 -- ============================================
 -- 10. TRIGGERS FOR UPDATED_AT
@@ -632,6 +657,9 @@ CREATE TRIGGER update_model_routing_rules_updated_at BEFORE UPDATE ON model_rout
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_model_conversations_updated_at BEFORE UPDATE ON model_conversations
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_model_messages_updated_at BEFORE UPDATE ON model_messages
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================
