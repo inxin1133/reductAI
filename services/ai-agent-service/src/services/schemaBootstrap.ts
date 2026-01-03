@@ -8,6 +8,70 @@ export async function ensureAiAccessSchema() {
   // 일부 환경에서는 미설치일 수 있어 방어적으로 생성합니다.
   await query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`)
 
+  // ai_providers.name UNIQUE 제거 + provider_family 추가
+  // - name은 업체명(표시용)으로 중복을 허용합니다. (예: OpenAI 아래에 ChatGPT/Sora/GPT Image 등 제품을 다중 등록)
+  // - slug는 계속 UNIQUE(제품/엔드포인트 단위)로 유지합니다.
+  // - provider_family는 라우팅/공용 credential의 "벤더 그룹 key" 입니다. (openai/anthropic/google/custom)
+  await query(`
+    DO $$
+    DECLARE
+      c RECORD;
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'ai_providers'
+      ) THEN
+        -- 1) name UNIQUE 제약 제거(자동 생성 이름 포함)
+        FOR c IN
+          SELECT conname, pg_get_constraintdef(oid) AS def
+          FROM pg_constraint
+          WHERE conrelid = 'public.ai_providers'::regclass
+            AND contype = 'u'
+        LOOP
+          IF position('(name)' in replace(c.def, ' ', '')) > 0 THEN
+            EXECUTE format('ALTER TABLE public.ai_providers DROP CONSTRAINT IF EXISTS %I', c.conname);
+          END IF;
+        END LOOP;
+
+        -- 2) provider_family 컬럼 추가
+        IF NOT EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'ai_providers'
+            AND column_name = 'provider_family'
+        ) THEN
+          ALTER TABLE public.ai_providers ADD COLUMN provider_family VARCHAR(50) NOT NULL DEFAULT 'custom';
+        END IF;
+
+        -- 3) 기존 row backfill
+        -- - 신규 컬럼은 default 'custom'으로 채워질 수 있어, 'custom'도 backfill 대상으로 봅니다.
+        UPDATE public.ai_providers
+        SET provider_family =
+          CASE
+            WHEN lower(split_part(slug, '-', 1)) IN ('openai','anthropic','google') THEN lower(split_part(slug, '-', 1))
+            WHEN lower(name) LIKE '%openai%' THEN 'openai'
+            WHEN lower(name) LIKE '%anthropic%' THEN 'anthropic'
+            WHEN lower(name) LIKE '%google%' THEN 'google'
+            ELSE provider_family
+          END
+        WHERE
+          (provider_family IS NULL OR btrim(provider_family) = '' OR lower(provider_family) = 'custom')
+          AND (
+            lower(split_part(slug, '-', 1)) IN ('openai','anthropic','google')
+            OR lower(name) LIKE '%openai%'
+            OR lower(name) LIKE '%anthropic%'
+            OR lower(name) LIKE '%google%'
+          );
+
+      END IF;
+    END $$;
+  `)
+
+  await query(`CREATE INDEX IF NOT EXISTS idx_ai_providers_provider_family ON ai_providers(provider_family);`)
+
   // ai_providers.display_name -> ai_providers.product_name (안전한 컬럼 rename)
   // - 기존 DB 호환을 위해 존재 여부를 확인한 후 rename 합니다.
   await query(`

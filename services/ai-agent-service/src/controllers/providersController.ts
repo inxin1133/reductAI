@@ -8,7 +8,7 @@ export async function getProviders(_req: Request, res: Response) {
   try {
     const result = await query(
       `SELECT 
-        id, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url,
+        id, provider_family, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url,
         status, is_verified, metadata, created_at, updated_at
       FROM ai_providers
       ORDER BY created_at DESC`
@@ -26,7 +26,7 @@ export async function getProvider(req: Request, res: Response) {
     const { id } = req.params
     const result = await query(
       `SELECT 
-        id, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url,
+        id, provider_family, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url,
         status, is_verified, metadata, created_at, updated_at
       FROM ai_providers
       WHERE id = $1`,
@@ -44,6 +44,7 @@ export async function getProvider(req: Request, res: Response) {
 export async function createProvider(req: Request, res: Response) {
   try {
     const {
+      provider_family,
       name,
       product_name,
       slug,
@@ -56,6 +57,7 @@ export async function createProvider(req: Request, res: Response) {
       is_verified = false,
       metadata = {},
     }: {
+      provider_family?: string
       name: string
       product_name: string
       slug: string
@@ -73,15 +75,24 @@ export async function createProvider(req: Request, res: Response) {
       return res.status(400).json({ message: "name, product_name, slug are required" })
     }
 
+    const family =
+      typeof provider_family === "string" && provider_family.trim()
+        ? provider_family.trim().toLowerCase()
+        : String(slug || "")
+            .trim()
+            .toLowerCase()
+            .split("-")[0] || "custom"
+
     const result = await query(
       `INSERT INTO ai_providers
-        (name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url, status, is_verified, metadata)
+        (provider_family, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url, status, is_verified, metadata)
       VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
       RETURNING 
-        id, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url,
+        id, provider_family, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url,
         status, is_verified, metadata, created_at, updated_at`,
       [
+        family,
         name,
         product_name,
         slug,
@@ -101,7 +112,7 @@ export async function createProvider(req: Request, res: Response) {
     console.error("createProvider error:", error)
     // unique 제약 위반 처리
     if (error?.code === "23505") {
-      return res.status(409).json({ message: "Duplicate provider (name or slug already exists)" })
+      return res.status(409).json({ message: "Duplicate provider (slug already exists)" })
     }
     res.status(500).json({ message: "Failed to create provider" })
   }
@@ -112,6 +123,7 @@ export async function updateProvider(req: Request, res: Response) {
   try {
     const { id } = req.params
     const {
+      provider_family,
       name,
       product_name,
       slug,
@@ -124,6 +136,7 @@ export async function updateProvider(req: Request, res: Response) {
       is_verified,
       metadata,
     }: {
+      provider_family?: string
       name?: string
       product_name?: string
       slug?: string
@@ -151,28 +164,30 @@ export async function updateProvider(req: Request, res: Response) {
     // 부분 업데이트 지원
     const result = await query(
       `UPDATE ai_providers SET
-        name = COALESCE($2, name),
-        product_name = COALESCE($3, product_name),
-        slug = COALESCE($4, slug),
+        provider_family = COALESCE($2, provider_family),
+        name = COALESCE($3, name),
+        product_name = COALESCE($4, product_name),
+        slug = COALESCE($5, slug),
         logo_key = CASE 
-          WHEN $5 = '${LOGO_KEY_UNSET}' THEN logo_key
-          WHEN $5 = '${LOGO_KEY_CLEAR}' THEN NULL
-          ELSE $5
+          WHEN $6 = '${LOGO_KEY_UNSET}' THEN logo_key
+          WHEN $6 = '${LOGO_KEY_CLEAR}' THEN NULL
+          ELSE $6
         END,
-        description = COALESCE($6, description),
-        website_url = COALESCE($7, website_url),
-        api_base_url = COALESCE($8, api_base_url),
-        documentation_url = COALESCE($9, documentation_url),
-        status = COALESCE($10, status),
-        is_verified = COALESCE($11, is_verified),
-        metadata = COALESCE($12::jsonb, metadata),
+        description = COALESCE($7, description),
+        website_url = COALESCE($8, website_url),
+        api_base_url = COALESCE($9, api_base_url),
+        documentation_url = COALESCE($10, documentation_url),
+        status = COALESCE($11, status),
+        is_verified = COALESCE($12, is_verified),
+        metadata = COALESCE($13::jsonb, metadata),
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $1
       RETURNING 
-        id, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url,
+        id, provider_family, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url,
         status, is_verified, metadata, created_at, updated_at`,
       [
         id,
+        typeof provider_family === "string" ? provider_family.trim().toLowerCase() : null,
         name ?? null,
         product_name ?? null,
         slug ?? null,
@@ -192,7 +207,7 @@ export async function updateProvider(req: Request, res: Response) {
   } catch (error: any) {
     console.error("updateProvider error:", error)
     if (error?.code === "23505") {
-      return res.status(409).json({ message: "Duplicate provider (name or slug already exists)" })
+      return res.status(409).json({ message: "Duplicate provider (slug already exists)" })
     }
     res.status(500).json({ message: "Failed to update provider" })
   }

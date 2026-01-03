@@ -1,7 +1,8 @@
 CREATE TABLE ai_providers (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name VARCHAR(100) NOT NULL UNIQUE, -- 예: 'openai', 'anthropic', 'google', 'cohere'
-    product_name VARCHAR(255) NOT NULL, -- 예: 'Chat GPT', 'Claude', 'Gemini'
+    provider_family VARCHAR(50) NOT NULL DEFAULT 'custom', -- 벤더 그룹(라우팅/credential 기준) 예: openai, anthropic, google, custom
+    name VARCHAR(100) NOT NULL, -- 업체명(표시용) 예: 'OpenAI', 'Google'
+    product_name VARCHAR(255) NOT NULL, -- 제품명(표시용) 예: 'ChatGPT', 'Sora', 'Gemini'
     slug VARCHAR(100) NOT NULL UNIQUE,
     logo_key VARCHAR(100), -- UI 로고(아이콘) 키: 프론트에서 key -> React 컴포넌트로 매핑 (예: chatgpt, claude, google)
     description TEXT,

@@ -306,7 +306,7 @@ export async function simulateModel(req: Request, res: Response) {
     if (!model_id || !input) return res.status(400).json({ message: "model_id and input are required" })
 
     const m = await query(
-      `SELECT m.id, m.model_id AS model_api_id, m.provider_id, p.name AS provider_name, p.slug AS provider_slug, p.api_base_url
+      `SELECT m.id, m.model_id AS model_api_id, m.provider_id, p.provider_family, p.name AS provider_name, p.slug AS provider_slug, p.api_base_url
        FROM ai_models m
        JOIN ai_providers p ON p.id = m.provider_id
        WHERE m.id = $1`,
@@ -321,16 +321,18 @@ export async function simulateModel(req: Request, res: Response) {
     //   방어적으로 normalize 합니다.
     const providerNameRaw = String(row.provider_name || "")
     const providerSlug = String(row.provider_slug || "")
+    const providerFamily = String((row as any).provider_family || "").trim().toLowerCase()
     const providerKey = (() => {
+      // 1) provider_family가 있으면 그 값을 최우선 사용
+      if (providerFamily) return providerFamily
+      // 2) (레거시) name/slug로 추론
       const n = providerNameRaw.trim().toLowerCase()
       const s = providerSlug.trim().toLowerCase()
       const s0 = s.split("-")[0] || s
-      if (n === "openai" || n.includes("openai")) return "openai"
-      if (n === "anthropic" || n.includes("anthropic")) return "anthropic"
-      if (n === "google" || n.includes("google")) return "google"
-      if (s0 === "openai") return "openai"
-      if (s0 === "anthropic") return "anthropic"
-      if (s0 === "google") return "google"
+      if (n.includes("openai")) return "openai"
+      if (n.includes("anthropic")) return "anthropic"
+      if (n.includes("google")) return "google"
+      if (s0) return s0
       return ""
     })()
     const modelApiId = row.model_api_id as string

@@ -23,8 +23,9 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 CREATE TABLE ai_providers (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name VARCHAR(100) NOT NULL UNIQUE, -- 예: 'openai', 'anthropic', 'google', 'cohere'
-    product_name VARCHAR(255) NOT NULL, -- 예: 'Chat GPT', 'Claude', 'Gemini'
+    provider_family VARCHAR(50) NOT NULL DEFAULT 'custom', -- 벤더 그룹(라우팅/credential 기준) 예: openai, anthropic, google, custom
+    name VARCHAR(100) NOT NULL, -- 업체명(표시용) 예: 'OpenAI', 'Google'
+    product_name VARCHAR(255) NOT NULL, -- 제품명(표시용) 예: 'ChatGPT', 'Sora', 'Gemini'
     slug VARCHAR(100) NOT NULL UNIQUE,
     logo_key VARCHAR(100), -- UI 로고(아이콘) 키: 프론트에서 key -> React 컴포넌트로 매핑 (예: chatgpt, claude, google)
     description TEXT,
@@ -38,13 +39,16 @@ CREATE TABLE ai_providers (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE INDEX idx_ai_providers_provider_family ON ai_providers(provider_family);
+
 CREATE INDEX idx_ai_providers_slug ON ai_providers(slug);
 CREATE INDEX idx_ai_providers_status ON ai_providers(status);
 
 COMMENT ON TABLE ai_providers IS 'AI 제공업체 정보를 관리하는 테이블';
 COMMENT ON COLUMN ai_providers.id IS '제공업체의 고유 식별자 (UUID)';
-COMMENT ON COLUMN ai_providers.name IS '제공업체 이름 (내부 식별용, 예: openai, anthropic)';
-COMMENT ON COLUMN ai_providers.product_name IS '제공업체 제품명/표시 이름 (예: Chat GPT, Claude, Gemini)';
+COMMENT ON COLUMN ai_providers.provider_family IS '벤더 그룹(라우팅/공용 credential 기준). 예: openai, anthropic, google, custom';
+COMMENT ON COLUMN ai_providers.name IS '업체명(표시용). 예: OpenAI, Google';
+COMMENT ON COLUMN ai_providers.product_name IS '제품명(표시용). 예: ChatGPT, Sora, Gemini';
 COMMENT ON COLUMN ai_providers.slug IS '제공업체의 고유 식별 문자열';
 COMMENT ON COLUMN ai_providers.logo_key IS '프론트 UI에서 표시할 로고(아이콘) 키. 실제 SVG/이미지는 저장하지 않고 key만 저장해 프론트에서 컴포넌트로 매핑합니다.';
 COMMENT ON COLUMN ai_providers.description IS '제공업체 설명';
