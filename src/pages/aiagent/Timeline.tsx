@@ -8,6 +8,7 @@ import { ChatInterface } from "@/components/ChatInterface"
 import { Markdown } from "@/components/Markdown"
 import { CodeBlock } from "@/components/CodeBlock"
 import { BlockTable } from "@/components/BlockTable"
+import { ProviderLogo } from "@/components/icons/providerLogoRegistry"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import { useLocation, useNavigate } from "react-router-dom"
 
@@ -63,6 +64,8 @@ type TimelineMessage = {
   content: string
   contentJson?: unknown
   model?: string
+  providerSlug?: string
+  isPending?: boolean
   createdAt: string // ISO
 }
 
@@ -122,6 +125,16 @@ function sortByRecent(convs: TimelineConversation[]) {
   return [...convs].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
 }
 
+function providerSlugToLogoKey(slug?: string | null): string | null {
+  const s = String(slug || "").trim().toLowerCase()
+  if (!s) return null
+  if (s === "openai") return "chatgpt"
+  if (s === "anthropic") return "claude"
+  if (s === "google") return "gemini"
+  // allow direct registry keys too
+  return s
+}
+
 export default function Timeline() {
   const location = useLocation()
   const navigate = useNavigate()
@@ -129,7 +142,7 @@ export default function Timeline() {
   const [isMobile, setIsMobile] = React.useState(false)
   const [conversations, setConversations] = React.useState<TimelineConversation[]>([])
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null)
-  const [messages, setMessages] = React.useState<Array<{ role: ChatRole; content: string; contentJson?: unknown; model?: string }>>([]);
+  const [messages, setMessages] = React.useState<Array<{ role: ChatRole; id?: string; content: string; contentJson?: unknown; model?: string; providerSlug?: string; isPending?: boolean }>>([]);
 
   // 현재 대화에서 마지막으로 사용한 모델을 유지하여 ChatInterface 드롭다운 초기값으로 사용합니다.
   const [stickySelectedModel, setStickySelectedModel] = React.useState<string | undefined>(undefined)
@@ -216,6 +229,12 @@ export default function Timeline() {
       content: extractTextFromJsonContent(m.content) || "",
       contentJson: m.content,
       model: typeof m.metadata?.model === "string" ? (m.metadata.model as string) : undefined,
+      providerSlug:
+        typeof m.metadata?.provider_slug === "string"
+          ? (m.metadata.provider_slug as string)
+          : typeof m.metadata?.provider_key === "string"
+            ? (m.metadata.provider_key as string)
+            : undefined,
       createdAt: m.created_at,
     })) as TimelineMessage[]
   }, [authHeaders])
@@ -253,13 +272,42 @@ export default function Timeline() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initial])
 
+  // "답변중" 단계 텍스트(실제 chain-of-thought는 제공 불가하므로, 파이프라인 진행 상태를 UX로 제공합니다)
+  const [isGenerating, setIsGenerating] = React.useState(false)
+  const [genPhase, setGenPhase] = React.useState(0)
+  const GENERATING_STEPS = React.useMemo(
+    () => ["요청 분석 중", "컨텍스트 불러오는 중", "모델 선택 중", "프롬프트 구성 중", "안전 조정 중", "추론/생성 중"],
+    []
+  )
+  React.useEffect(() => {
+    if (!isGenerating) return
+    const t = window.setInterval(() => setGenPhase((p) => (p + 1) % GENERATING_STEPS.length), 900)
+    return () => window.clearInterval(t)
+  }, [GENERATING_STEPS.length, isGenerating])
+
+  // 타입라이터(스트리밍 흉내) - 마지막 assistant 응답만 가볍게 적용
+  const [typing, setTyping] = React.useState<{ id: string; full: string; shown: string } | null>(null)
+  React.useEffect(() => {
+    if (!typing) return
+    const full = typing.full
+    if (typing.shown.length >= full.length) return
+    const t = window.setInterval(() => {
+      setTyping((prev) => {
+        if (!prev) return null
+        const nextLen = Math.min(prev.full.length, prev.shown.length + Math.max(1, Math.ceil(prev.full.length / 120)))
+        return { ...prev, shown: prev.full.slice(0, nextLen) }
+      })
+    }, 25)
+    return () => window.clearInterval(t)
+  }, [typing])
+
   // 대화 선택 시 메시지/모델 동기화
   React.useEffect(() => {
     if (!activeConversationId) return
     const run = async () => {
       try {
         const msgs = await fetchMessages(activeConversationId)
-        setMessages(msgs.map(m => ({ role: m.role, content: m.content, contentJson: m.contentJson, model: m.model })))
+        setMessages(msgs.map((m) => ({ id: m.id, role: m.role, content: m.content, contentJson: m.contentJson, model: m.model, providerSlug: m.providerSlug })))
         const lastModel = [...msgs].reverse().find(m => m.model)?.model
         setStickySelectedModel(lastModel)
       } catch {
@@ -364,16 +412,16 @@ export default function Timeline() {
                </div>
              }
            >
-             {/* Header Center Button: Page Save & Edit */}
+             {/* Header Center Button: Page Save & Edit - 페이지 저장 및 편집 */}
              <div className="bg-background border border-border flex items-center justify-center gap-[6px] px-3  h-[32px] rounded-lg shadow-sm cursor-pointer hover:bg-accent/50 transition-colors">
                <PencilLine className="size-4" />
                <span className="text-sm font-medium">페이지 저장 및 편집</span>
              </div>
            </UserHeader>
 
-           {/* Chat Messages Scroll Area */}
+           {/* Chat Messages Scroll Area - 채팅 메시지 스크롤 영역 */}
            <div className="overflow-y-auto p-6 flex flex-col w-full gap-4 items-center h-full">
-             {/* Messages */}
+             {/* Messages - 메시지 */}
              <div className="w-full max-w-[800px] flex flex-col gap-6 ">
                {messages.length === 0 ? (
                  <div className="text-sm text-muted-foreground text-center py-10">
@@ -397,11 +445,45 @@ export default function Timeline() {
                    ) : (
                      <div key={idx} className="w-full flex lg:flex-row flex-col justify-start gap-4">
                        <div className="size-6 bg-primary rounded-[4px] flex items-center justify-center shrink-0">
-                         <span className="text-primary-foreground text-sm font-bold">AI</span>
+                        {(() => {
+                          const logoKey = providerSlugToLogoKey(m.providerSlug)
+                          return logoKey ? (
+                            <ProviderLogo logoKey={logoKey} className="size-4 text-primary-foreground" />
+                          ) : (
+                            <span className="text-primary-foreground text-sm font-bold">AI</span>
+                          )
+                        })()}
                        </div>
                        <div className="flex flex-col gap-4 max-w-[720px]">
                         <div className="text-base text-primary whitespace-pre-wrap space-y-3">
                           {(() => {
+                            // "답변중" 상태 표시 + 타입라이터 표시
+                            if (m.isPending) {
+                              const step = GENERATING_STEPS[genPhase] || "답변 생성 중"
+                              return (
+                                <div className="space-y-2">
+                                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                    <span className="inline-block size-2 rounded-full bg-primary animate-pulse" />
+                                    <span>{step}...</span>
+                                  </div>
+                                  <div className="text-base text-primary">
+                                    <span className="opacity-70">답변을 작성하고 있습니다.</span>
+                                  </div>
+                                </div>
+                              )
+                            }
+
+                            // 타입라이터 효과: 마지막 응답 텍스트를 "써지는 것처럼" 보여줌
+                            // - 블록 렌더링은 완료 후 자연스럽게 표시(성능/복잡도 균형)
+                            if (typing && !m.isPending && m.role === "assistant" && typeof m.content === "string" && m.content === typing.full && typing.shown.length < typing.full.length) {
+                              return (
+                                <div>
+                                  {typing.shown}
+                                  <span className="inline-block w-[6px] animate-pulse">▍</span>
+                                </div>
+                              )
+                            }
+
                             const c = m.contentJson
                             if (c && typeof c === "object") {
                               const obj = c as Record<string, unknown>
@@ -480,7 +562,7 @@ export default function Timeline() {
                     const refreshed = sortByRecent(await fetchThreads())
                     setConversations(refreshed)
                     const msgs = await fetchMessages(id)
-                    setMessages(msgs.map((m) => ({ role: m.role, content: m.content, contentJson: m.contentJson, model: m.model })))
+                    setMessages(msgs.map((m) => ({ id: m.id, role: m.role, content: m.content, contentJson: m.contentJson, model: m.model, providerSlug: m.providerSlug })))
                     const lastModel = [...msgs].reverse().find((m) => m.model)?.model
                     setStickySelectedModel(lastModel)
                   } catch {
@@ -491,10 +573,36 @@ export default function Timeline() {
                 })()
               }}
                onMessage={(msg) => {
-                 // 1) 화면에 표시
-                 setMessages((prev) => [...prev, { role: msg.role, content: msg.content, contentJson: msg.contentJson, model: msg.model }])
-                // 2) DB 저장은 ChatInterface(/api/ai/chat/run)가 처리합니다. 중복 저장 방지.
-                if (msg.model) setStickySelectedModel(msg.model)
+                // 1) 화면에 표시 + "답변중"/타입라이터 UX
+                if (msg.role === "user") {
+                  setIsGenerating(true)
+                  setGenPhase(0)
+                  const pendingId = `pending_${Date.now()}`
+                  setMessages((prev) => [
+                    ...prev,
+                    { role: "user", content: msg.content, contentJson: msg.contentJson, model: msg.model },
+                    { id: pendingId, role: "assistant", content: "", providerSlug: msg.providerSlug, model: msg.model, isPending: true },
+                  ])
+                  return
+                }
+
+                if (msg.role === "assistant") {
+                  setIsGenerating(false)
+                  setTyping({ id: `typing_${Date.now()}`, full: msg.content, shown: "" })
+                  setMessages((prev) => {
+                    const next = [...prev]
+                    const idx = [...next].reverse().findIndex((m) => m.role === "assistant" && m.isPending)
+                    const realIdx = idx >= 0 ? next.length - 1 - idx : -1
+                    const row = { role: "assistant" as const, content: msg.content, contentJson: msg.contentJson, model: msg.model, providerSlug: msg.providerSlug }
+                    if (realIdx >= 0) next[realIdx] = { ...next[realIdx], ...row, isPending: false }
+                    else next.push(row)
+                    return next
+                  })
+                  if (msg.model) setStickySelectedModel(msg.model)
+                  return
+                }
+
+                setMessages((prev) => [...prev, { role: msg.role, content: msg.content, contentJson: msg.contentJson, model: msg.model, providerSlug: msg.providerSlug }])
                }}
              />
            </div>

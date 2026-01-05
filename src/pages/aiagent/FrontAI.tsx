@@ -4,7 +4,7 @@ import { UserHeader } from "@/components/UserHeader"
 import { useNavigate } from "react-router-dom"
 import { useRef } from "react"
 import { ChatInterface } from "@/components/ChatInterface"
-import {
+import { 
   Select,
   SelectContent,
   SelectItem,

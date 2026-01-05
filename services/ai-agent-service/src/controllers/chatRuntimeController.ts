@@ -189,6 +189,8 @@ async function appendMessage(args: {
   contentText: string
   summary: string | null
   modelApiId: string
+  providerSlug: string
+  providerKey: string
 }) {
   const maxOrder = await query(`SELECT COALESCE(MAX(message_order), 0)::int AS max FROM model_messages WHERE conversation_id = $1`, [
     args.conversationId,
@@ -207,7 +209,7 @@ async function appendMessage(args: {
       args.contentText || null,
       args.summary,
       nextOrder,
-      JSON.stringify({ model: args.modelApiId }),
+      JSON.stringify({ model: args.modelApiId, provider_slug: args.providerSlug, provider_key: args.providerKey }),
     ]
   )
   return { id: String(r.rows[0].id), message_order: Number(r.rows[0].message_order) }
@@ -597,6 +599,8 @@ export async function chatRun(req: Request, res: Response) {
       contentText: prompt,
       summary: null,
       modelApiId,
+      providerSlug: String(row.provider_slug || ""),
+      providerKey: providerKey,
     })
     await appendMessage({
       conversationId: convId,
@@ -605,6 +609,8 @@ export async function chatRun(req: Request, res: Response) {
       contentText: String(out.output_text || ""),
       summary: null,
       modelApiId,
+      providerSlug: String(row.provider_slug || ""),
+      providerKey: providerKey,
     })
 
     // best-effort: keep conversation model_id updated to last used model
