@@ -4,7 +4,7 @@ import { UserHeader } from "@/components/UserHeader"
 import { useNavigate } from "react-router-dom"
 import { useRef } from "react"
 import { ChatInterface } from "@/components/ChatInterface"
-import { 
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -105,9 +105,13 @@ export default function FrontAI() {
             // FrontAI에서는 "첫 질문 시작"만 하고, 실제 대화는 Timeline에서 이어가도록 합니다.
             submitMode="emit"
             onSubmit={({ input, providerSlug, model }) => {
+              const requestId =
+                typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+                  ? crypto.randomUUID()
+                  : `${Date.now()}_${Math.random().toString(16).slice(2)}`
               navigate("/timeline", {
                 state: {
-                  initial: { input, providerSlug, model, sessionLanguage: currentLang || null },
+                  initial: { requestId, input, providerSlug, model, sessionLanguage: currentLang || null },
                 },
               })
             }}

@@ -221,11 +221,31 @@ export async function listMessages(req: Request, res: Response) {
     )
     if (owns.rows.length === 0) return res.status(404).json({ message: "Thread not found" })
 
+    // Resolve provider logo key for each message.
+    // - preferred: metadata.provider_logo_key (stored at write-time by chat runtime)
+    // - fallback: metadata.provider_slug -> ai_providers.slug
+    // - fallback2: metadata.provider_key (aka provider_family) -> ai_providers.provider_family
     const result = await query(
-      `SELECT id, conversation_id, role, content, summary, metadata, message_order, created_at
-       FROM model_messages
-       WHERE conversation_id = $1
-       ORDER BY message_order ASC`,
+      `
+      SELECT
+        mm.id,
+        mm.conversation_id,
+        mm.role,
+        mm.content,
+        mm.summary,
+        mm.metadata,
+        mm.message_order,
+        mm.created_at,
+        COALESCE(NULLIF(mm.metadata->>'provider_logo_key',''), p_slug.logo_key, p_family.logo_key) AS provider_logo_key,
+        COALESCE(p_slug.slug, p_family.slug) AS provider_slug_resolved
+      FROM model_messages mm
+      LEFT JOIN ai_providers p_slug
+        ON p_slug.slug = NULLIF(mm.metadata->>'provider_slug', '')
+      LEFT JOIN ai_providers p_family
+        ON lower(p_family.provider_family) = lower(NULLIF(mm.metadata->>'provider_key', ''))
+      WHERE mm.conversation_id = $1
+      ORDER BY mm.message_order ASC
+      `,
       [id]
     )
     res.json(result.rows)

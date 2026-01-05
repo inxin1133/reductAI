@@ -10,6 +10,19 @@ type OpenAiJsonSchema = {
   strict?: boolean
 }
 
+function deepMerge(a: any, b: any): any {
+  // b wins. arrays are replaced.
+  if (Array.isArray(a) || Array.isArray(b)) return b ?? a
+  if (!a || typeof a !== "object") return b
+  if (!b || typeof b !== "object") return b
+  const out: Record<string, unknown> = { ...(a as Record<string, unknown>) }
+  for (const [k, v] of Object.entries(b as Record<string, unknown>)) {
+    const av = (out as any)[k]
+    ;(out as any)[k] = deepMerge(av, v)
+  }
+  return out
+}
+
 function openAiBlockJsonSchema(): OpenAiJsonSchema {
   // LLM block response schema (server-level enforcement)
   return {
@@ -108,6 +121,104 @@ function normalizeOpenAiBaseUrl(input: string) {
   }
 }
 
+export async function openaiGenerateImage(args: {
+  apiBaseUrl: string
+  apiKey: string
+  model: string
+  prompt: string
+  // common options (best-effort)
+  n?: number
+  size?: string
+  quality?: string
+  style?: string
+  background?: string
+}) {
+  const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl)
+  const base = normalized || "https://api.openai.com/v1"
+  const apiRoot = base.replace(/\/$/, "")
+
+  const body: Record<string, unknown> = {
+    model: args.model,
+    prompt: args.prompt,
+    response_format: "url",
+  }
+  if (Number.isFinite(args.n as number)) body.n = args.n
+  if (typeof args.size === "string" && args.size.trim()) body.size = args.size.trim()
+  if (typeof args.quality === "string" && args.quality.trim()) body.quality = args.quality.trim()
+  if (typeof args.style === "string" && args.style.trim()) body.style = args.style.trim()
+  if (typeof args.background === "string" && args.background.trim()) body.background = args.background.trim()
+
+  const res = await fetch(`${apiRoot}/images/generations`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${args.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(`OPENAI_IMAGE_FAILED_${res.status}@${apiRoot}:${JSON.stringify(json)}`)
+  }
+
+  const data = Array.isArray((json as any)?.data) ? ((json as any).data as any[]) : []
+  const urls = data.map((d) => (typeof d?.url === "string" ? d.url : "")).filter(Boolean)
+  const b64 = data.map((d) => (typeof d?.b64_json === "string" ? d.b64_json : "")).filter(Boolean)
+
+  return { raw: json, urls, b64 }
+}
+
+export async function openaiTextToSpeech(args: {
+  apiBaseUrl: string
+  apiKey: string
+  model: string
+  input: string
+  voice?: string
+  format?: "mp3" | "wav" | "opus" | "aac" | "flac"
+  speed?: number
+}) {
+  const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl)
+  const base = normalized || "https://api.openai.com/v1"
+  const apiRoot = base.replace(/\/$/, "")
+
+  const fmt = (args.format || "mp3").toLowerCase() as "mp3" | "wav" | "opus" | "aac" | "flac"
+  const body: Record<string, unknown> = {
+    model: args.model,
+    input: args.input,
+    voice: (args.voice || "alloy").toString(),
+    format: fmt,
+  }
+  if (typeof args.speed === "number" && Number.isFinite(args.speed)) body.speed = args.speed
+
+  const res = await fetch(`${apiRoot}/audio/speech`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${args.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "")
+    throw new Error(`OPENAI_TTS_FAILED_${res.status}@${apiRoot}:${errText}`)
+  }
+
+  const buf = Buffer.from(await res.arrayBuffer())
+  const b64 = buf.toString("base64")
+  const mime =
+    fmt === "mp3"
+      ? "audio/mpeg"
+      : fmt === "wav"
+        ? "audio/wav"
+        : fmt === "aac"
+          ? "audio/aac"
+          : fmt === "flac"
+            ? "audio/flac"
+            : "audio/ogg"
+  const dataUrl = `data:${mime};base64,${b64}`
+  return { raw: { mime, bytes: buf.length }, mime, data_url: dataUrl, base64: b64 }
+}
+
 // Google Gemini base URL 정규화
 // - 기본: https://generativelanguage.googleapis.com/v1beta
 // - 사용자가 /models/...:generateContent 같은 전체 엔드포인트를 넣어도 base까지만 잘라냅니다.
@@ -183,14 +294,21 @@ export async function anthropicListModels(apiKey: string) {
   return (json?.data || []) as Array<{ id: string }>
 }
 
-export async function googleSimulateChat(args: { apiBaseUrl: string; apiKey: string; model: string; input: string; maxTokens: number }) {
+export async function googleSimulateChat(args: {
+  apiBaseUrl: string
+  apiKey: string
+  model: string
+  input: string
+  maxTokens: number
+  templateBody?: Record<string, unknown> | null
+}) {
   const normalized = normalizeGoogleBaseUrl(args.apiBaseUrl)
   const base = normalized || "https://generativelanguage.googleapis.com/v1beta"
   const apiRoot = base.replace(/\/$/, "")
 
   const url = `${apiRoot}/models/${encodeURIComponent(args.model)}:generateContent`
 
-  const body = {
+  const baseBody = {
     contents: [
       {
         role: "user",
@@ -201,6 +319,7 @@ export async function googleSimulateChat(args: { apiBaseUrl: string; apiKey: str
       maxOutputTokens: args.maxTokens,
     },
   }
+  const body = args.templateBody && typeof args.templateBody === "object" ? deepMerge(args.templateBody, baseBody) : baseBody
 
   const res = await fetch(url, {
     method: "POST",
@@ -490,23 +609,34 @@ export async function openaiSimulateChat(args: {
   }
 }
 
-export async function anthropicSimulateChat(args: { apiKey: string; model: string; input: string; maxTokens: number }) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+export async function anthropicSimulateChat(args: {
+  apiBaseUrl?: string
+  apiKey: string
+  model: string
+  input: string
+  maxTokens: number
+  templateBody?: Record<string, unknown> | null
+}) {
+  const base = (args.apiBaseUrl || "https://api.anthropic.com/v1").replace(/\/+$/g, "")
+  const baseBody = {
+    model: args.model,
+    max_tokens: args.maxTokens,
+    messages: [{ role: "user", content: args.input }],
+  }
+  const body = args.templateBody && typeof args.templateBody === "object" ? deepMerge(args.templateBody, baseBody) : baseBody
+
+  const res = await fetch(`${base}/messages`, {
     method: "POST",
     headers: {
       "x-api-key": args.apiKey,
       "anthropic-version": "2023-06-01",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model: args.model,
-      max_tokens: args.maxTokens,
-      messages: [{ role: "user", content: args.input }],
-    }),
+    body: JSON.stringify(body),
   })
   const json = await res.json().catch(() => ({}))
   if (!res.ok) {
-    throw new Error(`ANTHROPIC_SIMULATE_FAILED_${res.status}:${JSON.stringify(json)}`)
+    throw new Error(`ANTHROPIC_SIMULATE_FAILED_${res.status}@${base}:${JSON.stringify(json)}`)
   }
   const text = json?.content?.[0]?.text ?? ""
   return { raw: json, output_text: text }

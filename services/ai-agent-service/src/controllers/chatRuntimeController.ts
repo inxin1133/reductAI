@@ -2,11 +2,25 @@ import { Request, Response } from "express"
 import { query } from "../config/db"
 import { AuthedRequest } from "../middleware/requireAuth"
 import { ensureSystemTenantId } from "../services/systemTenantService"
-import { getProviderAuth, getProviderBase, openaiSimulateChat, anthropicSimulateChat, googleSimulateChat } from "../services/providerClients"
+import {
+  getProviderAuth,
+  getProviderBase,
+  openaiGenerateImage,
+  openaiSimulateChat,
+  openaiTextToSpeech,
+  anthropicSimulateChat,
+  googleSimulateChat,
+} from "../services/providerClients"
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 
 const MODEL_TYPES: ModelType[] = ["text", "image", "audio", "music", "video", "multimodal", "embedding", "code"]
+
+type AudioFormat = "mp3" | "wav" | "opus" | "aac" | "flac"
+
+function isAudioFormat(v: unknown): v is AudioFormat {
+  return v === "mp3" || v === "wav" || v === "opus" || v === "aac" || v === "flac"
+}
 
 function isUuid(v: unknown): v is string {
   if (typeof v !== "string") return false
@@ -191,6 +205,7 @@ async function appendMessage(args: {
   modelApiId: string
   providerSlug: string
   providerKey: string
+  providerLogoKey: string | null
 }) {
   const maxOrder = await query(`SELECT COALESCE(MAX(message_order), 0)::int AS max FROM model_messages WHERE conversation_id = $1`, [
     args.conversationId,
@@ -209,7 +224,12 @@ async function appendMessage(args: {
       args.contentText || null,
       args.summary,
       nextOrder,
-      JSON.stringify({ model: args.modelApiId, provider_slug: args.providerSlug, provider_key: args.providerKey }),
+      JSON.stringify({
+        model: args.modelApiId,
+        provider_slug: args.providerSlug,
+        provider_key: args.providerKey,
+        provider_logo_key: args.providerLogoKey,
+      }),
     ]
   )
   return { id: String(r.rows[0].id), message_order: Number(r.rows[0].message_order) }
@@ -234,9 +254,12 @@ async function loadHistory(args: { conversationId: string }) {
   )
   const shortRows = (short.rows || []).slice().reverse()
   const shortText = shortRows
-    .map((m) => {
+    .map((m: { role?: unknown; content_text?: unknown; content?: unknown }) => {
       const role = String(m.role || "")
-      const t = (typeof m.content_text === "string" && m.content_text.trim()) ? String(m.content_text) : extractTextFromJsonContent(m.content)
+      const t =
+        typeof m.content_text === "string" && m.content_text.trim()
+          ? String(m.content_text)
+          : extractTextFromJsonContent(m.content)
       return `${role}: ${t}`
     })
     .join("\n")
@@ -253,7 +276,7 @@ async function loadHistory(args: { conversationId: string }) {
   )
   const longText = sums.rows
     .slice(-80) // cap
-    .map((m) => `${String(m.role || "")}: ${String(m.summary || "")}`)
+    .map((m: { role?: unknown; summary?: unknown }) => `${String(m.role || "")}: ${String(m.summary || "")}`)
     .join("\n")
 
   return { conversationSummary, shortText, longText }
@@ -263,7 +286,8 @@ export async function getConversationContext(req: Request, res: Response) {
   try {
     const userId = (req as AuthedRequest).userId
     const tenantId = await ensureSystemTenantId()
-    const conversationId = String((req.params as any)?.id || "").trim()
+    const params = (req.params || {}) as Record<string, string | undefined>
+    const conversationId = String(params.id || "").trim()
     if (!isUuid(conversationId)) return res.status(400).json({ message: "Invalid conversation id" })
 
     const ok = await ensureConversationOwned({ tenantId, userId, conversationId })
@@ -278,8 +302,11 @@ export async function getConversationContext(req: Request, res: Response) {
        LIMIT 16`,
       [conversationId]
     )
-    const shortRows = (short.rows || []).slice().reverse().map((m) => {
-      const text = (typeof m.content_text === "string" && m.content_text.trim()) ? String(m.content_text) : extractTextFromJsonContent(m.content)
+    const shortRows = (short.rows || []).slice().reverse().map((m: { id?: unknown; role?: unknown; message_order?: unknown; created_at?: unknown; content_text?: unknown; content?: unknown; summary?: unknown }) => {
+      const text =
+        typeof m.content_text === "string" && m.content_text.trim()
+          ? String(m.content_text)
+          : extractTextFromJsonContent(m.content)
       return {
         id: String(m.id),
         role: String(m.role || ""),
@@ -310,18 +337,31 @@ export async function getConversationContext(req: Request, res: Response) {
        LIMIT 200`,
       [conversationId]
     )
-    const summaryRows = (sums.rows || []).slice(-80).map((m) => ({
-      id: String(m.id),
-      role: String(m.role || ""),
-      message_order: Number(m.message_order || 0),
-      summary: String(m.summary || ""),
-      summary_tokens: Number(m.summary_tokens || 0),
-      importance: Number(m.importance || 0),
-      is_pinned: Boolean(m.is_pinned),
-      segment_group: typeof m.segment_group === "string" ? m.segment_group : null,
-      updated_at: m.updated_at,
-      created_at: m.created_at,
-    }))
+    const summaryRows = (sums.rows || []).slice(-80).map(
+      (m: {
+        id?: unknown
+        role?: unknown
+        message_order?: unknown
+        summary?: unknown
+        summary_tokens?: unknown
+        importance?: unknown
+        is_pinned?: unknown
+        segment_group?: unknown
+        updated_at?: unknown
+        created_at?: unknown
+      }) => ({
+        id: String(m.id),
+        role: String(m.role || ""),
+        message_order: Number(m.message_order || 0),
+        summary: String(m.summary || ""),
+        summary_tokens: Number(m.summary_tokens || 0),
+        importance: Number(m.importance || 0),
+        is_pinned: Boolean(m.is_pinned),
+        segment_group: typeof m.segment_group === "string" ? m.segment_group : null,
+        updated_at: m.updated_at,
+        created_at: m.created_at,
+      })
+    )
 
     // also provide the exact text context used by runtime, for debugging
     const runtime = await loadHistory({ conversationId })
@@ -341,9 +381,10 @@ export async function getConversationContext(req: Request, res: Response) {
       },
       runtime_context: runtime,
     })
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error("getConversationContext error:", e)
-    return res.status(500).json({ message: "Failed to get conversation context", details: String(e?.message || e) })
+    const msg = e instanceof Error ? e.message : String(e)
+    return res.status(500).json({ message: "Failed to get conversation context", details: msg })
   }
 }
 
@@ -399,7 +440,7 @@ export async function chatRun(req: Request, res: Response) {
     if (model_api_id && provider_id && isUuid(String(provider_id))) {
       const exact = await query(
         `SELECT id FROM ai_models WHERE provider_id = $1 AND model_id = $2 AND status='active' AND is_available=TRUE LIMIT 1`,
-        [String(provider_id), String(model_api_id)]
+        [String(provider_id), String(model_api_id).trim()]
       )
       if (exact.rows.length > 0) chosenModelDbId = String(exact.rows[0].id)
     }
@@ -416,9 +457,19 @@ export async function chatRun(req: Request, res: Response) {
           AND m.is_available = TRUE
         LIMIT 1
         `,
-        [String(provider_slug).trim(), String(model_api_id)]
+        [String(provider_slug).trim(), String(model_api_id).trim()]
       )
       if (exact.rows.length > 0) chosenModelDbId = String(exact.rows[0].id)
+    }
+
+    // fallback: if explicit provider lookup failed, try to find ANY active model with this model_api_id
+    // (ignores provider mismatch if model ID is unique/valid)
+    if (!chosenModelDbId && model_api_id) {
+      const anyMatch = await query(
+        `SELECT id FROM ai_models WHERE model_id = $1 AND status='active' AND is_available=TRUE ORDER BY is_default DESC, sort_order ASC LIMIT 1`,
+        [String(model_api_id).trim()]
+      )
+      if (anyMatch.rows.length > 0) chosenModelDbId = String(anyMatch.rows[0].id)
     }
 
     const effectiveLang = requestedLang || detectedLang || sessionLang || "ko"
@@ -444,6 +495,7 @@ export async function chatRun(req: Request, res: Response) {
         p.id AS provider_id,
         p.provider_family,
         p.slug AS provider_slug,
+        p.logo_key AS provider_logo_key,
         p.product_name AS provider_product_name,
         p.description AS provider_description
       FROM ai_models m
@@ -534,21 +586,14 @@ export async function chatRun(req: Request, res: Response) {
 
     const providerKey = String(row.provider_family || row.provider_slug || "").trim().toLowerCase()
     const modelApiId = String(row.model_api_id || "")
-
-    // For now: only text/chat execution is implemented.
-    if (mt !== "text") {
-      return res.status(400).json({
-        message: `Not implemented for model_type=${mt}`,
-        details: "Only text/chat is implemented in chatRun currently. Options payload is accepted but not executed yet.",
-        conversation_id: convId,
-        chosen: {
-          provider_product_name: String(row.provider_product_name || ""),
-          provider_description: String(row.provider_description || ""),
-          provider_key: providerKey,
-          model_api_id: modelApiId,
-        },
-      })
-    }
+    // Prefer DB-provided logo_key; if missing, derive a safe default that matches `providerLogoRegistry.tsx` keys.
+    const providerLogoKeyRaw = typeof row.provider_logo_key === "string" && row.provider_logo_key.trim() ? row.provider_logo_key.trim() : null
+    const providerSlugLower = String(row.provider_slug || "").trim().toLowerCase()
+    const providerLogoKey =
+      providerLogoKeyRaw ||
+      (providerKey === "openai" || providerSlugLower.startsWith("openai") ? "chatgpt" : null) ||
+      (providerKey === "google" || providerSlugLower.startsWith("google") ? "gemini" : null) ||
+      (providerKey === "anthropic" || providerSlugLower.startsWith("anthropic") ? "claude" : null)
 
     // language instruction (server-level)
     const langInstruction = finalLang ? `\n\n(출력 언어: ${finalLang})` : ""
@@ -561,34 +606,107 @@ export async function chatRun(req: Request, res: Response) {
       .filter(Boolean)
       .join("\n\n")
 
-    let out: { output_text: string; raw: unknown }
-    if (providerKey === "openai") {
-      out = await openaiSimulateChat({
+    let out: { output_text: string; raw: unknown; content: Record<string, unknown> }
+    if (mt === "text") {
+      if (providerKey === "openai") {
+        const r = await openaiSimulateChat({
+          apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+          apiKey: auth.apiKey,
+          model: modelApiId,
+          input,
+          maxTokens: safeMaxTokens,
+          templateBody: injectedTemplate || undefined,
+          responseSchema,
+        })
+        out = { ...r, content: { output_text: r.output_text, raw: r.raw } }
+      } else if (providerKey === "anthropic") {
+        const r = await anthropicSimulateChat({
+          apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+          apiKey: auth.apiKey,
+          model: modelApiId,
+          input,
+          maxTokens: safeMaxTokens,
+          templateBody: injectedTemplate || undefined,
+        })
+        out = { ...r, content: { output_text: r.output_text, raw: r.raw } }
+      } else if (providerKey === "google") {
+        const r = await googleSimulateChat({
+          apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+          apiKey: auth.apiKey,
+          model: modelApiId,
+          input,
+          maxTokens: safeMaxTokens,
+          templateBody: injectedTemplate || undefined,
+        })
+        out = { ...r, content: { output_text: r.output_text, raw: r.raw } }
+      } else {
+        return res.status(400).json({ message: `Unsupported provider_family/provider_slug: ${providerKey}` })
+      }
+    } else if (mt === "image") {
+      if (providerKey !== "openai") {
+        return res.status(400).json({ message: `Image is not supported for provider=${providerKey} yet.` })
+      }
+      const n = typeof options?.n === "number" ? clampInt(options.n, 1, 10) : 1
+      const size = typeof options?.size === "string" ? options.size : undefined
+      const quality = typeof options?.quality === "string" ? options.quality : undefined
+      const style = typeof options?.style === "string" ? options.style : undefined
+      const background = typeof options?.background === "string" ? options.background : undefined
+      const r = await openaiGenerateImage({
         apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
         apiKey: auth.apiKey,
         model: modelApiId,
-        input,
-        maxTokens: safeMaxTokens,
-        templateBody: injectedTemplate || undefined,
-        responseSchema,
+        prompt,
+        n,
+        size,
+        quality,
+        style,
+        background,
       })
-    } else if (providerKey === "anthropic") {
-      out = await anthropicSimulateChat({
-        apiKey: auth.apiKey,
-        model: modelApiId,
-        input,
-        maxTokens: safeMaxTokens,
-      })
-    } else if (providerKey === "google") {
-      out = await googleSimulateChat({
+      const urls = r.urls || []
+      const blocks = urls.length
+        ? urls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
+        : [{ type: "markdown", markdown: "이미지 생성 결과를 받지 못했습니다." }]
+      const blockJson = { title: "이미지 생성", summary: "요청한 이미지 생성 결과입니다.", blocks }
+      out = {
+        output_text: JSON.stringify(blockJson),
+        raw: r.raw,
+        content: { ...blockJson, images: urls.map((u) => ({ url: u })), raw: r.raw },
+      }
+    } else if (mt === "audio" || mt === "music") {
+      if (providerKey !== "openai") {
+        return res.status(400).json({ message: `${mt} is not supported for provider=${providerKey} yet.` })
+      }
+      const voice = typeof options?.voice === "string" ? options.voice : undefined
+      const formatRaw = typeof options?.format === "string" ? options.format.trim().toLowerCase() : ""
+      const format: AudioFormat = isAudioFormat(formatRaw) ? formatRaw : "mp3"
+      const speed = typeof options?.speed === "number" ? options.speed : undefined
+      const r = await openaiTextToSpeech({
         apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
         apiKey: auth.apiKey,
         model: modelApiId,
-        input,
-        maxTokens: safeMaxTokens,
+        input: prompt,
+        voice,
+        format,
+        speed,
+      })
+      const blockJson = {
+        title: mt === "music" ? "음악 생성" : "오디오 생성",
+        summary: "오디오 생성이 완료되었습니다.",
+        blocks: [{ type: "markdown", markdown: "오디오가 생성되었습니다. (재생 UI는 Timeline에서 표시됩니다)" }],
+      }
+      out = {
+        output_text: JSON.stringify(blockJson),
+        raw: r.raw,
+        content: { ...blockJson, audio: { mime: r.mime, data_url: r.data_url }, raw: r.raw },
+      }
+    } else if (mt === "video") {
+      return res.status(400).json({
+        message: "Video is not implemented yet.",
+        details:
+          "현재 프로젝트에는 video 생성용 provider client(예: Runway/Pika/Sora)가 아직 없습니다. 어떤 provider_family/endpoint를 사용할지 알려주시면 연동을 구현할 수 있습니다.",
       })
     } else {
-      return res.status(400).json({ message: `Unsupported provider_family/provider_slug: ${providerKey}` })
+      return res.status(400).json({ message: `Unsupported model_type=${mt}` })
     }
 
     // persist messages (user + assistant)
@@ -601,16 +719,18 @@ export async function chatRun(req: Request, res: Response) {
       modelApiId,
       providerSlug: String(row.provider_slug || ""),
       providerKey: providerKey,
+      providerLogoKey,
     })
     await appendMessage({
       conversationId: convId,
       role: "assistant",
-      content: { output_text: out.output_text, raw: out.raw },
+      content: out.content,
       contentText: String(out.output_text || ""),
       summary: null,
       modelApiId,
       providerSlug: String(row.provider_slug || ""),
       providerKey: providerKey,
+      providerLogoKey,
     })
 
     // best-effort: keep conversation model_id updated to last used model
@@ -631,9 +751,10 @@ export async function chatRun(req: Request, res: Response) {
       output_text: out.output_text,
       raw: out.raw,
     })
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error("chatRun error:", e)
-    return res.status(500).json({ message: "Failed to run chat", details: String(e?.message || e) })
+    const msg = e instanceof Error ? e.message : String(e)
+    return res.status(500).json({ message: "Failed to run chat", details: msg })
   }
 }
 

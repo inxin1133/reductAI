@@ -65,6 +65,7 @@ type TimelineMessage = {
   contentJson?: unknown
   model?: string
   providerSlug?: string
+  providerLogoKey?: string | null
   isPending?: boolean
   createdAt: string // ISO
 }
@@ -77,8 +78,19 @@ type TimelineConversation = {
   messages: TimelineMessage[]
 }
 
+type TimelineUiMessage = {
+  role: ChatRole
+  id?: string
+  content: string
+  contentJson?: unknown
+  model?: string
+  providerSlug?: string
+  providerLogoKey?: string | null
+  isPending?: boolean
+}
+
 type TimelineNavState = {
-  initial?: { input: string; providerSlug: string; model: string; sessionLanguage?: string | null }
+  initial?: { requestId: string; input: string; providerSlug: string; model: string; sessionLanguage?: string | null }
 }
 
 const TIMELINE_API_BASE = "/api/ai/timeline"
@@ -125,13 +137,23 @@ function sortByRecent(convs: TimelineConversation[]) {
   return [...convs].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
 }
 
-function providerSlugToLogoKey(slug?: string | null): string | null {
+function dedupeById<T extends { id: string }>(items: T[]) {
+  const map = new Map<string, T>()
+  for (const it of items) {
+    const id = String(it.id || "").trim()
+    if (!id) continue
+    map.set(id, it)
+  }
+  return Array.from(map.values())
+}
+
+function providerSlugToLogoKeyFallback(slug?: string | null): string | null {
+  // Fallback only. Prefer provider_logo_key from the server.
   const s = String(slug || "").trim().toLowerCase()
   if (!s) return null
-  if (s === "openai") return "chatgpt"
-  if (s === "anthropic") return "claude"
-  if (s === "google") return "gemini"
-  // allow direct registry keys too
+  if (s === "openai" || s.startsWith("openai-")) return "chatgpt"
+  if (s === "anthropic" || s.startsWith("anthropic-")) return "claude"
+  if (s === "google" || s.startsWith("google-")) return "gemini"
   return s
 }
 
@@ -142,7 +164,7 @@ export default function Timeline() {
   const [isMobile, setIsMobile] = React.useState(false)
   const [conversations, setConversations] = React.useState<TimelineConversation[]>([])
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null)
-  const [messages, setMessages] = React.useState<Array<{ role: ChatRole; id?: string; content: string; contentJson?: unknown; model?: string; providerSlug?: string; isPending?: boolean }>>([]);
+  const [messages, setMessages] = React.useState<TimelineUiMessage[]>([])
 
   // 현재 대화에서 마지막으로 사용한 모델을 유지하여 ChatInterface 드롭다운 초기값으로 사용합니다.
   const [stickySelectedModel, setStickySelectedModel] = React.useState<string | undefined>(undefined)
@@ -202,13 +224,14 @@ export default function Timeline() {
       created_at: string
       updated_at: string
     }>
-    return rows.map((r) => ({
+    const mapped = rows.map((r) => ({
       id: r.id,
       title: r.title,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
       messages: [],
     })) as TimelineConversation[]
+    return sortByRecent(dedupeById(mapped))
   }, [authHeaders])
 
   const fetchMessages = React.useCallback(async (threadId: string) => {
@@ -220,37 +243,54 @@ export default function Timeline() {
       content: unknown
       summary?: string | null
       metadata?: Record<string, unknown> | null
+      provider_logo_key?: string | null
+      provider_slug_resolved?: string | null
       created_at: string
       message_order?: number
     }>
-    return rows.map((m) => ({
+    const mapped = rows.map((m) => ({
       id: m.id,
       role: m.role,
       content: extractTextFromJsonContent(m.content) || "",
       contentJson: m.content,
       model: typeof m.metadata?.model === "string" ? (m.metadata.model as string) : undefined,
       providerSlug:
-        typeof m.metadata?.provider_slug === "string"
-          ? (m.metadata.provider_slug as string)
-          : typeof m.metadata?.provider_key === "string"
-            ? (m.metadata.provider_key as string)
-            : undefined,
+        typeof m.provider_slug_resolved === "string" && m.provider_slug_resolved.trim()
+          ? m.provider_slug_resolved
+          : typeof m.metadata?.provider_slug === "string"
+            ? (m.metadata.provider_slug as string)
+            : typeof m.metadata?.provider_key === "string"
+              ? (m.metadata.provider_key as string)
+              : undefined,
+      providerLogoKey:
+        typeof m.provider_logo_key === "string" && m.provider_logo_key.trim() ? m.provider_logo_key : null,
       createdAt: m.created_at,
     })) as TimelineMessage[]
+    return dedupeById(mapped)
   }, [authHeaders])
 
   // 0) 최초 진입 시 "서버(DB)"에서 대화 목록을 로드하고, "가장 최근 대화"를 자동으로 선택합니다.
   React.useEffect(() => {
     const run = async () => {
       try {
-        const loaded = sortByRecent(await fetchThreads())
+        const loaded = await fetchThreads()
         setConversations(loaded)
 
         // FrontAI에서 넘어온 initial이 없으면, 최근 대화를 자동으로 열어줍니다.
         if (!initial && loaded.length > 0) {
           setActiveConversationId(loaded[0].id)
           const msgs = await fetchMessages(loaded[0].id)
-          setMessages(msgs.map(m => ({ role: m.role, content: m.content, contentJson: m.contentJson, model: m.model })))
+          setMessages(
+            msgs.map((m) => ({
+              id: m.id,
+              role: m.role,
+              content: m.content,
+              contentJson: m.contentJson,
+              model: m.model,
+              providerSlug: m.providerSlug,
+              providerLogoKey: m.providerLogoKey,
+            }))
+          )
           const lastModel = [...msgs].reverse().find(m => m.model)?.model
           setStickySelectedModel(lastModel)
         }
@@ -266,6 +306,22 @@ export default function Timeline() {
   // FrontAI → Timeline initial payload는 1회만 consume해서 ChatInterface(autoSend)로 넘깁니다.
   React.useEffect(() => {
     if (!initial) return
+    // dev(StrictMode)/리마운트에서도 중복 autoSend를 막기 위해 requestId로 1회만 consume
+    const rid = String(initial.requestId || "").trim()
+    if (rid) {
+      const k = `reductai.timeline.initialConsumed.${rid}`
+      try {
+        if (sessionStorage.getItem(k) === "1") {
+          // already consumed
+          navigate(location.pathname, { replace: true, state: {} })
+          return
+        }
+        sessionStorage.setItem(k, "1")
+      } catch {
+        // ignore storage issues
+      }
+    }
+
     setInitialToSend(initial)
     // state consume
     navigate(location.pathname, { replace: true, state: {} })
@@ -307,7 +363,17 @@ export default function Timeline() {
     const run = async () => {
       try {
         const msgs = await fetchMessages(activeConversationId)
-        setMessages(msgs.map((m) => ({ id: m.id, role: m.role, content: m.content, contentJson: m.contentJson, model: m.model, providerSlug: m.providerSlug })))
+        setMessages(
+          msgs.map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            contentJson: m.contentJson,
+            model: m.model,
+            providerSlug: m.providerSlug,
+            providerLogoKey: m.providerLogoKey,
+          }))
+        )
         const lastModel = [...msgs].reverse().find(m => m.model)?.model
         setStickySelectedModel(lastModel)
       } catch {
@@ -315,9 +381,13 @@ export default function Timeline() {
       }
     }
     void run()
-  }, [activeConversationId, conversations, fetchMessages])
+  }, [activeConversationId, fetchMessages])
 
   // initial 질문/응답 생성은 ChatInterface(autoSend)가 /api/ai/chat/run(=DB-driven)을 통해 처리합니다.
+
+  const initialSelectedModelForChat = initialToSend?.model || stickySelectedModel
+  const initialProviderSlugForChat = initialToSend?.providerSlug
+  const sessionLanguageForChat = initialToSend?.sessionLanguage || undefined
 
   return (
     <div className="bg-background w-full h-screen overflow-hidden flex font-sans">
@@ -430,7 +500,7 @@ export default function Timeline() {
                ) : (
                  messages.map((m, idx) => (
                    m.role === "user" ? (
-                     <div key={idx} className="w-full flex justify-end">
+                     <div key={m.id || `u_${idx}`} className="w-full flex justify-end">
                        <div className="flex items-end gap-2 lg:w-full">
                          <div className="flex lg:flex-row flex-col-reverse gap-4 w-full justify-end items-end lg:items-start">
                            <div className="bg-secondary p-3 rounded-lg max-w-[720px]">
@@ -443,10 +513,10 @@ export default function Timeline() {
                        </div>
                      </div>
                    ) : (
-                     <div key={idx} className="w-full flex lg:flex-row flex-col justify-start gap-4">
+                     <div key={m.id || `a_${idx}`} className="w-full flex lg:flex-row flex-col justify-start gap-4">
                        <div className="size-6 bg-primary rounded-[4px] flex items-center justify-center shrink-0">
                         {(() => {
-                          const logoKey = providerSlugToLogoKey(m.providerSlug)
+                          const logoKey = m.providerLogoKey || providerSlugToLogoKeyFallback(m.providerSlug)
                           return logoKey ? (
                             <ProviderLogo logoKey={logoKey} className="size-4 text-primary-foreground" />
                           ) : (
@@ -549,10 +619,10 @@ export default function Timeline() {
              <ChatInterface
                variant="compact"
                // 대화 선택 시 마지막 모델을 초기값으로 반영합니다.
-               initialSelectedModel={stickySelectedModel}
-              initialProviderSlug={initialToSend?.providerSlug}
+               initialSelectedModel={initialSelectedModelForChat}
+              initialProviderSlug={initialProviderSlugForChat}
               autoSendPrompt={initialToSend?.input || null}
-              sessionLanguage={initialToSend?.sessionLanguage || undefined}
+              sessionLanguage={sessionLanguageForChat}
               conversationId={activeConversationId}
               onConversationId={(id) => {
                 setActiveConversationId(id)
@@ -562,7 +632,17 @@ export default function Timeline() {
                     const refreshed = sortByRecent(await fetchThreads())
                     setConversations(refreshed)
                     const msgs = await fetchMessages(id)
-                    setMessages(msgs.map((m) => ({ id: m.id, role: m.role, content: m.content, contentJson: m.contentJson, model: m.model, providerSlug: m.providerSlug })))
+                    setMessages(
+                      msgs.map((m) => ({
+                        id: m.id,
+                        role: m.role,
+                        content: m.content,
+                        contentJson: m.contentJson,
+                        model: m.model,
+                        providerSlug: m.providerSlug,
+                        providerLogoKey: m.providerLogoKey,
+                      }))
+                    )
                     const lastModel = [...msgs].reverse().find((m) => m.model)?.model
                     setStickySelectedModel(lastModel)
                   } catch {
@@ -577,11 +657,19 @@ export default function Timeline() {
                 if (msg.role === "user") {
                   setIsGenerating(true)
                   setGenPhase(0)
-                  const pendingId = `pending_${Date.now()}`
+                    const pendingId = `pending_${Date.now()}`
                   setMessages((prev) => [
                     ...prev,
-                    { role: "user", content: msg.content, contentJson: msg.contentJson, model: msg.model },
-                    { id: pendingId, role: "assistant", content: "", providerSlug: msg.providerSlug, model: msg.model, isPending: true },
+                    { id: `u_${Date.now()}`, role: "user", content: msg.content, contentJson: msg.contentJson, model: msg.model, providerSlug: msg.providerSlug },
+                    {
+                      id: pendingId,
+                      role: "assistant",
+                      content: "",
+                      providerSlug: msg.providerSlug,
+                      model: msg.model,
+                      providerLogoKey: null,
+                      isPending: true,
+                    },
                   ])
                   return
                 }
@@ -593,16 +681,44 @@ export default function Timeline() {
                     const next = [...prev]
                     const idx = [...next].reverse().findIndex((m) => m.role === "assistant" && m.isPending)
                     const realIdx = idx >= 0 ? next.length - 1 - idx : -1
-                    const row = { role: "assistant" as const, content: msg.content, contentJson: msg.contentJson, model: msg.model, providerSlug: msg.providerSlug }
+                    const row = {
+                      role: "assistant" as const,
+                      content: msg.content,
+                      contentJson: msg.contentJson,
+                      model: msg.model,
+                      providerSlug: msg.providerSlug,
+                      providerLogoKey: null,
+                    }
                     if (realIdx >= 0) next[realIdx] = { ...next[realIdx], ...row, isPending: false }
-                    else next.push(row)
+                    else next.push({ id: `a_${Date.now()}`, ...row })
                     return next
                   })
                   if (msg.model) setStickySelectedModel(msg.model)
+
+                  // keep sidebar strictly in sync with model_conversations.updated_at ordering
+                  void (async () => {
+                    try {
+                      const refreshed = await fetchThreads()
+                      setConversations(refreshed)
+                    } catch {
+                      // ignore
+                    }
+                  })()
                   return
                 }
 
-                setMessages((prev) => [...prev, { role: msg.role, content: msg.content, contentJson: msg.contentJson, model: msg.model, providerSlug: msg.providerSlug }])
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: `${msg.role}_${Date.now()}`,
+                    role: msg.role,
+                    content: msg.content,
+                    contentJson: msg.contentJson,
+                    model: msg.model,
+                    providerSlug: msg.providerSlug,
+                    providerLogoKey: null,
+                  },
+                ])
                }}
              />
            </div>

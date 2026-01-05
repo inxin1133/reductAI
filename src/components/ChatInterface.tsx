@@ -241,7 +241,7 @@ export function ChatInterface({
   const [runtimeOptions, setRuntimeOptions] = React.useState<Record<string, unknown>>({})
   const [isOptionExpanded, setIsOptionExpanded] = React.useState(true)
 
-  const promptInputRef = React.useRef<HTMLInputElement>(null)
+  const promptInputRef = React.useRef<HTMLTextAreaElement>(null)
 
   // 모델별 옵션 유지(세션 유지): in-memory + sessionStorage
   const [runtimeOptionsByModel, setRuntimeOptionsByModel] = React.useState<Record<string, Record<string, unknown>>>({})
@@ -363,6 +363,13 @@ export function ChatInterface({
 
   React.useEffect(() => {
     if (!currentProviderGroups.length) return
+
+    // Fix: If current selected provider is valid in this group, keep it.
+    // This prevents reverting to default/initial when user manually selects a different provider.
+    if (selectedProviderId && currentProviderGroups.some((g) => g.provider.id === selectedProviderId)) {
+      return
+    }
+
     const wantedModel = (initialSelectedModel || "").trim()
     const wantedProviderSlug = (initialProviderSlug || "").trim()
 
@@ -507,52 +514,66 @@ export function ChatInterface({
         return
       }
 
-      const maxTokens = selectedType === "text" ? 2048 : 512
-      const res = await fetch(CHAT_RUN_API, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({
-          model_type: selectedType,
-          conversation_id: conversationId || null,
-          userPrompt: input,
-          max_tokens: maxTokens,
-          session_language: sessionLanguage || null,
-          provider_id: providerId,
-          model_api_id: modelApiId,
-          options: runtimeOptions || {},
-        }),
-      })
-
-      const raw = await res.text()
-      let jsonUnknown: unknown = {}
       try {
-        jsonUnknown = raw ? (JSON.parse(raw) as unknown) : {}
-      } catch {
-        jsonUnknown = {}
+        const maxTokens = selectedType === "text" ? 2048 : 512
+        const res = await fetch(CHAT_RUN_API, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify({
+            model_type: selectedType,
+            conversation_id: conversationId || null,
+            userPrompt: input,
+            max_tokens: maxTokens,
+            session_language: sessionLanguage || null,
+            provider_id: providerId,
+            provider_slug: providerSlug,
+            model_api_id: modelApiId,
+            options: runtimeOptions || {},
+          }),
+        })
+
+        const raw = await res.text()
+        let jsonUnknown: unknown = {}
+        try {
+          jsonUnknown = raw ? (JSON.parse(raw) as unknown) : {}
+        } catch {
+          jsonUnknown = {}
+        }
+        const json = isRecord(jsonUnknown) ? jsonUnknown : {}
+
+        if (!res.ok) {
+          const msg = (typeof json.message === "string" ? String(json.message) : "") || raw || "AI 응답 실패"
+          const details = typeof json.details === "string" ? `\n${String(json.details)}` : ""
+          throw new Error(`${msg}${details}`)
+        }
+
+        const outText = String(json.output_text || "")
+        const conv = json.conversation_id ? String(json.conversation_id) : ""
+        if (conv && conv !== (conversationId || "")) onConversationId?.(conv)
+        const chosenObj = isRecord(json.chosen) ? json.chosen : {}
+        const chosenModel = chosenObj.model_api_id ? String(chosenObj.model_api_id) : modelApiId
+
+        // Always attempt to parse block-json so non-text modes can render rich results too.
+        const parsed = parseBlockJson(outText)
+        onMessage?.({
+          role: "assistant",
+          content: parsed.displayText,
+          contentJson: parsed.parsed ?? { text: outText },
+          summary: assistantSummary(parsed.parsed?.summary || outText),
+          providerSlug,
+          model: chosenModel,
+        })
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        onMessage?.({
+          role: "assistant",
+          content: `요청 처리 중 오류가 발생했습니다.\n\n${msg}`,
+          contentJson: { text: msg },
+          summary: assistantSummary(msg),
+          providerSlug,
+          model: modelApiId,
+        })
       }
-      const json = isRecord(jsonUnknown) ? jsonUnknown : {}
-
-      if (!res.ok) {
-        const msg = (typeof json.message === "string" ? String(json.message) : "") || raw || "AI 응답 실패"
-        const details = typeof json.details === "string" ? `\n${String(json.details)}` : ""
-        throw new Error(`${msg}${details}`)
-      }
-
-      const outText = String(json.output_text || "")
-      const conv = json.conversation_id ? String(json.conversation_id) : ""
-      if (conv && conv !== (conversationId || "")) onConversationId?.(conv)
-      const chosenObj = isRecord(json.chosen) ? json.chosen : {}
-      const chosenModel = chosenObj.model_api_id ? String(chosenObj.model_api_id) : modelApiId
-
-      const parsed = selectedType === "text" ? parseBlockJson(outText) : { parsed: undefined, displayText: outText }
-      onMessage?.({
-        role: "assistant",
-        content: parsed.displayText,
-        contentJson: parsed.parsed ?? { text: outText },
-        summary: assistantSummary(parsed.parsed?.summary || outText),
-        providerSlug,
-        model: chosenModel,
-      })
     },
     [
       assistantSummary,
@@ -582,10 +603,28 @@ export function ChatInterface({
     if (!uiConfig) return
     if (!currentProviderGroup?.provider?.id) return
     if (!selectedSubModel) return
+
+    // If an initial provider/model is specified (FrontAI -> Timeline), wait until
+    // the UI selection has actually applied before auto-sending.
+    const desiredProviderSlug = String(initialProviderSlug || "").trim()
+    const desiredModelApiId = String(initialSelectedModel || "").trim()
+    if (desiredProviderSlug && currentProviderGroup.provider.slug !== desiredProviderSlug) return
+    if (desiredModelApiId && selectedSubModel !== desiredModelApiId) return
+
     if (autoSentRef.current === p) return
     autoSentRef.current = p
     void handleSend(p)
-  }, [autoSendPrompt, currentProviderGroup?.provider?.id, handleSend, selectedSubModel, submitMode, uiConfig])
+  }, [
+    autoSendPrompt,
+    currentProviderGroup?.provider?.id,
+    currentProviderGroup?.provider?.slug,
+    handleSend,
+    initialProviderSlug,
+    initialSelectedModel,
+    selectedSubModel,
+    submitMode,
+    uiConfig,
+  ])
 
   const ModeTabs = () => (
     <div className="flex flex-col gap-[10px] items-start relative shrink-0 w-full">
@@ -757,24 +796,38 @@ export function ChatInterface({
               {currentProviderGroup && (
                 <div className="bg-background border border-border box-border flex flex-col gap-[10px] items-start justify-between pb-[12px] pt-[16px] px-[16px] relative rounded-[24px] shadow-sm shrink-0 w-full h-full">
                   <div className="flex flex-col gap-[10px] items-start justify-center relative shrink-0 w-full">
-                    <input
+                    <textarea
                       ref={promptInputRef}
-                      type="text"
                       placeholder={selectedModelLabel}
-                      className="w-full border-none outline-none text-[16px] placeholder:text-muted-foreground bg-transparent"
+                      className="w-full border-none outline-none text-[16px] placeholder:text-muted-foreground bg-transparent resize-none overflow-y-auto leading-6"
                       value={prompt}
-                      onChange={(e) => setPrompt(e.target.value)}
+                      rows={1}
+                      style={{ maxHeight: 24 * 12 }}
+                      onChange={(e) => {
+                        setPrompt(e.target.value)
+                        // auto-grow up to 12 lines; then scroll
+                        const el = e.currentTarget
+                        el.style.height = "auto"
+                        el.style.height = `${Math.min(el.scrollHeight, 24 * 12)}px`
+                      }}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter" && (e.nativeEvent as { isComposing?: boolean })?.isComposing) return
-                        if (e.key === "Enter" && isComposingRef.current) return
-                        if (e.key === "Enter") {
-                          e.preventDefault()
-                          void handleSend(e.currentTarget.value)
-                        }
+                        if (e.key !== "Enter") return
+                        if ((e.nativeEvent as { isComposing?: boolean })?.isComposing) return
+                        if (isComposingRef.current) return
+
+                        // Shift+Enter: newline
+                        if (e.shiftKey) return
+
+                        // Enter: send
+                        e.preventDefault()
+                        void handleSend(e.currentTarget.value)
                       }}
                       onCompositionStart={() => (isComposingRef.current = true)}
                       onCompositionEnd={() => (isComposingRef.current = false)}
                     />
+                    {!prompt.trim() && (
+                      <p className="text-xs text-muted-foreground">Shift + Enter로 줄바꿈</p>
+                    )}
                   </div>
 
                  

@@ -185,7 +185,7 @@ async function appendMessage(args) {
         args.contentText || null,
         args.summary,
         nextOrder,
-        JSON.stringify({ model: args.modelApiId }),
+        JSON.stringify({ model: args.modelApiId, provider_slug: args.providerSlug, provider_key: args.providerKey }),
     ]);
     return { id: String(r.rows[0].id), message_order: Number(r.rows[0].message_order) };
 }
@@ -497,6 +497,8 @@ async function chatRun(req, res) {
             contentText: prompt,
             summary: null,
             modelApiId,
+            providerSlug: String(row.provider_slug || ""),
+            providerKey: providerKey,
         });
         await appendMessage({
             conversationId: convId,
@@ -505,6 +507,8 @@ async function chatRun(req, res) {
             contentText: String(out.output_text || ""),
             summary: null,
             modelApiId,
+            providerSlug: String(row.provider_slug || ""),
+            providerKey: providerKey,
         });
         // best-effort: keep conversation model_id updated to last used model
         await (0, db_1.query)(`UPDATE model_conversations SET model_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [convId, chosenModelDbId]);
