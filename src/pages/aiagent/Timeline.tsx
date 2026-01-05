@@ -75,54 +75,10 @@ type TimelineConversation = {
 }
 
 type TimelineNavState = {
-  initial?: { input: string; providerSlug: string; model: string }
-}
-
-function nowIso() {
-  return new Date().toISOString()
-}
-
-function safeUuid() {
-  try {
-    return crypto.randomUUID()
-  } catch {
-    return `id_${Math.random().toString(16).slice(2)}_${Date.now()}`
-  }
-}
-
-function makeAutoTitleFromPrompt(input: string) {
-  // 제목 자동 생성 규칙(간단 버전)
-  // - 첫 줄 기준
-  // - 너무 길면 잘라서 ... 처리
-  const firstLine = (input || "").split("\n")[0]?.trim() || "새 대화"
-  const trimmed = firstLine.replace(/\s+/g, " ")
-  // 요구사항: 15자 이내(한글 기준)
-  const max = 15
-  if (trimmed.length <= max) return trimmed
-  // 15자 이내를 엄격히 지키기 위해 …를 붙이지 않습니다.
-  return trimmed.slice(0, max)
+  initial?: { input: string; providerSlug: string; model: string; sessionLanguage?: string | null }
 }
 
 const TIMELINE_API_BASE = "/api/ai/timeline"
-
-function clampText(input: string, max: number) {
-  const s = String(input || "").replace(/\s+/g, " ").trim()
-  if (s.length <= max) return s
-  return s.slice(0, max)
-}
-
-function userSummary(input: string) {
-  // 규칙 1) user 메시지 → 그대로 요약, 50자 이내
-  return clampText(input, 50)
-}
-
-function assistantSummary(input: string) {
-  // 규칙 2) assistant 메시지 → 핵심 1문장, 100자 이내, 마침표 1개
-  const cleaned = String(input || "").replace(/\s+/g, " ").trim()
-  const withoutDots = cleaned.replace(/\./g, "")
-  const head = clampText(withoutDots, 99)
-  return head ? `${head}.` : "요약."
-}
 
 function extractTextFromJsonContent(content: unknown): string {
   if (typeof content === "string") return content
@@ -162,88 +118,8 @@ function extractTextFromJsonContent(content: unknown): string {
   return ""
 }
 
-function storageKeyForUser() {
-  // "접속한 계정" 기준 분리 저장
-  const userId = localStorage.getItem("user_id") || "anon"
-  return `timeline_conversations_v1:${userId}`
-}
-
-function loadConversations(): TimelineConversation[] {
-  const raw = localStorage.getItem(storageKeyForUser())
-  if (!raw) return []
-  try {
-    const parsed = JSON.parse(raw) as TimelineConversation[]
-    if (!Array.isArray(parsed)) return []
-    return parsed
-  } catch {
-    return []
-  }
-}
-
-function saveConversations(next: TimelineConversation[]) {
-  localStorage.setItem(storageKeyForUser(), JSON.stringify(next))
-}
-
 function sortByRecent(convs: TimelineConversation[]) {
   return [...convs].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-}
-
-function formatInstructionForChatTab(userPrompt: string) {
-  // ChatInterface와 동일한 규칙(초기 메시지도 동일 포맷으로 받기 위함)
-  const schema = [
-    "{",
-    '  "title": "string",',
-    '  "summary": "string",',
-    '  "blocks": [',
-    '    { "type": "markdown", "markdown": "## 제목\\n- 항목" },',
-    '    { "type": "code", "language": "java", "code": "System.out.println(\\"hi\\");" },',
-    '    { "type": "table", "headers": ["컬럼1","컬럼2"], "rows": [["A","B"],["C","D"]] }',
-    "  ]",
-    "}",
-  ].join("\n")
-
-  const rules = [
-    "너는 이제부터 아래 스키마의 JSON 객체만 출력해야 한다.",
-    "JSON 외의 어떤 텍스트도 출력하지 마라.",
-    "출력은 반드시 '{' 로 시작하고 '}' 로 끝나는 단일 JSON이어야 한다.",
-    "출력에 백틱(`) 또는 코드펜스(예: ``` 또는 ```json)를 절대로 포함하지 마라.",
-    "규칙:",
-    "- JSON만 출력",
-    "- code 블록의 code 필드에는 코드만 그대로 넣고, 코드 펜스 같은 마크다운 문법은 절대 넣지 마라",
-    "- table 블록은 headers/rows만 사용한다",
-    "- markdown은 markdown 블록에서만 사용한다",
-  ].join("\n")
-
-  return [rules, "", "스키마:", schema, "", "사용자 요청:", userPrompt].join("\n")
-}
-
-function parseBlockJson(text: string): { parsed?: unknown; displayText: string; extractedSummary?: string } {
-  let raw = (text || "").trim()
-  if (raw.startsWith("```")) {
-    const firstNl = raw.indexOf("\n")
-    const lastFence = raw.lastIndexOf("```")
-    if (firstNl > -1 && lastFence > firstNl) {
-      raw = raw.slice(firstNl + 1, lastFence).trim()
-    }
-  }
-  const firstBrace = raw.indexOf("{")
-  const lastBrace = raw.lastIndexOf("}")
-  if (firstBrace > -1 && lastBrace > firstBrace) {
-    raw = raw.slice(firstBrace, lastBrace + 1)
-  }
-  if (!raw.startsWith("{")) return { displayText: text }
-  try {
-    const obj = JSON.parse(raw) as Record<string, unknown>
-    if (!obj || typeof obj !== "object") return { displayText: text }
-    const title = typeof obj.title === "string" ? obj.title : ""
-    const summary = typeof obj.summary === "string" ? obj.summary : ""
-    const out: string[] = []
-    if (title) out.push(title)
-    if (summary) out.push(summary)
-    return { parsed: obj, displayText: out.filter(Boolean).join("\n\n") || text, extractedSummary: summary }
-  } catch {
-    return { displayText: text }
-  }
 }
 
 export default function Timeline() {
@@ -255,10 +131,9 @@ export default function Timeline() {
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null)
   const [messages, setMessages] = React.useState<Array<{ role: ChatRole; content: string; contentJson?: unknown; model?: string }>>([]);
 
-  // FrontAI에서 넘어온 "첫 질문"을 1회만 자동 실행하기 위한 ref
-  const initialRanRef = React.useRef(false)
   // 현재 대화에서 마지막으로 사용한 모델을 유지하여 ChatInterface 드롭다운 초기값으로 사용합니다.
   const [stickySelectedModel, setStickySelectedModel] = React.useState<string | undefined>(undefined)
+  const [initialToSend, setInitialToSend] = React.useState<{ input: string; providerSlug: string; model: string; sessionLanguage?: string | null } | null>(null)
 
   const initial = (location.state as TimelineNavState | null)?.initial
 
@@ -345,42 +220,6 @@ export default function Timeline() {
     })) as TimelineMessage[]
   }, [authHeaders])
 
-  const createThreadFromFirstMessage = React.useCallback(async (firstMessage: string) => {
-    // [중요] title을 클라이언트에서 결정하지 않고, 서버(OpenAI)가 요약/키워드 기반 제목을 생성하도록 위임합니다.
-    // model도 함께 넘겨주면 conversation.model_id 매핑이 정확해집니다.
-    const selectedModel = stickySelectedModel || (initial?.model ?? "")
-    const res = await fetch(`${TIMELINE_API_BASE}/threads`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ first_message: firstMessage, model: selectedModel || null }),
-    })
-    if (!res.ok) throw new Error("THREAD_CREATE_FAILED")
-    const row = (await res.json()) as { id: string; title: string; created_at: string; updated_at: string }
-    return {
-      id: row.id,
-      title: row.title,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      messages: [],
-    } as TimelineConversation
-  }, [authHeaders, initial?.model, stickySelectedModel])
-
-  const addMessage = React.useCallback(async (threadId: string, msg: { role: ChatRole; content: string; contentJson?: unknown; summary?: string; model?: string }) => {
-    const res = await fetch(`${TIMELINE_API_BASE}/threads/${threadId}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({
-        role: msg.role,
-        // DB 저장용 JSON content (없으면 {text: ...}로 보존)
-        content: msg.contentJson ?? { text: msg.content },
-        summary: msg.summary ?? (msg.role === "assistant" ? assistantSummary(msg.content) : userSummary(msg.content)),
-        model: msg.model ?? null,
-      }),
-    })
-    if (!res.ok) throw new Error("MESSAGE_ADD_FAILED")
-    return true
-  }, [authHeaders])
-
   // 0) 최초 진입 시 "서버(DB)"에서 대화 목록을 로드하고, "가장 최근 대화"를 자동으로 선택합니다.
   React.useEffect(() => {
     const run = async () => {
@@ -397,21 +236,22 @@ export default function Timeline() {
           setStickySelectedModel(lastModel)
         }
       } catch (e) {
-        // 서버가 아직 준비되지 않았거나 접속 실패 시 localStorage fallback
-        const loaded = sortByRecent(loadConversations())
-        setConversations(loaded)
-        if (!initial && loaded.length > 0) {
-          setActiveConversationId(loaded[0].id)
-          setMessages(loaded[0].messages.map(m => ({ role: m.role, content: m.content, model: m.model })))
-          const lastModel = [...loaded[0].messages].reverse().find(m => m.model)?.model
-          setStickySelectedModel(lastModel)
-        }
-        console.warn("[Timeline] threads API 실패로 localStorage fallback 사용:", e)
+        setConversations([])
+        console.warn("[Timeline] threads API 실패:", e)
       }
     }
     void run()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // FrontAI → Timeline initial payload는 1회만 consume해서 ChatInterface(autoSend)로 넘깁니다.
+  React.useEffect(() => {
+    if (!initial) return
+    setInitialToSend(initial)
+    // state consume
+    navigate(location.pathname, { replace: true, state: {} })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial])
 
   // 대화 선택 시 메시지/모델 동기화
   React.useEffect(() => {
@@ -423,175 +263,13 @@ export default function Timeline() {
         const lastModel = [...msgs].reverse().find(m => m.model)?.model
         setStickySelectedModel(lastModel)
       } catch {
-        // fallback: localStorage 데이터로 표시
-        const conv = conversations.find(c => c.id === activeConversationId)
-        if (!conv) return
-        setMessages(conv.messages.map(m => ({ role: m.role, content: m.content, model: m.model })))
-        const lastModel = [...conv.messages].reverse().find(m => m.model)?.model
-        setStickySelectedModel(lastModel)
+        setMessages([])
       }
     }
     void run()
   }, [activeConversationId, conversations, fetchMessages])
 
-  // 공통: 현재 대화에 메시지 1개를 추가하고 (서버 우선) 저장합니다.
-  const appendToActiveConversation = React.useCallback((msg: { role: ChatRole; content: string; contentJson?: unknown; summary?: string; model?: string }) => {
-    const run = async () => {
-      try {
-        let activeId = activeConversationId
-
-        // 활성 스레드가 없으면, "첫 질문" 기준으로 서버에 스레드를 생성합니다.
-        if (!activeId) {
-          // 첫 메시지(주로 user 질문)를 서버에 전달하여
-          // OpenAI가 "요약/키워드" 기반 제목을 생성하도록 합니다.
-          const created = await createThreadFromFirstMessage(msg.content)
-          activeId = created.id
-          setActiveConversationId(created.id)
-          setConversations((prev) => sortByRecent([created, ...prev]))
-        }
-
-        await addMessage(activeId, msg)
-
-        // 저장 성공 후: 목록을 다시 갱신(최근순 유지)
-        const refreshed = sortByRecent(await fetchThreads())
-        setConversations(refreshed)
-        setActiveConversationId(activeId)
-        setStickySelectedModel(msg.model || stickySelectedModel)
-      } catch (e) {
-        // 서버 실패 시 localStorage fallback
-        setConversations((prev) => {
-          const t = nowIso()
-          let activeId = activeConversationId
-          let next = [...prev]
-          if (!activeId) {
-            const newId = safeUuid()
-            const title = msg.role === "user" ? makeAutoTitleFromPrompt(msg.content) : "새 대화"
-            const created: TimelineConversation = { id: newId, title, createdAt: t, updatedAt: t, messages: [] }
-            next = [created, ...next]
-            activeId = newId
-            setActiveConversationId(newId)
-          }
-          const idx = next.findIndex((c) => c.id === activeId)
-          if (idx < 0) return prev
-          const toAdd: TimelineMessage = { id: safeUuid(), role: msg.role, content: msg.content, model: msg.model, createdAt: t }
-          next[idx] = { ...next[idx], updatedAt: t, messages: [...next[idx].messages, toAdd] }
-          const sorted = sortByRecent(next)
-          saveConversations(sorted)
-          setActiveConversationId(activeId)
-          setStickySelectedModel(msg.model || stickySelectedModel)
-          return sorted
-        })
-        console.warn("[Timeline] append API 실패로 localStorage fallback 사용:", e)
-      }
-    }
-    void run()
-  }, [activeConversationId, stickySelectedModel, addMessage, createThreadFromFirstMessage, fetchThreads])
-
-  React.useEffect(() => {
-    if (!initial) return
-    if (initialRanRef.current) return
-    initialRanRef.current = true
-
-    // [중요] history state 정리(consume)
-    // FrontAI → Timeline으로 이동할 때 navigate(state)를 통해 초기 질문을 넘겼습니다.
-    // 이 state는 브라우저 히스토리 엔트리에 "그대로" 남기 때문에,
-    // 사용자가 뒤로가기/앞으로가기/리로드 등으로 Timeline에 다시 들어오면
-    // 같은 initial 값이 다시 들어와 "자동 전송"이 반복될 수 있습니다.
-    //
-    // 이를 막기 위해: initial을 한 번 읽어서 처리하기 시작한 즉시,
-    // Timeline의 현재 URL 엔트리를 replace로 덮어쓰되 state를 비워줍니다.
-    // - URL은 그대로(/timeline), state만 제거됩니다.
-    // - replace=true 이므로 히스토리 엔트리가 추가되지 않고 현재 엔트리만 갱신됩니다.
-    navigate(location.pathname, { replace: true, state: {} })
-
-    // 1) FrontAI의 질문을 기준으로 서버(DB)에 새 스레드를 만들고 제목을 자동 생성합니다.
-    // - 이 스레드가 좌측 "타임라인 목록"에 표시되는 단위입니다.
-    // - 이후 메시지(user/assistant)를 이 스레드에 계속 append 합니다.
-    const run = async () => {
-      try {
-        const thread = await createThreadFromFirstMessage(initial.input)
-
-        // 스레드를 활성화 + 목록 반영
-        setActiveConversationId(thread.id)
-        setStickySelectedModel(initial.model)
-
-        const refreshed = sortByRecent(await fetchThreads())
-        setConversations(refreshed)
-
-        // 2) 유저 메시지를 서버/화면에 저장
-        setMessages([{ role: "user", content: initial.input, contentJson: { text: initial.input }, model: initial.model }])
-        await addMessage(thread.id, {
-          role: "user",
-          content: initial.input,
-          contentJson: { text: initial.input },
-          summary: userSummary(initial.input),
-          model: initial.model,
-        })
-
-        // 3) 실제 AI 응답 생성(/api/ai/chat) 후 assistant 메시지를 서버/화면에 저장
-        const res = await fetch("/api/ai/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            provider_slug: initial.providerSlug,
-            model: initial.model,
-            input: formatInstructionForChatTab(initial.input),
-            output_format: "block_json",
-            max_tokens: 2048,
-          }),
-        })
-
-        const raw = await res.text()
-        let json: Record<string, unknown> = {}
-        try {
-          json = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
-        } catch {
-          json = {}
-        }
-
-        if (!res.ok) {
-          const parsed = json as { message?: unknown; details?: unknown }
-          const msg = (parsed?.message ? String(parsed.message) : "") || raw || "AI 응답 실패"
-          const details = parsed?.details ? `\n${String(parsed.details)}` : ""
-          throw new Error(`${msg}${details}`)
-        }
-
-        const okJson = json as { output_text?: unknown }
-        const out = String(okJson?.output_text || "")
-        const parsed = parseBlockJson(out)
-        setMessages((prev) => [...prev, { role: "assistant", content: parsed.displayText, contentJson: parsed.parsed ?? { text: out }, model: initial.model }])
-        await addMessage(thread.id, {
-          role: "assistant",
-          content: parsed.displayText,
-          contentJson: parsed.parsed ?? { text: out },
-          summary: assistantSummary(parsed.extractedSummary || out),
-          model: initial.model,
-        })
-
-        // 4) updated_at이 갱신되었으므로 목록을 다시 받아 "최근 대화가 위"를 확실히 보장합니다.
-        const refreshed2 = sortByRecent(await fetchThreads())
-        setConversations(refreshed2)
-      } catch (e) {
-        // 서버가 준비되지 않은 상황에서는 localStorage fallback로 동작 유지
-        console.warn("[Timeline] initial flow API 실패로 localStorage fallback 사용:", e)
-
-        const t = nowIso()
-        const newConversationId = safeUuid()
-        const title = makeAutoTitleFromPrompt(initial.input)
-        const created: TimelineConversation = { id: newConversationId, title, createdAt: t, updatedAt: t, messages: [] }
-        const userMsg: TimelineMessage = { id: safeUuid(), role: "user", content: initial.input, model: initial.model, createdAt: t }
-
-        const next = sortByRecent([{ ...created, messages: [userMsg] }, ...loadConversations()])
-        saveConversations(next)
-        setConversations(next)
-        setActiveConversationId(newConversationId)
-        setStickySelectedModel(initial.model)
-        setMessages([{ role: "user", content: initial.input, contentJson: { text: initial.input }, model: initial.model }])
-      }
-    }
-
-    void run()
-  }, [initial, navigate, location.pathname, createThreadFromFirstMessage, fetchThreads, addMessage])
+  // initial 질문/응답 생성은 ChatInterface(autoSend)가 /api/ai/chat/run(=DB-driven)을 통해 처리합니다.
 
   return (
     <div className="bg-background w-full h-screen overflow-hidden flex font-sans">
@@ -790,17 +468,33 @@ export default function Timeline() {
                variant="compact"
                // 대화 선택 시 마지막 모델을 초기값으로 반영합니다.
                initialSelectedModel={stickySelectedModel}
+              initialProviderSlug={initialToSend?.providerSlug}
+              autoSendPrompt={initialToSend?.input || null}
+              sessionLanguage={initialToSend?.sessionLanguage || undefined}
+              conversationId={activeConversationId}
+              onConversationId={(id) => {
+                setActiveConversationId(id)
+                // 첫 질문에서 신규 대화가 생성된 경우: 목록/메시지 즉시 동기화
+                void (async () => {
+                  try {
+                    const refreshed = sortByRecent(await fetchThreads())
+                    setConversations(refreshed)
+                    const msgs = await fetchMessages(id)
+                    setMessages(msgs.map((m) => ({ role: m.role, content: m.content, contentJson: m.contentJson, model: m.model })))
+                    const lastModel = [...msgs].reverse().find((m) => m.model)?.model
+                    setStickySelectedModel(lastModel)
+                  } catch {
+                    // ignore
+                  } finally {
+                    setInitialToSend(null)
+                  }
+                })()
+              }}
                onMessage={(msg) => {
                  // 1) 화면에 표시
                  setMessages((prev) => [...prev, { role: msg.role, content: msg.content, contentJson: msg.contentJson, model: msg.model }])
-                 // 2) localStorage(대화 히스토리)에 저장
-                 appendToActiveConversation({
-                   role: msg.role,
-                   content: msg.content,
-                   contentJson: msg.contentJson,
-                   summary: msg.summary,
-                   model: msg.model,
-                 })
+                // 2) DB 저장은 ChatInterface(/api/ai/chat/run)가 처리합니다. 중복 저장 방지.
+                if (msg.model) setStickySelectedModel(msg.model)
                }}
              />
            </div>

@@ -107,10 +107,11 @@ export default function FrontAI() {
             onSubmit={({ input, providerSlug, model }) => {
               navigate("/timeline", {
                 state: {
-                  initial: { input, providerSlug, model },
+                  initial: { input, providerSlug, model, sessionLanguage: currentLang || null },
                 },
               })
             }}
+            sessionLanguage={currentLang || undefined}
           />
 
         </div>

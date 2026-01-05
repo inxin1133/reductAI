@@ -15,6 +15,7 @@ import {
   ensureTimelineSchema,
 } from "./services/schemaBootstrap"
 import chatRoutes from "./routes/chatRoutes"
+import chatUiRoutes from "./routes/chatUiRoutes"
 import timelineRoutes from "./routes/timelineRoutes"
 import usageLogsRoutes from "./routes/usageLogsRoutes"
 import routingRulesRoutes from "./routes/routingRulesRoutes"
@@ -37,6 +38,7 @@ app.use("/api/ai/credentials", credentialsRoutes)
 app.use("/api/ai/models", modelsRoutes)
 app.use("/api/ai/model-access-by-type", tenantTypeModelAccessRoutes)
 app.use("/api/ai/chat", chatRoutes)
+app.use("/api/ai/chat-ui", chatUiRoutes)
 app.use("/api/ai/timeline", timelineRoutes)
 app.use("/api/ai/usage-logs", usageLogsRoutes)
 app.use("/api/ai/routing-rules", routingRulesRoutes)
