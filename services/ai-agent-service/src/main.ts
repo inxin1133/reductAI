@@ -7,6 +7,8 @@ import modelsRoutes from "./routes/modelsRoutes"
 import tenantTypeModelAccessRoutes from "./routes/tenantTypeModelAccessRoutes"
 import {
   ensureAiAccessSchema,
+  ensureModelApiProfilesSchema,
+  ensureProviderAuthProfilesSchema,
   ensureModelRoutingRulesSchema,
   ensureModelUsageLogsSchema,
   ensurePromptTemplatesSchema,
@@ -22,6 +24,8 @@ import routingRulesRoutes from "./routes/routingRulesRoutes"
 import promptTemplatesRoutes from "./routes/promptTemplatesRoutes"
 import responseSchemasRoutes from "./routes/responseSchemasRoutes"
 import promptSuggestionsRoutes from "./routes/promptSuggestionsRoutes"
+import modelApiProfilesRoutes from "./routes/modelApiProfilesRoutes"
+import providerAuthProfilesRoutes from "./routes/providerAuthProfilesRoutes"
 
 dotenv.config()
 
@@ -45,6 +49,8 @@ app.use("/api/ai/routing-rules", routingRulesRoutes)
 app.use("/api/ai/prompt-templates", promptTemplatesRoutes)
 app.use("/api/ai/response-schemas", responseSchemasRoutes)
 app.use("/api/ai/prompt-suggestions", promptSuggestionsRoutes)
+app.use("/api/ai/model-api-profiles", modelApiProfilesRoutes)
+app.use("/api/ai/provider-auth-profiles", providerAuthProfilesRoutes)
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "ai-agent-service" })
@@ -61,6 +67,8 @@ app.listen(PORT, async () => {
     await ensurePromptTemplatesSchema()
     await ensureResponseSchemasSchema()
     await ensurePromptSuggestionsSchema()
+    await ensureModelApiProfilesSchema()
+    await ensureProviderAuthProfilesSchema()
     console.log("ai-agent-service schema bootstrap ok")
   } catch (e) {
     console.error("ai-agent-service schema bootstrap failed:", e)

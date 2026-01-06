@@ -1034,4 +1034,80 @@ export async function ensurePromptSuggestionsSchema() {
   await query(`CREATE INDEX IF NOT EXISTS idx_prompt_suggestions_model_type ON prompt_suggestions(model_type);`)
 }
 
+/**
+ * Model API Profiles schema
+ * - Provider/모달리티별 호출/응답 매핑을 DB에서 관리합니다.
+ * - 최소 스펙 표준안: document/model_api_profiles_standard.md
+ */
+export async function ensureModelApiProfilesSchema() {
+  await query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`)
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS model_api_profiles (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      provider_id UUID NOT NULL REFERENCES ai_providers(id) ON DELETE CASCADE,
+      model_id UUID REFERENCES ai_models(id) ON DELETE SET NULL,
+      profile_key VARCHAR(120) NOT NULL,
+      purpose VARCHAR(50) NOT NULL CHECK (purpose IN ('chat','image','video','audio','music','multimodal','embedding','code')),
+      auth_profile_id UUID NULL,
+      transport JSONB NOT NULL,
+      response_mapping JSONB NOT NULL,
+      workflow JSONB NOT NULL DEFAULT '{}'::jsonb,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (tenant_id, provider_id, profile_key)
+    );
+  `)
+
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_api_profiles_tenant_provider_purpose ON model_api_profiles(tenant_id, provider_id, purpose, is_active);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_api_profiles_model_id ON model_api_profiles(model_id);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_model_api_profiles_profile_key ON model_api_profiles(tenant_id, profile_key);`)
+}
+
+/**
+ * Provider auth profiles schema
+ * - provider_api_credentials 위에 "인증 방식"을 추상화합니다.
+ * - v1: api_key / oauth2_service_account(google vertex)
+ */
+export async function ensureProviderAuthProfilesSchema() {
+  await query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`)
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS provider_auth_profiles (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      provider_id UUID NOT NULL REFERENCES ai_providers(id) ON DELETE CASCADE,
+      profile_key VARCHAR(100) NOT NULL,
+      auth_type VARCHAR(50) NOT NULL CHECK (auth_type IN ('api_key', 'oauth2_service_account', 'aws_sigv4', 'azure_ad')),
+      credential_id UUID NOT NULL REFERENCES provider_api_credentials(id) ON DELETE RESTRICT,
+      config JSONB NOT NULL DEFAULT '{}'::jsonb,
+      token_cache_key VARCHAR(255),
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (tenant_id, provider_id, profile_key)
+    );
+  `)
+
+  await query(`CREATE INDEX IF NOT EXISTS idx_provider_auth_profiles_tenant_provider_active ON provider_auth_profiles(tenant_id, provider_id, is_active);`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_provider_auth_profiles_credential_id ON provider_auth_profiles(credential_id);`)
+
+  // model_api_profiles.auth_profile_id FK (idempotent)
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='model_api_profiles')
+      AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='provider_auth_profiles')
+      AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_model_api_profiles_auth_profile_id')
+      THEN
+        ALTER TABLE model_api_profiles
+        ADD CONSTRAINT fk_model_api_profiles_auth_profile_id
+        FOREIGN KEY (auth_profile_id) REFERENCES provider_auth_profiles(id) ON DELETE SET NULL;
+      END IF;
+    END $$;
+  `)
+}
+
 

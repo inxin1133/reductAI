@@ -3,7 +3,6 @@ import { query } from "../config/db"
 import { AuthedRequest } from "../middleware/requireAuth"
 import { ensureSystemTenantId } from "../services/systemTenantService"
 import {
-  getProviderAuth,
   getProviderBase,
   openaiGenerateImage,
   openaiSimulateChat,
@@ -11,6 +10,7 @@ import {
   anthropicSimulateChat,
   googleSimulateChat,
 } from "../services/providerClients"
+import { resolveAuthForModelApiProfile } from "../services/authProfilesService"
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 
@@ -64,6 +64,18 @@ function clampInt(n: number, min: number, max: number) {
 
 function deepInjectVars(input: unknown, vars: Record<string, string>): unknown {
   if (typeof input === "string") {
+    // If the entire string is exactly one placeholder, allow scalar coercion
+    // so JSON templates can safely carry numbers/booleans (e.g., temperature/maxTokens).
+    const exact = input.match(/^\{\{\s*([a-zA-Z0-9_]+)\s*\}\}$/)
+    if (exact) {
+      const k = exact[1]
+      const raw = k in vars ? vars[k] : ""
+      const s = String(raw)
+      if (s === "true") return true
+      if (s === "false") return false
+      if (/^-?\d+(?:\.\d+)?$/.test(s)) return Number(s)
+      return s
+    }
     return input.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, k) => (k in vars ? vars[k] : ""))
   }
   if (Array.isArray(input)) return input.map((v) => deepInjectVars(v, vars))
@@ -73,6 +85,463 @@ function deepInjectVars(input: unknown, vars: Record<string, string>): unknown {
     return out
   }
   return input
+}
+
+type ModelApiPurpose = "chat" | "image" | "video" | "audio" | "music" | "multimodal" | "embedding" | "code"
+
+type ModelApiProfileRow = {
+  id: string
+  provider_id: string
+  model_id: string | null
+  profile_key: string
+  purpose: ModelApiPurpose
+  auth_profile_id: string | null
+  transport: Record<string, unknown>
+  response_mapping: Record<string, unknown>
+  workflow: Record<string, unknown>
+}
+
+function deepMergeJson(a: unknown, b: unknown): unknown {
+  // b wins. arrays are replaced.
+  if (Array.isArray(a) || Array.isArray(b)) return b ?? a
+  if (!a || typeof a !== "object") return b
+  if (!b || typeof b !== "object") return b
+  const out: Record<string, unknown> = { ...(a as Record<string, unknown>) }
+  for (const [k, v] of Object.entries(b as Record<string, unknown>)) {
+    const av = out[k]
+    out[k] = deepMergeJson(av, v)
+  }
+  return out
+}
+
+function safeObj(v: unknown): Record<string, unknown> {
+  if (!v) return {}
+  if (typeof v === "object" && !Array.isArray(v)) return v as Record<string, unknown>
+  return {}
+}
+
+function pickString(obj: Record<string, unknown>, key: string): string {
+  const v = obj[key]
+  return typeof v === "string" ? v : ""
+}
+
+function getByPath(root: unknown, path: string): unknown {
+  const p = String(path || "").trim()
+  if (!p) return undefined
+
+  // support a single projection segment like "data[].url"
+  const parts = p.split(".").filter(Boolean)
+  let cur: unknown = root
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]
+    if (part.endsWith("[]")) {
+      const name = part.slice(0, -2)
+      const curRec = safeObj(cur)
+      const arr = name ? curRec[name] : cur
+      const rest = parts.slice(i + 1).join(".")
+      if (!Array.isArray(arr)) return []
+      if (!rest) return arr
+      return arr.map((item) => getByPath(item, rest))
+    }
+
+    const m = part.match(/^([^[\]]+)(?:\[(\d+)\])?$/)
+    if (!m) return undefined
+    const key = m[1]
+    const idxStr = m[2]
+    const rec = safeObj(cur)
+    cur = rec[key]
+    if (idxStr !== undefined) {
+      const idx = Number(idxStr)
+      if (!Array.isArray(cur)) return undefined
+      cur = cur[idx] as unknown
+    }
+    if (cur === undefined || cur === null) return cur
+  }
+  return cur
+}
+
+async function loadModelApiProfile(args: {
+  tenantId: string
+  providerId: string
+  modelDbId: string
+  purpose: ModelApiPurpose
+}): Promise<ModelApiProfileRow | null> {
+  const r = await query(
+    `
+    SELECT id, provider_id, model_id, profile_key, purpose, auth_profile_id, transport, response_mapping, workflow
+    FROM model_api_profiles
+    WHERE tenant_id = $1
+      AND provider_id = $2
+      AND purpose = $3
+      AND is_active = TRUE
+      AND (model_id = $4 OR model_id IS NULL)
+    ORDER BY (model_id IS NULL) ASC, updated_at DESC
+    LIMIT 1
+    `,
+    [args.tenantId, args.providerId, args.purpose, args.modelDbId]
+  )
+  if (r.rows.length === 0) return null
+  const row = (r.rows[0] || {}) as Record<string, unknown>
+  return {
+    id: String(row.id || ""),
+    provider_id: String(row.provider_id || ""),
+    model_id: row.model_id ? String(row.model_id) : null,
+    profile_key: String(row.profile_key || ""),
+    purpose: String(row.purpose || "") as ModelApiPurpose,
+    auth_profile_id: row.auth_profile_id ? String(row.auth_profile_id) : null,
+    transport: safeObj(row.transport),
+    response_mapping: safeObj(row.response_mapping),
+    workflow: safeObj(row.workflow),
+  }
+}
+
+async function executeHttpJsonProfile(args: {
+  apiBaseUrl: string
+  apiKey: string
+  accessToken: string | null
+  modelApiId: string
+  purpose: ModelApiPurpose
+  prompt: string
+  input: string
+  language: string
+  maxTokens: number
+  history: { shortText: string; longText: string; conversationSummary: string }
+  options: Record<string, unknown>
+  injectedTemplate: Record<string, unknown> | null
+  profile: ModelApiProfileRow
+  configVars: Record<string, string>
+}): Promise<{ output_text: string; raw: unknown; content: Record<string, unknown> }> {
+  const transport = safeObj(args.profile.transport)
+  const responseMapping = safeObj(args.profile.response_mapping)
+  const workflow = safeObj(args.profile.workflow)
+
+  const kind = pickString(transport, "kind") || "http_json"
+  if (kind !== "http_json") {
+    throw new Error(`MODEL_API_PROFILE_UNSUPPORTED_KIND:${kind}`)
+  }
+
+  const method = (pickString(transport, "method") || "POST").toUpperCase()
+  const path = pickString(transport, "path") || "/"
+  const timeoutMs = Number(transport.timeout_ms || 60000) || 60000
+
+  const vars: Record<string, string> = {
+    apiKey: args.apiKey,
+    accessToken: args.accessToken || "",
+    model: args.modelApiId,
+    userPrompt: args.prompt,
+    input: args.input,
+    language: args.language,
+    maxTokens: String(args.maxTokens),
+    shortHistory: args.history.shortText,
+    longSummary: args.history.conversationSummary || args.history.longText,
+  }
+  for (const [k, v] of Object.entries(args.configVars || {})) vars[k] = v
+
+  // expose request options as template vars: {{params_<key>}}
+  // - only primitives are supported (string/number/boolean)
+  // - key is sanitized into [a-zA-Z0-9_]
+  for (const [k, v] of Object.entries(args.options || {})) {
+    if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean") continue
+    const safeKey = String(k).replace(/[^a-zA-Z0-9_]/g, "_")
+    if (!safeKey) continue
+    vars[`params_${safeKey}`] = String(v)
+  }
+
+  function normalizeUrlJoin(args2: {
+    apiBaseUrl: string
+    transportBaseUrl?: string
+    path: string
+    query: Record<string, unknown>
+  }) {
+    const baseUrlRaw = (args2.transportBaseUrl || args2.apiBaseUrl || "").trim()
+    const base = baseUrlRaw.replace(/\/+$/g, "")
+    let p = (args2.path || "/").trim()
+    if (!p.startsWith("/")) p = `/${p}`
+    if (base.toLowerCase().endsWith("/v1") && p.toLowerCase().startsWith("/v1/")) p = p.slice(3)
+    const u = new URL(`${base}${p}`)
+    for (const [k, v] of Object.entries(args2.query || {})) {
+      if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") u.searchParams.set(k, String(v))
+    }
+    return u
+  }
+
+  async function httpCall(args2: {
+    transportSpec: Record<string, unknown>
+    templateBody: Record<string, unknown> | null
+    vars: Record<string, string>
+    overrideMethod?: string
+    overridePath?: string
+    overrideQuery?: Record<string, unknown>
+    mode: "json" | "binary"
+  }): Promise<{ ok: boolean; status: number; url: string; json: unknown; buf: Buffer | null; contentType: string | null }> {
+    const tr = args2.transportSpec
+    const rawHeaders = safeObj(tr.headers)
+    const rawQuery = safeObj(tr.query)
+    const rawBody = safeObj(tr.body)
+
+    // If prompt_templates is configured, merge it into the profile body (template wins).
+    const mergedBody = (args2.templateBody ? deepMergeJson(rawBody, args2.templateBody) : rawBody) as Record<string, unknown>
+
+    const injectedHeaders = deepInjectVars(rawHeaders, args2.vars) as Record<string, unknown>
+    const injectedQuery = deepInjectVars(rawQuery, args2.vars) as Record<string, unknown>
+    const injectedBody = deepInjectVars(mergedBody, args2.vars) as Record<string, unknown>
+
+    const trBaseAny = deepInjectVars(tr.base_url, args2.vars)
+    const trBase = typeof trBaseAny === "string" && trBaseAny.trim() ? trBaseAny.trim() : ""
+
+    const pathAny = deepInjectVars(args2.overridePath ?? pickString(tr, "path") ?? "/", args2.vars)
+    const pathStr = typeof pathAny === "string" ? pathAny : String(pathAny ?? "/")
+
+    const m = (args2.overrideMethod || pickString(tr, "method") || "POST").toUpperCase()
+    const timeout = Number(tr.timeout_ms || timeoutMs) || timeoutMs
+
+    const urlObj = normalizeUrlJoin({
+      apiBaseUrl: args.apiBaseUrl,
+      transportBaseUrl: trBase,
+      path: pathStr,
+      query: { ...injectedQuery, ...(args2.overrideQuery || {}) },
+    })
+
+    const headers: Record<string, string> = {}
+    for (const [k, v] of Object.entries(injectedHeaders)) {
+      if (typeof v === "string") headers[k] = v
+    }
+    if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type") && args2.mode === "json") {
+      headers["Content-Type"] = "application/json"
+    }
+
+    const controller = new AbortController()
+    const t = setTimeout(() => controller.abort(), Math.max(1000, timeout))
+    let res: globalThis.Response
+    try {
+      res = await fetch(urlObj.toString(), {
+        method: m,
+        headers,
+        body: m === "GET" || m === "HEAD" ? undefined : JSON.stringify(injectedBody),
+        signal: controller.signal,
+      })
+    } finally {
+      clearTimeout(t)
+    }
+
+    const contentType = res.headers.get("content-type")
+
+    if (args2.mode === "binary") {
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "")
+        return { ok: false, status: res.status, url: urlObj.toString(), json: { error: errText }, buf: null, contentType }
+      }
+      const buf = Buffer.from(await res.arrayBuffer())
+      return { ok: true, status: res.status, url: urlObj.toString(), json: {}, buf, contentType }
+    }
+
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      return { ok: false, status: res.status, url: urlObj.toString(), json, buf: null, contentType }
+    }
+    return { ok: true, status: res.status, url: urlObj.toString(), json, buf: null, contentType }
+  }
+
+  function sleep(ms: number) {
+    return new Promise<void>((resolve) => setTimeout(resolve, ms))
+  }
+
+  const modeRaw = pickString(responseMapping, "mode").toLowerCase()
+  const resultType = pickString(responseMapping, "result_type") || "text"
+  const extract = safeObj(responseMapping.extract)
+
+  // initial request (json by default; async_job assumes json)
+  const initial = await httpCall({
+    transportSpec: transport,
+    templateBody: args.injectedTemplate,
+    vars,
+    overrideMethod: method,
+    overridePath: path,
+    mode: modeRaw === "binary" ? "binary" : "json",
+  })
+  if (!initial.ok) {
+    throw new Error(`MODEL_API_PROFILE_HTTP_${initial.status}:${JSON.stringify(initial.json)}@${initial.url}`)
+  }
+
+  // async job workflow: poll -> download/url
+  if (pickString(workflow, "type") === "async_job") {
+    const jobIdPath = pickString(workflow, "job_id_path") || pickString(extract, "job_id_path") || pickString(extract, "job_id")
+    const jobIdVal = jobIdPath ? getByPath(initial.json, jobIdPath) : undefined
+    const jobId = typeof jobIdVal === "string" ? jobIdVal : String(jobIdVal ?? "")
+    if (!jobId) throw new Error("ASYNC_JOB_MISSING_JOB_ID")
+
+    vars.job_id = jobId
+
+    const steps = Array.isArray((workflow as any).steps) ? ((workflow as any).steps as unknown[]) : []
+    const pollStep = (steps.find((s) => safeObj(s).name === "poll") || steps[0] || {}) as unknown
+    const poll = safeObj(pollStep)
+    const pollInterval = Math.min(Math.max(Number(poll.interval_ms || 2000) || 2000, 200), 10_000)
+    const pollMax = Math.min(Math.max(Number(poll.max_attempts || 60) || 60, 1), 120)
+    const statusPath = pickString(poll, "status_path") || pickString(workflow, "status_path") || "status"
+    const terminalStates = Array.isArray((poll as any).terminal_states)
+      ? ((poll as any).terminal_states as unknown[]).map((x) => String(x || "")).filter(Boolean)
+      : ["completed", "failed", "canceled", "cancelled", "error"]
+
+    let lastStatus = ""
+    let lastJson: unknown = initial.json
+
+    for (let i = 0; i < pollMax; i++) {
+      const pollPath = pickString(poll, "path") || ""
+      if (!pollPath) throw new Error("ASYNC_JOB_MISSING_POLL_PATH")
+      const polled = await httpCall({
+        transportSpec: transport,
+        templateBody: null,
+        vars,
+        overrideMethod: pickString(poll, "method") || "GET",
+        overridePath: pollPath,
+        mode: "json",
+      })
+      if (!polled.ok) throw new Error(`ASYNC_JOB_POLL_FAILED_${polled.status}:${JSON.stringify(polled.json)}@${polled.url}`)
+      lastJson = polled.json
+      const st = getByPath(polled.json, statusPath)
+      lastStatus = typeof st === "string" ? st : String(st ?? "")
+      if (terminalStates.includes(String(lastStatus).toLowerCase())) break
+      await sleep(pollInterval)
+    }
+
+    if (!terminalStates.includes(String(lastStatus).toLowerCase())) {
+      throw new Error(`ASYNC_JOB_TIMEOUT:status=${lastStatus || "unknown"}`)
+    }
+
+    // download step (optional)
+    const downloadStep = (steps.find((s) => safeObj(s).name === "download") || {}) as unknown
+    const download = safeObj(downloadStep)
+    const downloadPath = pickString(download, "path")
+    const downloadResultType = pickString(download, "result_type") || "binary_data_url"
+    const downloadMode = (pickString(download, "mode") || "binary").toLowerCase() === "json" ? "json" : "binary"
+
+    if (!downloadPath) {
+      // no download step; return job info only
+      const blockJson = {
+        title: "비디오 생성",
+        summary: `job_id=${jobId}, status=${lastStatus}`,
+        blocks: [{ type: "markdown", markdown: `작업 상태: ${lastStatus}\njob_id: ${jobId}` }],
+      }
+      return { output_text: JSON.stringify(blockJson), raw: { initial: initial.json, poll: lastJson }, content: { ...blockJson, job: { id: jobId, status: lastStatus }, raw: { initial: initial.json, poll: lastJson } } }
+    }
+
+    const downloaded = await httpCall({
+      transportSpec: transport,
+      templateBody: null,
+      vars,
+      overrideMethod: pickString(download, "method") || "GET",
+      overridePath: downloadPath,
+      mode: downloadMode,
+    })
+    if (!downloaded.ok) throw new Error(`ASYNC_JOB_DOWNLOAD_FAILED_${downloaded.status}:${JSON.stringify(downloaded.json)}@${downloaded.url}`)
+
+    if (downloadMode === "binary") {
+      const buf = downloaded.buf || Buffer.from("")
+      const ct = pickString(download, "content_type") || downloaded.contentType || "application/octet-stream"
+      const b64 = buf.toString("base64")
+      const dataUrl = `data:${ct};base64,${b64}`
+      const blockJson = {
+        title: "비디오 생성",
+        summary: `job_id=${jobId}, status=${lastStatus}`,
+        blocks: [{ type: "markdown", markdown: `비디오가 생성되었습니다. (job_id: ${jobId})` }],
+      }
+      return {
+        output_text: JSON.stringify(blockJson),
+        raw: { initial: initial.json, poll: lastJson, download: { bytes: buf.length, content_type: ct } },
+        content: { ...blockJson, job: { id: jobId, status: lastStatus }, video: { mime: ct, data_url: dataUrl }, raw: { initial: initial.json, poll: lastJson } },
+      }
+    }
+
+    // json download: try to extract URL
+    const urlPath = pickString(download, "url_path") || pickString(download, "result_url_path")
+    const urlVal = urlPath ? getByPath(downloaded.json, urlPath) : undefined
+    const urlStr = typeof urlVal === "string" ? urlVal : ""
+    const blockJson = {
+      title: "비디오 생성",
+      summary: `job_id=${jobId}, status=${lastStatus}`,
+      blocks: [{ type: "markdown", markdown: urlStr ? `비디오 URL: ${urlStr}` : `비디오 생성 완료. job_id: ${jobId}` }],
+    }
+    return {
+      output_text: JSON.stringify(blockJson),
+      raw: { initial: initial.json, poll: lastJson, download: downloaded.json },
+      content: { ...blockJson, job: { id: jobId, status: lastStatus }, video: urlStr ? { url: urlStr } : {}, raw: { initial: initial.json, poll: lastJson, download: downloaded.json } },
+    }
+  }
+
+  // binary mode (direct response)
+  if (modeRaw === "binary") {
+    const buf = initial.buf || Buffer.from("")
+    const ct = pickString(responseMapping, "content_type") || initial.contentType || "application/octet-stream"
+    const b64 = buf.toString("base64")
+    const dataUrl = `data:${ct};base64,${b64}`
+
+    const title =
+      args.purpose === "audio" || resultType.includes("audio") ? "오디오 생성" : args.purpose === "music" ? "음악 생성" : args.purpose === "video" ? "비디오 생성" : "파일 생성"
+    const blockJson = { title, summary: "생성이 완료되었습니다.", blocks: [{ type: "markdown", markdown: `${title}이(가) 생성되었습니다.` }] }
+
+    const key = resultType.includes("video") ? "video" : resultType.includes("audio") || args.purpose === "audio" || args.purpose === "music" ? "audio" : "binary"
+    return {
+      output_text: JSON.stringify(blockJson),
+      raw: { bytes: buf.length, content_type: ct },
+      content: { ...blockJson, [key]: { mime: ct, data_url: dataUrl }, raw: { bytes: buf.length, content_type: ct } } as Record<string, unknown>,
+    }
+  }
+
+  // json_base64 mode: extract base64 + mime then build data_url
+  if (modeRaw === "json_base64") {
+    const b64Path = pickString(extract, "base64_path") || pickString(extract, "audio_base64_path") || pickString(extract, "video_base64_path")
+    const mimePath = pickString(extract, "mime_path") || pickString(extract, "mime_type_path")
+    const b64Val = b64Path ? getByPath(initial.json, b64Path) : undefined
+    const mimeVal = mimePath ? getByPath(initial.json, mimePath) : undefined
+    const b64 = typeof b64Val === "string" ? b64Val : ""
+    const mime = typeof mimeVal === "string" ? mimeVal : pickString(responseMapping, "content_type") || "application/octet-stream"
+    if (!b64) throw new Error("JSON_BASE64_MISSING_BASE64")
+    const dataUrl = `data:${mime};base64,${b64}`
+    const title = args.purpose === "music" ? "음악 생성" : args.purpose === "audio" ? "오디오 생성" : args.purpose === "video" ? "비디오 생성" : "파일 생성"
+    const blockJson = { title, summary: "생성이 완료되었습니다.", blocks: [{ type: "markdown", markdown: `${title}이(가) 생성되었습니다.` }] }
+    const key = args.purpose === "video" ? "video" : "audio"
+    return { output_text: JSON.stringify(blockJson), raw: initial.json, content: { ...blockJson, [key]: { mime, data_url: dataUrl }, raw: initial.json } }
+  }
+
+  const json = initial.json
+
+  if (resultType === "text") {
+    const textPath = pickString(extract, "text_path")
+    const textVal = textPath ? getByPath(json, textPath) : undefined
+    const output_text = typeof textVal === "string" ? textVal : JSON.stringify(textVal ?? json)
+    return { output_text, raw: json, content: { output_text, raw: json } }
+  }
+
+  if (resultType === "image_urls") {
+    const urlsPath = pickString(extract, "urls_path")
+    const val = urlsPath ? getByPath(json, urlsPath) : []
+    const urls = Array.isArray(val) ? val.map((v) => (typeof v === "string" ? v : "")).filter(Boolean) : []
+    const blocks = urls.length
+      ? urls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
+      : [{ type: "markdown", markdown: "이미지 생성 결과를 받지 못했습니다." }]
+    const blockJson = { title: "이미지 생성", summary: "요청한 이미지 생성 결과입니다.", blocks }
+    return { output_text: JSON.stringify(blockJson), raw: json, content: { ...blockJson, images: urls.map((u) => ({ url: u })), raw: json } }
+  }
+
+  if (resultType === "audio_data_url") {
+    const dataUrlPath = pickString(extract, "data_url_path")
+    const val = dataUrlPath ? getByPath(json, dataUrlPath) : ""
+    const dataUrl = typeof val === "string" ? val : ""
+    const blockJson = {
+      title: args.purpose === "music" ? "음악 생성" : "오디오 생성",
+      summary: "오디오 생성이 완료되었습니다.",
+      blocks: [{ type: "markdown", markdown: "오디오가 생성되었습니다. (재생 UI는 Timeline에서 표시됩니다)" }],
+    }
+    return {
+      output_text: JSON.stringify(blockJson),
+      raw: json,
+      content: { ...blockJson, audio: { data_url: dataUrl }, raw: json },
+    }
+  }
+
+  // raw_json (or unknown)
+  const output_text = JSON.stringify(json)
+  return { output_text, raw: json, content: { output_text, raw: json } }
 }
 
 type RuleRow = {
@@ -581,7 +1050,6 @@ export async function chatRun(req: Request, res: Response) {
 
     // 7) 최종 request body 생성 + provider call
     const providerId = String(row.provider_id)
-    const auth = await getProviderAuth(providerId)
     const base = await getProviderBase(providerId)
 
     const providerKey = String(row.provider_family || row.provider_slug || "").trim().toLowerCase()
@@ -606,9 +1074,44 @@ export async function chatRun(req: Request, res: Response) {
       .filter(Boolean)
       .join("\n\n")
 
-    let out: { output_text: string; raw: unknown; content: Record<string, unknown> }
-    if (mt === "text") {
-      if (providerKey === "openai") {
+    let out: { output_text: string; raw: unknown; content: Record<string, unknown> } | null = null
+
+    // ✅ DB-driven execution: if a model_api_profile exists for this provider/purpose, try it first.
+    // Safe rollout: if profile is missing or fails, we fall back to the existing provider_family-specific code.
+    const purpose: ModelApiPurpose = (mt === "text" ? "chat" : mt) as ModelApiPurpose
+    let usedProfileKey: string | null = null
+    try {
+      const profile = await loadModelApiProfile({ tenantId, providerId, modelDbId: chosenModelDbId, purpose })
+      if (profile) {
+        usedProfileKey = profile.profile_key
+        const auth = await resolveAuthForModelApiProfile({ providerId, authProfileId: profile.auth_profile_id })
+        out = await executeHttpJsonProfile({
+          apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+          apiKey: auth.apiKey,
+          accessToken: auth.accessToken,
+          modelApiId,
+          purpose,
+          prompt,
+          input,
+          language: finalLang,
+          maxTokens: safeMaxTokens,
+          history,
+          options: options || {},
+          injectedTemplate,
+          profile,
+          configVars: auth.configVars,
+        })
+      }
+    } catch (e) {
+      console.warn("[model_api_profiles] execution failed -> fallback:", usedProfileKey, e)
+      out = null
+    }
+
+    if (out == null) {
+      const auth = await resolveAuthForModelApiProfile({ providerId, authProfileId: null })
+      // Fallback: 기존 provider별 하드코딩 실행기
+      if (mt === "text") {
+        if (providerKey === "openai") {
         const r = await openaiSimulateChat({
           apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
           apiKey: auth.apiKey,
@@ -619,7 +1122,7 @@ export async function chatRun(req: Request, res: Response) {
           responseSchema,
         })
         out = { ...r, content: { output_text: r.output_text, raw: r.raw } }
-      } else if (providerKey === "anthropic") {
+        } else if (providerKey === "anthropic") {
         const r = await anthropicSimulateChat({
           apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
           apiKey: auth.apiKey,
@@ -629,7 +1132,7 @@ export async function chatRun(req: Request, res: Response) {
           templateBody: injectedTemplate || undefined,
         })
         out = { ...r, content: { output_text: r.output_text, raw: r.raw } }
-      } else if (providerKey === "google") {
+        } else if (providerKey === "google") {
         const r = await googleSimulateChat({
           apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
           apiKey: auth.apiKey,
@@ -639,10 +1142,10 @@ export async function chatRun(req: Request, res: Response) {
           templateBody: injectedTemplate || undefined,
         })
         out = { ...r, content: { output_text: r.output_text, raw: r.raw } }
-      } else {
+        } else {
         return res.status(400).json({ message: `Unsupported provider_family/provider_slug: ${providerKey}` })
-      }
-    } else if (mt === "image") {
+        }
+      } else if (mt === "image") {
       if (providerKey !== "openai") {
         return res.status(400).json({ message: `Image is not supported for provider=${providerKey} yet.` })
       }
@@ -672,7 +1175,7 @@ export async function chatRun(req: Request, res: Response) {
         raw: r.raw,
         content: { ...blockJson, images: urls.map((u) => ({ url: u })), raw: r.raw },
       }
-    } else if (mt === "audio" || mt === "music") {
+      } else if (mt === "audio" || mt === "music") {
       if (providerKey !== "openai") {
         return res.status(400).json({ message: `${mt} is not supported for provider=${providerKey} yet.` })
       }
@@ -699,14 +1202,15 @@ export async function chatRun(req: Request, res: Response) {
         raw: r.raw,
         content: { ...blockJson, audio: { mime: r.mime, data_url: r.data_url }, raw: r.raw },
       }
-    } else if (mt === "video") {
+      } else if (mt === "video") {
       return res.status(400).json({
         message: "Video is not implemented yet.",
         details:
           "현재 프로젝트에는 video 생성용 provider client(예: Runway/Pika/Sora)가 아직 없습니다. 어떤 provider_family/endpoint를 사용할지 알려주시면 연동을 구현할 수 있습니다.",
       })
-    } else {
+      } else {
       return res.status(400).json({ message: `Unsupported model_type=${mt}` })
+      }
     }
 
     // persist messages (user + assistant)

@@ -175,6 +175,57 @@ COMMENT ON COLUMN provider_api_credentials.updated_at IS '인증 정보 최종 �
 COMMENT ON COLUMN provider_api_credentials.expires_at IS '인증 정보 만료 시각 (NULL이면 만료되지 않음)';
 
 -- ============================================
+-- 3.1 PROVIDER AUTH PROFILES (인증 프로필)
+-- ============================================
+-- provider_api_credentials의 raw secret/api_key(암호화 저장) 위에,
+-- 실제 호출 시 필요한 "인증 방식"을 프로필로 추상화합니다.
+--
+-- v1 목표:
+-- - api_key: 기존과 동일(Authorization Bearer 등)
+-- - oauth2_service_account: Google Vertex 등 access_token 발급(서비스 계정 JWT assertion)
+--
+-- NOTE:
+-- - token_cache_key는 서버 메모리 캐시 key 용도(추후 Redis 등으로 확장 가능)
+-- - config는 scopes/audience/token_url/region/project_id/location 등 프로필별 파라미터 저장
+
+
+CREATE TABLE provider_auth_profiles (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), -- 인증 프로필의 고유 식별자 (UUID)
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, -- 테넌트 ID (tenants 테이블 참조)
+    provider_id UUID NOT NULL REFERENCES ai_providers(id) ON DELETE CASCADE, -- 제공업체 ID (ai_providers 테이블 참조)
+    profile_key VARCHAR(100) NOT NULL, -- 인증 프로필 key (예: openai_api_key_v1, google_vertex_sa_v1)
+    auth_type VARCHAR(50) NOT NULL CHECK (auth_type IN ('api_key', 'oauth2_service_account', 'aws_sigv4', 'azure_ad')), -- 인증 방식
+    credential_id UUID NOT NULL REFERENCES provider_api_credentials(id) ON DELETE RESTRICT, -- 사용할 credential 식별자 (provider_api_credentials 테이블 참조)
+    config JSONB NOT NULL DEFAULT '{}', -- 인증 프로필의 추가 설정(JSON, scopes, audience 등)
+    token_cache_key VARCHAR(255), -- access_token 등 캐시 키 (oauth2 등에서 사용)
+    is_active BOOLEAN NOT NULL DEFAULT TRUE, -- 활성화 여부
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- 생성 시각
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- 수정 시각
+    UNIQUE (tenant_id, provider_id, profile_key) -- 테넌트+제공업체+프로필키 유니크 보장
+);
+
+CREATE INDEX idx_provider_auth_profiles_tenant_provider_active
+  ON provider_auth_profiles(tenant_id, provider_id, is_active); -- 테넌트/제공업체별 활성화 프로필 쿼리 최적화
+CREATE INDEX idx_provider_auth_profiles_credential_id
+  ON provider_auth_profiles(credential_id); -- credential 기준 역방향 탐색 최적화
+
+-- COMMENTs for provider_auth_profiles
+COMMENT ON TABLE provider_auth_profiles IS 'AI 제공업체 인증 방식을 프로필로 추상화한 테이블(각 테넌트별)';
+COMMENT ON COLUMN provider_auth_profiles.id IS '인증 프로필의 고유 식별자 (UUID)';
+COMMENT ON COLUMN provider_auth_profiles.tenant_id IS '테넌트 ID (tenants 테이블 참조)';
+COMMENT ON COLUMN provider_auth_profiles.provider_id IS '제공업체 ID (ai_providers 테이블 참조)';
+COMMENT ON COLUMN provider_auth_profiles.profile_key IS '인증 프로필 key (예: openai_api_key_v1, google_vertex_sa_v1)';
+COMMENT ON COLUMN provider_auth_profiles.auth_type IS '인증 방식(api_key, oauth2_service_account 등)';
+COMMENT ON COLUMN provider_auth_profiles.credential_id IS '연결된 실제 provider_api_credentials의 id';
+COMMENT ON COLUMN provider_auth_profiles.config IS '프로필별 Parameter, scopes/audience/token_url/project_id/location 등';
+COMMENT ON COLUMN provider_auth_profiles.token_cache_key IS '액세스 토큰 등 캐시를 위한 키 (oauth2 등)';
+COMMENT ON COLUMN provider_auth_profiles.is_active IS '인증 프로필 활성화 여부';
+COMMENT ON COLUMN provider_auth_profiles.created_at IS '인증 프로필 생성 시각';
+COMMENT ON COLUMN provider_auth_profiles.updated_at IS '인증 프로필 최종 수정 시각';
+
+
+
+-- ============================================
 -- 4. TENANT MODEL ACCESS (테넌트별 모델 접근 권한)
 -- ============================================
 
@@ -517,6 +568,58 @@ COMMENT ON COLUMN prompt_suggestions.is_active IS '활성 여부';
 COMMENT ON COLUMN prompt_suggestions.metadata IS '추가 메타데이터(JSON). 예: {"tags":["research"],"lang":"ko"}';
 COMMENT ON COLUMN prompt_suggestions.created_at IS '생성 시각';
 COMMENT ON COLUMN prompt_suggestions.updated_at IS '최종 수정 시각';
+
+-- ============================================
+-- 7.4 MODEL API PROFILES (Provider별 호출/응답 프로필)
+-- ============================================
+-- 목적(purpose: chat/image/audio/music/video/...)별로
+-- "어떤 엔드포인트를 어떤 바디/헤더로 호출하고", "응답을 어떻게 추출/표준화할지"를 DB에서 정의합니다.
+-- - 최소 스펙 표준안: document/model_api_profiles_standard.md 참고
+--
+-- 선택 규칙(권장):
+-- 1) tenant_id + provider_id + purpose + model_id(정확히 일치) + is_active=true
+-- 2) tenant_id + provider_id + purpose + model_id IS NULL + is_active=true
+
+CREATE TABLE model_api_profiles (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    provider_id UUID NOT NULL REFERENCES ai_providers(id) ON DELETE CASCADE,
+    model_id UUID REFERENCES ai_models(id) ON DELETE SET NULL, -- 모델 종속이면 지정, 공용이면 NULL 가능
+    profile_key VARCHAR(120) NOT NULL, -- 예: openai.images.generate.v1
+    purpose VARCHAR(50) NOT NULL CHECK (purpose IN ('chat','image','video','audio','music','multimodal','embedding','code')),
+    -- v1에서는 provider_api_credentials(api_key/endpoint_url)를 직접 사용하므로 auth_profile은 추후 확장 포인트로 둡니다.
+    auth_profile_id UUID NULL,
+    transport JSONB NOT NULL,          -- method/path/body/headers/retry/timeout
+    response_mapping JSONB NOT NULL,   -- extract rules / result_type 등
+    workflow JSONB NOT NULL DEFAULT '{}'::jsonb,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (tenant_id, provider_id, profile_key)
+);
+
+CREATE INDEX idx_model_api_profiles_tenant_provider_purpose
+  ON model_api_profiles(tenant_id, provider_id, purpose, is_active);
+CREATE INDEX idx_model_api_profiles_model_id
+  ON model_api_profiles(model_id);
+CREATE INDEX idx_model_api_profiles_profile_key
+  ON model_api_profiles(tenant_id, profile_key);
+
+COMMENT ON TABLE model_api_profiles IS 'Provider/모달리티별 API 호출/응답 매핑 프로필';
+COMMENT ON COLUMN model_api_profiles.profile_key IS '프로필 식별 키(버전 포함) 예: openai.images.generate.v1';
+COMMENT ON COLUMN model_api_profiles.transport IS '호출 스펙(JSON): method/path/headers/body/timeout/retry';
+COMMENT ON COLUMN model_api_profiles.response_mapping IS '응답 추출/표준화(JSON): result_type + extract paths 등';
+COMMENT ON COLUMN model_api_profiles.id IS '모델 API 프로필의 고유 식별자 (UUID)';
+COMMENT ON COLUMN model_api_profiles.tenant_id IS '테넌트 ID (tenants 테이블 참조)';
+COMMENT ON COLUMN model_api_profiles.provider_id IS 'AI Provider ID (ai_providers 테이블 참조)';
+COMMENT ON COLUMN model_api_profiles.model_id IS '적용되는 모델 ID (ai_models 테이블 참조, NULL이면 provider/목적의 공통 프로필)';
+COMMENT ON COLUMN model_api_profiles.purpose IS '모달리티 목적: chat/image/audio/video 등, 표준 enum값만 허용';
+COMMENT ON COLUMN model_api_profiles.auth_profile_id IS 'API 인증/자격 정보 세트 ID (예비 필드, 추후 확장용)';
+COMMENT ON COLUMN model_api_profiles.workflow IS '프로필별 후처리 워크플로우(확장 포인트, JSON 형태)';
+COMMENT ON COLUMN model_api_profiles.is_active IS '프로필 활성 여부 (true면 사용, false는 비활성/과거 버전)';
+COMMENT ON COLUMN model_api_profiles.created_at IS '프로필 생성 시각';
+COMMENT ON COLUMN model_api_profiles.updated_at IS '프로필 최종 수정 시각';
+
 
 -- ============================================
 -- 8. MODEL CONVERSATIONS (모델 대화 세션)
