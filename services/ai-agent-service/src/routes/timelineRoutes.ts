@@ -1,5 +1,5 @@
 import express from "express"
-import { addMessage, createThread, listMessages, listThreads, updateThreadTitle } from "../controllers/timelineController"
+import { addMessage, createThread, getMessageMedia, listMessages, listThreads, updateThreadTitle } from "../controllers/timelineController"
 import { requireAuth } from "../middleware/requireAuth"
 
 const router = express.Router()
@@ -15,6 +15,8 @@ router.patch("/threads/:id", updateThreadTitle)
 // messages
 router.get("/threads/:id/messages", listMessages)
 router.post("/threads/:id/messages", addMessage)
+// media proxy (prevents huge base64 payloads in listMessages)
+router.get("/threads/:id/messages/:messageId/media/:kind/:index", getMessageMedia)
 
 export default router
 

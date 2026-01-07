@@ -137,35 +137,81 @@ export async function openaiGenerateImage(args: {
   const base = normalized || "https://api.openai.com/v1"
   const apiRoot = base.replace(/\/$/, "")
 
-  const body: Record<string, unknown> = {
+  // NOTE:
+  // Some environments/providers (or newer OpenAI image endpoints) reject `response_format`.
+  // We prefer URLs when possible, but must be robust.
+  const bodyWithResponseFormat: Record<string, unknown> = {
     model: args.model,
     prompt: args.prompt,
     response_format: "url",
   }
-  if (Number.isFinite(args.n as number)) body.n = args.n
-  if (typeof args.size === "string" && args.size.trim()) body.size = args.size.trim()
-  if (typeof args.quality === "string" && args.quality.trim()) body.quality = args.quality.trim()
-  if (typeof args.style === "string" && args.style.trim()) body.style = args.style.trim()
-  if (typeof args.background === "string" && args.background.trim()) body.background = args.background.trim()
-
-  const res = await fetch(`${apiRoot}/images/generations`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${args.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  })
-  const json = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    throw new Error(`OPENAI_IMAGE_FAILED_${res.status}@${apiRoot}:${JSON.stringify(json)}`)
+  if (Number.isFinite(args.n as number)) bodyWithResponseFormat.n = args.n
+  if (typeof args.size === "string" && args.size.trim()) {
+    // Normalize common UI variants: "256*256" or "256×256" -> "256x256"
+    const normalizedSize = args.size.trim().replace(/[×*]/g, "x")
+    bodyWithResponseFormat.size = normalizedSize
   }
+  if (typeof args.quality === "string" && args.quality.trim()) bodyWithResponseFormat.quality = args.quality.trim()
+  if (typeof args.style === "string" && args.style.trim()) bodyWithResponseFormat.style = args.style.trim()
+  if (typeof args.background === "string" && args.background.trim()) bodyWithResponseFormat.background = args.background.trim()
+
+  const bodyNoResponseFormat: Record<string, unknown> = { ...bodyWithResponseFormat }
+  delete bodyNoResponseFormat.response_format
+  const retryableUnknownParams = new Set(["response_format", "style", "quality", "background"])
+
+  async function post(body: Record<string, unknown>) {
+    const res = await fetch(`${apiRoot}/images/generations`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${args.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    })
+    const json = await res.json().catch(() => ({}))
+    return { res, json }
+  }
+
+  // 1) Try with response_format=url for best compatibility with our URL renderer.
+  // 2) If API rejects an optional param as unknown, retry by removing it (up to a few attempts).
+  let r = await post(bodyWithResponseFormat)
+  let bodyToRetry: Record<string, unknown> | null = null
+  for (let attempt = 0; attempt < 4 && !r.res.ok; attempt++) {
+    const msg = (r.json as any)?.error?.message
+    const param = (r.json as any)?.error?.param
+    const isUnknown =
+      r.res.status === 400 &&
+      typeof msg === "string" &&
+      msg.toLowerCase().includes("unknown parameter") &&
+      typeof param === "string" &&
+      retryableUnknownParams.has(param)
+
+    if (!isUnknown) break
+
+    // first fallback: drop response_format if that's the issue
+    if (param === "response_format") {
+      bodyToRetry = { ...bodyNoResponseFormat }
+    } else {
+      bodyToRetry = { ...(bodyToRetry || bodyWithResponseFormat) }
+      delete (bodyToRetry as any)[param]
+      // also drop response_format if we haven't already, since some environments reject it too
+      delete (bodyToRetry as any).response_format
+    }
+    r = await post(bodyToRetry)
+  }
+  if (!r.res.ok) {
+    throw new Error(`OPENAI_IMAGE_FAILED_${r.res.status}@${apiRoot}:${JSON.stringify(r.json)}`)
+  }
+  const json = r.json
 
   const data = Array.isArray((json as any)?.data) ? ((json as any).data as any[]) : []
   const urls = data.map((d) => (typeof d?.url === "string" ? d.url : "")).filter(Boolean)
   const b64 = data.map((d) => (typeof d?.b64_json === "string" ? d.b64_json : "")).filter(Boolean)
+  // If the API returns base64 only, convert it to data URLs so the frontend can render without saving files.
+  // OpenAI image generations commonly return PNG bytes; default to image/png if unknown.
+  const data_urls = b64.map((s) => `data:image/png;base64,${s}`)
 
-  return { raw: json, urls, b64 }
+  return { raw: json, urls, b64, data_urls }
 }
 
 export async function openaiTextToSpeech(args: {

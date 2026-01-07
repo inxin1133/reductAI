@@ -90,7 +90,15 @@ type TimelineUiMessage = {
 }
 
 type TimelineNavState = {
-  initial?: { requestId: string; input: string; providerSlug: string; model: string; sessionLanguage?: string | null }
+  initial?: {
+    requestId: string
+    input: string
+    providerSlug: string
+    model: string
+    modelType?: "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
+    options?: Record<string, unknown> | null
+    sessionLanguage?: string | null
+  }
 }
 
 const TIMELINE_API_BASE = "/api/ai/timeline"
@@ -168,7 +176,14 @@ export default function Timeline() {
 
   // 현재 대화에서 마지막으로 사용한 모델을 유지하여 ChatInterface 드롭다운 초기값으로 사용합니다.
   const [stickySelectedModel, setStickySelectedModel] = React.useState<string | undefined>(undefined)
-  const [initialToSend, setInitialToSend] = React.useState<{ input: string; providerSlug: string; model: string; sessionLanguage?: string | null } | null>(null)
+  const [initialToSend, setInitialToSend] = React.useState<{
+    input: string
+    providerSlug: string
+    model: string
+    modelType?: "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
+    options?: Record<string, unknown> | null
+    sessionLanguage?: string | null
+  } | null>(null)
 
   const initial = (location.state as TimelineNavState | null)?.initial
 
@@ -387,6 +402,8 @@ export default function Timeline() {
 
   const initialSelectedModelForChat = initialToSend?.model || stickySelectedModel
   const initialProviderSlugForChat = initialToSend?.providerSlug
+  const initialModelTypeForChat = initialToSend?.modelType
+  const initialOptionsForChat = initialToSend?.options || undefined
   const sessionLanguageForChat = initialToSend?.sessionLanguage || undefined
 
   return (
@@ -564,6 +581,9 @@ export default function Timeline() {
                                     {blocks.map((b, bIdx) => {
                                       const type = typeof b.type === "string" ? b.type : ""
                                       if (type === "markdown" && typeof b.markdown === "string") {
+                                        // If this message already has `images[]`, skip markdown-rendered images to avoid duplicates.
+                                        const hasImages = Array.isArray(obj.images) && (obj.images as unknown[]).length > 0
+                                        if (hasImages && String(b.markdown).startsWith("![image](")) return null
                                         return (
                                           <Markdown
                                             key={bIdx}
@@ -592,6 +612,62 @@ export default function Timeline() {
                                       }
                                       return null
                                     })}
+                                    {(() => {
+                                      // Render generated images explicitly (more reliable than markdown-only rendering, 
+                                      // especially when sanitize policies strip data: URLs).
+                                      const imgsRaw = Array.isArray(obj.images) ? (obj.images as unknown[]) : []
+                                      const imgs = imgsRaw
+                                        .map((it) => (it && typeof it === "object" ? (it as Record<string, unknown>) : null))
+                                        .filter(Boolean)
+                                        .map((it) => (typeof it!.url === "string" ? String(it!.url) : ""))
+                                        .filter(Boolean)
+                                      if (!imgs.length) return null
+                                      const token = typeof window !== "undefined" ? localStorage.getItem("token") : null
+                                      return (
+                                        <div className="pt-2 grid grid-cols-1 gap-3">
+                                          {imgs.map((src, i) => (
+                                            <img
+                                              key={`${i}_${src.slice(0, 32)}`}
+                                              src={
+                                                token && src.startsWith("/api/ai/media/assets/")
+                                                  ? `${src}${src.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`
+                                                  : src
+                                              }
+                                              alt="image"
+                                              loading="lazy"
+                                              decoding="async"
+                                              className="w-full max-w-[720px] rounded-md border"
+                                            />
+                                          ))}
+                                        </div>
+                                      )
+                                    })()}
+                                    {(() => {
+                                      const audio = obj.audio && typeof obj.audio === "object" ? (obj.audio as Record<string, unknown>) : null
+                                      const video = obj.video && typeof obj.video === "object" ? (obj.video as Record<string, unknown>) : null
+                                      const audioUrl = audio && typeof audio.data_url === "string" ? String(audio.data_url) : ""
+                                      const videoUrl = video && typeof video.data_url === "string" ? String(video.data_url) : ""
+                                      const token = typeof window !== "undefined" ? localStorage.getItem("token") : null
+                                      const withToken = (u: string) =>
+                                        token && u.startsWith("/api/ai/media/assets/")
+                                          ? `${u}${u.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`
+                                          : u
+                                      if (videoUrl) {
+                                        return (
+                                          <div className="pt-2">
+                                            <video controls className="w-full max-w-[720px] rounded-md border" src={withToken(videoUrl)} />
+                                          </div>
+                                        )
+                                      }
+                                      if (audioUrl) {
+                                        return (
+                                          <div className="pt-2">
+                                            <audio controls className="w-full" src={withToken(audioUrl)} />
+                                          </div>
+                                        )
+                                      }
+                                      return null
+                                    })()}
                                   </div>
                                 )
                               }
@@ -621,6 +697,8 @@ export default function Timeline() {
                // 대화 선택 시 마지막 모델을 초기값으로 반영합니다.
                initialSelectedModel={initialSelectedModelForChat}
               initialProviderSlug={initialProviderSlugForChat}
+              initialModelType={initialModelTypeForChat}
+              initialOptions={initialOptionsForChat}
               autoSendPrompt={initialToSend?.input || null}
               sessionLanguage={sessionLanguageForChat}
               conversationId={activeConversationId}

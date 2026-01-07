@@ -46,6 +46,26 @@ function normalizeJsonContent(content: unknown) {
   return { value: content }
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return Boolean(v) && typeof v === "object" && !Array.isArray(v)
+}
+
+function parseDataUrlImage(url: string): { mime: string; base64: string } | null {
+  const s = String(url || "")
+  const m = s.match(/^data:([^;]+);base64,(.*)$/)
+  if (!m) return null
+  const mime = m[1] || "image/png"
+  const base64 = m[2] || ""
+  if (!base64) return null
+  return { mime, base64 }
+}
+
+function isLargeDataUrl(url: string) {
+  // Heuristic: base64 data URLs quickly blow up payloads & markdown rendering.
+  // ~200KB threshold keeps Timeline snappy.
+  return typeof url === "string" && url.startsWith("data:image/") && url.length > 200_000
+}
+
 function deriveSummary(args: { role: Role; content: unknown; toolName?: string }) {
   const role = args.role
   if (role === "tool") {
@@ -248,10 +268,86 @@ export async function listMessages(req: Request, res: Response) {
       `,
       [id]
     )
-    res.json(result.rows)
+    // Performance: if assistant content contains huge data:image URLs, replace them with a lightweight proxy URL.
+    // This prevents Timeline from downloading/rendering massive JSON on initial page load.
+    const rows = (result.rows || []).map((row: any) => {
+      const content = row?.content
+      if (!isRecord(content)) return row
+
+      const imagesRaw = Array.isArray((content as any).images) ? ((content as any).images as unknown[]) : null
+      if (!imagesRaw || imagesRaw.length === 0) return row
+
+      let changed = false
+      const newImages = imagesRaw.map((it, idx) => {
+        const rec = isRecord(it) ? it : null
+        const url = rec && typeof rec.url === "string" ? rec.url : ""
+        if (url && isLargeDataUrl(url)) {
+          changed = true
+          return { ...(rec || {}), url: `/api/ai/timeline/threads/${row.conversation_id}/messages/${row.id}/media/image/${idx}` }
+        }
+        return it
+      })
+
+      if (!changed) return row
+      const nextContent = { ...content, images: newImages, _media_proxied: true }
+      return { ...row, content: nextContent }
+    })
+
+    res.json(rows)
   } catch (e) {
     console.error("listMessages error:", e)
     res.status(500).json({ message: "Failed to fetch messages" })
+  }
+}
+
+// 메시지에 포함된 base64(data URL) 미디어를 proxy로 제공합니다. (현재는 image만)
+export async function getMessageMedia(req: Request, res: Response) {
+  try {
+    const userId = (req as AuthedRequest).userId
+    const tenantId = await ensureSystemTenantId()
+    const { id, messageId, kind, index } = (req.params || {}) as Record<string, string | undefined>
+
+    // allow both route param names (threadId=id, messageId=messageId)
+    const threadId = String(id || "").trim()
+    const mid = String(messageId || "").trim()
+    const k = String(kind || "").trim().toLowerCase()
+    const idx = Number(index || 0)
+    if (!threadId || !mid) return res.status(400).json({ message: "Invalid params" })
+    if (k !== "image") return res.status(400).json({ message: "Unsupported media kind" })
+    if (!Number.isFinite(idx) || idx < 0) return res.status(400).json({ message: "Invalid index" })
+
+    // ownership check
+    const owns = await query(
+      `SELECT 1 FROM model_conversations WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'active'`,
+      [threadId, tenantId, userId]
+    )
+    if (owns.rows.length === 0) return res.status(404).json({ message: "Thread not found" })
+
+    const r = await query(
+      `SELECT id, content
+       FROM model_messages
+       WHERE id = $1 AND conversation_id = $2
+       LIMIT 1`,
+      [mid, threadId]
+    )
+    if (r.rows.length === 0) return res.status(404).json({ message: "Message not found" })
+
+    const content = r.rows[0]?.content
+    if (!isRecord(content)) return res.status(404).json({ message: "No media" })
+    const imagesRaw = Array.isArray((content as any).images) ? ((content as any).images as unknown[]) : []
+    const item = imagesRaw[idx]
+    const rec = isRecord(item) ? item : null
+    const url = rec && typeof rec.url === "string" ? rec.url : ""
+    const parsed = url ? parseDataUrlImage(url) : null
+    if (!parsed) return res.status(404).json({ message: "No media" })
+
+    const buf = Buffer.from(parsed.base64, "base64")
+    res.setHeader("Content-Type", parsed.mime)
+    res.setHeader("Cache-Control", "private, max-age=3600")
+    return res.status(200).send(buf)
+  } catch (e) {
+    console.error("getMessageMedia error:", e)
+    return res.status(500).json({ message: "Failed to fetch media" })
   }
 }
 

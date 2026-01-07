@@ -104,14 +104,14 @@ export default function FrontAI() {
           <ChatInterface
             // FrontAI에서는 "첫 질문 시작"만 하고, 실제 대화는 Timeline에서 이어가도록 합니다.
             submitMode="emit"
-            onSubmit={({ input, providerSlug, model }) => {
+            onSubmit={({ input, providerSlug, model, modelType, options }) => {
               const requestId =
                 typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
                   ? crypto.randomUUID()
                   : `${Date.now()}_${Math.random().toString(16).slice(2)}`
               navigate("/timeline", {
                 state: {
-                  initial: { requestId, input, providerSlug, model, sessionLanguage: currentLang || null },
+                  initial: { requestId, input, providerSlug, model, modelType, options: options || null, sessionLanguage: currentLang || null },
                 },
               })
             }}

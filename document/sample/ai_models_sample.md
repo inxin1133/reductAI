@@ -221,6 +221,12 @@
 }
 ```
 
+### metadata
+
+```json
+{}
+```
+
 ## 5️⃣ (OpenAI) GPT-4o-tts - gpt-4o-mini-tts
 
 ### capabilities

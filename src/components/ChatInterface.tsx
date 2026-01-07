@@ -59,9 +59,11 @@ export interface ChatInterfaceProps {
     model?: string
   }) => void
   submitMode?: "send" | "emit"
-  onSubmit?: (payload: { input: string; providerSlug: string; model: string }) => void
+  onSubmit?: (payload: { input: string; providerSlug: string; model: string; modelType: ModelType; options?: Record<string, unknown> }) => void
   initialSelectedModel?: string
   initialProviderSlug?: string
+  initialModelType?: ModelType
+  initialOptions?: Record<string, unknown>
   autoSendPrompt?: string | null
   conversationId?: string | null
   onConversationId?: (id: string) => void
@@ -140,7 +142,7 @@ function safeString(v: unknown): string | null {
   return typeof v === "string" ? v : null
 }
 
-function parseBlockJson(text: string): { parsed?: LlmBlockResponse; displayText: string } {
+function parseBlockJson(text: string): { parsed?: Record<string, unknown>; displayText: string } {
   let raw = (text || "").trim()
   if (raw.startsWith("```")) {
     const firstNl = raw.indexOf("\n")
@@ -201,7 +203,8 @@ function parseBlockJson(text: string): { parsed?: LlmBlockResponse; displayText:
         out.push(`[table]\n${b.headers.join(" | ")}\n${b.rows.map((r) => r.join(" | ")).join("\n")}`)
       }
     }
-    return { parsed: { title, summary, blocks }, displayText: out.filter(Boolean).join("\n\n") || text }
+    // Keep the original JSON object so media fields (audio/video/images/...) are not lost.
+    return { parsed: obj as Record<string, unknown>, displayText: out.filter(Boolean).join("\n\n") || text }
   } catch {
     return { displayText: text }
   }
@@ -215,6 +218,8 @@ export function ChatInterface({
   onSubmit,
   initialSelectedModel,
   initialProviderSlug,
+  initialModelType,
+  initialOptions,
   autoSendPrompt,
   conversationId,
   onConversationId,
@@ -277,8 +282,10 @@ export function ChatInterface({
         const json = (await res.json().catch(() => ({}))) as ChatUiConfig
         if (!res.ok || !json.ok) throw new Error("CHAT_UI_CONFIG_FAILED")
         setUiConfig(json)
+        const desired = typeof initialModelType === "string" ? initialModelType : null
+        const allowed = new Set<ModelType>((json.model_types || []) as ModelType[])
         const first = (json.model_types?.[0] as ModelType | undefined) || "text"
-        setSelectedType(first)
+        setSelectedType(desired && allowed.has(desired) ? desired : first)
       } catch {
         setUiConfig(null)
       } finally {
@@ -287,7 +294,7 @@ export function ChatInterface({
     }
     void load()
     return () => controller.abort()
-  }, [])
+  }, [initialModelType])
 
   const currentProviderGroups = React.useMemo(() => {
     const map = uiConfig?.providers_by_type || {}
@@ -391,6 +398,16 @@ export function ChatInterface({
       null
     setSelectedSubModel(picked?.model_api_id || "")
   }, [initialSelectedModel, selectableModels])
+
+  // Apply FrontAI->Timeline initial options once (best-effort), before auto-send triggers.
+  const initialOptionsAppliedRef = React.useRef(false)
+  React.useEffect(() => {
+    if (initialOptionsAppliedRef.current) return
+    if (!initialOptions || typeof initialOptions !== "object") return
+    if (!selectedModelDbId) return
+    initialOptionsAppliedRef.current = true
+    applyRuntimeOptions(initialOptions)
+  }, [applyRuntimeOptions, initialOptions, selectedModelDbId])
 
   // 항상 "선택된 모델"이 유지되도록 강제 (선택값이 현재 목록에 없으면 default/첫번째로 복구)
   React.useEffect(() => {
@@ -510,7 +527,7 @@ export function ChatInterface({
       setPrompt("")
 
       if (submitMode === "emit") {
-        onSubmit?.({ input, providerSlug, model: modelApiId })
+        onSubmit?.({ input, providerSlug, model: modelApiId, modelType: selectedType, options: runtimeOptions || {} })
         return
       }
 
@@ -901,10 +918,11 @@ export function ChatInterface({
               )}
               </div>
 
-              {/* 옵션창 - 아래 있는 옵션 - 좁은 화면에서 나타남 */}
-                {/* (8) image/video/audio/music 타입 옵션 패널 */}
+              {/* 옵션창 - 아래 있는 옵션 */}
+              {/* - compact(Timeline 하단)에서는 화면 크기와 무관하게 항상 노출(드로어) */}
+              {/* - default(FrontAI)에서는 좁은 화면에서만 노출(xl:hidden) */}
                 {hasOptions && (
-                  <div className="w-full lg:w-[420px] xl:hidden block">
+                  <div className={cn("w-full lg:w-[420px] block", isCompact ? "" : "xl:hidden")}>
                     <Drawer>
                       <DrawerTrigger asChild>
                         <div className="bg-card border border-border flex gap-2 items-center p-2 rounded-[8px] w-full cursor-pointer hover:bg-accent/50 transition-colors">

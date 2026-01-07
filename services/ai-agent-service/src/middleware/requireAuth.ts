@@ -14,6 +14,12 @@ export type AuthedRequest = Request & {
   email?: string
 }
 
+export function verifyJwtToken(token: string): AuthPayload {
+  // auth-service도 기본값을 'secret'으로 사용하므로 동일하게 맞춥니다.
+  const secret = process.env.JWT_SECRET || "secret"
+  return jwt.verify(token, secret) as AuthPayload
+}
+
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   try {
     const header = req.headers.authorization || ""
@@ -21,9 +27,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     const token = m?.[1]
     if (!token) return res.status(401).json({ message: "Missing Authorization token" })
 
-    // auth-service도 기본값을 'secret'으로 사용하므로 동일하게 맞춥니다.
-    const secret = process.env.JWT_SECRET || "secret"
-    const decoded = jwt.verify(token, secret) as AuthPayload
+    const decoded = verifyJwtToken(token)
 
     const userId = decoded?.userId
     if (!userId) return res.status(401).json({ message: "Invalid token payload (missing userId)" })

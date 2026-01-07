@@ -2,6 +2,7 @@ import { Request, Response } from "express"
 import { query } from "../config/db"
 import { AuthedRequest } from "../middleware/requireAuth"
 import { ensureSystemTenantId } from "../services/systemTenantService"
+import crypto from "crypto"
 import {
   getProviderBase,
   openaiGenerateImage,
@@ -11,6 +12,7 @@ import {
   googleSimulateChat,
 } from "../services/providerClients"
 import { resolveAuthForModelApiProfile } from "../services/authProfilesService"
+import { newAssetId, storeImageDataUrlAsAsset } from "../services/mediaAssetsService"
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 
@@ -118,6 +120,10 @@ function safeObj(v: unknown): Record<string, unknown> {
   if (!v) return {}
   if (typeof v === "object" && !Array.isArray(v)) return v as Record<string, unknown>
   return {}
+}
+
+function safeArr(v: unknown): unknown[] {
+  return Array.isArray(v) ? v : []
 }
 
 function pickString(obj: Record<string, unknown>, key: string): string {
@@ -244,6 +250,11 @@ async function executeHttpJsonProfile(args: {
     if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean") continue
     const safeKey = String(k).replace(/[^a-zA-Z0-9_]/g, "_")
     if (!safeKey) continue
+    // Normalize common UI variants (e.g. "256×256") before template injection.
+    if (typeof v === "string" && safeKey === "size") {
+      vars[`params_${safeKey}`] = v.trim().replace(/[×*]/g, "x")
+      continue
+    }
     vars[`params_${safeKey}`] = String(v)
   }
 
@@ -372,15 +383,14 @@ async function executeHttpJsonProfile(args: {
 
     vars.job_id = jobId
 
-    const steps = Array.isArray((workflow as any).steps) ? ((workflow as any).steps as unknown[]) : []
+    const steps = safeArr((workflow as Record<string, unknown>).steps)
     const pollStep = (steps.find((s) => safeObj(s).name === "poll") || steps[0] || {}) as unknown
     const poll = safeObj(pollStep)
     const pollInterval = Math.min(Math.max(Number(poll.interval_ms || 2000) || 2000, 200), 10_000)
     const pollMax = Math.min(Math.max(Number(poll.max_attempts || 60) || 60, 1), 120)
     const statusPath = pickString(poll, "status_path") || pickString(workflow, "status_path") || "status"
-    const terminalStates = Array.isArray((poll as any).terminal_states)
-      ? ((poll as any).terminal_states as unknown[]).map((x) => String(x || "")).filter(Boolean)
-      : ["completed", "failed", "canceled", "cancelled", "error"]
+    const terminalStatesRaw = safeArr(poll.terminal_states).map((x) => String(x || "")).filter(Boolean)
+    const terminalStates = terminalStatesRaw.length ? terminalStatesRaw : ["completed", "failed", "canceled", "cancelled", "error"]
 
     let lastStatus = ""
     let lastJson: unknown = initial.json
@@ -412,7 +422,6 @@ async function executeHttpJsonProfile(args: {
     const downloadStep = (steps.find((s) => safeObj(s).name === "download") || {}) as unknown
     const download = safeObj(downloadStep)
     const downloadPath = pickString(download, "path")
-    const downloadResultType = pickString(download, "result_type") || "binary_data_url"
     const downloadMode = (pickString(download, "mode") || "binary").toLowerCase() === "json" ? "json" : "binary"
 
     if (!downloadPath) {
@@ -666,6 +675,7 @@ async function createConversation(args: { tenantId: string; userId: string; mode
 }
 
 async function appendMessage(args: {
+  id?: string
   conversationId: string
   role: "user" | "assistant"
   content: Record<string, unknown>
@@ -680,13 +690,15 @@ async function appendMessage(args: {
     args.conversationId,
   ])
   const nextOrder = Number(maxOrder.rows[0]?.max || 0) + 1
+  const msgId = args.id ? String(args.id) : null
   const r = await query(
     `
-    INSERT INTO model_messages (conversation_id, role, content, content_text, summary, message_order, metadata)
-    VALUES ($1,$2,$3::jsonb,$4,$5,$6,$7::jsonb)
+    INSERT INTO model_messages (id, conversation_id, role, content, content_text, summary, message_order, metadata)
+    VALUES (COALESCE($1::uuid, uuid_generate_v4()), $2,$3,$4::jsonb,$5,$6,$7,$8::jsonb)
     RETURNING id, message_order
     `,
     [
+      msgId,
       args.conversationId,
       args.role,
       JSON.stringify(args.content),
@@ -702,6 +714,73 @@ async function appendMessage(args: {
     ]
   )
   return { id: String(r.rows[0].id), message_order: Number(r.rows[0].message_order) }
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return Boolean(v) && typeof v === "object" && !Array.isArray(v)
+}
+
+function stripRawForDb(content: Record<string, unknown>) {
+  if ("raw" in content) {
+    // avoid persisting huge provider payloads (often includes base64)
+    delete content.raw
+  }
+}
+
+type PendingAsset = { assetId: string; kind: "image" | "audio" | "video"; dataUrl: string; index: number }
+
+function rewriteContentWithAssetUrls(content: Record<string, unknown>): { content: Record<string, unknown>; assets: PendingAsset[] } {
+  const out = { ...content }
+  stripRawForDb(out)
+
+  const assets: PendingAsset[] = []
+
+  // images[]
+  const imagesVal = out.images
+  if (Array.isArray(imagesVal)) {
+    const imgs = imagesVal.map((it) => (isRecord(it) ? { ...it } : null))
+    const nextImgs: Record<string, unknown>[] = []
+    for (let i = 0; i < imgs.length; i++) {
+      const rec = imgs[i]
+      if (!rec) continue
+      const url = typeof rec.url === "string" ? String(rec.url) : ""
+      if (url.startsWith("data:image/")) {
+        const assetId = newAssetId()
+        const assetUrl = `/api/ai/media/assets/${assetId}`
+        assets.push({ assetId, kind: "image", dataUrl: url, index: i })
+        nextImgs.push({ ...rec, url: assetUrl, asset_id: assetId })
+      } else if (url) {
+        nextImgs.push(rec)
+      }
+    }
+    out.images = nextImgs
+
+    // If blocks look like our image-only blocks, rebuild them from image URLs for consistency.
+    const blocksVal = out.blocks
+    const blocks = Array.isArray(blocksVal) ? (blocksVal as unknown[]) : null
+    const allImgMarkdown =
+      blocks &&
+      blocks.length === nextImgs.length &&
+      blocks.every((b) => isRecord(b) && b.type === "markdown" && typeof b.markdown === "string" && String(b.markdown).startsWith("![image]("))
+    if (allImgMarkdown) {
+      out.blocks = nextImgs.map((im) => ({ type: "markdown", markdown: `![image](${String(im.url || "")})` }))
+    }
+  }
+
+  // audio/video: keep field name `data_url` but store a normal URL
+  for (const k of ["audio", "video"] as const) {
+    const obj = out[k]
+    if (!isRecord(obj)) continue
+    const du = typeof obj.data_url === "string" ? String(obj.data_url) : ""
+    if (!du.startsWith("data:")) continue
+    const kind = k === "audio" ? "audio" : "video"
+    const assetId = newAssetId()
+    const assetUrl = `/api/ai/media/assets/${assetId}`
+    assets.push({ assetId, kind, dataUrl: du, index: 0 })
+    out[k] = { ...obj, data_url: assetUrl, asset_id: assetId }
+  }
+
+  return { content: out, assets }
 }
 
 async function loadHistory(args: { conversationId: string }) {
@@ -725,10 +804,17 @@ async function loadHistory(args: { conversationId: string }) {
   const shortText = shortRows
     .map((m: { role?: unknown; content_text?: unknown; content?: unknown }) => {
       const role = String(m.role || "")
-      const t =
+      let t =
         typeof m.content_text === "string" && m.content_text.trim()
           ? String(m.content_text)
           : extractTextFromJsonContent(m.content)
+
+      // Guardrail: never inject massive blobs (e.g., base64 data URLs) into history.
+      // This can explode context length and break chat.
+      if (t.startsWith("data:") || t.includes("data:image/") || t.includes("base64,")) {
+        t = extractTextFromJsonContent(m.content) || "[media]"
+      }
+      if (t.length > 4000) t = `${t.slice(0, 4000)}…`
       return `${role}: ${t}`
     })
     .join("\n")
@@ -1165,15 +1251,16 @@ export async function chatRun(req: Request, res: Response) {
         style,
         background,
       })
-      const urls = r.urls || []
-      const blocks = urls.length
-        ? urls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
+      // Prefer real URLs; if API returns base64 only, fall back to data URLs.
+      const sourceUrls: string[] = (r.urls && r.urls.length ? r.urls : r.data_urls) || []
+      const blocks = sourceUrls.length
+        ? sourceUrls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
         : [{ type: "markdown", markdown: "이미지 생성 결과를 받지 못했습니다." }]
       const blockJson = { title: "이미지 생성", summary: "요청한 이미지 생성 결과입니다.", blocks }
       out = {
         output_text: JSON.stringify(blockJson),
-        raw: r.raw,
-        content: { ...blockJson, images: urls.map((u) => ({ url: u })), raw: r.raw },
+        raw: { provider: "openai", kind: "image", model: modelApiId, count: sourceUrls.length },
+        content: { ...blockJson, images: sourceUrls.map((u) => ({ url: u })), raw: { provider: "openai", kind: "image", model: modelApiId, count: sourceUrls.length } },
       }
       } else if (mt === "audio" || mt === "music") {
       if (providerKey !== "openai") {
@@ -1225,17 +1312,58 @@ export async function chatRun(req: Request, res: Response) {
       providerKey: providerKey,
       providerLogoKey,
     })
+
+    // Assetize media fields (image/audio/video data URLs) before persisting assistant message.
+    const assistantMessageId = crypto.randomUUID()
+    const rewritten = rewriteContentWithAssetUrls(out.content)
+
+    // Use a safe, compact content_text for history/context (avoid huge JSON / base64).
+    const title = typeof rewritten.content.title === "string" ? rewritten.content.title : ""
+    const summary = typeof rewritten.content.summary === "string" ? rewritten.content.summary : ""
+    const imgCount = Array.isArray(rewritten.content.images) ? (rewritten.content.images as unknown[]).length : 0
+    const hasAudio = isRecord(rewritten.content.audio)
+    const hasVideo = isRecord(rewritten.content.video)
+    const contentTextForHistory =
+      title || summary
+        ? `${title || ""}${title && summary ? " - " : ""}${summary || ""}`.slice(0, 4000)
+        : imgCount
+          ? `이미지 생성 (${imgCount}장)`
+          : hasAudio
+            ? "오디오 생성"
+            : hasVideo
+              ? "비디오 생성"
+              : String(out.output_text || "").slice(0, 4000)
+
     await appendMessage({
+      id: assistantMessageId,
       conversationId: convId,
       role: "assistant",
-      content: out.content,
-      contentText: String(out.output_text || ""),
+      content: rewritten.content,
+      contentText: contentTextForHistory,
       summary: null,
       modelApiId,
       providerSlug: String(row.provider_slug || ""),
       providerKey: providerKey,
       providerLogoKey,
     })
+
+    // Persist assets (FK requires message row exists).
+    for (const a of rewritten.assets) {
+      await storeImageDataUrlAsAsset({
+        tenantId,
+        userId: userId || null,
+        conversationId: convId,
+        messageId: assistantMessageId,
+        assetId: a.assetId,
+        dataUrl: a.dataUrl,
+        index: a.index,
+        kind: a.kind,
+      })
+    }
+
+    // Return rewritten (assetized) content to the client as output_text too,
+    // so the frontend never receives base64 blobs in output_text.
+    out.output_text = JSON.stringify(rewritten.content)
 
     // best-effort: keep conversation model_id updated to last used model
     await query(`UPDATE model_conversations SET model_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [convId, chosenModelDbId])
