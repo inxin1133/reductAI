@@ -32,6 +32,18 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ============================================
+-- (권장) ProseMirror 기반 블록 에디터 저장 전략 요약
+-- ============================================
+-- 목표(서버가 블록을 직접 이해/검색/부분수정):
+-- - "문서 전체(JSON)"를 1개 컬럼에 저장하지 않고, 블록을 1급 엔티티(row)로 저장합니다.
+-- - 각 블록의 인라인 리치텍스트는 ProseMirror JSON을 블록 content 안에 저장합니다(블록별 PM node/doc).
+-- - 페이지 링크/임베드(내부 페이지/외부 URL)는 FK/별도 캐시 테이블로 무결성과 백링크 조회를 지원합니다.
+--
+-- NOTE:
+-- - ProseMirror 스키마 버전이 바뀔 수 있으므로 블록/문서에 schema_version을 보관하는 것을 권장합니다.
+--
+
+-- ============================================
 -- 1. BOARD CATEGORIES
 -- ============================================
 
@@ -151,16 +163,83 @@ COMMENT ON COLUMN posts.updated_at IS '게시글 최종 수정 시각';
 COMMENT ON COLUMN posts.deleted_at IS '게시글 삭제 시각 (Soft Delete용, NULL이면 삭제되지 않음)';
 
 -- ============================================
+-- 2.1 EXTERNAL EMBEDS (외부 임베드 메타 캐시, 선택이지만 권장)
+-- ============================================
+-- 외부 URL 임베드(oEmbed/OpenGraph 등) 블록을 안정적으로 렌더링하기 위해,
+-- 외부 URL의 메타 정보를 캐시해둡니다.
+-- - blocks에서 url을 직접 들고 있어도 되지만, 캐시 테이블이 있으면 재조회/갱신/차단 처리에 유리합니다.
+--
+CREATE TABLE external_embeds (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    canonical_url TEXT NOT NULL,
+    provider VARCHAR(120), -- youtube, figma, twitter 등 (선택)
+    oembed_json JSONB,     -- oEmbed 응답/메타 (선택)
+    open_graph_json JSONB, -- OpenGraph 메타 (선택)
+    status VARCHAR(30) NOT NULL DEFAULT 'active' CHECK (status IN ('active','blocked','error')),
+    fetched_at TIMESTAMP WITH TIME ZONE,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(tenant_id, canonical_url)
+);
+
+CREATE INDEX idx_external_embeds_tenant ON external_embeds(tenant_id);
+CREATE INDEX idx_external_embeds_status ON external_embeds(tenant_id, status);
+
+COMMENT ON TABLE external_embeds IS '외부 URL 임베드(oEmbed/OpenGraph) 메타데이터 캐시 테이블';
+COMMENT ON COLUMN external_embeds.canonical_url IS '임베드 대상 외부 URL(정규화된 canonical URL 권장)';
+COMMENT ON COLUMN external_embeds.oembed_json IS 'oEmbed 응답(JSON)';
+COMMENT ON COLUMN external_embeds.open_graph_json IS 'OpenGraph 메타(JSON)';
+COMMENT ON COLUMN external_embeds.status IS '임베드 상태(active/blocked/error)';
+
+-- ============================================
 -- 3. POST BLOCKS (블록 에디터의 블록 단위)
 -- ============================================
 
 CREATE TABLE post_blocks (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     post_id UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
-    block_type VARCHAR(100) NOT NULL, -- 'paragraph', 'heading', 'image', 'video', 'code', 'list', 'quote', etc.
-    block_order INTEGER NOT NULL,
-    content JSONB NOT NULL DEFAULT '{}', -- 블록 타입에 따라 다른 구조의 JSON 데이터
+    -- Notion 스타일 중첩: parent_block_id가 NULL이면 top-level block
     parent_block_id UUID REFERENCES post_blocks(id) ON DELETE CASCADE, -- 중첩된 블록 지원 (예: 리스트 아이템)
+
+    -- 블록 타입: 서버가 이해하는 1급 타입 (예: paragraph/heading/image/table/page_link/page_embed/external_embed 등)
+    block_type VARCHAR(100) NOT NULL,
+
+    -- 정렬 키: insert/reorder를 위해 정수 대신 "간격이 있는" 값 사용 권장
+    -- - app에서 (이전+다음)/2 같은 방식으로 중간 삽입 가능
+    -- - 동일 컨테이너(=같은 post + 같은 parent_block) 내에서 유니크해야 함
+    sort_key NUMERIC(24, 12) NOT NULL,
+
+    -- 블록 본문(JSON): ProseMirror node/doc(인라인 리치텍스트 포함) + 타입별 속성/스타일/설정
+    -- 예:
+    -- - paragraph: {"pm":{"type":"doc","content":[...]}, "align":"left"}
+    -- - heading:   {"level":2,"pm":{...}}
+    -- - image:     {"asset_id":"...","caption_pm":{...}}
+    content JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+    -- 검색/리스트 성능용 캐시(선택): content에서 텍스트를 추출해 저장 (PM doc에서 plain text)
+    content_text TEXT,
+
+    -- Full-text search용(선택): content_text 기반 tsvector 캐시 (쿼리 성능/정렬에 유리)
+    search_vector tsvector,
+
+    -- 페이지 링크/임베드(내부): 링크/임베드 대상 페이지를 FK로 보관하여 무결성/백링크 조회를 지원
+    ref_post_id UUID REFERENCES posts(id) ON DELETE SET NULL,
+
+    -- 외부 임베드(선택): external_embeds 캐시를 FK로 연결
+    external_embed_id UUID REFERENCES external_embeds(id) ON DELETE SET NULL,
+
+    -- Soft delete / archive (Notion 스타일)
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+
+    -- ProseMirror 스키마 버전(호환성 관리)
+    pm_schema_version INTEGER NOT NULL DEFAULT 1,
+
+    -- 편집자 추적(선택)
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    updated_by UUID REFERENCES users(id) ON DELETE SET NULL,
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -168,20 +247,61 @@ CREATE TABLE post_blocks (
 );
 
 CREATE INDEX idx_post_blocks_post_id ON post_blocks(post_id);
-CREATE INDEX idx_post_blocks_block_order ON post_blocks(post_id, block_order);
 CREATE INDEX idx_post_blocks_block_type ON post_blocks(block_type);
 CREATE INDEX idx_post_blocks_parent_block_id ON post_blocks(parent_block_id);
+CREATE INDEX idx_post_blocks_parent_sort ON post_blocks(post_id, parent_block_id, sort_key);
+CREATE INDEX idx_post_blocks_ref_post_id ON post_blocks(ref_post_id);
+CREATE INDEX idx_post_blocks_external_embed_id ON post_blocks(external_embed_id);
+CREATE INDEX idx_post_blocks_is_deleted ON post_blocks(post_id, is_deleted) WHERE is_deleted = FALSE;
+
+-- 동일 컨테이너(=post + parent_block) 내에서 sort_key 유니크 보장
+-- - parent_block_id가 NULL(top-level)인 경우, 컨테이너 키로 post_id를 사용
+CREATE UNIQUE INDEX uq_post_blocks_container_sort_key
+  ON post_blocks(post_id, COALESCE(parent_block_id, post_id), sort_key);
+
+-- JSONB 검색 가속(필요 시)
+CREATE INDEX idx_post_blocks_content_gin ON post_blocks USING GIN (content);
+
+-- Full-text search 가속(선택): content_text 기반
+CREATE INDEX idx_post_blocks_search_vector ON post_blocks USING GIN (search_vector);
 
 COMMENT ON TABLE post_blocks IS '게시글의 블록 단위 콘텐츠를 저장하는 테이블. 블록 에디터의 핵심 테이블입니다.';
 COMMENT ON COLUMN post_blocks.id IS '블록의 고유 식별자 (UUID)';
 COMMENT ON COLUMN post_blocks.post_id IS '블록이 속한 게시글 ID (posts 테이블 참조)';
-COMMENT ON COLUMN post_blocks.block_type IS '블록 타입 (예: paragraph, heading, image, video, code, list, quote, table, divider)';
-COMMENT ON COLUMN post_blocks.block_order IS '블록의 순서 (게시글 내에서의 위치)';
-COMMENT ON COLUMN post_blocks.content IS '블록의 실제 콘텐츠 (JSON 형식, 블록 타입에 따라 다른 구조)';
+COMMENT ON COLUMN post_blocks.parent_block_id IS '상위 블록 ID (중첩된 블록 구조 지원, 예: 리스트의 아이템)';
+COMMENT ON COLUMN post_blocks.block_type IS '블록 타입 (예: paragraph, heading, image, video, code, list, quote, table, page_link, page_embed, external_embed)';
+COMMENT ON COLUMN post_blocks.sort_key IS '블록 정렬 키(동일 컨테이너 내 유니크). 중간 삽입/부분 정렬을 위해 NUMERIC 사용 권장';
+COMMENT ON COLUMN post_blocks.content IS '블록 콘텐츠(JSON). ProseMirror node/doc(인라인 리치텍스트 포함) + 타입별 속성';
+COMMENT ON COLUMN post_blocks.content_text IS '검색/리스트 최적화용 텍스트 캐시(선택). ProseMirror에서 추출한 plain text 등';
+COMMENT ON COLUMN post_blocks.search_vector IS 'Full-text search용 tsvector 캐시(선택). content_text에서 생성';
+COMMENT ON COLUMN post_blocks.ref_post_id IS 'page_link/page_embed 등 내부 페이지를 참조하는 블록의 대상 posts.id (백링크 조회/무결성)';
+COMMENT ON COLUMN post_blocks.external_embed_id IS 'external_embed 블록이 참조하는 external_embeds.id';
+COMMENT ON COLUMN post_blocks.is_deleted IS '블록 soft delete 여부';
+COMMENT ON COLUMN post_blocks.deleted_at IS '블록 삭제 시각(soft delete)';
+COMMENT ON COLUMN post_blocks.pm_schema_version IS 'ProseMirror 스키마 버전(호환성 관리용)';
 COMMENT ON COLUMN post_blocks.parent_block_id IS '상위 블록 ID (중첩된 블록 구조 지원, 예: 리스트의 아이템)';
 COMMENT ON COLUMN post_blocks.metadata IS '블록의 추가 메타데이터 (JSON 형식, 예: 스타일, 설정)';
 COMMENT ON COLUMN post_blocks.created_at IS '블록 생성 시각';
 COMMENT ON COLUMN post_blocks.updated_at IS '블록 최종 수정 시각';
+
+-- ============================================
+-- 3.1 BLOCK REFERENCE BACKLINK VIEW (선택)
+-- ============================================
+-- 내부 페이지 링크/임베드 백링크를 빠르게 조회하기 위한 뷰
+-- - 링크/임베드 종류는 block_type으로 구분(권장: page_link/page_embed)
+--
+CREATE OR REPLACE VIEW post_backlinks AS
+SELECT
+    b.ref_post_id       AS target_post_id,
+    b.post_id           AS source_post_id,
+    b.id                AS source_block_id,
+    b.block_type        AS ref_type,
+    b.created_at        AS created_at
+FROM post_blocks b
+WHERE b.ref_post_id IS NOT NULL
+  AND b.is_deleted = FALSE;
+
+COMMENT ON VIEW post_backlinks IS '페이지 링크/임베드 블록 기반 백링크 조회 뷰';
 
 -- ============================================
 -- 4. POST TAGS
@@ -393,7 +513,7 @@ CREATE TABLE post_revisions (
     author_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     title VARCHAR(500),
     excerpt TEXT,
-    blocks_snapshot JSONB, -- 블록들의 스냅샷
+    blocks_snapshot JSONB, -- 블록들의 스냅샷(권장: 블록 id/정렬키/콘텐츠의 스냅샷)
     change_summary TEXT, -- 변경 사항 요약
     revision_number INTEGER NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -419,18 +539,18 @@ COMMENT ON COLUMN post_revisions.created_at IS '수정 이력 생성 시각';
 -- ============================================
 
 -- Reuse the function from main schema if it exists, otherwise create it
-DO $$ 
+DO $do$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'update_updated_at_column') THEN
         CREATE OR REPLACE FUNCTION update_updated_at_column()
-        RETURNS TRIGGER AS $$
+        RETURNS TRIGGER AS $func$
         BEGIN
             NEW.updated_at = CURRENT_TIMESTAMP;
             RETURN NEW;
         END;
-        $$ language 'plpgsql';
+        $func$ language 'plpgsql';
     END IF;
-END $$;
+END $do$;
 
 COMMENT ON FUNCTION update_updated_at_column() IS '레코드가 업데이트될 때 updated_at 컬럼을 자동으로 현재 시각으로 갱신하는 트리거 함수';
 
@@ -442,6 +562,28 @@ CREATE TRIGGER update_posts_updated_at BEFORE UPDATE ON posts
 
 CREATE TRIGGER update_post_blocks_updated_at BEFORE UPDATE ON post_blocks
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_external_embeds_updated_at BEFORE UPDATE ON external_embeds
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================
+-- 12. FULL-TEXT SEARCH VECTOR MAINTENANCE (선택)
+-- ============================================
+-- content_text가 바뀔 때 search_vector를 자동 갱신합니다.
+-- - 언어는 기본 simple 구성(필요 시 tenant/페이지 언어에 따라 english/korean 등으로 확장)
+--
+CREATE OR REPLACE FUNCTION update_post_block_search_vector()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.search_vector := to_tsvector('simple', COALESCE(NEW.content_text, ''));
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+COMMENT ON FUNCTION update_post_block_search_vector() IS 'post_blocks.content_text -> search_vector 자동 생성 트리거 함수';
+
+CREATE TRIGGER trigger_update_post_block_search_vector
+    BEFORE INSERT OR UPDATE OF content_text ON post_blocks
+    FOR EACH ROW EXECUTE FUNCTION update_post_block_search_vector();
 
 CREATE TRIGGER update_post_comments_updated_at BEFORE UPDATE ON post_comments
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

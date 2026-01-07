@@ -1,11 +1,20 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getConversationContext = getConversationContext;
 exports.chatRun = chatRun;
 const db_1 = require("../config/db");
 const systemTenantService_1 = require("../services/systemTenantService");
+const crypto_1 = __importDefault(require("crypto"));
 const providerClients_1 = require("../services/providerClients");
+const authProfilesService_1 = require("../services/authProfilesService");
+const mediaAssetsService_1 = require("../services/mediaAssetsService");
 const MODEL_TYPES = ["text", "image", "audio", "music", "video", "multimodal", "embedding", "code"];
+function isAudioFormat(v) {
+    return v === "mp3" || v === "wav" || v === "opus" || v === "aac" || v === "flac";
+}
 function isUuid(v) {
     if (typeof v !== "string")
         return false;
@@ -58,6 +67,21 @@ function clampInt(n, min, max) {
 }
 function deepInjectVars(input, vars) {
     if (typeof input === "string") {
+        // If the entire string is exactly one placeholder, allow scalar coercion
+        // so JSON templates can safely carry numbers/booleans (e.g., temperature/maxTokens).
+        const exact = input.match(/^\{\{\s*([a-zA-Z0-9_]+)\s*\}\}$/);
+        if (exact) {
+            const k = exact[1];
+            const raw = k in vars ? vars[k] : "";
+            const s = String(raw);
+            if (s === "true")
+                return true;
+            if (s === "false")
+                return false;
+            if (/^-?\d+(?:\.\d+)?$/.test(s))
+                return Number(s);
+            return s;
+        }
         return input.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, k) => (k in vars ? vars[k] : ""));
     }
     if (Array.isArray(input))
@@ -69,6 +93,396 @@ function deepInjectVars(input, vars) {
         return out;
     }
     return input;
+}
+function deepMergeJson(a, b) {
+    // b wins. arrays are replaced.
+    if (Array.isArray(a) || Array.isArray(b))
+        return b ?? a;
+    if (!a || typeof a !== "object")
+        return b;
+    if (!b || typeof b !== "object")
+        return b;
+    const out = { ...a };
+    for (const [k, v] of Object.entries(b)) {
+        const av = out[k];
+        out[k] = deepMergeJson(av, v);
+    }
+    return out;
+}
+function safeObj(v) {
+    if (!v)
+        return {};
+    if (typeof v === "object" && !Array.isArray(v))
+        return v;
+    return {};
+}
+function safeArr(v) {
+    return Array.isArray(v) ? v : [];
+}
+function pickString(obj, key) {
+    const v = obj[key];
+    return typeof v === "string" ? v : "";
+}
+function getByPath(root, path) {
+    const p = String(path || "").trim();
+    if (!p)
+        return undefined;
+    // support a single projection segment like "data[].url"
+    const parts = p.split(".").filter(Boolean);
+    let cur = root;
+    for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        if (part.endsWith("[]")) {
+            const name = part.slice(0, -2);
+            const curRec = safeObj(cur);
+            const arr = name ? curRec[name] : cur;
+            const rest = parts.slice(i + 1).join(".");
+            if (!Array.isArray(arr))
+                return [];
+            if (!rest)
+                return arr;
+            return arr.map((item) => getByPath(item, rest));
+        }
+        const m = part.match(/^([^[\]]+)(?:\[(\d+)\])?$/);
+        if (!m)
+            return undefined;
+        const key = m[1];
+        const idxStr = m[2];
+        const rec = safeObj(cur);
+        cur = rec[key];
+        if (idxStr !== undefined) {
+            const idx = Number(idxStr);
+            if (!Array.isArray(cur))
+                return undefined;
+            cur = cur[idx];
+        }
+        if (cur === undefined || cur === null)
+            return cur;
+    }
+    return cur;
+}
+async function loadModelApiProfile(args) {
+    const r = await (0, db_1.query)(`
+    SELECT id, provider_id, model_id, profile_key, purpose, auth_profile_id, transport, response_mapping, workflow
+    FROM model_api_profiles
+    WHERE tenant_id = $1
+      AND provider_id = $2
+      AND purpose = $3
+      AND is_active = TRUE
+      AND (model_id = $4 OR model_id IS NULL)
+    ORDER BY (model_id IS NULL) ASC, updated_at DESC
+    LIMIT 1
+    `, [args.tenantId, args.providerId, args.purpose, args.modelDbId]);
+    if (r.rows.length === 0)
+        return null;
+    const row = (r.rows[0] || {});
+    return {
+        id: String(row.id || ""),
+        provider_id: String(row.provider_id || ""),
+        model_id: row.model_id ? String(row.model_id) : null,
+        profile_key: String(row.profile_key || ""),
+        purpose: String(row.purpose || ""),
+        auth_profile_id: row.auth_profile_id ? String(row.auth_profile_id) : null,
+        transport: safeObj(row.transport),
+        response_mapping: safeObj(row.response_mapping),
+        workflow: safeObj(row.workflow),
+    };
+}
+async function executeHttpJsonProfile(args) {
+    const transport = safeObj(args.profile.transport);
+    const responseMapping = safeObj(args.profile.response_mapping);
+    const workflow = safeObj(args.profile.workflow);
+    const kind = pickString(transport, "kind") || "http_json";
+    if (kind !== "http_json") {
+        throw new Error(`MODEL_API_PROFILE_UNSUPPORTED_KIND:${kind}`);
+    }
+    const method = (pickString(transport, "method") || "POST").toUpperCase();
+    const path = pickString(transport, "path") || "/";
+    const timeoutMs = Number(transport.timeout_ms || 60000) || 60000;
+    const vars = {
+        apiKey: args.apiKey,
+        accessToken: args.accessToken || "",
+        model: args.modelApiId,
+        userPrompt: args.prompt,
+        input: args.input,
+        language: args.language,
+        maxTokens: String(args.maxTokens),
+        shortHistory: args.history.shortText,
+        longSummary: args.history.conversationSummary || args.history.longText,
+    };
+    for (const [k, v] of Object.entries(args.configVars || {}))
+        vars[k] = v;
+    // expose request options as template vars: {{params_<key>}}
+    // - only primitives are supported (string/number/boolean)
+    // - key is sanitized into [a-zA-Z0-9_]
+    for (const [k, v] of Object.entries(args.options || {})) {
+        if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean")
+            continue;
+        const safeKey = String(k).replace(/[^a-zA-Z0-9_]/g, "_");
+        if (!safeKey)
+            continue;
+        // Normalize common UI variants (e.g. "256×256") before template injection.
+        if (typeof v === "string" && safeKey === "size") {
+            vars[`params_${safeKey}`] = v.trim().replace(/[×*]/g, "x");
+            continue;
+        }
+        vars[`params_${safeKey}`] = String(v);
+    }
+    function normalizeUrlJoin(args2) {
+        const baseUrlRaw = (args2.transportBaseUrl || args2.apiBaseUrl || "").trim();
+        const base = baseUrlRaw.replace(/\/+$/g, "");
+        let p = (args2.path || "/").trim();
+        if (!p.startsWith("/"))
+            p = `/${p}`;
+        if (base.toLowerCase().endsWith("/v1") && p.toLowerCase().startsWith("/v1/"))
+            p = p.slice(3);
+        const u = new URL(`${base}${p}`);
+        for (const [k, v] of Object.entries(args2.query || {})) {
+            if (typeof v === "string" || typeof v === "number" || typeof v === "boolean")
+                u.searchParams.set(k, String(v));
+        }
+        return u;
+    }
+    async function httpCall(args2) {
+        const tr = args2.transportSpec;
+        const rawHeaders = safeObj(tr.headers);
+        const rawQuery = safeObj(tr.query);
+        const rawBody = safeObj(tr.body);
+        // If prompt_templates is configured, merge it into the profile body (template wins).
+        const mergedBody = (args2.templateBody ? deepMergeJson(rawBody, args2.templateBody) : rawBody);
+        const injectedHeaders = deepInjectVars(rawHeaders, args2.vars);
+        const injectedQuery = deepInjectVars(rawQuery, args2.vars);
+        const injectedBody = deepInjectVars(mergedBody, args2.vars);
+        const trBaseAny = deepInjectVars(tr.base_url, args2.vars);
+        const trBase = typeof trBaseAny === "string" && trBaseAny.trim() ? trBaseAny.trim() : "";
+        const pathAny = deepInjectVars(args2.overridePath ?? pickString(tr, "path") ?? "/", args2.vars);
+        const pathStr = typeof pathAny === "string" ? pathAny : String(pathAny ?? "/");
+        const m = (args2.overrideMethod || pickString(tr, "method") || "POST").toUpperCase();
+        const timeout = Number(tr.timeout_ms || timeoutMs) || timeoutMs;
+        const urlObj = normalizeUrlJoin({
+            apiBaseUrl: args.apiBaseUrl,
+            transportBaseUrl: trBase,
+            path: pathStr,
+            query: { ...injectedQuery, ...(args2.overrideQuery || {}) },
+        });
+        const headers = {};
+        for (const [k, v] of Object.entries(injectedHeaders)) {
+            if (typeof v === "string")
+                headers[k] = v;
+        }
+        if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type") && args2.mode === "json") {
+            headers["Content-Type"] = "application/json";
+        }
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), Math.max(1000, timeout));
+        let res;
+        try {
+            res = await fetch(urlObj.toString(), {
+                method: m,
+                headers,
+                body: m === "GET" || m === "HEAD" ? undefined : JSON.stringify(injectedBody),
+                signal: controller.signal,
+            });
+        }
+        finally {
+            clearTimeout(t);
+        }
+        const contentType = res.headers.get("content-type");
+        if (args2.mode === "binary") {
+            if (!res.ok) {
+                const errText = await res.text().catch(() => "");
+                return { ok: false, status: res.status, url: urlObj.toString(), json: { error: errText }, buf: null, contentType };
+            }
+            const buf = Buffer.from(await res.arrayBuffer());
+            return { ok: true, status: res.status, url: urlObj.toString(), json: {}, buf, contentType };
+        }
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            return { ok: false, status: res.status, url: urlObj.toString(), json, buf: null, contentType };
+        }
+        return { ok: true, status: res.status, url: urlObj.toString(), json, buf: null, contentType };
+    }
+    function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+    const modeRaw = pickString(responseMapping, "mode").toLowerCase();
+    const resultType = pickString(responseMapping, "result_type") || "text";
+    const extract = safeObj(responseMapping.extract);
+    // initial request (json by default; async_job assumes json)
+    const initial = await httpCall({
+        transportSpec: transport,
+        templateBody: args.injectedTemplate,
+        vars,
+        overrideMethod: method,
+        overridePath: path,
+        mode: modeRaw === "binary" ? "binary" : "json",
+    });
+    if (!initial.ok) {
+        throw new Error(`MODEL_API_PROFILE_HTTP_${initial.status}:${JSON.stringify(initial.json)}@${initial.url}`);
+    }
+    // async job workflow: poll -> download/url
+    if (pickString(workflow, "type") === "async_job") {
+        const jobIdPath = pickString(workflow, "job_id_path") || pickString(extract, "job_id_path") || pickString(extract, "job_id");
+        const jobIdVal = jobIdPath ? getByPath(initial.json, jobIdPath) : undefined;
+        const jobId = typeof jobIdVal === "string" ? jobIdVal : String(jobIdVal ?? "");
+        if (!jobId)
+            throw new Error("ASYNC_JOB_MISSING_JOB_ID");
+        vars.job_id = jobId;
+        const steps = safeArr(workflow.steps);
+        const pollStep = (steps.find((s) => safeObj(s).name === "poll") || steps[0] || {});
+        const poll = safeObj(pollStep);
+        const pollInterval = Math.min(Math.max(Number(poll.interval_ms || 2000) || 2000, 200), 10000);
+        const pollMax = Math.min(Math.max(Number(poll.max_attempts || 60) || 60, 1), 120);
+        const statusPath = pickString(poll, "status_path") || pickString(workflow, "status_path") || "status";
+        const terminalStatesRaw = safeArr(poll.terminal_states).map((x) => String(x || "")).filter(Boolean);
+        const terminalStates = terminalStatesRaw.length ? terminalStatesRaw : ["completed", "failed", "canceled", "cancelled", "error"];
+        let lastStatus = "";
+        let lastJson = initial.json;
+        for (let i = 0; i < pollMax; i++) {
+            const pollPath = pickString(poll, "path") || "";
+            if (!pollPath)
+                throw new Error("ASYNC_JOB_MISSING_POLL_PATH");
+            const polled = await httpCall({
+                transportSpec: transport,
+                templateBody: null,
+                vars,
+                overrideMethod: pickString(poll, "method") || "GET",
+                overridePath: pollPath,
+                mode: "json",
+            });
+            if (!polled.ok)
+                throw new Error(`ASYNC_JOB_POLL_FAILED_${polled.status}:${JSON.stringify(polled.json)}@${polled.url}`);
+            lastJson = polled.json;
+            const st = getByPath(polled.json, statusPath);
+            lastStatus = typeof st === "string" ? st : String(st ?? "");
+            if (terminalStates.includes(String(lastStatus).toLowerCase()))
+                break;
+            await sleep(pollInterval);
+        }
+        if (!terminalStates.includes(String(lastStatus).toLowerCase())) {
+            throw new Error(`ASYNC_JOB_TIMEOUT:status=${lastStatus || "unknown"}`);
+        }
+        // download step (optional)
+        const downloadStep = (steps.find((s) => safeObj(s).name === "download") || {});
+        const download = safeObj(downloadStep);
+        const downloadPath = pickString(download, "path");
+        const downloadMode = (pickString(download, "mode") || "binary").toLowerCase() === "json" ? "json" : "binary";
+        if (!downloadPath) {
+            // no download step; return job info only
+            const blockJson = {
+                title: "비디오 생성",
+                summary: `job_id=${jobId}, status=${lastStatus}`,
+                blocks: [{ type: "markdown", markdown: `작업 상태: ${lastStatus}\njob_id: ${jobId}` }],
+            };
+            return { output_text: JSON.stringify(blockJson), raw: { initial: initial.json, poll: lastJson }, content: { ...blockJson, job: { id: jobId, status: lastStatus }, raw: { initial: initial.json, poll: lastJson } } };
+        }
+        const downloaded = await httpCall({
+            transportSpec: transport,
+            templateBody: null,
+            vars,
+            overrideMethod: pickString(download, "method") || "GET",
+            overridePath: downloadPath,
+            mode: downloadMode,
+        });
+        if (!downloaded.ok)
+            throw new Error(`ASYNC_JOB_DOWNLOAD_FAILED_${downloaded.status}:${JSON.stringify(downloaded.json)}@${downloaded.url}`);
+        if (downloadMode === "binary") {
+            const buf = downloaded.buf || Buffer.from("");
+            const ct = pickString(download, "content_type") || downloaded.contentType || "application/octet-stream";
+            const b64 = buf.toString("base64");
+            const dataUrl = `data:${ct};base64,${b64}`;
+            const blockJson = {
+                title: "비디오 생성",
+                summary: `job_id=${jobId}, status=${lastStatus}`,
+                blocks: [{ type: "markdown", markdown: `비디오가 생성되었습니다. (job_id: ${jobId})` }],
+            };
+            return {
+                output_text: JSON.stringify(blockJson),
+                raw: { initial: initial.json, poll: lastJson, download: { bytes: buf.length, content_type: ct } },
+                content: { ...blockJson, job: { id: jobId, status: lastStatus }, video: { mime: ct, data_url: dataUrl }, raw: { initial: initial.json, poll: lastJson } },
+            };
+        }
+        // json download: try to extract URL
+        const urlPath = pickString(download, "url_path") || pickString(download, "result_url_path");
+        const urlVal = urlPath ? getByPath(downloaded.json, urlPath) : undefined;
+        const urlStr = typeof urlVal === "string" ? urlVal : "";
+        const blockJson = {
+            title: "비디오 생성",
+            summary: `job_id=${jobId}, status=${lastStatus}`,
+            blocks: [{ type: "markdown", markdown: urlStr ? `비디오 URL: ${urlStr}` : `비디오 생성 완료. job_id: ${jobId}` }],
+        };
+        return {
+            output_text: JSON.stringify(blockJson),
+            raw: { initial: initial.json, poll: lastJson, download: downloaded.json },
+            content: { ...blockJson, job: { id: jobId, status: lastStatus }, video: urlStr ? { url: urlStr } : {}, raw: { initial: initial.json, poll: lastJson, download: downloaded.json } },
+        };
+    }
+    // binary mode (direct response)
+    if (modeRaw === "binary") {
+        const buf = initial.buf || Buffer.from("");
+        const ct = pickString(responseMapping, "content_type") || initial.contentType || "application/octet-stream";
+        const b64 = buf.toString("base64");
+        const dataUrl = `data:${ct};base64,${b64}`;
+        const title = args.purpose === "audio" || resultType.includes("audio") ? "오디오 생성" : args.purpose === "music" ? "음악 생성" : args.purpose === "video" ? "비디오 생성" : "파일 생성";
+        const blockJson = { title, summary: "생성이 완료되었습니다.", blocks: [{ type: "markdown", markdown: `${title}이(가) 생성되었습니다.` }] };
+        const key = resultType.includes("video") ? "video" : resultType.includes("audio") || args.purpose === "audio" || args.purpose === "music" ? "audio" : "binary";
+        return {
+            output_text: JSON.stringify(blockJson),
+            raw: { bytes: buf.length, content_type: ct },
+            content: { ...blockJson, [key]: { mime: ct, data_url: dataUrl }, raw: { bytes: buf.length, content_type: ct } },
+        };
+    }
+    // json_base64 mode: extract base64 + mime then build data_url
+    if (modeRaw === "json_base64") {
+        const b64Path = pickString(extract, "base64_path") || pickString(extract, "audio_base64_path") || pickString(extract, "video_base64_path");
+        const mimePath = pickString(extract, "mime_path") || pickString(extract, "mime_type_path");
+        const b64Val = b64Path ? getByPath(initial.json, b64Path) : undefined;
+        const mimeVal = mimePath ? getByPath(initial.json, mimePath) : undefined;
+        const b64 = typeof b64Val === "string" ? b64Val : "";
+        const mime = typeof mimeVal === "string" ? mimeVal : pickString(responseMapping, "content_type") || "application/octet-stream";
+        if (!b64)
+            throw new Error("JSON_BASE64_MISSING_BASE64");
+        const dataUrl = `data:${mime};base64,${b64}`;
+        const title = args.purpose === "music" ? "음악 생성" : args.purpose === "audio" ? "오디오 생성" : args.purpose === "video" ? "비디오 생성" : "파일 생성";
+        const blockJson = { title, summary: "생성이 완료되었습니다.", blocks: [{ type: "markdown", markdown: `${title}이(가) 생성되었습니다.` }] };
+        const key = args.purpose === "video" ? "video" : "audio";
+        return { output_text: JSON.stringify(blockJson), raw: initial.json, content: { ...blockJson, [key]: { mime, data_url: dataUrl }, raw: initial.json } };
+    }
+    const json = initial.json;
+    if (resultType === "text") {
+        const textPath = pickString(extract, "text_path");
+        const textVal = textPath ? getByPath(json, textPath) : undefined;
+        const output_text = typeof textVal === "string" ? textVal : JSON.stringify(textVal ?? json);
+        return { output_text, raw: json, content: { output_text, raw: json } };
+    }
+    if (resultType === "image_urls") {
+        const urlsPath = pickString(extract, "urls_path");
+        const val = urlsPath ? getByPath(json, urlsPath) : [];
+        const urls = Array.isArray(val) ? val.map((v) => (typeof v === "string" ? v : "")).filter(Boolean) : [];
+        const blocks = urls.length
+            ? urls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
+            : [{ type: "markdown", markdown: "이미지 생성 결과를 받지 못했습니다." }];
+        const blockJson = { title: "이미지 생성", summary: "요청한 이미지 생성 결과입니다.", blocks };
+        return { output_text: JSON.stringify(blockJson), raw: json, content: { ...blockJson, images: urls.map((u) => ({ url: u })), raw: json } };
+    }
+    if (resultType === "audio_data_url") {
+        const dataUrlPath = pickString(extract, "data_url_path");
+        const val = dataUrlPath ? getByPath(json, dataUrlPath) : "";
+        const dataUrl = typeof val === "string" ? val : "";
+        const blockJson = {
+            title: args.purpose === "music" ? "음악 생성" : "오디오 생성",
+            summary: "오디오 생성이 완료되었습니다.",
+            blocks: [{ type: "markdown", markdown: "오디오가 생성되었습니다. (재생 UI는 Timeline에서 표시됩니다)" }],
+        };
+        return {
+            output_text: JSON.stringify(blockJson),
+            raw: json,
+            content: { ...blockJson, audio: { data_url: dataUrl }, raw: json },
+        };
+    }
+    // raw_json (or unknown)
+    const output_text = JSON.stringify(json);
+    return { output_text, raw: json, content: { output_text, raw: json } };
 }
 function matchCondition(cond, ctx) {
     if (!cond || typeof cond !== "object" || Array.isArray(cond))
@@ -174,20 +588,87 @@ async function appendMessage(args) {
         args.conversationId,
     ]);
     const nextOrder = Number(maxOrder.rows[0]?.max || 0) + 1;
+    const msgId = args.id ? String(args.id) : null;
     const r = await (0, db_1.query)(`
-    INSERT INTO model_messages (conversation_id, role, content, content_text, summary, message_order, metadata)
-    VALUES ($1,$2,$3::jsonb,$4,$5,$6,$7::jsonb)
+    INSERT INTO model_messages (id, conversation_id, role, content, content_text, summary, message_order, metadata)
+    VALUES (COALESCE($1::uuid, uuid_generate_v4()), $2,$3,$4::jsonb,$5,$6,$7,$8::jsonb)
     RETURNING id, message_order
     `, [
+        msgId,
         args.conversationId,
         args.role,
         JSON.stringify(args.content),
         args.contentText || null,
         args.summary,
         nextOrder,
-        JSON.stringify({ model: args.modelApiId, provider_slug: args.providerSlug, provider_key: args.providerKey }),
+        JSON.stringify({
+            model: args.modelApiId,
+            provider_slug: args.providerSlug,
+            provider_key: args.providerKey,
+            provider_logo_key: args.providerLogoKey,
+        }),
     ]);
     return { id: String(r.rows[0].id), message_order: Number(r.rows[0].message_order) };
+}
+function isRecord(v) {
+    return Boolean(v) && typeof v === "object" && !Array.isArray(v);
+}
+function stripRawForDb(content) {
+    if ("raw" in content) {
+        // avoid persisting huge provider payloads (often includes base64)
+        delete content.raw;
+    }
+}
+function rewriteContentWithAssetUrls(content) {
+    const out = { ...content };
+    stripRawForDb(out);
+    const assets = [];
+    // images[]
+    const imagesVal = out.images;
+    if (Array.isArray(imagesVal)) {
+        const imgs = imagesVal.map((it) => (isRecord(it) ? { ...it } : null));
+        const nextImgs = [];
+        for (let i = 0; i < imgs.length; i++) {
+            const rec = imgs[i];
+            if (!rec)
+                continue;
+            const url = typeof rec.url === "string" ? String(rec.url) : "";
+            if (url.startsWith("data:image/")) {
+                const assetId = (0, mediaAssetsService_1.newAssetId)();
+                const assetUrl = `/api/ai/media/assets/${assetId}`;
+                assets.push({ assetId, kind: "image", dataUrl: url, index: i });
+                nextImgs.push({ ...rec, url: assetUrl, asset_id: assetId });
+            }
+            else if (url) {
+                nextImgs.push(rec);
+            }
+        }
+        out.images = nextImgs;
+        // If blocks look like our image-only blocks, rebuild them from image URLs for consistency.
+        const blocksVal = out.blocks;
+        const blocks = Array.isArray(blocksVal) ? blocksVal : null;
+        const allImgMarkdown = blocks &&
+            blocks.length === nextImgs.length &&
+            blocks.every((b) => isRecord(b) && b.type === "markdown" && typeof b.markdown === "string" && String(b.markdown).startsWith("![image]("));
+        if (allImgMarkdown) {
+            out.blocks = nextImgs.map((im) => ({ type: "markdown", markdown: `![image](${String(im.url || "")})` }));
+        }
+    }
+    // audio/video: keep field name `data_url` but store a normal URL
+    for (const k of ["audio", "video"]) {
+        const obj = out[k];
+        if (!isRecord(obj))
+            continue;
+        const du = typeof obj.data_url === "string" ? String(obj.data_url) : "";
+        if (!du.startsWith("data:"))
+            continue;
+        const kind = k === "audio" ? "audio" : "video";
+        const assetId = (0, mediaAssetsService_1.newAssetId)();
+        const assetUrl = `/api/ai/media/assets/${assetId}`;
+        assets.push({ assetId, kind, dataUrl: du, index: 0 });
+        out[k] = { ...obj, data_url: assetUrl, asset_id: assetId };
+    }
+    return { content: out, assets };
 }
 async function loadHistory(args) {
     const conv = await (0, db_1.query)(`SELECT conversation_summary, conversation_summary_updated_at, conversation_summary_tokens
@@ -203,7 +684,16 @@ async function loadHistory(args) {
     const shortText = shortRows
         .map((m) => {
         const role = String(m.role || "");
-        const t = (typeof m.content_text === "string" && m.content_text.trim()) ? String(m.content_text) : extractTextFromJsonContent(m.content);
+        let t = typeof m.content_text === "string" && m.content_text.trim()
+            ? String(m.content_text)
+            : extractTextFromJsonContent(m.content);
+        // Guardrail: never inject massive blobs (e.g., base64 data URLs) into history.
+        // This can explode context length and break chat.
+        if (t.startsWith("data:") || t.includes("data:image/") || t.includes("base64,")) {
+            t = extractTextFromJsonContent(m.content) || "[media]";
+        }
+        if (t.length > 4000)
+            t = `${t.slice(0, 4000)}…`;
         return `${role}: ${t}`;
     })
         .join("\n");
@@ -224,7 +714,8 @@ async function getConversationContext(req, res) {
     try {
         const userId = req.userId;
         const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
-        const conversationId = String(req.params?.id || "").trim();
+        const params = (req.params || {});
+        const conversationId = String(params.id || "").trim();
         if (!isUuid(conversationId))
             return res.status(400).json({ message: "Invalid conversation id" });
         const ok = await ensureConversationOwned({ tenantId, userId, conversationId });
@@ -237,7 +728,9 @@ async function getConversationContext(req, res) {
        ORDER BY message_order DESC
        LIMIT 16`, [conversationId]);
         const shortRows = (short.rows || []).slice().reverse().map((m) => {
-            const text = (typeof m.content_text === "string" && m.content_text.trim()) ? String(m.content_text) : extractTextFromJsonContent(m.content);
+            const text = typeof m.content_text === "string" && m.content_text.trim()
+                ? String(m.content_text)
+                : extractTextFromJsonContent(m.content);
             return {
                 id: String(m.id),
                 role: String(m.role || ""),
@@ -292,7 +785,8 @@ async function getConversationContext(req, res) {
     }
     catch (e) {
         console.error("getConversationContext error:", e);
-        return res.status(500).json({ message: "Failed to get conversation context", details: String(e?.message || e) });
+        const msg = e instanceof Error ? e.message : String(e);
+        return res.status(500).json({ message: "Failed to get conversation context", details: msg });
     }
 }
 async function chatRun(req, res) {
@@ -320,7 +814,7 @@ async function chatRun(req, res) {
         let chosenModelDbId = null;
         // if client specifies explicit model_api_id + provider_id, try to resolve that exact model first
         if (model_api_id && provider_id && isUuid(String(provider_id))) {
-            const exact = await (0, db_1.query)(`SELECT id FROM ai_models WHERE provider_id = $1 AND model_id = $2 AND status='active' AND is_available=TRUE LIMIT 1`, [String(provider_id), String(model_api_id)]);
+            const exact = await (0, db_1.query)(`SELECT id FROM ai_models WHERE provider_id = $1 AND model_id = $2 AND status='active' AND is_available=TRUE LIMIT 1`, [String(provider_id), String(model_api_id).trim()]);
             if (exact.rows.length > 0)
                 chosenModelDbId = String(exact.rows[0].id);
         }
@@ -335,9 +829,16 @@ async function chatRun(req, res) {
           AND m.status = 'active'
           AND m.is_available = TRUE
         LIMIT 1
-        `, [String(provider_slug).trim(), String(model_api_id)]);
+        `, [String(provider_slug).trim(), String(model_api_id).trim()]);
             if (exact.rows.length > 0)
                 chosenModelDbId = String(exact.rows[0].id);
+        }
+        // fallback: if explicit provider lookup failed, try to find ANY active model with this model_api_id
+        // (ignores provider mismatch if model ID is unique/valid)
+        if (!chosenModelDbId && model_api_id) {
+            const anyMatch = await (0, db_1.query)(`SELECT id FROM ai_models WHERE model_id = $1 AND status='active' AND is_available=TRUE ORDER BY is_default DESC, sort_order ASC LIMIT 1`, [String(model_api_id).trim()]);
+            if (anyMatch.rows.length > 0)
+                chosenModelDbId = String(anyMatch.rows[0].id);
         }
         const effectiveLang = requestedLang || detectedLang || sessionLang || "ko";
         if (!chosenModelDbId) {
@@ -360,6 +861,7 @@ async function chatRun(req, res) {
         p.id AS provider_id,
         p.provider_family,
         p.slug AS provider_slug,
+        p.logo_key AS provider_logo_key,
         p.product_name AS provider_product_name,
         p.description AS provider_description
       FROM ai_models m
@@ -429,24 +931,16 @@ async function chatRun(req, res) {
         const safeMaxTokens = modelMaxOut ? clampInt(maxTokensRequested, 16, Math.max(16, modelMaxOut)) : maxTokensRequested;
         // 7) 최종 request body 생성 + provider call
         const providerId = String(row.provider_id);
-        const auth = await (0, providerClients_1.getProviderAuth)(providerId);
         const base = await (0, providerClients_1.getProviderBase)(providerId);
         const providerKey = String(row.provider_family || row.provider_slug || "").trim().toLowerCase();
         const modelApiId = String(row.model_api_id || "");
-        // For now: only text/chat execution is implemented.
-        if (mt !== "text") {
-            return res.status(400).json({
-                message: `Not implemented for model_type=${mt}`,
-                details: "Only text/chat is implemented in chatRun currently. Options payload is accepted but not executed yet.",
-                conversation_id: convId,
-                chosen: {
-                    provider_product_name: String(row.provider_product_name || ""),
-                    provider_description: String(row.provider_description || ""),
-                    provider_key: providerKey,
-                    model_api_id: modelApiId,
-                },
-            });
-        }
+        // Prefer DB-provided logo_key; if missing, derive a safe default that matches `providerLogoRegistry.tsx` keys.
+        const providerLogoKeyRaw = typeof row.provider_logo_key === "string" && row.provider_logo_key.trim() ? row.provider_logo_key.trim() : null;
+        const providerSlugLower = String(row.provider_slug || "").trim().toLowerCase();
+        const providerLogoKey = providerLogoKeyRaw ||
+            (providerKey === "openai" || providerSlugLower.startsWith("openai") ? "chatgpt" : null) ||
+            (providerKey === "google" || providerSlugLower.startsWith("google") ? "gemini" : null) ||
+            (providerKey === "anthropic" || providerSlugLower.startsWith("anthropic") ? "claude" : null);
         // language instruction (server-level)
         const langInstruction = finalLang ? `\n\n(출력 언어: ${finalLang})` : "";
         const input = [
@@ -457,37 +951,149 @@ async function chatRun(req, res) {
         ]
             .filter(Boolean)
             .join("\n\n");
-        let out;
-        if (providerKey === "openai") {
-            out = await (0, providerClients_1.openaiSimulateChat)({
-                apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-                apiKey: auth.apiKey,
-                model: modelApiId,
-                input,
-                maxTokens: safeMaxTokens,
-                templateBody: injectedTemplate || undefined,
-                responseSchema,
-            });
+        let out = null;
+        // ✅ DB-driven execution: if a model_api_profile exists for this provider/purpose, try it first.
+        // Safe rollout: if profile is missing or fails, we fall back to the existing provider_family-specific code.
+        const purpose = (mt === "text" ? "chat" : mt);
+        let usedProfileKey = null;
+        try {
+            const profile = await loadModelApiProfile({ tenantId, providerId, modelDbId: chosenModelDbId, purpose });
+            if (profile) {
+                usedProfileKey = profile.profile_key;
+                const auth = await (0, authProfilesService_1.resolveAuthForModelApiProfile)({ providerId, authProfileId: profile.auth_profile_id });
+                out = await executeHttpJsonProfile({
+                    apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                    apiKey: auth.apiKey,
+                    accessToken: auth.accessToken,
+                    modelApiId,
+                    purpose,
+                    prompt,
+                    input,
+                    language: finalLang,
+                    maxTokens: safeMaxTokens,
+                    history,
+                    options: options || {},
+                    injectedTemplate,
+                    profile,
+                    configVars: auth.configVars,
+                });
+            }
         }
-        else if (providerKey === "anthropic") {
-            out = await (0, providerClients_1.anthropicSimulateChat)({
-                apiKey: auth.apiKey,
-                model: modelApiId,
-                input,
-                maxTokens: safeMaxTokens,
-            });
+        catch (e) {
+            console.warn("[model_api_profiles] execution failed -> fallback:", usedProfileKey, e);
+            out = null;
         }
-        else if (providerKey === "google") {
-            out = await (0, providerClients_1.googleSimulateChat)({
-                apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-                apiKey: auth.apiKey,
-                model: modelApiId,
-                input,
-                maxTokens: safeMaxTokens,
-            });
-        }
-        else {
-            return res.status(400).json({ message: `Unsupported provider_family/provider_slug: ${providerKey}` });
+        if (out == null) {
+            const auth = await (0, authProfilesService_1.resolveAuthForModelApiProfile)({ providerId, authProfileId: null });
+            // Fallback: 기존 provider별 하드코딩 실행기
+            if (mt === "text") {
+                if (providerKey === "openai") {
+                    const r = await (0, providerClients_1.openaiSimulateChat)({
+                        apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                        apiKey: auth.apiKey,
+                        model: modelApiId,
+                        input,
+                        maxTokens: safeMaxTokens,
+                        templateBody: injectedTemplate || undefined,
+                        responseSchema,
+                    });
+                    out = { ...r, content: { output_text: r.output_text, raw: r.raw } };
+                }
+                else if (providerKey === "anthropic") {
+                    const r = await (0, providerClients_1.anthropicSimulateChat)({
+                        apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                        apiKey: auth.apiKey,
+                        model: modelApiId,
+                        input,
+                        maxTokens: safeMaxTokens,
+                        templateBody: injectedTemplate || undefined,
+                    });
+                    out = { ...r, content: { output_text: r.output_text, raw: r.raw } };
+                }
+                else if (providerKey === "google") {
+                    const r = await (0, providerClients_1.googleSimulateChat)({
+                        apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                        apiKey: auth.apiKey,
+                        model: modelApiId,
+                        input,
+                        maxTokens: safeMaxTokens,
+                        templateBody: injectedTemplate || undefined,
+                    });
+                    out = { ...r, content: { output_text: r.output_text, raw: r.raw } };
+                }
+                else {
+                    return res.status(400).json({ message: `Unsupported provider_family/provider_slug: ${providerKey}` });
+                }
+            }
+            else if (mt === "image") {
+                if (providerKey !== "openai") {
+                    return res.status(400).json({ message: `Image is not supported for provider=${providerKey} yet.` });
+                }
+                const n = typeof options?.n === "number" ? clampInt(options.n, 1, 10) : 1;
+                const size = typeof options?.size === "string" ? options.size : undefined;
+                const quality = typeof options?.quality === "string" ? options.quality : undefined;
+                const style = typeof options?.style === "string" ? options.style : undefined;
+                const background = typeof options?.background === "string" ? options.background : undefined;
+                const r = await (0, providerClients_1.openaiGenerateImage)({
+                    apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                    apiKey: auth.apiKey,
+                    model: modelApiId,
+                    prompt,
+                    n,
+                    size,
+                    quality,
+                    style,
+                    background,
+                });
+                // Prefer real URLs; if API returns base64 only, fall back to data URLs.
+                const sourceUrls = (r.urls && r.urls.length ? r.urls : r.data_urls) || [];
+                const blocks = sourceUrls.length
+                    ? sourceUrls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
+                    : [{ type: "markdown", markdown: "이미지 생성 결과를 받지 못했습니다." }];
+                const blockJson = { title: "이미지 생성", summary: "요청한 이미지 생성 결과입니다.", blocks };
+                out = {
+                    output_text: JSON.stringify(blockJson),
+                    raw: { provider: "openai", kind: "image", model: modelApiId, count: sourceUrls.length },
+                    content: { ...blockJson, images: sourceUrls.map((u) => ({ url: u })), raw: { provider: "openai", kind: "image", model: modelApiId, count: sourceUrls.length } },
+                };
+            }
+            else if (mt === "audio" || mt === "music") {
+                if (providerKey !== "openai") {
+                    return res.status(400).json({ message: `${mt} is not supported for provider=${providerKey} yet.` });
+                }
+                const voice = typeof options?.voice === "string" ? options.voice : undefined;
+                const formatRaw = typeof options?.format === "string" ? options.format.trim().toLowerCase() : "";
+                const format = isAudioFormat(formatRaw) ? formatRaw : "mp3";
+                const speed = typeof options?.speed === "number" ? options.speed : undefined;
+                const r = await (0, providerClients_1.openaiTextToSpeech)({
+                    apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                    apiKey: auth.apiKey,
+                    model: modelApiId,
+                    input: prompt,
+                    voice,
+                    format,
+                    speed,
+                });
+                const blockJson = {
+                    title: mt === "music" ? "음악 생성" : "오디오 생성",
+                    summary: "오디오 생성이 완료되었습니다.",
+                    blocks: [{ type: "markdown", markdown: "오디오가 생성되었습니다. (재생 UI는 Timeline에서 표시됩니다)" }],
+                };
+                out = {
+                    output_text: JSON.stringify(blockJson),
+                    raw: r.raw,
+                    content: { ...blockJson, audio: { mime: r.mime, data_url: r.data_url }, raw: r.raw },
+                };
+            }
+            else if (mt === "video") {
+                return res.status(400).json({
+                    message: "Video is not implemented yet.",
+                    details: "현재 프로젝트에는 video 생성용 provider client(예: Runway/Pika/Sora)가 아직 없습니다. 어떤 provider_family/endpoint를 사용할지 알려주시면 연동을 구현할 수 있습니다.",
+                });
+            }
+            else {
+                return res.status(400).json({ message: `Unsupported model_type=${mt}` });
+            }
         }
         // persist messages (user + assistant)
         await appendMessage({
@@ -499,17 +1105,54 @@ async function chatRun(req, res) {
             modelApiId,
             providerSlug: String(row.provider_slug || ""),
             providerKey: providerKey,
+            providerLogoKey,
         });
+        // Assetize media fields (image/audio/video data URLs) before persisting assistant message.
+        const assistantMessageId = crypto_1.default.randomUUID();
+        const rewritten = rewriteContentWithAssetUrls(out.content);
+        // Use a safe, compact content_text for history/context (avoid huge JSON / base64).
+        const title = typeof rewritten.content.title === "string" ? rewritten.content.title : "";
+        const summary = typeof rewritten.content.summary === "string" ? rewritten.content.summary : "";
+        const imgCount = Array.isArray(rewritten.content.images) ? rewritten.content.images.length : 0;
+        const hasAudio = isRecord(rewritten.content.audio);
+        const hasVideo = isRecord(rewritten.content.video);
+        const contentTextForHistory = title || summary
+            ? `${title || ""}${title && summary ? " - " : ""}${summary || ""}`.slice(0, 4000)
+            : imgCount
+                ? `이미지 생성 (${imgCount}장)`
+                : hasAudio
+                    ? "오디오 생성"
+                    : hasVideo
+                        ? "비디오 생성"
+                        : String(out.output_text || "").slice(0, 4000);
         await appendMessage({
+            id: assistantMessageId,
             conversationId: convId,
             role: "assistant",
-            content: { output_text: out.output_text, raw: out.raw },
-            contentText: String(out.output_text || ""),
+            content: rewritten.content,
+            contentText: contentTextForHistory,
             summary: null,
             modelApiId,
             providerSlug: String(row.provider_slug || ""),
             providerKey: providerKey,
+            providerLogoKey,
         });
+        // Persist assets (FK requires message row exists).
+        for (const a of rewritten.assets) {
+            await (0, mediaAssetsService_1.storeImageDataUrlAsAsset)({
+                tenantId,
+                userId: userId || null,
+                conversationId: convId,
+                messageId: assistantMessageId,
+                assetId: a.assetId,
+                dataUrl: a.dataUrl,
+                index: a.index,
+                kind: a.kind,
+            });
+        }
+        // Return rewritten (assetized) content to the client as output_text too,
+        // so the frontend never receives base64 blobs in output_text.
+        out.output_text = JSON.stringify(rewritten.content);
         // best-effort: keep conversation model_id updated to last used model
         await (0, db_1.query)(`UPDATE model_conversations SET model_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [convId, chosenModelDbId]);
         return res.json({
@@ -530,6 +1173,7 @@ async function chatRun(req, res) {
     }
     catch (e) {
         console.error("chatRun error:", e);
-        return res.status(500).json({ message: "Failed to run chat", details: String(e?.message || e) });
+        const msg = e instanceof Error ? e.message : String(e);
+        return res.status(500).json({ message: "Failed to run chat", details: msg });
     }
 }

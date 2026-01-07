@@ -2,11 +2,14 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ensureAiAccessSchema = ensureAiAccessSchema;
 exports.ensureTimelineSchema = ensureTimelineSchema;
+exports.ensureMessageMediaAssetsSchema = ensureMessageMediaAssetsSchema;
 exports.ensureModelUsageLogsSchema = ensureModelUsageLogsSchema;
 exports.ensureModelRoutingRulesSchema = ensureModelRoutingRulesSchema;
 exports.ensurePromptTemplatesSchema = ensurePromptTemplatesSchema;
 exports.ensureResponseSchemasSchema = ensureResponseSchemasSchema;
 exports.ensurePromptSuggestionsSchema = ensurePromptSuggestionsSchema;
+exports.ensureModelApiProfilesSchema = ensureModelApiProfilesSchema;
+exports.ensureProviderAuthProfilesSchema = ensureProviderAuthProfilesSchema;
 const db_1 = require("../config/db");
 const systemTenantService_1 = require("./systemTenantService");
 // ⚠️ 운영에서는 별도의 마이그레이션 도구를 사용하는 것을 권장합니다.
@@ -547,6 +550,51 @@ async function ensureTimelineSchema() {
   `);
 }
 /**
+ * 메시지 첨부 미디어 자산(message_media_assets)
+ * - base64(data URL) 직접 저장을 피하고, 외부 스토리지로 분리하기 위한 메타 테이블
+ * - v1 단계에서는 "db_proxy" 전략(서버가 DB에서 원본을 읽어 proxy 서빙)을 지원하고,
+ *   이후 media-service + object storage(S3/GCS/R2)로 자연스럽게 확장 가능
+ */
+async function ensureMessageMediaAssetsSchema() {
+    await (0, db_1.query)(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
+    await (0, db_1.query)(`
+    CREATE TABLE IF NOT EXISTS message_media_assets (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+      conversation_id UUID NOT NULL REFERENCES model_conversations(id) ON DELETE CASCADE,
+      message_id UUID NOT NULL REFERENCES model_messages(id) ON DELETE CASCADE,
+
+      kind VARCHAR(30) NOT NULL CHECK (kind IN ('image','audio','video','file')),
+      mime VARCHAR(120),
+      bytes BIGINT,
+      sha256 VARCHAR(64),
+
+      status VARCHAR(30) NOT NULL DEFAULT 'stored' CHECK (status IN ('pending','stored','failed')),
+
+      storage_provider VARCHAR(30) NOT NULL DEFAULT 'db_proxy' CHECK (storage_provider IN ('db_proxy','local_fs','s3','gcs','r2','http')),
+      storage_bucket VARCHAR(255),
+      storage_key VARCHAR(1000),
+      public_url TEXT,
+      is_private BOOLEAN NOT NULL DEFAULT TRUE,
+      expires_at TIMESTAMP WITH TIME ZONE,
+
+      width INTEGER,
+      height INTEGER,
+      duration_ms INTEGER,
+
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_message_media_assets_tenant ON message_media_assets(tenant_id);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_message_media_assets_message ON message_media_assets(message_id);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_message_media_assets_conversation ON message_media_assets(conversation_id, created_at DESC);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_message_media_assets_kind ON message_media_assets(kind);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_message_media_assets_sha256 ON message_media_assets(sha256);`);
+}
+/**
  * Model usage logs schema
  * - Admin "모델 사용 로그"에서 조회하는 테이블을 서비스 부팅 시 보장합니다.
  * - 본 프로젝트의 공식 스키마(document/schema_models.sql)의 일부를 필요한 최소 형태로 반영합니다.
@@ -986,4 +1034,73 @@ async function ensurePromptSuggestionsSchema() {
     await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_prompt_suggestions_tenant_active ON prompt_suggestions(tenant_id, is_active, sort_order);`);
     await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_prompt_suggestions_model ON prompt_suggestions(model_id);`);
     await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_prompt_suggestions_model_type ON prompt_suggestions(model_type);`);
+}
+/**
+ * Model API Profiles schema
+ * - Provider/모달리티별 호출/응답 매핑을 DB에서 관리합니다.
+ * - 최소 스펙 표준안: document/model_api_profiles_standard.md
+ */
+async function ensureModelApiProfilesSchema() {
+    await (0, db_1.query)(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
+    await (0, db_1.query)(`
+    CREATE TABLE IF NOT EXISTS model_api_profiles (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      provider_id UUID NOT NULL REFERENCES ai_providers(id) ON DELETE CASCADE,
+      model_id UUID REFERENCES ai_models(id) ON DELETE SET NULL,
+      profile_key VARCHAR(120) NOT NULL,
+      purpose VARCHAR(50) NOT NULL CHECK (purpose IN ('chat','image','video','audio','music','multimodal','embedding','code')),
+      auth_profile_id UUID NULL,
+      transport JSONB NOT NULL,
+      response_mapping JSONB NOT NULL,
+      workflow JSONB NOT NULL DEFAULT '{}'::jsonb,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (tenant_id, provider_id, profile_key)
+    );
+  `);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_api_profiles_tenant_provider_purpose ON model_api_profiles(tenant_id, provider_id, purpose, is_active);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_api_profiles_model_id ON model_api_profiles(model_id);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_api_profiles_profile_key ON model_api_profiles(tenant_id, profile_key);`);
+}
+/**
+ * Provider auth profiles schema
+ * - provider_api_credentials 위에 "인증 방식"을 추상화합니다.
+ * - v1: api_key / oauth2_service_account(google vertex)
+ */
+async function ensureProviderAuthProfilesSchema() {
+    await (0, db_1.query)(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
+    await (0, db_1.query)(`
+    CREATE TABLE IF NOT EXISTS provider_auth_profiles (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      provider_id UUID NOT NULL REFERENCES ai_providers(id) ON DELETE CASCADE,
+      profile_key VARCHAR(100) NOT NULL,
+      auth_type VARCHAR(50) NOT NULL CHECK (auth_type IN ('api_key', 'oauth2_service_account', 'aws_sigv4', 'azure_ad')),
+      credential_id UUID NOT NULL REFERENCES provider_api_credentials(id) ON DELETE RESTRICT,
+      config JSONB NOT NULL DEFAULT '{}'::jsonb,
+      token_cache_key VARCHAR(255),
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (tenant_id, provider_id, profile_key)
+    );
+  `);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_provider_auth_profiles_tenant_provider_active ON provider_auth_profiles(tenant_id, provider_id, is_active);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_provider_auth_profiles_credential_id ON provider_auth_profiles(credential_id);`);
+    // model_api_profiles.auth_profile_id FK (idempotent)
+    await (0, db_1.query)(`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='model_api_profiles')
+      AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='provider_auth_profiles')
+      AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_model_api_profiles_auth_profile_id')
+      THEN
+        ALTER TABLE model_api_profiles
+        ADD CONSTRAINT fk_model_api_profiles_auth_profile_id
+        FOREIGN KEY (auth_profile_id) REFERENCES provider_auth_profiles(id) ON DELETE SET NULL;
+      END IF;
+    END $$;
+  `);
 }

@@ -1,4 +1,4 @@
-import { Router } from "express"
+import express from "express"
 import {
   createPromptSuggestion,
   deletePromptSuggestion,
@@ -7,7 +7,7 @@ import {
   updatePromptSuggestion,
 } from "../controllers/promptSuggestionsController"
 
-const router = Router()
+const router = express.Router()
 
 router.get("/", listPromptSuggestions)
 router.get("/:id", getPromptSuggestion)

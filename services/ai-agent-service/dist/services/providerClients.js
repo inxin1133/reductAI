@@ -1,5 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.openaiGenerateImage = openaiGenerateImage;
+exports.openaiTextToSpeech = openaiTextToSpeech;
 exports.getProviderAuth = getProviderAuth;
 exports.getProviderBase = getProviderBase;
 exports.openaiListModels = openaiListModels;
@@ -10,6 +12,21 @@ exports.anthropicSimulateChat = anthropicSimulateChat;
 const db_1 = require("../config/db");
 const systemTenantService_1 = require("./systemTenantService");
 const cryptoService_1 = require("./cryptoService");
+function deepMerge(a, b) {
+    // b wins. arrays are replaced.
+    if (Array.isArray(a) || Array.isArray(b))
+        return b ?? a;
+    if (!a || typeof a !== "object")
+        return b;
+    if (!b || typeof b !== "object")
+        return b;
+    const out = { ...a };
+    for (const [k, v] of Object.entries(b)) {
+        const av = out[k];
+        out[k] = deepMerge(av, v);
+    }
+    return out;
+}
 function openAiBlockJsonSchema() {
     // LLM block response schema (server-level enforcement)
     return {
@@ -105,6 +122,123 @@ function normalizeOpenAiBaseUrl(input) {
         return cleaned;
     }
 }
+async function openaiGenerateImage(args) {
+    const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl);
+    const base = normalized || "https://api.openai.com/v1";
+    const apiRoot = base.replace(/\/$/, "");
+    // NOTE:
+    // Some environments/providers (or newer OpenAI image endpoints) reject `response_format`.
+    // We prefer URLs when possible, but must be robust.
+    const bodyWithResponseFormat = {
+        model: args.model,
+        prompt: args.prompt,
+        response_format: "url",
+    };
+    if (Number.isFinite(args.n))
+        bodyWithResponseFormat.n = args.n;
+    if (typeof args.size === "string" && args.size.trim()) {
+        // Normalize common UI variants: "256*256" or "256×256" -> "256x256"
+        const normalizedSize = args.size.trim().replace(/[×*]/g, "x");
+        bodyWithResponseFormat.size = normalizedSize;
+    }
+    if (typeof args.quality === "string" && args.quality.trim())
+        bodyWithResponseFormat.quality = args.quality.trim();
+    if (typeof args.style === "string" && args.style.trim())
+        bodyWithResponseFormat.style = args.style.trim();
+    if (typeof args.background === "string" && args.background.trim())
+        bodyWithResponseFormat.background = args.background.trim();
+    const bodyNoResponseFormat = { ...bodyWithResponseFormat };
+    delete bodyNoResponseFormat.response_format;
+    const retryableUnknownParams = new Set(["response_format", "style", "quality", "background"]);
+    async function post(body) {
+        const res = await fetch(`${apiRoot}/images/generations`, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${args.apiKey}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(body),
+        });
+        const json = await res.json().catch(() => ({}));
+        return { res, json };
+    }
+    // 1) Try with response_format=url for best compatibility with our URL renderer.
+    // 2) If API rejects an optional param as unknown, retry by removing it (up to a few attempts).
+    let r = await post(bodyWithResponseFormat);
+    let bodyToRetry = null;
+    for (let attempt = 0; attempt < 4 && !r.res.ok; attempt++) {
+        const msg = r.json?.error?.message;
+        const param = r.json?.error?.param;
+        const isUnknown = r.res.status === 400 &&
+            typeof msg === "string" &&
+            msg.toLowerCase().includes("unknown parameter") &&
+            typeof param === "string" &&
+            retryableUnknownParams.has(param);
+        if (!isUnknown)
+            break;
+        // first fallback: drop response_format if that's the issue
+        if (param === "response_format") {
+            bodyToRetry = { ...bodyNoResponseFormat };
+        }
+        else {
+            bodyToRetry = { ...(bodyToRetry || bodyWithResponseFormat) };
+            delete bodyToRetry[param];
+            // also drop response_format if we haven't already, since some environments reject it too
+            delete bodyToRetry.response_format;
+        }
+        r = await post(bodyToRetry);
+    }
+    if (!r.res.ok) {
+        throw new Error(`OPENAI_IMAGE_FAILED_${r.res.status}@${apiRoot}:${JSON.stringify(r.json)}`);
+    }
+    const json = r.json;
+    const data = Array.isArray(json?.data) ? json.data : [];
+    const urls = data.map((d) => (typeof d?.url === "string" ? d.url : "")).filter(Boolean);
+    const b64 = data.map((d) => (typeof d?.b64_json === "string" ? d.b64_json : "")).filter(Boolean);
+    // If the API returns base64 only, convert it to data URLs so the frontend can render without saving files.
+    // OpenAI image generations commonly return PNG bytes; default to image/png if unknown.
+    const data_urls = b64.map((s) => `data:image/png;base64,${s}`);
+    return { raw: json, urls, b64, data_urls };
+}
+async function openaiTextToSpeech(args) {
+    const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl);
+    const base = normalized || "https://api.openai.com/v1";
+    const apiRoot = base.replace(/\/$/, "");
+    const fmt = (args.format || "mp3").toLowerCase();
+    const body = {
+        model: args.model,
+        input: args.input,
+        voice: (args.voice || "alloy").toString(),
+        format: fmt,
+    };
+    if (typeof args.speed === "number" && Number.isFinite(args.speed))
+        body.speed = args.speed;
+    const res = await fetch(`${apiRoot}/audio/speech`, {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${args.apiKey}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(`OPENAI_TTS_FAILED_${res.status}@${apiRoot}:${errText}`);
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    const b64 = buf.toString("base64");
+    const mime = fmt === "mp3"
+        ? "audio/mpeg"
+        : fmt === "wav"
+            ? "audio/wav"
+            : fmt === "aac"
+                ? "audio/aac"
+                : fmt === "flac"
+                    ? "audio/flac"
+                    : "audio/ogg";
+    const dataUrl = `data:${mime};base64,${b64}`;
+    return { raw: { mime, bytes: buf.length }, mime, data_url: dataUrl, base64: b64 };
+}
 // Google Gemini base URL 정규화
 // - 기본: https://generativelanguage.googleapis.com/v1beta
 // - 사용자가 /models/...:generateContent 같은 전체 엔드포인트를 넣어도 base까지만 잘라냅니다.
@@ -183,7 +317,7 @@ async function googleSimulateChat(args) {
     const base = normalized || "https://generativelanguage.googleapis.com/v1beta";
     const apiRoot = base.replace(/\/$/, "");
     const url = `${apiRoot}/models/${encodeURIComponent(args.model)}:generateContent`;
-    const body = {
+    const baseBody = {
         contents: [
             {
                 role: "user",
@@ -194,6 +328,7 @@ async function googleSimulateChat(args) {
             maxOutputTokens: args.maxTokens,
         },
     };
+    const body = args.templateBody && typeof args.templateBody === "object" ? deepMerge(args.templateBody, baseBody) : baseBody;
     const res = await fetch(url, {
         method: "POST",
         headers: {
@@ -454,22 +589,25 @@ async function openaiSimulateChat(args) {
     }
 }
 async function anthropicSimulateChat(args) {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+    const base = (args.apiBaseUrl || "https://api.anthropic.com/v1").replace(/\/+$/g, "");
+    const baseBody = {
+        model: args.model,
+        max_tokens: args.maxTokens,
+        messages: [{ role: "user", content: args.input }],
+    };
+    const body = args.templateBody && typeof args.templateBody === "object" ? deepMerge(args.templateBody, baseBody) : baseBody;
+    const res = await fetch(`${base}/messages`, {
         method: "POST",
         headers: {
             "x-api-key": args.apiKey,
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-            model: args.model,
-            max_tokens: args.maxTokens,
-            messages: [{ role: "user", content: args.input }],
-        }),
+        body: JSON.stringify(body),
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
-        throw new Error(`ANTHROPIC_SIMULATE_FAILED_${res.status}:${JSON.stringify(json)}`);
+        throw new Error(`ANTHROPIC_SIMULATE_FAILED_${res.status}@${base}:${JSON.stringify(json)}`);
     }
     const text = json?.content?.[0]?.text ?? "";
     return { raw: json, output_text: text };

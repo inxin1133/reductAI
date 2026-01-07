@@ -1,4 +1,3 @@
-import { NextFunction, Request, Response } from "express"
 import jwt from "jsonwebtoken"
 
 // auth-service와 동일한 payload 형태를 가정합니다.
@@ -8,6 +7,14 @@ type AuthPayload = {
   userId?: string
   email?: string
 }
+
+// NOTE:
+// This project intentionally avoids importing Express type-only exports like NextFunction/Router
+// because some TS configs treat them as non-existent named exports.
+// If you want strict Express typing later, prefer enabling/adding the proper type deps and tsconfig.
+type Request = any
+type Response = any
+type NextFunction = any
 
 export type AuthedRequest = Request & {
   userId: string

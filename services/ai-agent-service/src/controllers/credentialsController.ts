@@ -60,7 +60,7 @@ export async function getCredentials(req: Request, res: Response) {
       params
     )
 
-    const rows = result.rows.map((r) => ({
+    const rows = result.rows.map((r: any) => ({
       ...r,
       api_key_masked: maskedFromLast4(r.api_key_last4),
     }))

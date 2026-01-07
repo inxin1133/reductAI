@@ -7,7 +7,7 @@ const router = express.Router()
 // Media endpoints are consumed by <img>/<audio>/<video> tags.
 // Those requests cannot attach Authorization headers when JWT is stored in localStorage.
 // So we accept a fallback `?token=` query param ONLY for this media router.
-router.use((req, res, next) => {
+router.use((req: any, res: any, next: any) => {
   const header = String(req.headers.authorization || "")
   const m = header.match(/^Bearer\s+(.+)$/i)
   const headerToken = m?.[1]

@@ -55,7 +55,7 @@ app.use("/api/ai/prompt-suggestions", promptSuggestionsRoutes)
 app.use("/api/ai/model-api-profiles", modelApiProfilesRoutes)
 app.use("/api/ai/provider-auth-profiles", providerAuthProfilesRoutes)
 
-app.get("/health", (_req, res) => {
+app.get("/health", (_req: any, res: any) => {
   res.json({ status: "ok", service: "ai-agent-service" })
 })
 

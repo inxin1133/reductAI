@@ -16,4 +16,6 @@ router.patch("/threads/:id", timelineController_1.updateThreadTitle);
 // messages
 router.get("/threads/:id/messages", timelineController_1.listMessages);
 router.post("/threads/:id/messages", timelineController_1.addMessage);
+// media proxy (prevents huge base64 payloads in listMessages)
+router.get("/threads/:id/messages/:messageId/media/:kind/:index", timelineController_1.getMessageMedia);
 exports.default = router;
