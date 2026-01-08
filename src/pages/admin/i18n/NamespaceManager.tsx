@@ -17,19 +17,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Plus, Pencil, Trash2, Loader2, Search } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
-import { useEffect as useEffectReact } from "react"
 
 // 네임스페이스 인터페이스 정의
 interface Namespace {
@@ -74,7 +66,9 @@ export default function NamespaceManager() {
   // 인증 헤더 가져오기
   const authHeaders = () => {
     const token = localStorage.getItem("token")
-    return token ? { Authorization: `Bearer ${token}` } : {}
+    const headers: Record<string, string> = {}
+    if (token) headers.Authorization = `Bearer ${token}`
+    return headers
   }
 
   // 초기 로딩 및 검색/페이지 변경 시 데이터 호출
@@ -123,7 +117,7 @@ export default function NamespaceManager() {
   }
 
   // 헤더 액션 버튼 설정 (추가 버튼)
-  useEffectReact(() => {
+  useEffect(() => {
     setAction(
       <Button onClick={handleCreate} size="sm">
         <Plus className="mr-2 h-4 w-4" /> 네임스페이스 추가

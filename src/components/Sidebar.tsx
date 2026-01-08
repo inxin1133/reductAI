@@ -289,7 +289,13 @@ export function Sidebar({ className }: SidebarProps) {
               </div>
               {isPersonalOpen && (
                 <>
-                  <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer">
+                  <div
+                    className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50"
+                    onClick={() => {
+                      setIsMobileMenuOpen(false)
+                      navigate("/posts/new/edit")
+                    }}
+                  >
                      <BookOpen className="size-5" />
                      <span className="text-base text-foreground">나의 페이지</span>
                   </div>
@@ -462,7 +468,10 @@ export function Sidebar({ className }: SidebarProps) {
              </div>
              {isPersonalOpen && (
                <>
-                 <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50">
+                 <div
+                   className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50"
+                   onClick={() => navigate("/posts/new/edit")}
+                 >
                     <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
                       <BookOpen className="size-full" />
                     </div>

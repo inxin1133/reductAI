@@ -10,6 +10,7 @@ import LanguageManager from "./pages/admin/i18n/LanguageManager";
 import NamespaceManager from "./pages/admin/i18n/NamespaceManager";
 import TranslationManager from "./pages/admin/i18n/TranslationManager";
 import TranslationHistoryPage from "./pages/admin/i18n/TranslationHistory";
+import PostEditorPage from "./pages/posts/PostEditorPage";
 
 import UserManager from "./pages/admin/users/UserManager";
 import RoleManager from "./pages/admin/users/RoleManager";
@@ -54,6 +55,14 @@ const router = createBrowserRouter([
       {
         path: "/timeline",
         element: <Timeline />,
+      },
+      {
+        path: "/posts/:id/edit",
+        element: <PostEditorPage />,
+      },
+      {
+        path: "/posts/new/edit",
+        element: <PostEditorPage />,
       },
       {
         path: "/admin/login",

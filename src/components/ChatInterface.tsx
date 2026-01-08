@@ -132,8 +132,6 @@ type LlmBlock =
   | { type: "code"; language: string; code: string }
   | { type: "table"; headers: string[]; rows: string[][] }
 
-type LlmBlockResponse = { title: string; summary: string; blocks: LlmBlock[] }
-
 function isRecord(v: unknown): v is Record<string, unknown> {
   return Boolean(v) && typeof v === "object" && !Array.isArray(v)
 }
@@ -576,7 +574,7 @@ export function ChatInterface({
           role: "assistant",
           content: parsed.displayText,
           contentJson: parsed.parsed ?? { text: outText },
-          summary: assistantSummary(parsed.parsed?.summary || outText),
+          summary: assistantSummary(typeof parsed.parsed?.summary === "string" ? parsed.parsed.summary : outText),
           providerSlug,
           model: chosenModel,
         })
