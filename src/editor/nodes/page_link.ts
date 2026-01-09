@@ -29,10 +29,11 @@ export const pageLinkNodeSpec: NodeSpec = {
         "data-page-id": pageId || "",
         "data-display": display || "link",
       },
+      // Step 4 요구사항: embed는 title만 렌더링 (콘텐츠/요약 포함 X)
       ["div", { class: "font-semibold", "data-role": "title" }, title || "Untitled page"],
-      display === "embed"
-        ? ["div", { class: "mt-1 text-xs text-muted-foreground", "data-role": "summary" }, "Preview (title + summary)"]
-        : ["div", { class: "mt-1 text-xs text-muted-foreground", "data-role": "hint" }, "Link"],
+      display === "link"
+        ? ["div", { class: "mt-1 text-xs text-muted-foreground", "data-role": "hint" }, "Link"]
+        : ["div", { class: "hidden", "data-role": "hint" }, ""],
     ]
   },
   parseDOM: [

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react"
-import { useNavigate, useParams } from "react-router-dom"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useLocation, useNavigate, useParams } from "react-router-dom"
 import { ProseMirrorEditor } from "../../components/post/ProseMirrorEditor"
-import { ChevronLeft, ChevronRight, FileText, Plus, RefreshCw, Save } from "lucide-react"
+import { ChevronDown, ChevronLeft, ChevronRight, FileText, Plus, RefreshCw, Save } from "lucide-react"
 
 import { AppShell } from "@/components/layout/AppShell"
 import { Button } from "@/components/ui/button"
@@ -31,6 +31,7 @@ type DocJson = unknown
 export default function PostEditorPage() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
   const rawId = id || ""
   const isNew = rawId === "new"
   const postId = rawId
@@ -43,16 +44,35 @@ export default function PostEditorPage() {
 
   const [navOpen, setNavOpen] = useState(true)
   const [myPages, setMyPages] = useState<MyPage[]>([])
+  const [pageTitle, setPageTitle] = useState<string>("")
+  const titleInputRef = useRef<HTMLInputElement | null>(null)
+  const [isDeletedPage, setIsDeletedPage] = useState(false)
 
-  const canSave = useMemo(() => !!postId && !!draftDocJson, [postId, draftDocJson])
+  const canSave = useMemo(() => !!postId && !isNew && !!draftDocJson, [postId, isNew, draftDocJson])
 
-  const sortPages = (pages: MyPage[]) =>
-    [...pages].sort((a, b) => {
-      const ao = Number(a.page_order || 0)
-      const bo = Number(b.page_order || 0)
+  // Autosave / safe navigation helpers
+  const draftRef = useRef<DocJson>(null)
+  const versionRef = useRef<number>(0)
+  const lastSavedRef = useRef<string>("")
+  const savingRef = useRef(false)
+  const pendingSaveRef = useRef(false)
+  const autoTimerRef = useRef<number | null>(null)
+  const navigatingRef = useRef<string | null>(null)
+  const [dirty, setDirty] = useState(false)
+
+  // IMPORTANT:
+  // Keep ordering stable and NOT dependent on title (renaming shouldn't reshuffle the tree).
+  // We currently rely on page_order only; when equal, preserve the existing order.
+  const sortPages = (pages: MyPage[]) => {
+    const indexed = pages.map((p, idx) => ({ p, idx }))
+    indexed.sort((a, b) => {
+      const ao = Number(a.p.page_order || 0)
+      const bo = Number(b.p.page_order || 0)
       if (ao !== bo) return ao - bo
-      return String(a.title || "").localeCompare(String(b.title || ""))
+      return a.idx - b.idx
     })
+    return indexed.map((x) => x.p)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -67,7 +87,7 @@ export default function PostEditorPage() {
 
         // Landing flow: /posts/new/edit
         // - If the user already has pages, open the topmost one.
-        // - Otherwise, create a new page and open it.
+        // - Otherwise, show empty state (user creates via +)
         if (isNew) {
           const pagesRes = await fetch(`/api/posts/mine`, { headers: authOnly })
           if (pagesRes.ok) {
@@ -85,18 +105,15 @@ export default function PostEditorPage() {
             }
           }
 
-          // no pages -> create a new one
-          const created = await fetch(`/api/posts`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...authOnly },
-            body: JSON.stringify({ title: "Untitled", page_type: "page", status: "draft", visibility: "private" }),
-          })
-          if (!created.ok) throw new Error(await created.text())
-          const pj = await created.json()
-          const newId = String(pj.id || "")
-          if (!newId) throw new Error("Failed to create post (missing id)")
-          if (cancelled) return
-          navigate(`/posts/${newId}/edit`, { replace: true })
+          // no pages -> empty state (no auto-create)
+          if (!cancelled) {
+            setInitialDocJson(null)
+            setDraftDocJson(null)
+            setServerVersion(0)
+            const s = JSON.stringify(null)
+            lastSavedRef.current = s
+            setDirty(false)
+          }
           return
         }
 
@@ -109,11 +126,21 @@ export default function PostEditorPage() {
 
         const r = await fetch(`/api/posts/${postId}/content`, { headers: authOnly })
         if (!r.ok) throw new Error(await r.text())
-        const json = await r.json()
+        const json: unknown = await r.json()
         if (cancelled) return
-        setServerVersion(Number(json.version || 0))
-        setInitialDocJson(json.docJson || null)
-        setDraftDocJson(json.docJson || null)
+        const j = json && typeof json === "object" ? (json as Record<string, unknown>) : {}
+        setServerVersion(Number(j.version || 0))
+        setInitialDocJson(j.docJson || null)
+        setDraftDocJson(j.docJson || null)
+        const title = typeof j.title === "string" && j.title.trim() ? j.title : "New page"
+        setPageTitle(title)
+        const status = typeof j.status === "string" ? j.status : ""
+        const deletedAt = j.deleted_at != null
+        setIsDeletedPage(status === "deleted" || deletedAt)
+        // reset autosave baseline
+        const s = JSON.stringify(j.docJson || null)
+        lastSavedRef.current = s
+        setDirty(false)
       } catch (e: unknown) {
         if (cancelled) return
         const msg = e instanceof Error ? e.message : "Failed to load"
@@ -129,29 +156,253 @@ export default function PostEditorPage() {
     }
   }, [postId, isNew, navigate])
 
-  async function save() {
-    if (!canSave) return
-    setError(null)
+  const saveNow = useCallback(async (args?: { silent?: boolean }): Promise<boolean> => {
+    if (!postId || !draftRef.current) return false
+    if (savingRef.current) {
+      pendingSaveRef.current = true
+      return false
+    }
+    savingRef.current = true
+    if (!args?.silent) setError(null)
     try {
       const authOnly: Record<string, string> = { ...authHeaders() }
       const r = await fetch(`/api/posts/${postId}/content`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authOnly },
-        body: JSON.stringify({ docJson: draftDocJson, version: serverVersion }),
+        body: JSON.stringify({ docJson: draftRef.current, version: versionRef.current }),
       })
       if (r.status === 409) {
         const j = await r.json().catch(() => ({}))
         setError(`Version conflict (server: ${j.currentVersion}). Reload and try again.`)
-        return
+        return false
       }
       if (!r.ok) throw new Error(await r.text())
       const j = await r.json()
-      setServerVersion(Number(j.version || serverVersion + 1))
+      const nextV = Number(j.version || versionRef.current + 1)
+      versionRef.current = nextV
+      setServerVersion(nextV)
+      lastSavedRef.current = JSON.stringify(draftRef.current || null)
+      setDirty(false)
+      return true
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to save"
       setError(msg)
+      return false
+    } finally {
+      savingRef.current = false
+      if (pendingSaveRef.current) {
+        pendingSaveRef.current = false
+        void saveNow({ silent: true })
+      }
     }
-  }
+  }, [postId])
+
+  // Title editing (debounced PATCH /api/posts/:id)
+  const titleTimerRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (isNew) return
+    if (!postId) return
+    const next = String(pageTitle || "").trim()
+    if (!next) return
+    if (titleTimerRef.current) window.clearTimeout(titleTimerRef.current)
+    titleTimerRef.current = window.setTimeout(() => {
+      titleTimerRef.current = null
+      const token = localStorage.getItem("token")
+      if (!token) return
+      void (async () => {
+        await fetch(`/api/posts/${postId}`, {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ title: next }),
+        })
+        window.dispatchEvent(new CustomEvent("reductai:page-title-updated", { detail: { postId, title: next } }))
+      })()
+    }, 400)
+    return () => {
+      if (titleTimerRef.current) window.clearTimeout(titleTimerRef.current)
+    }
+  }, [isNew, pageTitle, postId])
+
+  // keep refs in sync
+  useEffect(() => {
+    draftRef.current = draftDocJson
+    const s = JSON.stringify(draftDocJson || null)
+    setDirty(s !== lastSavedRef.current)
+  }, [draftDocJson])
+  useEffect(() => {
+    versionRef.current = serverVersion
+  }, [serverVersion])
+
+  // Autosave: debounce changes
+  useEffect(() => {
+    if (!canSave) return
+    if (!dirty) return
+    if (autoTimerRef.current) window.clearTimeout(autoTimerRef.current)
+    autoTimerRef.current = window.setTimeout(() => {
+      autoTimerRef.current = null
+      void saveNow({ silent: true })
+    }, 700)
+    return () => {
+      if (autoTimerRef.current) window.clearTimeout(autoTimerRef.current)
+    }
+  }, [canSave, dirty, postId, saveNow])
+
+  // Safe navigation requested by PageLinkNodeView
+  useEffect(() => {
+    function onOpenPost(e: Event) {
+      const ce = e as CustomEvent<{ postId?: string; focusTitle?: boolean; forceSave?: boolean }>
+      const targetId = String(ce.detail?.postId || "")
+      if (!targetId) return
+      const focusTitle = Boolean(ce.detail?.focusTitle)
+      const forceSave = Boolean(ce.detail?.forceSave)
+      navigatingRef.current = targetId
+      void (async () => {
+        // IMPORTANT:
+        // The embed flow may navigate immediately after inserting the embed link, before React `dirty`
+        // state has a chance to update. Force-save (or compare snapshots) ensures the parent keeps the link.
+        const snapshot = JSON.stringify(draftRef.current || null)
+        const shouldSave = forceSave || snapshot !== lastSavedRef.current
+        if (shouldSave && canSave) await saveNow({ silent: true })
+        navigate(`/posts/${targetId}/edit`, { state: { focusTitle } })
+      })()
+    }
+    window.addEventListener("reductai:open-post", onOpenPost as EventListener)
+    return () => window.removeEventListener("reductai:open-post", onOpenPost as EventListener)
+  }, [canSave, dirty, navigate, postId, saveNow])
+
+  // Focus the title input after embed auto-navigation
+  useEffect(() => {
+    if (isNew) return
+    const state = location.state as unknown
+    const focus =
+      !!state &&
+      typeof state === "object" &&
+      "focusTitle" in state &&
+      typeof (state as Record<string, unknown>).focusTitle === "boolean" &&
+      Boolean((state as Record<string, unknown>).focusTitle)
+    if (!focus) return
+    window.setTimeout(() => titleInputRef.current?.focus(), 0)
+  }, [isNew, location.state, postId])
+
+  // Keep left tree reactive to in-editor page creation/title updates (embed flow)
+  useEffect(() => {
+    function onPageCreated(e: Event) {
+      const ce = e as CustomEvent<{ postId?: string; parent_id?: string | null; title?: string }>
+      const id = String(ce.detail?.postId || "")
+      if (!id) return
+      const parent_id = ce.detail?.parent_id ? String(ce.detail.parent_id) : null
+      const title = String(ce.detail?.title || "New page")
+      setMyPages((prev) => {
+        if (prev.some((p) => String(p.id) === id)) return prev
+        // Keep existing order; append new pages at the end (until we introduce explicit ordering UX).
+        const next = prev.concat([
+          {
+            id,
+            parent_id,
+            title,
+            child_count: 0,
+            page_order: 0,
+            updated_at: new Date().toISOString(),
+          },
+        ])
+        return next
+      })
+    }
+
+    function onTitleUpdated(e: Event) {
+      const ce = e as CustomEvent<{ postId?: string; title?: string }>
+      const id = String(ce.detail?.postId || "")
+      const title = String(ce.detail?.title || "")
+      if (!id || !title) return
+      // Update in-place; do NOT resort on title changes.
+      setMyPages((prev) => prev.map((p) => (String(p.id) === id ? { ...p, title } : p)))
+    }
+
+    window.addEventListener("reductai:page-created", onPageCreated as EventListener)
+    window.addEventListener("reductai:page-title-updated", onTitleUpdated as EventListener)
+    const onEmbedRemoved = (e: Event) => {
+      const ce = e as CustomEvent<{ pageIds?: string[] }>
+      const ids = Array.isArray(ce.detail?.pageIds) ? ce.detail!.pageIds!.map(String).filter(Boolean) : []
+      if (!ids.length) return
+
+      // Optimistically hide from tree immediately
+      setMyPages((prev) => prev.filter((p) => !ids.includes(String(p.id))))
+
+      // Persist deletion (soft delete) so it disappears everywhere
+      const token = localStorage.getItem("token")
+      if (!token) return
+      void (async () => {
+        for (const pid of ids) {
+          await fetch(`/api/posts/${pid}`, {
+            method: "PATCH",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "deleted" }),
+          }).catch(() => null)
+        }
+      })()
+    }
+    window.addEventListener("reductai:embed-removed", onEmbedRemoved as EventListener)
+
+    const onEmbedAdded = (e: Event) => {
+      const ce = e as CustomEvent<{ pageIds?: string[] }>
+      const ids = Array.isArray(ce.detail?.pageIds) ? ce.detail!.pageIds!.map(String).filter(Boolean) : []
+      if (!ids.length) return
+
+      const token = localStorage.getItem("token")
+      if (!token) return
+
+      // Restore pages that were previously soft-deleted (undo case)
+      void (async () => {
+        for (const pid of ids) {
+          await fetch(`/api/posts/${pid}`, {
+            method: "PATCH",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "draft" }),
+          }).catch(() => null)
+
+          // After restore, preview becomes available again; use it to repopulate tree entry.
+          const pr = await fetch(`/api/posts/${pid}/preview`, { headers: { Authorization: `Bearer ${token}` } }).catch(
+            () => null
+          )
+          const title =
+            pr && pr.ok
+              ? await pr
+                  .json()
+                  .then((j) =>
+                    j &&
+                    typeof j === "object" &&
+                    "title" in j &&
+                    typeof (j as Record<string, unknown>).title === "string"
+                      ? String((j as Record<string, unknown>).title)
+                      : "New page"
+                  )
+                  .catch(() => "New page")
+              : "New page"
+
+          setMyPages((prev) => {
+            if (prev.some((p) => String(p.id) === pid)) return prev
+            return prev.concat([
+              {
+                id: pid,
+                parent_id: postId && postId !== "new" ? postId : null,
+                title,
+                child_count: 0,
+                page_order: 0,
+                updated_at: new Date().toISOString(),
+              },
+            ])
+          })
+        }
+      })()
+    }
+    window.addEventListener("reductai:embed-added", onEmbedAdded as EventListener)
+    return () => {
+      window.removeEventListener("reductai:page-created", onPageCreated as EventListener)
+      window.removeEventListener("reductai:page-title-updated", onTitleUpdated as EventListener)
+      window.removeEventListener("reductai:embed-removed", onEmbedRemoved as EventListener)
+      window.removeEventListener("reductai:embed-added", onEmbedAdded as EventListener)
+    }
+  }, [postId])
 
   const roots = useMemo(() => sortPages(myPages.filter((p) => !p.parent_id)), [myPages])
   const childrenByParent = useMemo(() => {
@@ -169,6 +420,85 @@ export default function PostEditorPage() {
     return m
   }, [myPages])
 
+  const parentById = useMemo(() => {
+    const m = new Map<string, string | null>()
+    for (const p of myPages) m.set(String(p.id), p.parent_id ? String(p.parent_id) : null)
+    return m
+  }, [myPages])
+
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+
+  // Expand roots and the ancestor chain of the current page so it stays visible.
+  useEffect(() => {
+    if (!myPages.length) return
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      let cur = String(postId || "")
+      // expand parents up to root
+      for (let i = 0; i < 50; i += 1) {
+        const p = parentById.get(cur) || null
+        if (!p) break
+        next.add(p)
+        cur = p
+      }
+      return next
+    })
+  }, [myPages.length, parentById, postId, roots])
+
+  const toggleExpand = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const renderTreeNode = (p: MyPage, depth: number) => {
+    const id = String(p.id)
+    const kids = childrenByParent.get(id) || []
+    const hasKids = kids.length > 0
+    const isExpanded = expanded.has(id)
+    const isActive = id === postId
+
+    return (
+      <div key={id} className="flex flex-col">
+        <div className="flex items-center gap-1" style={{ paddingLeft: depth * 12 }}>
+          {hasKids ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0"
+              title={isExpanded ? "접기" : "펼치기"}
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                toggleExpand(id)
+              }}
+            >
+              {isExpanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+            </Button>
+          ) : (
+            <div className="h-7 w-7 shrink-0" />
+          )}
+          <Button
+            variant={isActive ? "secondary" : "ghost"}
+            className="w-full justify-start gap-2 px-2"
+            onClick={() => navigate(`/posts/${id}/edit`)}
+          >
+            <FileText className={["size-4", depth > 0 ? "opacity-70" : ""].join(" ")} />
+            <span className="truncate">{p.title || "New page"}</span>
+          </Button>
+        </div>
+        {hasKids && isExpanded ? (
+          <div className="flex flex-col">
+            {kids.map((c) => renderTreeNode(c, depth + 1))}
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
   async function createNewFromNav() {
     setError(null)
     try {
@@ -176,7 +506,7 @@ export default function PostEditorPage() {
       const r = await fetch(`/api/posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authOnly },
-        body: JSON.stringify({ title: "Untitled", page_type: "page", status: "draft", visibility: "private" }),
+        body: JSON.stringify({ title: "New page", page_type: "page", status: "draft", visibility: "private" }),
       })
       if (!r.ok) throw new Error(await r.text())
       const j = await r.json()
@@ -197,9 +527,9 @@ export default function PostEditorPage() {
             <RefreshCw className="size-4 mr-2" />
             Reload
           </Button>
-          <Button size="sm" disabled={!canSave} onClick={save}>
+          <Button size="sm" disabled={!canSave} onClick={() => void saveNow()}>
             <Save className="size-4 mr-2" />
-            Save
+            Save{dirty ? "*" : ""}
           </Button>
         </div>
       }
@@ -208,7 +538,7 @@ export default function PostEditorPage() {
           {/* Left page tree (local) - 왼쪽 페이지 트리 */}
           <div
             className={[
-              "h-full border-r bg-sidebar text-sidebar-foreground transition-all duration-200 shrink-0",
+              "h-full border-r text-sidebar-foreground bg-background transition-all duration-200 shrink-0",
               navOpen ? "w-[280px]" : "w-[56px]",
             ].join(" ")}
           >
@@ -235,29 +565,7 @@ export default function PostEditorPage() {
                   ) : null}
 
                   <div className="flex flex-col gap-1">
-                    {roots.map((p) => (
-                      <div key={p.id}>
-                        <Button
-                          variant={p.id === postId ? "secondary" : "ghost"}
-                          className="w-full justify-start gap-2"
-                          onClick={() => navigate(`/posts/${p.id}/edit`)}
-                        >
-                          <FileText className="size-4" />
-                          <span className="truncate">{p.title || "Untitled"}</span>
-                        </Button>
-                        {(childrenByParent.get(p.id) || []).map((c) => (
-                          <Button
-                            key={c.id}
-                            variant={c.id === postId ? "secondary" : "ghost"}
-                            className="w-full justify-start gap-2 pl-8"
-                            onClick={() => navigate(`/posts/${c.id}/edit`)}
-                          >
-                            <FileText className="size-4 opacity-70" />
-                            <span className="truncate">{c.title || "Untitled"}</span>
-                          </Button>
-                        ))}
-                      </div>
-                    ))}
+                    {roots.map((p) => renderTreeNode(p, 0))}
                   </div>
                 </div>
               </ScrollArea>
@@ -280,6 +588,20 @@ export default function PostEditorPage() {
             <div className="text-sm text-muted-foreground">
               postId: <span className="font-mono">{postId}</span> · version: {serverVersion}
             </div>
+            {!isNew ? (
+              <div className="mt-3">
+                {isDeletedPage ? (
+                  <div className="mb-2 text-sm font-semibold text-red-600">Deleted Page</div>
+                ) : null}
+                <input
+                  ref={titleInputRef}
+                  className="w-full max-w-3xl bg-transparent text-3xl font-bold outline-none placeholder:text-muted-foreground"
+                  value={pageTitle}
+                  placeholder="New page"
+                  onChange={(e) => setPageTitle(e.target.value)}
+                />
+              </div>
+            ) : null}
           </div>
 
           {error ? (
@@ -302,7 +624,27 @@ export default function PostEditorPage() {
             </div>
           ) : (
             <div className="">
-              <ProseMirrorEditor initialDocJson={initialDocJson} onChange={setDraftDocJson} />
+              {isNew ? (
+                <Card className="p-6">
+                  <div className="text-lg font-semibold mb-2">아직 페이지가 없습니다.</div>
+                  <div className="text-sm text-muted-foreground mb-4">
+                    왼쪽 상단의 <span className="font-semibold">+</span> 버튼으로 새 페이지를 만들어 주세요.
+                  </div>
+                  <Button onClick={createNewFromNav}>
+                    <Plus className="size-4 mr-2" />
+                    새 페이지 만들기
+                  </Button>
+                </Card>
+              ) : (
+                <ProseMirrorEditor
+                  initialDocJson={initialDocJson}
+                  onChange={(j) => {
+                    // Keep draftRef in sync immediately so "save-before-navigate" never misses the latest embed link.
+                    draftRef.current = j
+                    setDraftDocJson(j)
+                  }}
+                />
+              )}
             </div>
           )}
         </div>

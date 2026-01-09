@@ -102,6 +102,35 @@ function createTable2x2(schema: Schema) {
   return table.create(null, [mkRow(), mkRow()])
 }
 
+function authHeaders(): Record<string, string> {
+  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null
+  const headers: Record<string, string> = {}
+  if (token) headers.Authorization = `Bearer ${token}`
+  headers["Content-Type"] = "application/json"
+  return headers
+}
+
+async function createNewPage(): Promise<{ id: string; title: string } | null> {
+  try {
+    const m = typeof window !== "undefined" ? window.location.pathname.match(/^\/posts\/([^/]+)\/edit/) : null
+    const parent_id = m?.[1] && m[1] !== "new" ? m[1] : null
+    const r = await fetch(`/api/posts`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ title: "New page", page_type: "page", status: "draft", visibility: "private", parent_id }),
+    })
+    if (!r.ok) return null
+    const j = await r.json()
+    const id = typeof j.id === "string" ? j.id : ""
+    const title = typeof j.title === "string" ? j.title : "New page"
+    if (!id) return null
+    window.dispatchEvent(new CustomEvent("reductai:page-created", { detail: { postId: id, parent_id, title } }))
+    return { id, title }
+  } catch {
+    return null
+  }
+}
+
 export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
   return [
     {
@@ -226,15 +255,14 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     {
       key: "page",
       title: "Page Link",
-      keywords: ["page", "link", "embed"],
+      keywords: ["page", "link"],
       applyReplace: (view) => {
         const n = schema.nodes.page_link
         if (!n) return
         const pageId = window.prompt("Target pageId (posts.id)?", "") || ""
         if (!pageId.trim()) return
         const title = window.prompt("Title (optional)", "") || ""
-        const display = window.prompt("display? (link|embed)", "link") || "link"
-        replaceCurrentBlock(view, n.create({ pageId: pageId.trim(), title, display }))
+        replaceCurrentBlock(view, n.create({ pageId: pageId.trim(), title, display: "link" }))
       },
       applyInsert: (view, args) => {
         const n = schema.nodes.page_link
@@ -242,8 +270,44 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
         const pageId = window.prompt("Target pageId (posts.id)?", "") || ""
         if (!pageId.trim()) return
         const title = window.prompt("Title (optional)", "") || ""
-        const display = window.prompt("display? (link|embed)", "link") || "link"
-        insertBlockRelative(view, { ...args, node: n.create({ pageId: pageId.trim(), title, display }) })
+        insertBlockRelative(view, { ...args, node: n.create({ pageId: pageId.trim(), title, display: "link" }) })
+      },
+    },
+    {
+      key: "embed",
+      title: "Page Embed",
+      keywords: ["embed", "page"],
+      applyReplace: (view) => {
+        const n = schema.nodes.page_link
+        if (!n) return
+        void (async () => {
+          const created = await createNewPage()
+          if (!created) return
+          // Always leave a visible "title + link" in the parent page.
+          replaceCurrentBlock(view, n.create({ pageId: created.id, title: created.title || "New page", display: "embed" }))
+          window.setTimeout(() => {
+            window.dispatchEvent(
+              new CustomEvent("reductai:open-post", { detail: { postId: created.id, focusTitle: true, forceSave: true } })
+            )
+          }, 0)
+        })()
+      },
+      applyInsert: (view, args) => {
+        const n = schema.nodes.page_link
+        if (!n) return
+        void (async () => {
+          const created = await createNewPage()
+          if (!created) return
+          insertBlockRelative(view, {
+            ...args,
+            node: n.create({ pageId: created.id, title: created.title || "New page", display: "embed" }),
+          })
+          window.setTimeout(() => {
+            window.dispatchEvent(
+              new CustomEvent("reductai:open-post", { detail: { postId: created.id, focusTitle: true, forceSave: true } })
+            )
+          }, 0)
+        })()
       },
     },
   ]

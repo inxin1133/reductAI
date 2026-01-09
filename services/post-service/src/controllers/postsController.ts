@@ -23,6 +23,15 @@ export async function getPostContent(req: Request, res: Response) {
     const { id } = req.params
     const version = await getPostMetaVersion(id)
 
+    const p = await query(
+      `SELECT id, title, status, deleted_at
+       FROM posts
+       WHERE id = $1
+       LIMIT 1`,
+      [id]
+    )
+    if (p.rows.length === 0) return res.status(404).json({ message: "Post not found" })
+
     const r = await query(
       `SELECT id, post_id, parent_block_id, block_type, sort_key, content, content_text, ref_post_id, external_embed_id
        FROM post_blocks
@@ -32,7 +41,14 @@ export async function getPostContent(req: Request, res: Response) {
     )
 
     const docJson = blocksToDocJson(r.rows as any)
-    return res.json({ docJson, version })
+    const row = p.rows[0]
+    return res.json({
+      docJson,
+      version,
+      title: row.title,
+      status: row.status,
+      deleted_at: row.deleted_at,
+    })
   } catch (e) {
     console.error("post-service getPostContent error:", e)
     return res.status(500).json({ message: "Failed to load post content" })
@@ -43,6 +59,7 @@ export async function savePostContent(req: Request, res: Response) {
   const client = await pool.connect()
   try {
     const { id } = req.params
+    const userId = (req as AuthedRequest).userId
     const body = req.body as { docJson?: any; version?: number; pmSchemaVersion?: number }
 
     if (!body?.docJson || typeof body.docJson !== "object") {
@@ -55,7 +72,7 @@ export async function savePostContent(req: Request, res: Response) {
     await client.query("BEGIN")
 
     const postRow = await client.query(
-      `SELECT id, metadata
+      `SELECT id, author_id, metadata
        FROM posts
        WHERE id = $1
        FOR UPDATE`,
@@ -76,10 +93,36 @@ export async function savePostContent(req: Request, res: Response) {
       })
     }
 
+    // If embed blocks were removed, mark the corresponding child pages as deleted.
+    // We only delete pages that are true children (posts.parent_id = this post id) and owned by the same user.
+    const prevBlocks = await client.query(
+      `SELECT ref_post_id, content
+       FROM post_blocks
+       WHERE post_id = $1 AND block_type = 'page_link'`,
+      [id]
+    )
+    const prevEmbedIds = new Set<string>()
+    for (const row of prevBlocks.rows as Array<{ ref_post_id?: string | null; content?: any }>) {
+      const pid = typeof row.ref_post_id === "string" ? row.ref_post_id : null
+      if (!pid) continue
+      const pm = row.content?.pm || row.content
+      const display = pm?.attrs?.display
+      if (display === "embed") prevEmbedIds.add(pid)
+    }
+
     // Replace-all strategy for MVP: delete existing blocks and re-insert from docJson.
     await client.query(`DELETE FROM post_blocks WHERE post_id = $1`, [id])
 
     const blocks = docJsonToBlocks({ postId: id, docJson: body.docJson, pmSchemaVersion })
+
+    const nextEmbedIds = new Set<string>()
+    for (const b of blocks) {
+      if (b.block_type !== "page_link") continue
+      const pm = b.content?.pm || b.content
+      const display = pm?.attrs?.display
+      const pid = typeof b.ref_post_id === "string" ? b.ref_post_id : null
+      if (display === "embed" && pid) nextEmbedIds.add(pid)
+    }
 
     for (const b of blocks) {
       await client.query(
@@ -99,6 +142,37 @@ export async function savePostContent(req: Request, res: Response) {
           b.external_embed_id,
           pmSchemaVersion,
         ]
+      )
+    }
+
+    // Mark removed embeds' pages as deleted.
+    const removed: string[] = []
+    for (const pid of prevEmbedIds) {
+      if (!nextEmbedIds.has(pid)) removed.push(pid)
+    }
+    if (removed.length) {
+      await client.query(
+        `UPDATE posts
+         SET status = 'deleted', deleted_at = NOW(), updated_at = NOW()
+         WHERE id = ANY($1::uuid[])
+           AND parent_id = $2
+           AND author_id = $3
+           AND deleted_at IS NULL`,
+        [removed, id, userId]
+      )
+    }
+
+    // If embeds were re-added (undo), restore those child pages.
+    const restoreIds = Array.from(nextEmbedIds)
+    if (restoreIds.length) {
+      await client.query(
+        `UPDATE posts
+         SET status = 'draft', deleted_at = NULL, updated_at = NOW()
+         WHERE id = ANY($1::uuid[])
+           AND parent_id = $2
+           AND author_id = $3
+           AND (deleted_at IS NOT NULL OR COALESCE(status,'') = 'deleted')`,
+        [restoreIds, id, userId]
       )
     }
 
@@ -133,18 +207,35 @@ export async function createPost(req: Request, res: Response) {
     const pageType = typeof body.page_type === "string" ? body.page_type : "page"
     const visibility = typeof body.visibility === "string" ? body.visibility : "private"
     const status = typeof body.status === "string" ? body.status : "draft"
+    const parentId = typeof body.parent_id === "string" && body.parent_id.trim() ? body.parent_id.trim() : null
 
     // slug must be unique within (tenant_id,parent_id)
     const slug = `page-${randomUUID().slice(0, 8)}`
 
     await client.query("BEGIN")
+
+    // Validate parent_id (must exist and be owned by same user) if provided
+    if (parentId) {
+      const p = await client.query(
+        `SELECT id
+         FROM posts
+         WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
+         LIMIT 1`,
+        [parentId, userId]
+      )
+      if (p.rows.length === 0) {
+        await client.query("ROLLBACK")
+        return res.status(400).json({ message: "Invalid parent_id" })
+      }
+    }
+
     const r = await client.query(
       `INSERT INTO posts (
          tenant_id, parent_id, category_id, author_id, title, slug, page_type, status, visibility, metadata
        )
-       VALUES ($1,NULL,NULL,$2,$3,$4,$5,$6,$7,$8::jsonb)
-       RETURNING id, title, slug, created_at, updated_at`,
-      [tenantId, userId, title, slug, pageType, status, visibility, JSON.stringify({ doc_version: 0 })]
+       VALUES ($1,$9,NULL,$2,$3,$4,$5,$6,$7,$8::jsonb)
+       RETURNING id, parent_id, title, slug, created_at, updated_at`,
+      [tenantId, userId, title, slug, pageType, status, visibility, JSON.stringify({ doc_version: 0 }), parentId]
     )
     await client.query("COMMIT")
     return res.status(201).json(r.rows[0])
@@ -163,8 +254,9 @@ export async function listMyPages(req: Request, res: Response) {
     const r = await query(
       `SELECT id, parent_id, title, slug, page_type, status, visibility, child_count, page_order, updated_at
        FROM posts
-       WHERE author_id = $1 AND deleted_at IS NULL
-       ORDER BY parent_id NULLS FIRST, page_order ASC, updated_at DESC`,
+       WHERE author_id = $1 AND deleted_at IS NULL AND COALESCE(status, '') <> 'deleted'
+       -- IMPORTANT: keep ordering stable; opening/saving a page updates updated_at and should NOT reshuffle the tree.
+       ORDER BY parent_id NULLS FIRST, page_order ASC, created_at ASC, id ASC`,
       [userId]
     )
     return res.json(r.rows)
@@ -210,6 +302,55 @@ export async function getPostPreview(req: Request, res: Response) {
   } catch (e) {
     console.error("post-service getPostPreview error:", e)
     return res.status(500).json({ message: "Failed to load preview" })
+  }
+}
+
+export async function updatePost(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const userId = (req as AuthedRequest).userId
+    const { id } = req.params
+    const body = (req.body || {}) as any
+
+    const title = typeof body.title === "string" ? body.title.trim() : ""
+    const status = typeof body.status === "string" ? body.status.trim() : ""
+
+    if (!title && !status) return res.status(400).json({ message: "title or status is required" })
+
+    const updates: string[] = []
+    const values: any[] = [id, userId]
+    let idx = 3
+
+    if (title) {
+      updates.push(`title = $${idx}`)
+      values.push(title)
+      idx += 1
+    }
+    if (status) {
+      // MVP: support "deleted" (trash) and "draft" (restore)
+      if (status !== "deleted" && status !== "draft") return res.status(400).json({ message: "invalid status" })
+      updates.push(`status = $${idx}`)
+      values.push(status)
+      idx += 1
+      if (status === "deleted") updates.push(`deleted_at = NOW()`)
+      if (status === "draft") updates.push(`deleted_at = NULL`)
+    }
+    updates.push(`updated_at = NOW()`)
+
+    const r = await client.query(
+      `UPDATE posts
+       SET ${updates.join(", ")}
+       WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
+       RETURNING id, parent_id, title, status, deleted_at, updated_at`,
+      values
+    )
+    if (r.rows.length === 0) return res.status(404).json({ message: "Post not found" })
+    return res.json(r.rows[0])
+  } catch (e) {
+    console.error("post-service updatePost error:", e)
+    return res.status(500).json({ message: "Failed to update post" })
+  } finally {
+    client.release()
   }
 }
 

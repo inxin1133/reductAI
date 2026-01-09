@@ -27,7 +27,7 @@ function sortPages(pages: MyPage[]) {
 // Avoids timing/state issues inside PostEditorPage by doing only:
 // - fetch /api/posts/mine
 // - redirect to top page if exists
-// - else create then redirect
+// - else go to /posts/new/edit (empty state; user can create via +)
 export default function PostEntryPage() {
   const navigate = useNavigate()
 
@@ -53,19 +53,9 @@ export default function PostEntryPage() {
           }
         }
 
-        // No pages -> create
-        const created = await fetch(`/api/posts`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...headers },
-          body: JSON.stringify({ title: "Untitled", page_type: "page", status: "draft", visibility: "private" }),
-        })
-        if (!created.ok) throw new Error(await created.text())
-        const pj = await created.json().catch(() => ({}))
-        const newId = String((pj as any).id || "")
-        if (!newId) throw new Error("Failed to create post (missing id)")
-        if (!cancelled) navigate(`/posts/${newId}/edit`, { replace: true })
+        // No pages -> show empty state (user creates via +)
+        if (!cancelled) navigate(`/posts/new/edit`, { replace: true })
       } catch {
-        // Fallback: old behavior
         if (!cancelled) navigate(`/posts/new/edit`, { replace: true })
       }
     }

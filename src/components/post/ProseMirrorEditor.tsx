@@ -43,6 +43,7 @@ function getEmptyDoc() {
 export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
+  const embedIdsRef = useRef<Set<string>>(new Set())
 
   const [markdown, setMarkdown] = useState("")
   const [docJson, setDocJson] = useState<PmDocJson>(initialDocJson ?? null)
@@ -82,6 +83,34 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
         const nextState = result.state
         this.updateState(nextState)
 
+        // Detect removed embed blocks (page_link with display=embed) so we can soft-delete the underlying child pages.
+        // This is an optimistic UX layer; server also enforces deletion on save.
+        const nextEmbedIds = new Set<string>()
+        nextState.doc.descendants((node) => {
+          if (node.type === editorSchema.nodes.page_link) {
+            const attrs = (node.attrs || {}) as Record<string, unknown>
+            const display = typeof attrs.display === "string" ? attrs.display : ""
+            const pageId = typeof attrs.pageId === "string" ? attrs.pageId : ""
+            if (display === "embed" && pageId) nextEmbedIds.add(pageId)
+          }
+          return true
+        })
+        const removed: string[] = []
+        const added: string[] = []
+        for (const pid of embedIdsRef.current) {
+          if (!nextEmbedIds.has(pid)) removed.push(pid)
+        }
+        for (const pid of nextEmbedIds) {
+          if (!embedIdsRef.current.has(pid)) added.push(pid)
+        }
+        if (removed.length) {
+          window.dispatchEvent(new CustomEvent("reductai:embed-removed", { detail: { pageIds: removed } }))
+        }
+        if (added.length) {
+          window.dispatchEvent(new CustomEvent("reductai:embed-added", { detail: { pageIds: added } }))
+        }
+        embedIdsRef.current = nextEmbedIds
+
         const json = nextState.doc.toJSON()
         setDocJson(json)
         onChange?.(json)
@@ -93,12 +122,54 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
     })
     viewRef.current = view
 
+    // Initialize embed id set from initial doc so first deletion is tracked correctly.
+    const initEmbeds = new Set<string>()
+    view.state.doc.descendants((node) => {
+      if (node.type === editorSchema.nodes.page_link) {
+        const attrs = (node.attrs || {}) as Record<string, unknown>
+        const display = typeof attrs.display === "string" ? attrs.display : ""
+        const pageId = typeof attrs.pageId === "string" ? attrs.pageId : ""
+        if (display === "embed" && pageId) initEmbeds.add(pageId)
+      }
+      return true
+    })
+    embedIdsRef.current = initEmbeds
+
+    // When a page title changes elsewhere (e.g., editing child page title), update any embed/link blocks
+    // that reference that pageId so the parent page shows the latest title automatically.
+    const onTitleUpdated = (e: Event) => {
+      const ce = e as CustomEvent<{ postId?: string; title?: string }>
+      const pageId = String(ce.detail?.postId || "")
+      const nextTitle = String(ce.detail?.title || "")
+      if (!pageId || !nextTitle) return
+      const v = viewRef.current
+      if (!v) return
+
+      let tr = v.state.tr
+      let changed = false
+      v.state.doc.descendants((node, pos) => {
+        if (node.type === editorSchema.nodes.page_link) {
+          const attrs = (node.attrs || {}) as Record<string, unknown>
+          const curPageId = typeof attrs.pageId === "string" ? attrs.pageId : ""
+          const curTitle = typeof attrs.title === "string" ? attrs.title : ""
+          if (curPageId === pageId && curTitle !== nextTitle) {
+            tr = tr.setNodeMarkup(pos, undefined, { ...(attrs as Record<string, unknown>), title: nextTitle })
+            changed = true
+          }
+        }
+        return true
+      })
+      if (changed) v.dispatch(tr)
+    }
+    window.addEventListener("reductai:page-title-updated", onTitleUpdated as EventListener)
+
     // init derived views
     setMarkdown(exportMarkdown(editorSchema, doc))
     setDocJson(doc.toJSON())
     onChange?.(doc.toJSON())
 
     return () => {
+      window.removeEventListener("reductai:page-title-updated", onTitleUpdated as EventListener)
       view.destroy()
       viewRef.current = null
     }
@@ -215,11 +286,39 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
             const pageId = window.prompt("Target pageId (posts.id)?", "") || ""
             if (!pageId) return
             const title = window.prompt("Title (optional)", "") || ""
-            const display = window.prompt("display? (link|embed)", "link") || "link"
-            run(cmdInsertPageLink(editorSchema, { pageId, title, display }))
+            run(cmdInsertPageLink(editorSchema, { pageId, title, display: "link" }))
           }}
         >
           Page Link
+        </button>
+        <button
+          className="px-2 py-1 border rounded"
+          onMouseDown={(e) => {
+            e.preventDefault()
+            const token = localStorage.getItem("token")
+            if (!token) return
+            void (async () => {
+              const m = window.location.pathname.match(/^\/posts\/([^/]+)\/edit/)
+              const parent_id = m?.[1] && m[1] !== "new" ? m[1] : null
+              const r = await fetch(`/api/posts`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+                body: JSON.stringify({ title: "New page", page_type: "page", status: "draft", visibility: "private", parent_id }),
+              })
+              if (!r.ok) return
+              const j = await r.json()
+              const pageId = typeof j.id === "string" ? j.id : ""
+              if (!pageId) return
+              window.dispatchEvent(new CustomEvent("reductai:page-created", { detail: { postId: pageId, parent_id, title: "New page" } }))
+              // Always leave a visible "title + link" in the parent page.
+              run(cmdInsertPageLink(editorSchema, { pageId, title: "New page", display: "embed" }))
+              window.dispatchEvent(
+                new CustomEvent("reductai:open-post", { detail: { postId: pageId, focusTitle: true, forceSave: true } })
+              )
+            })()
+          }}
+        >
+          Page Embed
         </button>
 
         <span className="mx-2 opacity-40">|</span>
