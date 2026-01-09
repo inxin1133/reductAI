@@ -19,7 +19,8 @@ export const mentionNodeSpec: NodeSpec = {
         "data-mention": "1",
         "data-mention-id": id || "",
         "data-mention-type": type || "user",
-        class: "pm-mention",
+        class:
+          "inline-flex items-center rounded-md bg-primary/10 px-1.5 py-0.5 text-sm font-semibold text-primary ring-1 ring-inset ring-primary/15",
       },
       `@${label || "mention"}`,
     ]

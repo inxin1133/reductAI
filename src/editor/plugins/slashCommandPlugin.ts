@@ -1,7 +1,7 @@
 import { Plugin, PluginKey } from "prosemirror-state"
 import type { EditorView } from "prosemirror-view"
 import type { Schema } from "prosemirror-model"
-import { wrapInList } from "prosemirror-schema-list"
+import { getBlockCommandRegistry } from "../commands/blockCommandRegistry"
 
 type SlashCmd = {
   key: string
@@ -35,173 +35,17 @@ function deleteSlashQuery(view: EditorView, from: number, to: number) {
   dispatch(tr)
 }
 
-function replaceCurrentBlock(view: EditorView, node: any) {
-  const { state, dispatch } = view
-  const { $from } = state.selection
-
-  let depth = $from.depth
-  while (depth > 0) {
-    const n = $from.node(depth)
-    if (n.isBlock && n.type.name !== "doc") break
-    depth -= 1
-  }
-  if (depth <= 0) return
-
-  const start = $from.before(depth)
-  const end = $from.after(depth)
-  const tr = state.tr.replaceWith(start, end, node)
-  dispatch(tr.scrollIntoView())
-}
-
-function setBlockTypeOnSelection(view: EditorView, type: any, attrs?: Record<string, any>) {
-  const { state, dispatch } = view
-  const { from, to } = state.selection
-  const tr = state.tr.setBlockType(from, to, type, attrs)
-  dispatch(tr.scrollIntoView())
-}
-
-function insertTable2x2(view: EditorView, schema: Schema) {
-  const table = schema.nodes.table
-  const row = schema.nodes.table_row
-  const cell = schema.nodes.table_cell
-  const paragraph = schema.nodes.paragraph
-  if (!table || !row || !cell || !paragraph) return
-
-  const mkCell = () => cell.createAndFill(null, paragraph.createAndFill())!
-  const mkRow = () => row.create(null, [mkCell(), mkCell()])
-  const t = table.create(null, [mkRow(), mkRow()])
-
-  replaceCurrentBlock(view, t)
-}
-
-function insertHr(view: EditorView, schema: Schema) {
-  const hr = schema.nodes.horizontal_rule
-  if (!hr) return
-  replaceCurrentBlock(view, hr.create())
-}
-
-function insertImage(view: EditorView, schema: Schema) {
-  const img = schema.nodes.image
-  if (!img) return
-  const src = window.prompt("Image URL?", "https://") || ""
-  if (!src.trim()) return
-  replaceCurrentBlock(view, img.create({ src: src.trim() }))
-}
-
-function insertPageLink(view: EditorView, schema: Schema) {
-  const n = schema.nodes.page_link
-  if (!n) return
-  const pageId = window.prompt("Target pageId (posts.id)?", "") || ""
-  if (!pageId.trim()) return
-  const title = window.prompt("Title (optional)", "") || ""
-  const display = window.prompt("display? (link|embed)", "link") || "link"
-  replaceCurrentBlock(view, n.create({ pageId: pageId.trim(), title, display }))
-}
-
-function insertCodeBlock(view: EditorView, schema: Schema) {
-  const cb = schema.nodes.code_block
-  if (!cb) return
-  setBlockTypeOnSelection(view, cb)
-}
-
-function wrapBulletList(view: EditorView, schema: Schema) {
-  const cmd = wrapInList(schema.nodes.bullet_list)
-  cmd(view.state, view.dispatch)
-}
-
 function makeCommands(schema: Schema): SlashCmd[] {
-  return [
-    {
-      key: "text",
-      title: "Text",
-      keywords: ["text", "paragraph"],
-      run: (view, ctx) => {
-        deleteSlashQuery(view, ctx.from, ctx.to)
-        setBlockTypeOnSelection(view, schema.nodes.paragraph)
-      },
+  const blocks = getBlockCommandRegistry(schema)
+  return blocks.map((b) => ({
+    key: b.key,
+    title: b.title,
+    keywords: b.keywords,
+    run: (view, ctx) => {
+      deleteSlashQuery(view, ctx.from, ctx.to)
+      b.applyReplace(view)
     },
-    {
-      key: "h1",
-      title: "Heading 1",
-      keywords: ["h1", "heading"],
-      run: (view, ctx) => {
-        deleteSlashQuery(view, ctx.from, ctx.to)
-        setBlockTypeOnSelection(view, schema.nodes.heading, { level: 1 })
-      },
-    },
-    {
-      key: "h2",
-      title: "Heading 2",
-      keywords: ["h2", "heading"],
-      run: (view, ctx) => {
-        deleteSlashQuery(view, ctx.from, ctx.to)
-        setBlockTypeOnSelection(view, schema.nodes.heading, { level: 2 })
-      },
-    },
-    {
-      key: "h3",
-      title: "Heading 3",
-      keywords: ["h3", "heading"],
-      run: (view, ctx) => {
-        deleteSlashQuery(view, ctx.from, ctx.to)
-        setBlockTypeOnSelection(view, schema.nodes.heading, { level: 3 })
-      },
-    },
-    {
-      key: "list",
-      title: "Bullet List",
-      keywords: ["list", "bullet", "ul"],
-      run: (view, ctx) => {
-        deleteSlashQuery(view, ctx.from, ctx.to)
-        wrapBulletList(view, schema)
-      },
-    },
-    {
-      key: "table",
-      title: "Table (2x2)",
-      keywords: ["table", "grid"],
-      run: (view, ctx) => {
-        deleteSlashQuery(view, ctx.from, ctx.to)
-        insertTable2x2(view, schema)
-      },
-    },
-    {
-      key: "image",
-      title: "Image",
-      keywords: ["image", "img", "picture"],
-      run: (view, ctx) => {
-        deleteSlashQuery(view, ctx.from, ctx.to)
-        insertImage(view, schema)
-      },
-    },
-    {
-      key: "divider",
-      title: "Divider",
-      keywords: ["divider", "hr", "horizontal"],
-      run: (view, ctx) => {
-        deleteSlashQuery(view, ctx.from, ctx.to)
-        insertHr(view, schema)
-      },
-    },
-    {
-      key: "page",
-      title: "Page Link",
-      keywords: ["page", "link", "embed"],
-      run: (view, ctx) => {
-        deleteSlashQuery(view, ctx.from, ctx.to)
-        insertPageLink(view, schema)
-      },
-    },
-    {
-      key: "code",
-      title: "Code Block",
-      keywords: ["code", "codeblock"],
-      run: (view, ctx) => {
-        deleteSlashQuery(view, ctx.from, ctx.to)
-        insertCodeBlock(view, schema)
-      },
-    },
-  ]
+  }))
 }
 
 function filterCommands(all: SlashCmd[], query: string) {
@@ -331,15 +175,18 @@ export function slashCommandPlugin(schema: Schema) {
 
         if (event.key === "Escape") {
           // Dismiss until user types again (docChanged resets dismissed)
+          event.preventDefault()
           view.dispatch(view.state.tr.setMeta(key, { dismissed: true }))
           return true
         }
         if (event.key === "ArrowDown") {
+          event.preventDefault()
           const next = Math.min((st.index || 0) + 1, Math.max((st.items?.length || 1) - 1, 0))
           view.dispatch(view.state.tr.setMeta(key, { index: next }))
           return true
         }
         if (event.key === "ArrowUp") {
+          event.preventDefault()
           const next = Math.max((st.index || 0) - 1, 0)
           view.dispatch(view.state.tr.setMeta(key, { index: next }))
           return true
@@ -347,12 +194,9 @@ export function slashCommandPlugin(schema: Schema) {
         if (event.key === "Enter") {
           const cmd = st.items?.[st.index || 0]
           if (!cmd) return false
-          // Ensure we delete the slash query range before running the command.
-          // (Some commands use view.state right away.)
-          if (st.from < st.to) {
-            const tr = view.state.tr.delete(st.from, st.to)
-            view.dispatch(tr)
-          }
+          // Prevent keymaps/splitBlock from consuming Enter while the menu is open.
+          event.preventDefault()
+          // cmd.run() already deletes the slash query internally.
           cmd.run(view, { from: st.from, to: st.to, query: st.query })
           return true
         }

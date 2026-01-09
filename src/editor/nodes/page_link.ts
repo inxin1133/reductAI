@@ -12,24 +12,27 @@ export const pageLinkNodeSpec: NodeSpec = {
   selectable: true,
   draggable: true,
   attrs: {
+    blockId: { default: null },
     pageId: { default: null },
     title: { default: "" },
     display: { default: "link" },
   },
   toDOM: (node) => {
-    const { pageId, title, display } = node.attrs as any
+    const { pageId, title, display, blockId } = node.attrs as any
     return [
       "div",
       {
-        class: "pm-page-link",
+        class:
+          "my-3 rounded-xl border border-border bg-card p-3 text-card-foreground shadow-sm",
         "data-page-link": "1",
+        "data-block-id": blockId || "",
         "data-page-id": pageId || "",
         "data-display": display || "link",
       },
-      ["div", { class: "pm-page-link-title" }, title || "Untitled page"],
+      ["div", { class: "font-semibold", "data-role": "title" }, title || "Untitled page"],
       display === "embed"
-        ? ["div", { class: "pm-page-link-preview" }, "Preview (title + summary)"]
-        : ["div", { class: "pm-page-link-hint" }, "Link"],
+        ? ["div", { class: "mt-1 text-xs text-muted-foreground", "data-role": "summary" }, "Preview (title + summary)"]
+        : ["div", { class: "mt-1 text-xs text-muted-foreground", "data-role": "hint" }, "Link"],
     ]
   },
   parseDOM: [
@@ -37,8 +40,9 @@ export const pageLinkNodeSpec: NodeSpec = {
       tag: "div[data-page-link]",
       getAttrs: (dom) => {
         const el = dom as HTMLElement
-        const title = el.querySelector(".pm-page-link-title")?.textContent || ""
+        const title = el.querySelector('[data-role="title"]')?.textContent || ""
         return {
+          blockId: el.getAttribute("data-block-id"),
           pageId: el.getAttribute("data-page-id"),
           display: el.getAttribute("data-display") || "link",
           title,

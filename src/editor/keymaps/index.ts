@@ -1,7 +1,7 @@
 import { keymap } from "prosemirror-keymap"
-import { baseKeymap, setBlockType } from "prosemirror-commands"
+import { baseKeymap, chainCommands, setBlockType } from "prosemirror-commands"
 import { undo, redo } from "prosemirror-history"
-import { sinkListItem, liftListItem } from "prosemirror-schema-list"
+import { sinkListItem, liftListItem, splitListItem } from "prosemirror-schema-list"
 import type { Schema } from "prosemirror-model"
 
 export function buildEditorKeymap(schema: Schema) {
@@ -13,6 +13,15 @@ export function buildEditorKeymap(schema: Schema) {
     // List indent
     Tab: sinkListItem(schema.nodes.list_item),
     "Shift-Tab": liftListItem(schema.nodes.list_item),
+  }
+
+  // Notion-like list behavior:
+  // - Enter continues list
+  // - Enter on empty list item exits to paragraph
+  // - Backspace at start/empty lifts out of list to paragraph
+  if (schema.nodes.list_item) {
+    keys["Enter"] = splitListItem(schema.nodes.list_item)
+    keys["Backspace"] = chainCommands(liftListItem(schema.nodes.list_item), baseKeymap.Backspace)
   }
 
   // Shift+Enter -> hard_break (only meaningful inside textblocks)

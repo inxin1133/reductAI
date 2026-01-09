@@ -293,7 +293,7 @@ export function Sidebar({ className }: SidebarProps) {
                     className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50"
                     onClick={() => {
                       setIsMobileMenuOpen(false)
-                      navigate("/posts/new/edit")
+                      navigate("/posts")
                     }}
                   >
                      <BookOpen className="size-5" />
@@ -470,7 +470,7 @@ export function Sidebar({ className }: SidebarProps) {
                <>
                  <div
                    className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50"
-                   onClick={() => navigate("/posts/new/edit")}
+                   onClick={() => navigate("/posts")}
                  >
                     <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
                       <BookOpen className="size-full" />

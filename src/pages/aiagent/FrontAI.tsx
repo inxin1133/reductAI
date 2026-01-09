@@ -1,6 +1,5 @@
 import * as React from "react"
-import { Sidebar } from "@/components/Sidebar"
-import { UserHeader } from "@/components/UserHeader"
+import { AppShell } from "@/components/layout/AppShell"
 import { useNavigate } from "react-router-dom"
 import { useRef } from "react"
 import { ChatInterface } from "@/components/ChatInterface"
@@ -72,55 +71,49 @@ export default function FrontAI() {
   }, []);
 
   return (
-    <div className="bg-background relative w-full h-screen overflow-hidden flex font-sans">
-      
-      {/* Sidebar (GNB) */}
-      <Sidebar />
-
-
-      {/* Main Content - 메인 컨텐츠 시작 */}
-      <div className="flex-1 flex flex-col h-full w-full bg-background relative pt-[56px] md:pt-0">
-        {/* Top Bar */}
-        <UserHeader>
-           {/* 언어 선택 컴포넌트 */}
-           <Select value={currentLang} onValueChange={setCurrentLang}>
-             <SelectTrigger className="w-[120px] h-9 bg-background">
-               <SelectValue placeholder="언어 선택" />
-             </SelectTrigger>
-             <SelectContent>
-               {languages.map(lang => (
-                 <SelectItem key={lang.code} value={lang.code}>
-                   {lang.flag_emoji} {lang.native_name}
-                 </SelectItem>
-               ))}
-             </SelectContent>
-           </Select>
-           
-        </UserHeader>
-
-        {/* Main Body - 메인 바디 */}        
-        <div className="flex flex-[1_0_0] flex-col gap-[40px] items-center justify-center p-[24px] relative shrink-0 w-full">
-          
-          <ChatInterface
-            // FrontAI에서는 "첫 질문 시작"만 하고, 실제 대화는 Timeline에서 이어가도록 합니다.
-            submitMode="emit"
-            onSubmit={({ input, providerSlug, model, modelType, options }) => {
-              const requestId =
-                typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-                  ? crypto.randomUUID()
-                  : `${Date.now()}_${Math.random().toString(16).slice(2)}`
-              navigate("/timeline", {
-                state: {
-                  initial: { requestId, input, providerSlug, model, modelType, options: options || null, sessionLanguage: currentLang || null },
+    <AppShell
+      headerContent={
+        <Select value={currentLang} onValueChange={setCurrentLang}>
+          <SelectTrigger className="w-[120px] h-9 bg-background">
+            <SelectValue placeholder="언어 선택" />
+          </SelectTrigger>
+          <SelectContent>
+            {languages.map((lang) => (
+              <SelectItem key={lang.code} value={lang.code}>
+                {lang.flag_emoji} {lang.native_name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      }
+    >
+      {/* Main Body - 메인 바디 */}
+      <div className="flex flex-1 flex-col gap-[40px] items-center justify-center p-[24px] relative w-full">
+        <ChatInterface
+          // FrontAI에서는 "첫 질문 시작"만 하고, 실제 대화는 Timeline에서 이어가도록 합니다.
+          submitMode="emit"
+          onSubmit={({ input, providerSlug, model, modelType, options }) => {
+            const requestId =
+              typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+                ? crypto.randomUUID()
+                : `${Date.now()}_${Math.random().toString(16).slice(2)}`
+            navigate("/timeline", {
+              state: {
+                initial: {
+                  requestId,
+                  input,
+                  providerSlug,
+                  model,
+                  modelType,
+                  options: options || null,
+                  sessionLanguage: currentLang || null,
                 },
-              })
-            }}
-            sessionLanguage={currentLang || undefined}
-          />
-
-        </div>
+              },
+            })
+          }}
+          sessionLanguage={currentLang || undefined}
+        />
       </div>
-
-    </div>
+    </AppShell>
   );
 }

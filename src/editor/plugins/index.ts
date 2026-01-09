@@ -9,15 +9,29 @@ import { buildInputRules } from "./inputRules"
 import { buildEditorKeymap, baseKeys } from "../keymaps"
 import { mentionPlugin } from "./mentionPlugin"
 import { slashCommandPlugin } from "./slashCommandPlugin"
+import { listStylePlugin } from "./listStylePlugin"
+import { trailingParagraphPlugin } from "./trailingParagraphPlugin"
+import { blockInserterPlugin } from "./blockInserterPlugin"
+import { blockIdPlugin } from "./blockIdPlugin"
 
 export function buildEditorPlugins(schema: Schema, opts?: { mention?: { enabled?: boolean } }) {
   const plugins: any[] = []
 
   plugins.push(history())
-  plugins.push(dropCursor())
+  // Hide the default drop-cursor line; we provide our own drop indicator for block DnD.
+  plugins.push(dropCursor({ color: "rgba(0,0,0,0)", width: 0 }))
   plugins.push(gapCursor())
 
   plugins.push(inputRules({ rules: buildInputRules(schema) }))
+
+  // Ensure stable blockId on every top-level block (needed for block drag/drop).
+  plugins.push(blockIdPlugin(schema))
+
+  // Slash commands should get key events (Enter/Arrows/Escape) BEFORE keymaps consume them.
+  plugins.push(slashCommandPlugin(schema))
+
+  // Block inserter (+) on hover. Reuses the same command registry as slash.
+  plugins.push(blockInserterPlugin(schema))
 
   // Tables
   plugins.push(columnResizing())
@@ -27,8 +41,11 @@ export function buildEditorPlugins(schema: Schema, opts?: { mention?: { enabled?
   plugins.push(buildEditorKeymap(schema))
   plugins.push(baseKeys)
 
-  // Slash commands (Notion-style)
-  plugins.push(slashCommandPlugin(schema))
+  // List marker styles by nesting depth (disc/circle/square and 1/a/i/A/I by default)
+  plugins.push(listStylePlugin(schema))
+
+  // Always keep a writable trailing paragraph after the last block (Notion-like)
+  plugins.push(trailingParagraphPlugin(schema))
 
   // Mention autocomplete (mock)
   if (opts?.mention?.enabled !== false) {

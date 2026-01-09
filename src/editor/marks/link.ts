@@ -19,8 +19,20 @@ export const linkMarkSpec: MarkSpec = {
     },
   ],
   toDOM: (mark) => {
-    const { href, title } = mark.attrs as any
-    return ["a", { href, title, rel: "noopener noreferrer nofollow", target: "_blank" }, 0]
+    const { href, title } = mark.attrs as { href?: string; title?: string | null }
+    return [
+      "a",
+      {
+        href: String(href || ""),
+        title: title ?? null,
+        rel: "noopener noreferrer nofollow",
+        target: "_blank",
+        // Tailwind-first styling (dark-mode safe)
+        class:
+          "text-primary underline underline-offset-4 decoration-primary/40 hover:decoration-primary hover:text-primary/90",
+      },
+      0,
+    ]
   },
 }
 

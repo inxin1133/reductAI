@@ -1,6 +1,5 @@
 import * as React from "react"
-import { Sidebar } from "@/components/Sidebar"
-import { UserHeader } from "@/components/UserHeader"
+import { AppShell } from "@/components/layout/AppShell"
 import { Button } from "@/components/ui/button"
 import { Copy, Volume2, Repeat, ChevronsLeft, PencilLine, GalleryVerticalEnd } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -407,107 +406,94 @@ export default function Timeline() {
   const sessionLanguageForChat = initialToSend?.sessionLanguage || undefined
 
   return (
-    <div className="bg-background w-full h-screen overflow-hidden flex font-sans">
-      {/* Global Sidebar */}
-      <Sidebar />
-
-      {/* Main Content Area - 메인 컨텐츠 시작 */}
-      <div className="flex-1 flex flex-row h-full w-full bg-background relative pt-[56px] md:pt-0">
-        
-        {/* Timeline Sidebar (Local) - 타임라인 사이드바 (로컬) */}
-        {isSidebarOpen && (
-          <>
-            {/* Mobile: backdrop (컨텐츠를 덮는 오버레이 형태) */}
-            {isMobile && (
-              <div
-                className="fixed inset-0 top-[56px] z-30 bg-black/30"
-                onClick={() => setIsSidebarOpen(false)}
-              />
-            )}
-
-            <div
-              className={cn(
-                "border-r border-border h-full flex flex-col px-2 py-4 bg-background shrink-0",
-                isMobile ? "fixed top-[56px] left-0 bottom-0 z-40 w-[240px] shadow-lg" : "w-[200px]"
-              )}
+    <AppShell
+      headerLeftContent={
+        <div className="flex items-end">
+          {isSidebarOpen ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-4 p-0 hover:bg-transparent"
+              onClick={() => setIsSidebarOpen(false)}
             >
-              <TimelineSidebarList
-                conversations={conversations}
-                activeConversationId={activeConversationId}
-                onSelect={(id) => {
-                  setActiveConversationId(id)
-                  // 모바일 오버레이에서는 선택 후 닫아주어 컨텐츠를 바로 볼 수 있게 합니다.
-                  if (isMobile) setIsSidebarOpen(false)
-                }}
-              />
-            </div>
-          </>
-        )}
+              <ChevronsLeft className="size-4" />
+            </Button>
+          ) : isMobile ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-4 p-0 hover:bg-transparent"
+              onClick={() => setIsSidebarOpen(true)}
+            >
+              <GalleryVerticalEnd className="size-4" />
+            </Button>
+          ) : (
+            <HoverCard openDelay={0} closeDelay={100}>
+              <HoverCardTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-4 p-0 hover:bg-transparent"
+                  onClick={() => setIsSidebarOpen(true)}
+                >
+                  <GalleryVerticalEnd className="size-4" />
+                </Button>
+              </HoverCardTrigger>
+              <HoverCardContent side="right" align="start" className="w-[200px] p-2">
+                <TimelineSidebarList
+                  conversations={conversations}
+                  activeConversationId={activeConversationId}
+                  onSelect={(id) => {
+                    setActiveConversationId(id)
+                    setIsSidebarOpen(true)
+                  }}
+                />
+              </HoverCardContent>
+            </HoverCard>
+          )}
+        </div>
+      }
+      headerContent={
+        <div className="bg-background border border-border flex items-center justify-center gap-[6px] px-3 h-[32px] rounded-lg shadow-sm cursor-pointer hover:bg-accent/50 transition-colors">
+          <PencilLine className="size-4" />
+          <span className="text-sm font-medium">페이지 저장 및 편집</span>
+        </div>
+      }
+      leftPane={
+        <>
+          {/* Timeline Sidebar (Local) */}
+          {isSidebarOpen && (
+            <>
+              {isMobile && (
+                <div
+                  className="fixed inset-0 top-[56px] z-30 bg-black/30"
+                  onClick={() => setIsSidebarOpen(false)}
+                />
+              )}
 
-        {/* Chat Content Area - 채팅 내용 및 입력 영역 */}
-        <div className="flex-1 flex flex-col h-full relative w-full">
-           {/* Header */}
-           <UserHeader 
-             leftContent={
-               <div className="flex items-end">
-                 {/* Sidebar Toggle Button (HoverCard for preview when closed) */}
-                 {isSidebarOpen ? (
-                   <Button
-                     variant="ghost"
-                     size="icon"
-                     className="size-4 p-0 hover:bg-transparent"
-                     onClick={() => setIsSidebarOpen(false)}
-                   >
-                     <ChevronsLeft className="size-4" />
-                   </Button>
-                 ) : (
-                   // 모바일에서는 hover가 없으므로: 클릭 시 오버레이 사이드바를 열기만 합니다.
-                   isMobile ? (
-                     <Button
-                       variant="ghost"
-                       size="icon"
-                       className="size-4 p-0 hover:bg-transparent"
-                       onClick={() => setIsSidebarOpen(true)}
-                     >
-                       <GalleryVerticalEnd className="size-4" />
-                     </Button>
-                   ) : (
-                     <HoverCard openDelay={0} closeDelay={100}>
-                       <HoverCardTrigger asChild>
-                         <Button
-                           variant="ghost"
-                           size="icon"
-                           className="size-4 p-0 hover:bg-transparent"
-                           onClick={() => setIsSidebarOpen(true)}
-                         >
-                           <GalleryVerticalEnd className="size-4" />
-                         </Button>
-                       </HoverCardTrigger>
-                       <HoverCardContent side="right" align="start" className="w-[200px] p-2">
-                         <TimelineSidebarList
-                           conversations={conversations}
-                           activeConversationId={activeConversationId}
-                           onSelect={(id) => {
-                             setActiveConversationId(id)
-                             setIsSidebarOpen(true)
-                           }}
-                         />
-                       </HoverCardContent>
-                     </HoverCard>
-                   )
-                 )}
-               </div>
-             }
-           >
-             {/* Header Center Button: Page Save & Edit - 페이지 저장 및 편집 */}
-             <div className="bg-background border border-border flex items-center justify-center gap-[6px] px-3  h-[32px] rounded-lg shadow-sm cursor-pointer hover:bg-accent/50 transition-colors">
-               <PencilLine className="size-4" />
-               <span className="text-sm font-medium">페이지 저장 및 편집</span>
-             </div>
-           </UserHeader>
-
-           {/* Chat Messages Scroll Area - 채팅 메시지 스크롤 영역 */}
-           <div className="overflow-y-auto p-6 flex flex-col w-full gap-4 items-center h-full">
+              <div
+                className={cn(
+                  "border-r border-border h-full flex flex-col px-2 py-4 bg-background shrink-0",
+                  isMobile ? "fixed top-[56px] left-0 bottom-0 z-40 w-[240px] shadow-lg" : "w-[200px]"
+                )}
+              >
+                <TimelineSidebarList
+                  conversations={conversations}
+                  activeConversationId={activeConversationId}
+                  onSelect={(id) => {
+                    setActiveConversationId(id)
+                    if (isMobile) setIsSidebarOpen(false)
+                  }}
+                />
+              </div>
+            </>
+          )}
+        </>
+      }
+    >
+      <div className="flex-1 flex flex-col h-full relative w-full">
+        {/* Chat Messages Scroll Area */}
+        <div className="overflow-y-auto p-6 flex flex-col w-full gap-4 items-center h-full">
              {/* Messages - 메시지 */}
              <div className="w-full max-w-[800px] flex flex-col gap-6 ">
                {messages.length === 0 ? (
@@ -688,11 +674,11 @@ export default function Timeline() {
                )}
              </div>
 
-           </div>
+        </div>
 
-           {/* Bottom Panel - Timeline 하단 패널 (ChatInterface compact 모드로 대체) */}
-           <div className="p-4 flex flex-col items-center gap-2 w-full">
-             <ChatInterface
+        {/* Bottom Panel */}
+        <div className="p-4 flex flex-col items-center gap-2 w-full">
+          <ChatInterface
                variant="compact"
                // 대화 선택 시 마지막 모델을 초기값으로 반영합니다.
                initialSelectedModel={initialSelectedModelForChat}
@@ -798,11 +784,10 @@ export default function Timeline() {
                   },
                 ])
                }}
-             />
-           </div>
+          />
         </div>
       </div>
-    </div>
+    </AppShell>
   )
 }
 

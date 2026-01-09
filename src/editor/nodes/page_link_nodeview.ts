@@ -5,7 +5,7 @@ type Preview = { title: string; summary: string }
 
 function authHeaders(): Record<string, string> {
   const token = typeof window !== "undefined" ? localStorage.getItem("token") : null
-  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  const headers: Record<string, string> = {}
   if (token) headers.Authorization = `Bearer ${token}`
   return headers
 }
@@ -32,18 +32,21 @@ export class PageLinkNodeView implements NodeView {
 
   constructor(node: PMNode, _view: EditorView, _getPos: () => number) {
     const dom = document.createElement("div")
-    dom.className = "pm-page-link"
+    dom.className = "my-3 rounded-xl border border-border bg-card p-3 text-card-foreground shadow-sm"
 
     const title = document.createElement("div")
-    title.className = "pm-page-link-title"
+    title.className = "font-semibold"
+    title.setAttribute("data-role", "title")
     dom.appendChild(title)
 
     const summary = document.createElement("div")
-    summary.className = "pm-page-link-preview"
+    summary.className = "mt-1 text-xs text-muted-foreground"
+    summary.setAttribute("data-role", "summary")
     dom.appendChild(summary)
 
     const hint = document.createElement("div")
-    hint.className = "pm-page-link-hint"
+    hint.className = "mt-1 text-xs text-muted-foreground"
+    hint.setAttribute("data-role", "hint")
     dom.appendChild(hint)
 
     this.dom = dom
