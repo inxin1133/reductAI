@@ -28,6 +28,31 @@ type MyPage = {
 
 type DocJson = unknown
 
+function extractEmbedIdsInOrder(docJson: unknown): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const walk = (n: unknown) => {
+    if (!n || typeof n !== "object") return
+    const node = n as Record<string, unknown>
+    const type = typeof node.type === "string" ? node.type : ""
+    if (type === "page_link") {
+      const attrs = node.attrs && typeof node.attrs === "object" ? (node.attrs as Record<string, unknown>) : {}
+      const display = typeof attrs.display === "string" ? attrs.display : ""
+      const pageId = typeof attrs.pageId === "string" ? attrs.pageId : ""
+      if (display === "embed" && pageId && !seen.has(pageId)) {
+        seen.add(pageId)
+        out.push(pageId)
+      }
+    }
+    const content = node.content
+    if (Array.isArray(content)) {
+      for (const c of content) walk(c)
+    }
+  }
+  walk(docJson)
+  return out
+}
+
 export default function PostEditorPage() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -229,6 +254,24 @@ export default function PostEditorPage() {
     const s = JSON.stringify(draftDocJson || null)
     setDirty(s !== lastSavedRef.current)
   }, [draftDocJson])
+
+  // Keep the left tree ordering synced with the embed order inside the parent document (instant UX).
+  useEffect(() => {
+    if (!postId || postId === "new") return
+    const ids = extractEmbedIdsInOrder(draftDocJson)
+    if (!ids.length) return
+    const order = new Map<string, number>()
+    for (let i = 0; i < ids.length; i += 1) order.set(String(ids[i]), i + 1)
+    setMyPages((prev) =>
+      prev.map((p) => {
+        if (String(p.parent_id || "") !== String(postId)) return p
+        const ord = order.get(String(p.id))
+        if (!ord) return p
+        if (Number(p.page_order || 0) === ord) return p
+        return { ...p, page_order: ord }
+      })
+    )
+  }, [draftDocJson, postId])
   useEffect(() => {
     versionRef.current = serverVersion
   }, [serverVersion])

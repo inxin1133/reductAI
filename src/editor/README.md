@@ -23,6 +23,15 @@ Markdown과 1:1 매핑이 어려운 노드들은 fallback 표현을 사용합니
 - `page_link` → `[[title|pageId|display]]`
 - `mention` → `@label`
 
+## Input rules & shortcuts (수정/추가 위치)
+
+- **Typing rules (입력 규칙)**: `src/editor/plugins/inputRules.ts`
+  - 예: `- ` → bullet list, `1. ` → ordered list, `"> "`/`" "` → quote, `` `code` `` → code mark
+- **Shortcuts (단축키)**: `src/editor/keymaps/index.ts`
+  - 예: `Mod-b`(bold), `Mod-i`(italic), undo/redo, list indent 등
+- **Mention (@) 동작**: `src/editor/plugins/mentionPlugin.ts`
+  - `@...` 매칭/드롭다운/키 처리(Enter/Arrow/Escape) 수정은 여기서
+
 ## 데모 페이지
 - 프론트 라우트: `/posts/:id/edit`
 - 동작:

@@ -48,7 +48,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
   const [markdown, setMarkdown] = useState("")
   const [docJson, setDocJson] = useState<PmDocJson>(initialDocJson ?? null)
 
-  const plugins = useMemo(() => buildEditorPlugins(editorSchema, { mention: { enabled: true } }), [])
+  // Mention (@) is temporarily disabled (it caused runaway update loops / freezes).
+  const plugins = useMemo(() => buildEditorPlugins(editorSchema, { mention: { enabled: false } }), [])
 
   useEffect(() => {
     if (!mountRef.current) return

@@ -1,6 +1,21 @@
 import type { Schema } from "prosemirror-model"
 import { InputRule, wrappingInputRule, textblockTypeInputRule } from "prosemirror-inputrules"
 
+function markInputRule(regexp: RegExp, markType: any) {
+  return new InputRule(regexp, (state, match, start, end) => {
+    const m = match[match.length - 1]
+    if (!m) return null
+    const tr = state.tr
+    const textStart = start + match[0].indexOf(m)
+    const textEnd = textStart + m.length
+    if (textEnd < end) tr.delete(textEnd, end)
+    if (start < textStart) tr.delete(start, textStart)
+    tr.addMark(start, start + m.length, markType.create())
+    tr.removeStoredMark(markType)
+    return tr
+  })
+}
+
 // Build input rules:
 // - "- " -> bullet_list
 // - "1. " -> ordered_list
@@ -31,6 +46,17 @@ export function buildInputRules(schema: Schema) {
   // Blockquote: "> "
   if (schema.nodes.blockquote) {
     rules.push(wrappingInputRule(/^\s*>\s$/, schema.nodes.blockquote))
+  }
+
+  // Blockquote: '" ' (quote + space) -> blockquote (Korean keyboard friendly)
+  if (schema.nodes.blockquote) {
+    rules.push(wrappingInputRule(/^"\s$/, schema.nodes.blockquote))
+  }
+
+  // Inline code: `text` -> code mark
+  if (schema.marks.code) {
+    // Similar to prosemirror example: apply code mark and strip backticks.
+    rules.push(markInputRule(/`([^`]+)`$/, schema.marks.code))
   }
 
   // Horizontal rule: "---"

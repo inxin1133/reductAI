@@ -33,6 +33,11 @@ export function buildEditorPlugins(schema: Schema, opts?: { mention?: { enabled?
   // Block inserter (+) on hover. Reuses the same command registry as slash.
   plugins.push(blockInserterPlugin(schema))
 
+  // Mention autocomplete should capture Enter/Arrows/Escape BEFORE keymaps consume them.
+  if (opts?.mention?.enabled !== false) {
+    plugins.push(mentionPlugin())
+  }
+
   // Tables
   plugins.push(columnResizing())
   plugins.push(tableEditing())
@@ -46,11 +51,6 @@ export function buildEditorPlugins(schema: Schema, opts?: { mention?: { enabled?
 
   // Always keep a writable trailing paragraph after the last block (Notion-like)
   plugins.push(trailingParagraphPlugin(schema))
-
-  // Mention autocomplete (mock)
-  if (opts?.mention?.enabled !== false) {
-    plugins.push(mentionPlugin())
-  }
 
   return plugins
 }

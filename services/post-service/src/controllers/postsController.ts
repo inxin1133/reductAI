@@ -176,6 +176,37 @@ export async function savePostContent(req: Request, res: Response) {
       )
     }
 
+    // Keep children ordering in sync with the embed order inside this parent page.
+    // Topmost embed block => smallest page_order (appears first in tree).
+    const embedOrder: string[] = []
+    const embedSeen = new Set<string>()
+    for (const b of blocks) {
+      if (b.block_type !== "page_link") continue
+      const pm = b.content?.pm || b.content
+      const display = pm?.attrs?.display
+      const pid = typeof b.ref_post_id === "string" ? b.ref_post_id : null
+      if (display === "embed" && pid && !embedSeen.has(pid)) {
+        embedSeen.add(pid)
+        embedOrder.push(pid)
+      }
+    }
+    if (embedOrder.length) {
+      const ords = embedOrder.map((_, i) => i + 1)
+      await client.query(
+        `WITH ord AS (
+           SELECT *
+           FROM unnest($1::uuid[], $2::int[]) AS t(id, ord)
+         )
+         UPDATE posts p
+         SET page_order = ord.ord
+         FROM ord
+         WHERE p.id = ord.id
+           AND p.parent_id = $3
+           AND p.author_id = $4`,
+        [embedOrder, ords, id, userId]
+      )
+    }
+
     const nextVersion = cur + 1
     await client.query(
       `UPDATE posts
