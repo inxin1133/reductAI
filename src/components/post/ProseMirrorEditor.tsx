@@ -7,6 +7,16 @@ import { editorSchema } from "../../editor/schema"
 import { buildEditorPlugins } from "../../editor/plugins"
 import { PageLinkNodeView } from "../../editor/nodes/page_link_nodeview"
 import { CodeBlockNodeView } from "../../editor/nodes/code_block_nodeview"
+import { blockInserterKey, type BlockInserterState } from "../../editor/plugins/blockInserterPlugin"
+import { getBlockCommandRegistry } from "../../editor/commands/blockCommandRegistry"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   cmdBlockquote,
   cmdBulletList,
@@ -28,6 +38,7 @@ import { exportMarkdown } from "../../editor/serializers/markdown"
 
 type PmDocJson = unknown
 type PmCommand = (state: EditorState, dispatch?: (tr: Transaction) => void, view?: EditorView) => boolean
+type MenuAnchor = { left: number; top: number; width: number; height: number }
 
 type Props = {
   initialDocJson?: PmDocJson
@@ -48,8 +59,27 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
   const [markdown, setMarkdown] = useState("")
   const [docJson, setDocJson] = useState<PmDocJson>(initialDocJson ?? null)
 
+  const [blockMenuOpen, setBlockMenuOpen] = useState(false)
+  const [blockMenuAnchor, setBlockMenuAnchor] = useState<MenuAnchor | null>(null)
+  const [blockMenuQuery, setBlockMenuQuery] = useState("")
+  const blockMenuInputRef = useRef<HTMLInputElement | null>(null)
+  const blockMenuSigRef = useRef<string>("")
+
   // Mention (@) is temporarily disabled (it caused runaway update loops / freezes).
   const plugins = useMemo(() => buildEditorPlugins(editorSchema, { mention: { enabled: false } }), [])
+
+  const blockCommands = useMemo(() => {
+    const items = getBlockCommandRegistry(editorSchema)
+    return items.map((c) => ({ key: c.key, title: c.title, keywords: c.keywords }))
+  }, [])
+
+  const filteredBlockCommands = useMemo(() => {
+    const q = blockMenuQuery.trim().toLowerCase()
+    if (!q) return blockCommands
+    return blockCommands.filter(
+      (c) => c.key.startsWith(q) || c.keywords.some((k) => String(k || "").toLowerCase().startsWith(q))
+    )
+  }, [blockCommands, blockMenuQuery])
 
   useEffect(() => {
     if (!mountRef.current) return
@@ -116,6 +146,18 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
         setDocJson(json)
         onChange?.(json)
         setMarkdown(exportMarkdown(editorSchema, nextState.doc))
+
+        // Sync block inserter menu state for the React DropdownMenu overlay.
+        const ui = blockInserterKey.getState(nextState) as BlockInserterState | undefined
+        const open = Boolean(ui?.menuOpen)
+        const anchor = ui?.menuAnchor || null
+        const sig = `${open ? 1 : 0}:${anchor ? `${Math.round(anchor.left)},${Math.round(anchor.top)},${Math.round(anchor.width)},${Math.round(anchor.height)}` : ""}`
+        if (sig !== blockMenuSigRef.current) {
+          blockMenuSigRef.current = sig
+          setBlockMenuOpen(open)
+          setBlockMenuAnchor(anchor)
+          if (!open) setBlockMenuQuery("")
+        }
       },
       attributes: {
         class: "pm-editor ProseMirror",
@@ -177,6 +219,22 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Focus the menu search input when opened.
+  useEffect(() => {
+    if (!blockMenuOpen) return
+    window.setTimeout(() => blockMenuInputRef.current?.focus(), 0)
+  }, [blockMenuOpen])
+
+  const closeBlockMenu = () => {
+    const v = viewRef.current
+    if (!v) return
+    v.dispatch(v.state.tr.setMeta(blockInserterKey, { menuOpen: false, query: "", menuAnchor: null }))
+  }
+
+  const runBlockMenuCommand = (commandKey: string, side: "before" | "after") => {
+    window.dispatchEvent(new CustomEvent("reductai:block-inserter:run", { detail: { commandKey, side } }))
+  }
+
   const run = (cmd: PmCommand) => {
     const view = viewRef.current
     if (!view) return
@@ -203,6 +261,115 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
 
   return (
     <div className="w-full">
+      {/* Block inserter menu (React / shadcn DropdownMenu) - 블럭 삽입 메뉴 */}
+      {blockMenuOpen && blockMenuAnchor ? (
+        <DropdownMenu
+          open={blockMenuOpen}
+          onOpenChange={(open) => {
+            if (!open) closeBlockMenu()
+          }}
+        >
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-hidden="true"
+              tabIndex={-1}
+              style={{
+                position: "fixed",
+                left: Math.round(blockMenuAnchor.left),
+                top: Math.round(blockMenuAnchor.top),
+                width: Math.max(1, Math.round(blockMenuAnchor.width)),
+                height: Math.max(1, Math.round(blockMenuAnchor.height)),
+                opacity: 0,
+                pointerEvents: "none",
+              }}
+            />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            side="right"
+            align="start"
+            sideOffset={6}
+            className="w-[320px] p-0"
+            onCloseAutoFocus={(e) => {
+              // Keep selection stable; the plugin will close the menu and keep the rail visible.
+              e.preventDefault()
+            }}
+          >
+            <DropdownMenuLabel className="px-2 py-2">Insert</DropdownMenuLabel>
+            <div className="px-2 pb-2">
+              <input
+                ref={blockMenuInputRef}
+                className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm outline-none"
+                placeholder="Search blocks..."
+                value={blockMenuQuery}
+                onChange={(e) => setBlockMenuQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  // Let Esc close the Radix menu.
+                  e.stopPropagation()
+                }}
+              />
+            </div>
+            <DropdownMenuSeparator />
+            <div className="max-h-[320px] overflow-auto p-1">
+              {filteredBlockCommands.length === 0 ? (
+                <div className="px-2 py-2 text-sm text-muted-foreground">No items</div>
+              ) : (
+                filteredBlockCommands.map((it) => (
+                  <DropdownMenuItem
+                    key={it.key}
+                    className="flex items-center justify-between gap-2"
+                    onSelect={(e) => {
+                      // We'll handle clicks ourselves to avoid double-trigger when clicking nested buttons.
+                      e.preventDefault()
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="flex flex-1 flex-col text-left"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        runBlockMenuCommand(it.key, "after")
+                      }}
+                    >
+                      <div className="text-sm">{it.title}</div>
+                      <div className="text-xs text-muted-foreground">/{it.key}</div>
+                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        className="rounded-sm border border-border px-2 py-1 text-xs hover:bg-accent"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          runBlockMenuCommand(it.key, "before")
+                        }}
+                      >
+                        Above
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-sm border border-border px-2 py-1 text-xs hover:bg-accent"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          runBlockMenuCommand(it.key, "after")
+                        }}
+                      >
+                        Below
+                      </button>
+                    </div>
+                  </DropdownMenuItem>
+                ))
+              )}
+            </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : null}
+
       <div className="flex flex-wrap gap-2 border rounded-md p-2">
         <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, cmdToggleBold(editorSchema))}>
           Bold

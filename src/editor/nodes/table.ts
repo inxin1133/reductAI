@@ -98,7 +98,7 @@ export const tableCellNodeSpec: NodeSpec = {
     cellToDom(
       "td",
       (node.attrs || {}) as CellAttrs,
-      "align-top border-b border-r border-border/60 p-3"
+      "align-top border-b border-r border-border/60 p-2"
     ),
 }
 
@@ -116,7 +116,7 @@ export const tableHeaderNodeSpec: NodeSpec = {
     cellToDom(
       "th",
       (node.attrs || {}) as CellAttrs,
-      "bg-muted/50 font-semibold text-foreground align-top border-b border-r border-border/60 p-3"
+      "bg-muted/50 font-semibold text-foreground align-top border-b border-r border-border/60 p-2"
     ),
 }
 

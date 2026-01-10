@@ -4,7 +4,7 @@ import { Decoration, DecorationSet } from "prosemirror-view"
 import type { Node as PMNode, Schema } from "prosemirror-model"
 import { getBlockCommandRegistry, type BlockInsertSide } from "../commands/blockCommandRegistry"
 
-type InserterState = {
+export type BlockInserterState = {
   hover: boolean
   blockFrom: number
   blockTo: number
@@ -16,9 +16,10 @@ type InserterState = {
   draggingPos: number | null
   dropPos: number | null
   placeholderHeight: number
+  menuAnchor: { left: number; top: number; width: number; height: number } | null
 }
 
-const key = new PluginKey<InserterState>("blockInserter")
+export const blockInserterKey = new PluginKey<BlockInserterState>("blockInserter")
 
 function findTopLevelBlockRangeAtPos(view: EditorView, pos: number): { from: number; to: number } | null {
   const doc = view.state.doc
@@ -72,14 +73,9 @@ function clamp(n: number, a: number, b: number) {
 
 export function blockInserterPlugin(schema: Schema) {
   const commands = getBlockCommandRegistry(schema)
-  const filterCommands = (q: string) => {
-    const query = (q || "").trim().toLowerCase()
-    if (!query) return commands
-    return commands.filter((c) => c.key.startsWith(query) || c.keywords.some((k) => k.startsWith(query)))
-  }
 
-  return new Plugin<InserterState>({
-    key,
+  return new Plugin<BlockInserterState>({
+    key: blockInserterKey,
     state: {
       init: () => ({
         hover: false,
@@ -93,16 +89,17 @@ export function blockInserterPlugin(schema: Schema) {
         draggingPos: null,
         dropPos: null,
         placeholderHeight: 36,
+        menuAnchor: null,
       }),
       apply: (tr, prev) => {
-        const meta = tr.getMeta(key) as Partial<InserterState> | undefined
+        const meta = tr.getMeta(blockInserterKey) as Partial<BlockInserterState> | undefined
         if (!meta) return prev
         return { ...prev, ...meta }
       },
     },
     props: {
       decorations(state) {
-        const st = key.getState(state) as InserterState
+        const st = blockInserterKey.getState(state) as BlockInserterState
         const decos: Decoration[] = []
 
         if (st.draggingPos != null) {
@@ -129,7 +126,7 @@ export function blockInserterPlugin(schema: Schema) {
           if (!target) return false
           if (!view.dom.contains(target)) return false
 
-          const st = key.getState(view.state) as InserterState
+          const st = blockInserterKey.getState(view.state) as BlockInserterState
           if (st.menuOpen) return false
           // While dragging, don't fight the drag loop with hover updates.
           if (st.draggingId) return false
@@ -144,42 +141,24 @@ export function blockInserterPlugin(schema: Schema) {
           if (!range) return false
 
           if (st.hover && st.blockFrom === range.from && st.blockTo === range.to && st.kind === range.kind) return false
-          view.dispatch(view.state.tr.setMeta(key, { hover: true, blockFrom: range.from, blockTo: range.to, kind: range.kind }))
+          view.dispatch(
+            view.state.tr.setMeta(blockInserterKey, {
+              hover: true,
+              blockFrom: range.from,
+              blockTo: range.to,
+              kind: range.kind,
+            })
+          )
           return false
         },
       },
       handleKeyDown: (view, event) => {
-        const st = key.getState(view.state) as InserterState
+        const st = blockInserterKey.getState(view.state) as BlockInserterState
         if (!st.menuOpen) return false
 
         if (event.key === "Escape") {
           event.preventDefault()
-          view.dispatch(view.state.tr.setMeta(key, { menuOpen: false }))
-          return true
-        }
-        if (event.key === "ArrowDown") {
-          event.preventDefault()
-          const items = filterCommands(st.query)
-          view.dispatch(
-            view.state.tr.setMeta(key, { index: clamp((st.index || 0) + 1, 0, Math.max(items.length - 1, 0)) })
-          )
-          return true
-        }
-        if (event.key === "ArrowUp") {
-          event.preventDefault()
-          const items = filterCommands(st.query)
-          view.dispatch(
-            view.state.tr.setMeta(key, { index: clamp((st.index || 0) - 1, 0, Math.max(items.length - 1, 0)) })
-          )
-          return true
-        }
-        if (event.key === "Enter") {
-          event.preventDefault()
-          const items = filterCommands(st.query)
-          const cmd = items[clamp(st.index || 0, 0, Math.max(items.length - 1, 0))]
-          if (!cmd) return true
-          view.dispatch(view.state.tr.setMeta(key, { menuOpen: false }))
-          cmd.applyInsert(view, { blockFrom: st.blockFrom, blockTo: st.blockTo, side: "after" })
+          view.dispatch(view.state.tr.setMeta(blockInserterKey, { menuOpen: false, query: "", menuAnchor: null }))
           return true
         }
         return false
@@ -244,23 +223,17 @@ export function blockInserterPlugin(schema: Schema) {
       handle.setAttribute("draggable", "true")
       rail.appendChild(handle)
 
-
-      // Floating menu
-      const menu = document.createElement("div")
-      menu.className = "pm-block-inserter-menu"
-      menu.style.display = "none"
-      document.body.appendChild(menu)
-
       let overUI = false
       let hideTimer: number | null = null
       let clearHoverTimer: number | null = null
       let draggingId: string | null = null
       let dropPos: number | null = null
-      let draggingKind: InserterState["kind"] = "top"
+      let draggingKind: BlockInserterState["kind"] = "top"
       let draggingContainerId: string | null = null
       let placeholderHeight = 36
 
-      // Drop line overlay (used for table_row drag, where inserting a widget into <table> is problematic)
+      // Drop line overlay (used for table_row drag, where inserting a widget into <table> is problematic) 
+      // 드래그 중에 테이블 내부에 위젯을 삽입하는 문제를 방지하기 위해 사용되는 드롭 라인 오버레이입니다.
       const dropLine = document.createElement("div")
       dropLine.className = "pm-drop-line"
       dropLine.style.display = "none"
@@ -285,9 +258,9 @@ export function blockInserterPlugin(schema: Schema) {
         if (!pending) return
         const next = pending
         pending = null
-        const st = key.getState(view.state) as InserterState
+        const st = blockInserterKey.getState(view.state) as BlockInserterState
         if (st.dropPos === next.dropPos && st.placeholderHeight === placeholderHeight) return
-        view.dispatch(view.state.tr.setMeta(key, { dropPos: next.dropPos, placeholderHeight }))
+        view.dispatch(view.state.tr.setMeta(blockInserterKey, { dropPos: next.dropPos, placeholderHeight }))
         if (draggingKind === "table_row" && next.y != null) showDropLineAt(next.y)
       }
 
@@ -296,7 +269,7 @@ export function blockInserterPlugin(schema: Schema) {
         raf = null
         pending = null
         hideDropLine()
-        view.dispatch(view.state.tr.setMeta(key, { draggingId: null, draggingPos: null, dropPos: null }))
+        view.dispatch(view.state.tr.setMeta(blockInserterKey, { draggingId: null, draggingPos: null, dropPos: null }))
       }
 
       function setOverUI(v: boolean) {
@@ -313,80 +286,20 @@ export function blockInserterPlugin(schema: Schema) {
       }
 
       function scheduleHideIfNeeded() {
-        const st = key.getState(view.state) as InserterState
+        const st = blockInserterKey.getState(view.state) as BlockInserterState
         if (st.menuOpen) return
         if (st.hover) return
         if (overUI) return
         if (hideTimer) window.clearTimeout(hideTimer)
         hideTimer = window.setTimeout(() => {
-          const st2 = key.getState(view.state) as InserterState
+          const st2 = blockInserterKey.getState(view.state) as BlockInserterState
           if (!st2.menuOpen && !st2.hover && !overUI) {
             rail.style.display = "none"
-            menu.style.display = "none"
           }
         }, 220)
       }
 
-      function renderMenu(st: InserterState) {
-        if (!st.menuOpen) {
-          menu.style.display = "none"
-          return
-        }
-
-        const items = filterCommands(st.query)
-        const safeIndex = clamp(st.index || 0, 0, Math.max(items.length - 1, 0))
-
-        menu.innerHTML = `
-          <div class="pm-block-inserter-menu-header">
-            <div class="pm-block-inserter-menu-title">Insert</div>
-          </div>
-          <div class="pm-block-inserter-search-wrap">
-            <input class="pm-block-inserter-search" placeholder="Search blocks..." value="${(st.query || "").replaceAll('"', "&quot;")}" />
-          </div>
-          <div class="pm-block-inserter-menu-list">
-            ${
-              items.length === 0
-                ? `<div class="pm-block-inserter-empty">No items</div>`
-                : items
-                    .map((it, i) => {
-                      const active = i === safeIndex
-                      return `<div data-i="${i}" class="pm-block-inserter-item ${active ? "is-active" : ""}">
-                        <div class="pm-block-inserter-item-main">
-                          <div class="pm-block-inserter-item-title">${it.title}</div>
-                          <div class="pm-block-inserter-item-key">/${it.key}</div>
-                        </div>
-                        <div class="pm-block-inserter-item-actions">
-                          <button type="button" data-act="before" data-i="${i}" class="pm-block-inserter-mini">Above</button>
-                          <button type="button" data-act="after" data-i="${i}" class="pm-block-inserter-mini">Below</button>
-                        </div>
-                      </div>`
-                    })
-                    .join("")
-            }
-          </div>
-        `
-
-        const input = menu.querySelector("input.pm-block-inserter-search") as HTMLInputElement | null
-        if (input) {
-          input.addEventListener("keydown", (e) => {
-            // Let Arrow/Enter be handled by editor keydown handler (menu is outside view.dom)
-            if (e.key === "Escape") e.preventDefault()
-          })
-          input.addEventListener("input", () => {
-            view.dispatch(view.state.tr.setMeta(key, { query: input.value, index: 0 }))
-          })
-          // Keep focus on input when menu opens
-          window.setTimeout(() => input.focus(), 0)
-        }
-
-        // position menu near button
-        const btnRect = rail.getBoundingClientRect()
-        menu.style.left = `${Math.round(btnRect.left + 28)}px`
-        menu.style.top = `${Math.round(btnRect.top)}px`
-        menu.style.display = "block"
-      }
-
-      function positionButton(st: InserterState) {
+      function positionButton(st: BlockInserterState) {
         if ((!st.hover && !overUI) && !st.menuOpen) {
           rail.style.display = "none"
           return
@@ -473,9 +386,8 @@ export function blockInserterPlugin(schema: Schema) {
       }
 
       function updateUI() {
-        const st = key.getState(view.state) as InserterState
+        const st = blockInserterKey.getState(view.state) as BlockInserterState
         positionButton(st)
-        renderMenu(st)
       }
 
       // Throttle UI updates to animation frames to avoid stutter while typing.
@@ -488,23 +400,22 @@ export function blockInserterPlugin(schema: Schema) {
       }
 
       function openMenu() {
-        const st = key.getState(view.state) as InserterState
-        view.dispatch(view.state.tr.setMeta(key, { menuOpen: true, index: 0, query: st.query || "" }))
+        const st = blockInserterKey.getState(view.state) as BlockInserterState
+        const r = btn.getBoundingClientRect()
+        view.dispatch(
+          view.state.tr.setMeta(blockInserterKey, {
+            menuOpen: true,
+            index: 0,
+            query: st.query || "",
+            menuAnchor: { left: r.left, top: r.top, width: r.width, height: r.height },
+          })
+        )
         setOverUI(true)
         rail.style.display = "flex"
-        renderMenu({ ...st, menuOpen: true, index: 0 })
-      }
-
-      function closeMenu() {
-        view.dispatch(view.state.tr.setMeta(key, { menuOpen: false, query: "" }))
-        menu.style.display = "none"
-        scheduleHideIfNeeded()
       }
 
       rail.addEventListener("mouseenter", () => setOverUI(true))
       rail.addEventListener("mouseleave", () => setOverUI(false))
-      menu.addEventListener("mouseenter", () => setOverUI(true))
-      menu.addEventListener("mouseleave", () => setOverUI(false))
 
       btn.addEventListener("mousedown", (e) => e.preventDefault())
       btn.addEventListener("click", (e) => {
@@ -516,7 +427,7 @@ export function blockInserterPlugin(schema: Schema) {
       // NOTE: don't preventDefault on mousedown here — it cancels native dragstart in some browsers.
       handle.addEventListener("mousedown", (e) => e.stopPropagation())
       handle.addEventListener("dragstart", (e) => {
-        const st = key.getState(view.state) as InserterState
+        const st = blockInserterKey.getState(view.state) as BlockInserterState
         const range = findKindedRangeAtPos(view, st.blockFrom, schema)
         if (!range) return
         const node = view.state.doc.nodeAt(range.from)
@@ -540,7 +451,14 @@ export function blockInserterPlugin(schema: Schema) {
         }
         dropPos = null
         hideDropLine()
-        view.dispatch(view.state.tr.setMeta(key, { draggingId, draggingPos: range.from, placeholderHeight, kind: range.kind }))
+        view.dispatch(
+          view.state.tr.setMeta(blockInserterKey, {
+            draggingId,
+            draggingPos: range.from,
+            placeholderHeight,
+            kind: range.kind,
+          })
+        )
         try {
           // IMPORTANT: do NOT put the UUID into text/plain, otherwise browsers may insert it into contenteditable on drop.
           // Use a custom mime type and keep text/plain empty to avoid stray text insertion.
@@ -560,52 +478,29 @@ export function blockInserterPlugin(schema: Schema) {
         scheduleHideIfNeeded()
       })
 
-      menu.addEventListener("mousedown", (e) => e.preventDefault())
-      menu.addEventListener("click", (e) => {
-        const t = e.target as HTMLElement
-        const actEl = t.closest("[data-act]") as HTMLElement | null
-        const st = key.getState(view.state) as InserterState
-        const items = filterCommands(st.query)
-
-        // If user clicks the mini action buttons, use that side
-        if (actEl) {
-          const idx = parseInt(actEl.getAttribute("data-i") || "0", 10)
-          const act = (actEl.getAttribute("data-act") || "after") as BlockInsertSide
-          const cmd = items[idx]
-          if (!cmd) return
-          closeMenu()
-          cmd.applyInsert(view, { blockFrom: st.blockFrom, blockTo: st.blockTo, side: act })
-          return
-        }
-
-        // If user clicks the item row itself, default to inserting below
-        const itemEl = t.closest("[data-i]") as HTMLElement | null
-        if (!itemEl) return
-        const idx = parseInt(itemEl.getAttribute("data-i") || "0", 10)
-        const cmd = items[idx]
-        if (!cmd) return
-        closeMenu()
-        cmd.applyInsert(view, { blockFrom: st.blockFrom, blockTo: st.blockTo, side: "after" })
-      })
-
-      // Close menu on outside click
-      function onDocMouseDown(e: MouseEvent) {
-        const st = key.getState(view.state) as InserterState
+      // React menu calls into the plugin to execute commands.
+      function onRunMenu(e: Event) {
+        const ce = e as CustomEvent<{ commandKey?: string; side?: BlockInsertSide }>
+        const cmdKey = String(ce.detail?.commandKey || "")
+        const side = (ce.detail?.side || "after") as BlockInsertSide
+        if (!cmdKey) return
+        const st = blockInserterKey.getState(view.state) as BlockInserterState
         if (!st.menuOpen) return
-        const target = e.target as Node
-        if (menu.contains(target) || rail.contains(target)) return
-        closeMenu()
+        const cmd = commands.find((c) => c.key === cmdKey)
+        if (!cmd) return
+        view.dispatch(view.state.tr.setMeta(blockInserterKey, { menuOpen: false, query: "", menuAnchor: null }))
+        cmd.applyInsert(view, { blockFrom: st.blockFrom, blockTo: st.blockTo, side })
       }
-      document.addEventListener("mousedown", onDocMouseDown)
+      window.addEventListener("reductai:block-inserter:run", onRunMenu as EventListener)
 
       // When the mouse leaves the editor AND the inserter UI, clear hover state so the rail can hide.
       function onDocMouseMove(e: MouseEvent) {
-        const st = key.getState(view.state) as InserterState
+        const st = blockInserterKey.getState(view.state) as BlockInserterState
         if (st.menuOpen) return
         if (overUI) return
         const target = e.target as Node | null
-        // Moving from editor -> rail/menu: don't clear hover before mouseenter fires.
-        if (target && (rail.contains(target) || menu.contains(target))) return
+        // Moving from editor -> rail: don't clear hover before mouseenter fires.
+        if (target && rail.contains(target)) return
         if (target && view.dom.contains(target)) return
         if (!st.hover) return
 
@@ -614,10 +509,10 @@ export function blockInserterPlugin(schema: Schema) {
         if (clearHoverTimer) return
         clearHoverTimer = window.setTimeout(() => {
           clearHoverTimer = null
-          const st2 = key.getState(view.state) as InserterState
+          const st2 = blockInserterKey.getState(view.state) as BlockInserterState
           if (st2.menuOpen) return
           if (overUI) return
-          view.dispatch(view.state.tr.setMeta(key, { hover: false }))
+          view.dispatch(view.state.tr.setMeta(blockInserterKey, { hover: false }))
           scheduleHideIfNeeded()
         }, 220)
       }
@@ -668,7 +563,7 @@ export function blockInserterPlugin(schema: Schema) {
         return null
       }
 
-      function rangeFromDomForKind(el: Element, kind: InserterState["kind"]): { from: number; to: number } | null {
+      function rangeFromDomForKind(el: Element, kind: BlockInserterState["kind"]): { from: number; to: number } | null {
         const pos = view.posAtDOM(el as unknown as Node, 0)
         const $pos = view.state.doc.resolve(pos)
         if (kind === "table_row" && schema.nodes.table_row) {
@@ -686,7 +581,7 @@ export function blockInserterPlugin(schema: Schema) {
         return null
       }
 
-      function siblingElementsForTarget(kind: InserterState["kind"], target: EventTarget | null) {
+      function siblingElementsForTarget(kind: BlockInserterState["kind"], target: EventTarget | null) {
         const node = target as unknown as Node | null
         if (!node) return null
         const el: Element | null = node.nodeType === 1 ? (node as unknown as Element) : (node as Node).parentElement
@@ -736,7 +631,7 @@ export function blockInserterPlugin(schema: Schema) {
         if (draggingKind === "list_item" || draggingKind === "table_row") {
           const cid = parentContainerIdAt(anchorRange.from)
           if (!cid || (draggingContainerId && cid !== draggingContainerId)) {
-            view.dispatch(view.state.tr.setMeta(key, { dropPos: null }))
+            view.dispatch(view.state.tr.setMeta(blockInserterKey, { dropPos: null }))
             return
           }
         }
@@ -793,14 +688,13 @@ export function blockInserterPlugin(schema: Schema) {
       return {
         update: () => scheduleUI(),
         destroy: () => {
-          document.removeEventListener("mousedown", onDocMouseDown)
           document.removeEventListener("mousemove", onDocMouseMove)
           view.dom.removeEventListener("dragover", onDragOver, true)
           view.dom.removeEventListener("drop", onDrop, true)
           window.removeEventListener("scroll", onScroll, true)
+          window.removeEventListener("reductai:block-inserter:run", onRunMenu as EventListener)
           if (uiRaf != null) window.cancelAnimationFrame(uiRaf)
           rail.remove()
-          menu.remove()
           dropLine.remove()
         },
       }

@@ -14,6 +14,7 @@ import { imageNodeSpec } from "../nodes/image"
 import { mentionNodeSpec } from "../nodes/mention"
 import { pageLinkNodeSpec } from "../nodes/page_link"
 import { tableCellNodeSpec, tableHeaderNodeSpec, tableNodeSpec, tableRowNodeSpec } from "../nodes/table"
+import { horizontalRuleNodeSpec } from "../nodes/horizontal_rule"
 
 import { strongMarkSpec } from "../marks/strong"
 import { emMarkSpec } from "../marks/em"
@@ -27,6 +28,7 @@ const baseNodes = addListNodes(basicSchema.spec.nodes, "paragraph block*", "bloc
   .update("heading", headingNodeSpec)
   .update("blockquote", blockquoteNodeSpec)
   .update("code_block", codeBlockNodeSpec)
+  .update("horizontal_rule", horizontalRuleNodeSpec)
   // Override list nodes for marker/style control
   .update("bullet_list", bulletListNodeSpec)
   .update("ordered_list", orderedListNodeSpec)

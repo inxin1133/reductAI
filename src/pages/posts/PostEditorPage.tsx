@@ -1,11 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
 import { ProseMirrorEditor } from "../../components/post/ProseMirrorEditor"
-import { ChevronDown, ChevronLeft, ChevronRight, FileText, Plus, RefreshCw, Save } from "lucide-react"
+import { ChevronDown, ChevronsLeft, ChevronRight, FileText, ListTree, Plus, Save, ListChevronsDownUp, ListChevronsUpDown } from "lucide-react"
 
 import { AppShell } from "@/components/layout/AppShell"
 import { Button } from "@/components/ui/button"
+import {
+  Breadcrumb,
+  BreadcrumbEllipsis,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb"
 import { Card } from "@/components/ui/card"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -68,6 +79,9 @@ export default function PostEditorPage() {
   const [draftDocJson, setDraftDocJson] = useState<DocJson>(null)
 
   const [navOpen, setNavOpen] = useState(true)
+  const navOpenRef = useRef(true)
+  const [isMobile, setIsMobile] = useState(false)
+  const [isNavDrawerOpen, setIsNavDrawerOpen] = useState(false)
   const [myPages, setMyPages] = useState<MyPage[]>([])
   const [pageTitle, setPageTitle] = useState<string>("")
   const titleInputRef = useRef<HTMLInputElement | null>(null)
@@ -469,10 +483,84 @@ export default function PostEditorPage() {
     return m
   }, [myPages])
 
+  const pageById = useMemo(() => {
+    const m = new Map<string, MyPage>()
+    for (const p of myPages) m.set(String(p.id), p)
+    return m
+  }, [myPages])
+
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [autoExpandAncestors, setAutoExpandAncestors] = useState(true)
+
+  const expandableIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const [parentId, kids] of childrenByParent.entries()) {
+      if (kids.length > 0) ids.add(String(parentId))
+    }
+    return ids
+  }, [childrenByParent])
+
+  // Mobile behavior: auto-collapse page tree and open it as an overlay drawer (Timeline-like)
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return
+    const mq = window.matchMedia("(max-width: 767px)")
+
+    const apply = () => {
+      const mobile = mq.matches
+      setIsMobile(mobile)
+      if (mobile) {
+        // remember desktop state and collapse
+        navOpenRef.current = navOpen
+        setNavOpen(false)
+        setIsNavDrawerOpen(false)
+      } else {
+        setIsNavDrawerOpen(false)
+        // restore last desktop state
+        setNavOpen(navOpenRef.current)
+      }
+    }
+
+    apply()
+    if (typeof mq.addEventListener === "function") {
+      mq.addEventListener("change", apply)
+      return () => mq.removeEventListener("change", apply)
+    }
+    // Safari legacy
+    mq.addListener(apply)
+    return () => mq.removeListener(apply)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const breadcrumbData = useMemo(() => {
+    if (!postId || postId === "new") return { visible: [] as Array<{ id: string; title: string }>, hidden: [] as Array<{ id: string; title: string }> }
+    const chain: Array<{ id: string; title: string }> = []
+    let cur = String(postId)
+    for (let i = 0; i < 50; i += 1) {
+      const p = pageById.get(cur)
+      const title = cur === String(postId) && String(pageTitle || "").trim() ? String(pageTitle) : p?.title || "New page"
+      chain.push({ id: cur, title })
+      const parent = parentById.get(cur) || null
+      if (!parent) break
+      cur = String(parent)
+    }
+    chain.reverse()
+    if (chain.length <= 4) return { visible: chain, hidden: [] as Array<{ id: string; title: string }> }
+    const hidden = chain.slice(1, Math.max(1, chain.length - 2))
+    // Notion-like: show first, ellipsis, last-1, last
+    return {
+      visible: [chain[0], { id: "__ellipsis__", title: "..." }, chain[chain.length - 2], chain[chain.length - 1]],
+      hidden,
+    }
+  }, [pageById, pageTitle, parentById, postId])
+
+  const openNav = () => {
+    if (isMobile) setIsNavDrawerOpen(true)
+    else setNavOpen(true)
+  }
 
   // Expand roots and the ancestor chain of the current page so it stays visible.
   useEffect(() => {
+    if (!autoExpandAncestors) return
     if (!myPages.length) return
     setExpanded((prev) => {
       const next = new Set(prev)
@@ -486,7 +574,25 @@ export default function PostEditorPage() {
       }
       return next
     })
-  }, [myPages.length, parentById, postId, roots])
+  }, [autoExpandAncestors, myPages.length, parentById, postId, roots])
+
+  const expandAll = useCallback(() => {
+    setAutoExpandAncestors(true)
+    setExpanded(new Set(expandableIds))
+  }, [expandableIds])
+
+  const collapseAll = useCallback(() => {
+    setAutoExpandAncestors(false)
+    setExpanded(new Set())
+  }, [])
+
+  const isAllExpanded = useMemo(() => {
+    if (!expandableIds.size) return false
+    for (const id of expandableIds) {
+      if (!expanded.has(id)) return false
+    }
+    return true
+  }, [expandableIds, expanded])
 
   const toggleExpand = (id: string) => {
     setExpanded((prev) => {
@@ -564,12 +670,121 @@ export default function PostEditorPage() {
 
   return (
     <AppShell
+      headerLeftContent={
+        <div className="flex items-center gap-2 min-w-0 overflow-hidden flex-nowrap">
+          {/* When collapsed, show ListTree icon + breadcrumb */}
+          {(isMobile ? !isNavDrawerOpen : !navOpen) ? (
+            <HoverCard openDelay={0} closeDelay={120}>
+              <HoverCardTrigger asChild>
+                <Button variant="ghost" size="icon" className="size-8 shrink-0" onClick={openNav} title="페이지 트리">
+                  <ListTree className="size-4" />
+                </Button>
+              </HoverCardTrigger>
+              {!isMobile ? (
+                <HoverCardContent side="right" align="start" className="w-[280px] p-2">
+                  <div className="flex items-center justify-between px-1 pb-2">
+                    <div className="text-sm font-semibold">나의 페이지</div>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={isAllExpanded ? collapseAll : expandAll}
+                        title={isAllExpanded ? "목록 최소화" : "목록 펼치기"}
+                        className="size-8"
+                      >
+                        {isAllExpanded ? <ListChevronsDownUp className="size-4" /> : <ListChevronsUpDown className="size-4" />}
+                      </Button>
+
+                      <Button variant="ghost" size="icon" onClick={createNewFromNav} title="새 페이지" className="size-8">
+                        <Plus className="size-4" />
+                      </Button>
+                    </div>
+                  </div>
+                  <Separator />
+                  <ScrollArea className="h-[360px]">
+                    <div className="pt-2">
+                      {roots.length === 0 ? (
+                        <div className="text-sm text-muted-foreground px-2 py-2">아직 페이지가 없습니다.</div>
+                      ) : (
+                        <div className="flex flex-col gap-1">{roots.map((p) => renderTreeNode(p, 0))}</div>
+                      )}
+                    </div>
+                  </ScrollArea>
+                </HoverCardContent>
+              ) : null}
+            </HoverCard>
+          ) : null}
+
+          <Breadcrumb className="min-w-0 overflow-hidden">
+            <BreadcrumbList className="min-w-0 overflow-hidden flex-nowrap whitespace-nowrap break-normal">
+              {breadcrumbData.visible.map((c, idx) => {
+                const isLast = idx === breadcrumbData.visible.length - 1
+                if (c.id === "__ellipsis__") {
+                  return (
+                    <BreadcrumbItem key={`ellipsis_${idx}`}>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild className="gap-0">
+                          <Button                            
+                            variant="ghost"
+                            size="icon"
+                            className="size-8 shrink-0"                            
+                            title="숨겨진 경로 보기"
+                          >
+                            <BreadcrumbEllipsis />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-64">
+                          {breadcrumbData.hidden.map((h) => (
+                            <DropdownMenuItem
+                              key={h.id}
+                              onSelect={() => {
+                                if (isMobile) setIsNavDrawerOpen(false)
+                                navigate(`/posts/${h.id}/edit`)
+                              }}
+                            >
+                              <span className="truncate">{h.title || "New page"}</span>
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                      {!isLast ? <BreadcrumbSeparator /> : null}
+                    </BreadcrumbItem>
+                  )
+                }
+                const label = (
+                  <span className="max-w-[120px] min-w-[30px] w-full truncate inline-block align-bottom">{c.title || "New page"}</span>
+                )
+                return (
+                  <BreadcrumbItem key={c.id} className="min-w-0">
+                    {isLast ? (
+                      <BreadcrumbPage className="min-w-0">{label}</BreadcrumbPage>
+                    ) : (
+                      <BreadcrumbLink
+                        asChild
+                        className="min-w-0 cursor-pointer"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          if (isMobile) setIsNavDrawerOpen(false)
+                          navigate(`/posts/${c.id}/edit`)
+                        }}
+                      >
+                        <span className="min-w-0">{label}</span>
+                      </BreadcrumbLink>
+                    )}
+                    {!isLast ? <BreadcrumbSeparator /> : null}
+                  </BreadcrumbItem>
+                )
+              })}
+            </BreadcrumbList>
+          </Breadcrumb>
+        </div>
+      }
       headerContent={
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
+          {/* <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
             <RefreshCw className="size-4 mr-2" />
             Reload
-          </Button>
+          </Button> */}
           <Button size="sm" disabled={!canSave} onClick={() => void saveNow()}>
             <Save className="size-4 mr-2" />
             Save{dirty ? "*" : ""}
@@ -579,47 +794,85 @@ export default function PostEditorPage() {
       leftPane={
         <>
           {/* Left page tree (local) - 왼쪽 페이지 트리 */}
-          <div
-            className={[
-              "h-full border-r text-sidebar-foreground bg-background transition-all duration-200 shrink-0",
-              navOpen ? "w-[280px]" : "w-[56px]",
-            ].join(" ")}
-          >
-            <div className="h-12 flex items-center justify-between px-3">
-              {navOpen ? <div className="font-semibold">나의 페이지</div> : <div className="font-semibold">P</div>}
-              <div className="flex items-center gap-2">
-                {navOpen ? (
-                  <Button variant="ghost" size="icon" onClick={createNewFromNav} title="새 페이지">
-                    <Plus className="size-4" />
-                  </Button>
-                ) : null}
-                <Button variant="ghost" size="icon" onClick={() => setNavOpen((v) => !v)} title="토글">
-                  {navOpen ? <ChevronLeft className="size-4" /> : <ChevronRight className="size-4" />}
-                </Button>
-              </div>
-            </div>
-            <Separator />
-
-            {navOpen ? (
-              <ScrollArea className="h-[calc(100%-48px)]">
-                <div className="p-2">
-                  {roots.length === 0 ? (
-                    <div className="text-sm opacity-70 px-2 py-2">아직 페이지가 없습니다.</div>
-                  ) : null}
-
-                  <div className="flex flex-col gap-1">
-                    {roots.map((p) => renderTreeNode(p, 0))}
+          {isMobile ? (
+            <>
+              {/* Mobile: NavDrawer - 모바일 왼쪽 페이지 트리 */}
+              {isNavDrawerOpen ? (
+                <>
+                  <div className="fixed inset-0 top-[56px] z-30 bg-black/30" onClick={() => setIsNavDrawerOpen(false)} />
+                  <div className="fixed top-[56px] left-0 bottom-0 z-40 w-[320px] border-r border-border bg-background shadow-lg">
+                    <div className="h-12 flex items-center justify-between px-3">
+                      <div className="font-semibold">나의 페이지</div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="ghost"
+                          className="size-8 shrink-0"
+                          title={isAllExpanded ? "목록 최소화" : "목록 펼치기"}
+                          onClick={isAllExpanded ? collapseAll : expandAll}
+                        >
+                          {isAllExpanded ? <ListChevronsDownUp className="size-4" /> : <ListChevronsUpDown className="size-4" />}
+                        </Button>
+                        <Button variant="ghost" className="size-8 shrink-0" onClick={createNewFromNav} title="새 페이지">
+                          <Plus className="size-4" />
+                        </Button>
+                        <Button variant="ghost" className="size-8 shrink-0" onClick={() => setIsNavDrawerOpen(false)} title="닫기">
+                          <ChevronsLeft className="size-4" />
+                        </Button>
+                      </div>
+                    </div>
+                    <Separator />
+                    <ScrollArea className="h-[calc(100%-48px)]">
+                      <div className="p-2">
+                        {roots.length === 0 ? (
+                          <div className="text-sm opacity-70 px-2 py-2">아직 페이지가 없습니다.</div>
+                        ) : (
+                          <div className="flex flex-col gap-1">{roots.map((p) => renderTreeNode(p, 0))}</div>
+                        )}
+                      </div>
+                    </ScrollArea>
+                  </div>
+                </>
+              ) : null}
+              {/* Mobile: keep leftPane width zero so main content doesn't shift - 왼쪽 페이지 트리 너비를 0으로 유지하여 메인 콘텐츠가 이동하지 않도록 함 */}
+              <div className="w-0" />
+            </>
+          ) : navOpen ? (
+            <>
+              {/* Desktop: NavDrawer - 데스크탑 왼쪽 페이지 트리 */}
+              <div className="h-full w-[280px] border-r text-sidebar-foreground bg-background transition-all duration-200 shrink-0">
+                <div className="h-14 flex items-center justify-between px-3">
+                  <div className="text-sm font-semibold">나의 페이지</div>
+                  <div className="flex items-center gap-0">
+                    <Button
+                      variant="ghost"
+                      className="size-8 shrink-0"
+                      title={isAllExpanded ? "목록 최소화" : "목록 펼치기"}
+                      onClick={isAllExpanded ? collapseAll : expandAll}
+                    >
+                      {isAllExpanded ? <ListChevronsDownUp className="size-4" /> : <ListChevronsUpDown className="size-4" />}
+                    </Button>
+                    <Button variant="ghost" className="size-8 shrink-0" onClick={createNewFromNav} title="새 페이지">
+                      <Plus className="size-4" />
+                    </Button>
+                    <Button variant="ghost" className="size-8 shrink-0" onClick={() => setNavOpen(false)} title="닫기">
+                      <ChevronsLeft className="size-4" />
+                    </Button>
                   </div>
                 </div>
-              </ScrollArea>
-            ) : (
-              <div className="p-2 flex flex-col gap-2">
-                <Button variant="ghost" size="icon" onClick={createNewFromNav} title="새 페이지">
-                  <Plus className="size-5" />
-                </Button>
+                <Separator />
+
+                <ScrollArea className="h-[calc(100%-48px)]">
+                  <div className="p-2">
+                    {roots.length === 0 ? <div className="text-sm opacity-70 px-2 py-2">아직 페이지가 없습니다.</div> : null}
+                    <div className="flex flex-col gap-1">{roots.map((p) => renderTreeNode(p, 0))}</div>
+                  </div>
+                </ScrollArea>
               </div>
-            )}
-          </div>
+            </>
+          ) : (
+            // Desktop: keep leftPane width zero so main content doesn't shift
+            <div className="w-0" />
+          )}
         </>
       }
     >
