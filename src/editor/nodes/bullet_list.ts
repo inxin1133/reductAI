@@ -7,6 +7,8 @@ export const bulletListNodeSpec: NodeSpec = {
   attrs: {
     bulletStyle: { default: "disc" },
     blockId: { default: null },
+    // listKind: "bullet" | "check"
+    listKind: { default: "bullet" },
   },
   content: "list_item+",
   group: "block",
@@ -19,20 +21,28 @@ export const bulletListNodeSpec: NodeSpec = {
         const style = (el.style as any)?.listStyleType || ""
         const bulletStyle = (data || style || "disc").trim()
         const blockId = el.getAttribute("data-block-id") || ""
-        return { bulletStyle, blockId: blockId || null }
+        const listKind = (el.getAttribute("data-list-kind") || "bullet").trim()
+        return { bulletStyle, blockId: blockId || null, listKind }
       },
     },
   ],
   toDOM: (node) => {
-    const { bulletStyle, blockId } = node.attrs as { bulletStyle?: string; blockId?: string | null }
+    const { bulletStyle, blockId, listKind } = node.attrs as {
+      bulletStyle?: string
+      blockId?: string | null
+      listKind?: string
+    }
     const style = String(bulletStyle || "disc")
+    const kind = String(listKind || "bullet")
+    const isCheck = kind === "check"
     return [
       "ul",
       {
-        class: `pm-bullet-list pm-bullet-${style}`,
+        class: isCheck ? "pm-task-list" : `pm-bullet-list pm-bullet-${style}`,
         "data-bullet-style": style,
+        "data-list-kind": kind,
         "data-block-id": blockId || "",
-        style: `list-style-type: ${style};`,
+        style: isCheck ? "list-style-type: none;" : `list-style-type: ${style};`,
       },
       0,
     ]

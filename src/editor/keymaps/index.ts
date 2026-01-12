@@ -5,6 +5,105 @@ import { sinkListItem, liftListItem, splitListItem } from "prosemirror-schema-li
 import type { Schema } from "prosemirror-model"
 import { TextSelection } from "prosemirror-state"
 
+function isInListItem(state: any, schema: Schema) {
+  const li = schema.nodes.list_item
+  if (!li) return false
+  const $from = state.selection?.$from
+  if (!$from) return false
+  for (let d = $from.depth; d > 0; d -= 1) {
+    if ($from.node(d).type === li) return true
+  }
+  return false
+}
+
+function findChecklistListPos(state: any, schema: Schema): number | null {
+  const bl = schema.nodes.bullet_list
+  if (!bl) return null
+  const $from = state.selection?.$from
+  if (!$from) return null
+  for (let d = $from.depth; d > 0; d -= 1) {
+    const n = $from.node(d)
+    if (n.type === bl && String((n.attrs as any)?.listKind || "bullet") === "check") {
+      return $from.before(d)
+    }
+  }
+  return null
+}
+
+function findNearestBlockWithIndent(state: any): { pos: number; node: any } | null {
+  const sel = state.selection
+  const $from = sel?.$from
+  if (!$from) return null
+  for (let d = $from.depth; d > 0; d -= 1) {
+    const node = $from.node(d)
+    if (!node || !node.isBlock || node.type.name === "doc") continue
+    const specAttrs = (node.type.spec && (node.type.spec as any).attrs) || null
+    if (specAttrs && "indent" in specAttrs) {
+      return { pos: $from.before(d), node }
+    }
+  }
+  return null
+}
+
+function indentBlock(delta: 1 | -1) {
+  return (state: any, dispatch: any) => {
+    const found = findNearestBlockWithIndent(state)
+    if (!found) return false
+    const cur = Math.max(0, Math.min(8, Number((found.node.attrs as any)?.indent || 0)))
+    const next = Math.max(0, Math.min(8, cur + delta))
+    if (next === cur) return false
+    if (!dispatch) return true
+    const tr = state.tr.setNodeMarkup(found.pos, undefined, { ...(found.node.attrs as any), indent: next })
+    dispatch(tr.scrollIntoView())
+    return true
+  }
+}
+
+function ensureChecklistKindInsideList(tr: any, checklistPos: number, schema: Schema) {
+  const bl = schema.nodes.bullet_list
+  if (!bl) return tr
+  const root = tr.doc.nodeAt(checklistPos)
+  if (!root || root.type !== bl) return tr
+
+  const toFix: number[] = []
+  root.descendants((node: any, pos: number) => {
+    if (node.type === bl) {
+      const cur = String((node.attrs as any)?.listKind || "bullet")
+      if (cur !== "check") toFix.push(checklistPos + 1 + pos)
+    }
+    return true
+  })
+
+  // Apply from deeper to shallower for position stability
+  for (let i = toFix.length - 1; i >= 0; i -= 1) {
+    const pos = toFix[i]
+    const n = tr.doc.nodeAt(pos)
+    if (!n || n.type !== bl) continue
+    tr = tr.setNodeMarkup(pos, undefined, { ...(n.attrs as any), listKind: "check" })
+  }
+  return tr
+}
+
+function sinkListItemPreserveChecklist(schema: Schema) {
+  const li = schema.nodes.list_item
+  if (!li) return () => false
+  const base = sinkListItem(li)
+  return (state: any, dispatch: any) => {
+    const checklistPos = findChecklistListPos(state, schema)
+    if (!dispatch) return base(state, dispatch)
+    return base(
+      state,
+      (tr: any) => {
+        let nextTr = tr
+        if (checklistPos != null) {
+          nextTr = ensureChecklistKindInsideList(nextTr, checklistPos, schema)
+        }
+        dispatch(nextTr)
+      }
+    )
+  }
+}
+
 function exitCodeMarkOnArrowRight(schema: Schema) {
   const code = schema.marks.code
   if (!code) return () => false
@@ -92,9 +191,17 @@ export function buildEditorKeymap(schema: Schema) {
     "Mod-b": schema.marks.strong ? toggleMark(schema.marks.strong) : false,
     "Mod-i": schema.marks.em ? toggleMark(schema.marks.em) : false,
 
-    // List indent
-    Tab: sinkListItem(schema.nodes.list_item),
-    "Shift-Tab": liftListItem(schema.nodes.list_item),
+    // Notion-like:
+    // - In lists: Tab/Shift-Tab should indent/outdent the list ITEM (marker + content), never just the inner paragraph.
+    // - Outside lists: Tab/Shift-Tab adjust block indent.
+    Tab: (state: any, dispatch: any) => {
+      if (isInListItem(state, schema)) return sinkListItemPreserveChecklist(schema)(state, dispatch)
+      return indentBlock(1)(state, dispatch)
+    },
+    "Shift-Tab": (state: any, dispatch: any) => {
+      if (isInListItem(state, schema)) return liftListItem(schema.nodes.list_item)(state, dispatch)
+      return indentBlock(-1)(state, dispatch)
+    },
   }
 
   // Code mark UX (inline `code`):

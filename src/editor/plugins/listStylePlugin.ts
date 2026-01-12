@@ -31,6 +31,10 @@ function walkAndNormalize(args: {
   if (isBullet) {
     const desired = bulletStyles[listDepth % bulletStyles.length] || "disc"
     const attrs = (node.attrs || {}) as ListAttrs
+    // Checklist uses its own styling; don't normalize bulletStyle.
+    if (String((attrs as any).listKind || "bullet") === "check") {
+      nextDepth = listDepth + 1
+    } else {
     const cur = String(attrs.bulletStyle || "disc")
     if (cur !== desired) {
       try {
@@ -41,6 +45,7 @@ function walkAndNormalize(args: {
       }
     }
     nextDepth = listDepth + 1
+    }
   } else if (isOrdered) {
     const desired = orderedTypes[listDepth % orderedTypes.length] || "1"
     const attrs = (node.attrs || {}) as ListAttrs

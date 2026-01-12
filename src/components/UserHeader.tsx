@@ -1,6 +1,7 @@
 import { useTheme } from "@/hooks/useTheme"
 import { Eclipse } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
 
 interface UserHeaderProps {
   className?: string;
@@ -21,12 +22,14 @@ export function UserHeader({ className, children, leftContent }: UserHeaderProps
        {/* Center/Custom Content (e.g., Language Selector, Action Buttons) */}
        {children}
        
-       <div 
-         className="size-4 relative shrink-0 flex items-center justify-center cursor-pointer"
+       <Button         
+         variant="ghost"
+         className="size-8 shrink-0 hover:bg-accent"
          onClick={toggleTheme}
+         aria-label="Toggle theme"
        >
-         <Eclipse className="size-full text-foreground" />
-       </div>
+         <Eclipse className="size-4 text-foreground" />
+       </Button>
     </div>
   )
 }

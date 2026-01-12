@@ -35,7 +35,22 @@ type SidebarProps = {
 export function Sidebar({ className }: SidebarProps) {
   const navigate = useNavigate()
   const location = useLocation()
-  const [isOpen, setIsOpen] = useState(true)
+
+  const SIDEBAR_OPEN_KEY = "reductai:sidebar:isOpen"
+  const getInitialIsOpen = () => {
+    try {
+      if (typeof window === "undefined") return true
+      const v = window.localStorage.getItem(SIDEBAR_OPEN_KEY)
+      if (v === "0") return false
+      if (v === "1") return true
+      return true
+    } catch {
+      return true
+    }
+  }
+
+  // Persist the user's desktop sidebar open/closed preference across route changes and resizes.
+  const [isOpen, setIsOpen] = useState<boolean>(() => getInitialIsOpen())
   const [isProfileOpen, setIsProfileOpen] = useState(false)
   const [isPersonalOpen, setIsPersonalOpen] = useState(true)
   const [isTeamOpen, setIsTeamOpen] = useState(true)
@@ -54,9 +69,12 @@ export function Sidebar({ className }: SidebarProps) {
 
   useEffect(() => {
     const checkMobile = () => {
-      setIsMobile(window.innerWidth < 768)
-      if (window.innerWidth < 768) {
-        setIsOpen(true) // Always "open" inside the mobile drawer
+      const mobile = window.innerWidth < 768
+      setIsMobile(mobile)
+      if (!mobile) {
+        // If we resize back to desktop, close any mobile-only overlays/popovers.
+        setIsMobileMenuOpen(false)
+        setIsMobileProfileOpen(false)
       }
     }
     
@@ -64,6 +82,17 @@ export function Sidebar({ className }: SidebarProps) {
     window.addEventListener('resize', checkMobile)
     return () => window.removeEventListener('resize', checkMobile)
   }, [])
+
+  // Persist on desktop only (mobile uses a separate drawer UI).
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    if (isMobile) return
+    try {
+      window.localStorage.setItem(SIDEBAR_OPEN_KEY, isOpen ? "1" : "0")
+    } catch {
+      // ignore (storage might be blocked)
+    }
+  }, [isMobile, isOpen])
 
   const handleLogout = () => {
     // 세션/토큰 정리

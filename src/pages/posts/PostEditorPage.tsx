@@ -1,7 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
 import { ProseMirrorEditor } from "../../components/post/ProseMirrorEditor"
-import { ChevronDown, ChevronsLeft, ChevronRight, FileText, ListTree, Plus, Save, ListChevronsDownUp, ListChevronsUpDown } from "lucide-react"
+import {
+  ChevronDown,
+  ChevronsLeft,
+  ChevronRight,
+  FileText,
+  ListTree,
+  Plus,
+  Save,
+  ListChevronsDownUp,
+  ListChevronsUpDown,
+  ChevronsLeftRight,
+  ChevronsRightLeft,
+} from "lucide-react"
 
 import { AppShell } from "@/components/layout/AppShell"
 import { Button } from "@/components/ui/button"
@@ -78,14 +90,67 @@ export default function PostEditorPage() {
   const [initialDocJson, setInitialDocJson] = useState<DocJson>(null)
   const [draftDocJson, setDraftDocJson] = useState<DocJson>(null)
 
-  const [navOpen, setNavOpen] = useState(true)
-  const navOpenRef = useRef(true)
+  const NAV_OPEN_KEY = "reductai:postEditor:navOpen"
+  const getInitialNavOpen = () => {
+    try {
+      if (typeof window === "undefined") return true
+      const v = window.localStorage.getItem(NAV_OPEN_KEY)
+      if (v === "0") return false
+      if (v === "1") return true
+      return true
+    } catch {
+      return true
+    }
+  }
+
+  // Persist the user's preference for the left page tree visibility across route changes.
+  const [navOpen, setNavOpen] = useState<boolean>(() => getInitialNavOpen())
+  const navOpenRef = useRef<boolean>(getInitialNavOpen())
   const [isMobile, setIsMobile] = useState(false)
   const [isNavDrawerOpen, setIsNavDrawerOpen] = useState(false)
   const [myPages, setMyPages] = useState<MyPage[]>([])
   const [pageTitle, setPageTitle] = useState<string>("")
   const titleInputRef = useRef<HTMLInputElement | null>(null)
   const [isDeletedPage, setIsDeletedPage] = useState(false)
+
+  const CONTENT_WIDE_KEY_PREFIX = "reductai:postEditor:isWideLayout:"
+  const wideKeyFor = useCallback(
+    (pid: string) => `${CONTENT_WIDE_KEY_PREFIX}${String(pid || "").trim()}`,
+    []
+  )
+  const readWidePref = useCallback(
+    (pid: string) => {
+      try {
+        if (typeof window === "undefined") return false
+        const k = wideKeyFor(pid)
+        return window.localStorage.getItem(k) === "1"
+      } catch {
+        return false
+      }
+    },
+    [wideKeyFor]
+  )
+
+  const [isWideLayout, setIsWideLayout] = useState<boolean>(() => {
+    if (!postId || postId === "new") return false
+    return readWidePref(postId)
+  })
+
+  useEffect(() => {
+    if (!postId || postId === "new") return
+    setIsWideLayout(readWidePref(postId))
+  }, [postId, readWidePref])
+
+  useEffect(() => {
+    if (!postId || postId === "new") return
+    try {
+      if (typeof window === "undefined") return
+      const k = wideKeyFor(postId)
+      window.localStorage.setItem(k, isWideLayout ? "1" : "0")
+    } catch {
+      // ignore (storage might be blocked)
+    }
+  }, [isWideLayout, postId, wideKeyFor])
 
   const canSave = useMemo(() => !!postId && !isNew && !!draftDocJson, [postId, isNew, draftDocJson])
 
@@ -509,14 +574,10 @@ export default function PostEditorPage() {
       const mobile = mq.matches
       setIsMobile(mobile)
       if (mobile) {
-        // remember desktop state and collapse
-        navOpenRef.current = navOpen
-        setNavOpen(false)
+        // Mobile uses an overlay drawer; keep desktop preference (navOpen) unchanged.
         setIsNavDrawerOpen(false)
       } else {
         setIsNavDrawerOpen(false)
-        // restore last desktop state
-        setNavOpen(navOpenRef.current)
       }
     }
 
@@ -528,8 +589,19 @@ export default function PostEditorPage() {
     // Safari legacy
     mq.addListener(apply)
     return () => mq.removeListener(apply)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Persist navOpen choice on desktop; don't overwrite preference while in mobile overlay mode.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    if (isMobile) return
+    try {
+      window.localStorage.setItem(NAV_OPEN_KEY, navOpen ? "1" : "0")
+    } catch {
+      // ignore (storage might be blocked)
+    }
+    navOpenRef.current = navOpen
+  }, [isMobile, navOpen])
 
   const breadcrumbData = useMemo(() => {
     if (!postId || postId === "new") return { visible: [] as Array<{ id: string; title: string }>, hidden: [] as Array<{ id: string; title: string }> }
@@ -785,9 +857,17 @@ export default function PostEditorPage() {
             <RefreshCw className="size-4 mr-2" />
             Reload
           </Button> */}
-          <Button size="sm" disabled={!canSave} onClick={() => void saveNow()}>
+          <Button className="hidden" size="sm" disabled={!canSave} onClick={() => void saveNow()}>
             <Save className="size-4 mr-2" />
             Save{dirty ? "*" : ""}
+          </Button>
+          <Button
+            variant="ghost"
+            className="size-8 shrink-0"
+            title="페이지 너비 토글"
+            onClick={() => setIsWideLayout((v) => !v)}
+          >
+            {isWideLayout ? <ChevronsRightLeft className="size-4" /> : <ChevronsLeftRight className="size-4" />}
           </Button>
         </div>
       }
@@ -878,7 +958,7 @@ export default function PostEditorPage() {
     >
       {/* Editor (Main Body slot) */}
       <div className="flex-1 h-full overflow-auto">
-        <div className="max-w-6xl mx-auto px-12 py-6">
+        <div className={[isWideLayout ? "w-full" : "max-w-4xl", "mx-auto px-12 py-6"].join(" ")}>
           <div className="mb-4">
             <div className="text-xl font-semibold">Post Editor</div>
             <div className="text-sm text-muted-foreground">

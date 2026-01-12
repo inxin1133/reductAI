@@ -354,7 +354,16 @@ export function blockInserterPlugin(schema: Schema) {
           if (!anchorRectCache) {
             const domEl = view.nodeDOM(anchorPos) as HTMLElement | null
             const rect = domEl?.getBoundingClientRect()
-            if (rect) anchorRectCache = { left: rect.left, top: rect.top }
+            if (rect) {
+              // For list anchors, top-of-<ul> can be slightly above the first row (especially with custom list item UIs).
+              // Use the first <li> top when available to align "+ / handle" with the row content.
+              if ((domEl?.tagName === "UL" || domEl?.tagName === "OL") && domEl.firstElementChild instanceof HTMLElement) {
+                const liRect = domEl.firstElementChild.getBoundingClientRect()
+                anchorRectCache = { left: rect.left, top: liRect.top }
+              } else {
+                anchorRectCache = { left: rect.left, top: rect.top }
+              }
+            }
           }
           if (anchorRectCache) {
             anchorLeft = anchorRectCache.left

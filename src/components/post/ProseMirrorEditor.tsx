@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { EditorState, type Transaction } from "prosemirror-state"
 import { EditorView } from "prosemirror-view"
 import { DOMParser as PMDOMParser } from "prosemirror-model"
-
+import { Button } from "@/components/ui/button"
 import { editorSchema } from "../../editor/schema"
 import { buildEditorPlugins } from "../../editor/plugins"
 import { PageLinkNodeView } from "../../editor/nodes/page_link_nodeview"
 import { CodeBlockNodeView } from "../../editor/nodes/code_block_nodeview"
+import { ListItemNodeView } from "../../editor/nodes/list_item_nodeview"
 import { blockInserterKey, type BlockInserterState } from "../../editor/plugins/blockInserterPlugin"
 import { getBlockCommandRegistry } from "../../editor/commands/blockCommandRegistry"
 import {
@@ -17,9 +18,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { ButtonGroup, ButtonGroupItem } from "@/components/ui/button-group"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   cmdBlockquote,
   cmdBulletList,
+  cmdChecklist,
   cmdCodeBlock,
   cmdHeading,
   cmdDuplicateBlock,
@@ -30,11 +35,58 @@ import {
   cmdOrderedList,
   cmdParagraph,
   cmdToggleBold,
+  cmdToggleUnderline,
+  cmdToggleStrikethrough,
+  cmdSetTextColor,
+  cmdClearTextColor,
+  cmdSetBlockBgColor,
+  cmdClearBlockBgColor,
   cmdToggleCodeMark,
   cmdToggleItalic,
+  cmdInsertTable,
+  cmdSetTableCellAlign,
   tableCommands,
 } from "../../editor/commands"
 import { exportMarkdown } from "../../editor/serializers/markdown"
+import { isInTable as pmIsInTable } from "prosemirror-tables"
+import { 
+  ChevronRight, 
+  ChevronDown,
+  Bold,
+  Italic,
+  Underline,
+  Strikethrough,
+  CodeXml,
+  Link,
+  Palette,
+  Type,
+  Heading1,
+  Heading2,
+  Heading3,  
+  List,
+  ListOrdered,
+  ListTodo,  
+  Quote,
+  CopyPlus,
+  SquareCode,
+  AtSign,
+  Image,
+  TextAlignStart,
+  TextAlignCenter,
+  TextAlignEnd,
+  Minus,  
+  Link2,
+  File,
+  PaintBucket,  
+  Grid2X2,
+  TableCellsMerge,    
+  TableCellsSplit,      
+  BetweenHorizontalStart,  
+  BetweenVerticalStart,   
+  FoldHorizontal,
+  FoldVertical,
+  Grid2X2X, 
+} from "lucide-react"
 
 type PmDocJson = unknown
 type PmCommand = (state: EditorState, dispatch?: (tr: Transaction) => void, view?: EditorView) => boolean
@@ -44,6 +96,67 @@ type Props = {
   initialDocJson?: PmDocJson
   onChange?: (docJson: PmDocJson) => void
 }
+
+function ToolbarTooltip({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6}>
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+const TEXT_COLOR_PRESETS_500: Array<{ key: string; label: string; textClass: string; bgClass: string }> = [
+  { key: "slate-500", label: "slate-500", textClass: "text-slate-500", bgClass: "bg-slate-500" },
+  { key: "gray-500", label: "gray-500", textClass: "text-gray-500", bgClass: "bg-gray-500" },
+  { key: "zinc-500", label: "zinc-500", textClass: "text-zinc-500", bgClass: "bg-zinc-500" },
+  { key: "neutral-500", label: "neutral-500", textClass: "text-neutral-500", bgClass: "bg-neutral-500" },
+  { key: "stone-500", label: "stone-500", textClass: "text-stone-500", bgClass: "bg-stone-500" },
+  { key: "red-500", label: "red-500", textClass: "text-red-500", bgClass: "bg-red-500" },
+  { key: "orange-500", label: "orange-500", textClass: "text-orange-500", bgClass: "bg-orange-500" },
+  { key: "amber-500", label: "amber-500", textClass: "text-amber-500", bgClass: "bg-amber-500" },
+  { key: "yellow-500", label: "yellow-500", textClass: "text-yellow-500", bgClass: "bg-yellow-500" },
+  { key: "lime-500", label: "lime-500", textClass: "text-lime-500", bgClass: "bg-lime-500" },
+  { key: "green-500", label: "green-500", textClass: "text-green-500", bgClass: "bg-green-500" },
+  { key: "emerald-500", label: "emerald-500", textClass: "text-emerald-500", bgClass: "bg-emerald-500" },
+  { key: "teal-500", label: "teal-500", textClass: "text-teal-500", bgClass: "bg-teal-500" },
+  { key: "cyan-500", label: "cyan-500", textClass: "text-cyan-500", bgClass: "bg-cyan-500" },
+  { key: "sky-500", label: "sky-500", textClass: "text-sky-500", bgClass: "bg-sky-500" },
+  { key: "blue-500", label: "blue-500", textClass: "text-blue-500", bgClass: "bg-blue-500" },
+  { key: "indigo-500", label: "indigo-500", textClass: "text-indigo-500", bgClass: "bg-indigo-500" },
+  { key: "violet-500", label: "violet-500", textClass: "text-violet-500", bgClass: "bg-violet-500" },
+  { key: "purple-500", label: "purple-500", textClass: "text-purple-500", bgClass: "bg-purple-500" },
+  { key: "fuchsia-500", label: "fuchsia-500", textClass: "text-fuchsia-500", bgClass: "bg-fuchsia-500" },
+  { key: "pink-500", label: "pink-500", textClass: "text-pink-500", bgClass: "bg-pink-500" },
+  { key: "rose-500", label: "rose-500", textClass: "text-rose-500", bgClass: "bg-rose-500" },
+]
+
+const BLOCK_BG_PRESETS_100: Array<{ key: string; label: string; bgClass: string }> = [
+  { key: "slate-100", label: "slate-100", bgClass: "bg-slate-100" },
+  { key: "gray-100", label: "gray-100", bgClass: "bg-gray-100" },
+  { key: "zinc-100", label: "zinc-100", bgClass: "bg-zinc-100" },
+  { key: "neutral-100", label: "neutral-100", bgClass: "bg-neutral-100" },
+  { key: "stone-100", label: "stone-100", bgClass: "bg-stone-100" },
+  { key: "red-100", label: "red-100", bgClass: "bg-red-100" },
+  { key: "orange-100", label: "orange-100", bgClass: "bg-orange-100" },
+  { key: "amber-100", label: "amber-100", bgClass: "bg-amber-100" },
+  { key: "yellow-100", label: "yellow-100", bgClass: "bg-yellow-100" },
+  { key: "lime-100", label: "lime-100", bgClass: "bg-lime-100" },
+  { key: "green-100", label: "green-100", bgClass: "bg-green-100" },
+  { key: "emerald-100", label: "emerald-100", bgClass: "bg-emerald-100" },
+  { key: "teal-100", label: "teal-100", bgClass: "bg-teal-100" },
+  { key: "cyan-100", label: "cyan-100", bgClass: "bg-cyan-100" },
+  { key: "sky-100", label: "sky-100", bgClass: "bg-sky-100" },
+  { key: "blue-100", label: "blue-100", bgClass: "bg-blue-100" },
+  { key: "indigo-100", label: "indigo-100", bgClass: "bg-indigo-100" },
+  { key: "violet-100", label: "violet-100", bgClass: "bg-violet-100" },
+  { key: "purple-100", label: "purple-100", bgClass: "bg-purple-100" },
+  { key: "fuchsia-100", label: "fuchsia-100", bgClass: "bg-fuchsia-100" },
+  { key: "pink-100", label: "pink-100", bgClass: "bg-pink-100" },
+  { key: "rose-100", label: "rose-100", bgClass: "bg-rose-100" },
+]
 
 function getEmptyDoc() {
   const wrap = document.createElement("div")
@@ -59,11 +172,33 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
   const [markdown, setMarkdown] = useState("")
   const [docJson, setDocJson] = useState<PmDocJson>(initialDocJson ?? null)
 
+  const TOOLBAR_OPEN_KEY = "reductai:pmEditor:toolbarOpen"
+  const [toolbarOpen, setToolbarOpen] = useState<boolean>(() => {
+    try {
+      if (typeof window === "undefined") return false
+      return window.localStorage.getItem(TOOLBAR_OPEN_KEY) === "1"
+    } catch {
+      return false
+    }
+  })
+  const [textColorOpen, setTextColorOpen] = useState(false)
+  const [blockBgOpen, setBlockBgOpen] = useState(false)
+
+  useEffect(() => {
+    try {
+      if (typeof window === "undefined") return
+      window.localStorage.setItem(TOOLBAR_OPEN_KEY, toolbarOpen ? "1" : "0")
+    } catch {
+      // ignore (storage might be blocked)
+    }
+  }, [toolbarOpen])
+
   const [blockMenuOpen, setBlockMenuOpen] = useState(false)
   const [blockMenuAnchor, setBlockMenuAnchor] = useState<MenuAnchor | null>(null)
   const [blockMenuQuery, setBlockMenuQuery] = useState("")
   const blockMenuInputRef = useRef<HTMLInputElement | null>(null)
   const blockMenuSigRef = useRef<string>("")
+  const [tableInsertOpen, setTableInsertOpen] = useState(false)
 
   // Mention (@) is temporarily disabled (it caused runaway update loops / freezes).
   const plugins = useMemo(() => buildEditorPlugins(editorSchema, { mention: { enabled: false } }), [])
@@ -101,6 +236,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
       nodeViews: {
         page_link: (node, view, getPos) => new PageLinkNodeView(node, view, getPos as () => number),
         code_block: (node, view, getPos) => new CodeBlockNodeView(node, view, getPos as () => number),
+        list_item: (node, view, getPos) => new ListItemNodeView(node, view, getPos as () => number),
       },
       // NOTE:
       // ProseMirror can dispatch transactions during EditorView construction (e.g. plugin views).
@@ -248,6 +384,21 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
     run(cmd)
   }
 
+  const insertTableFromPopover = (e: React.MouseEvent, size: 2 | 3 | 4) => {
+    runFromToolbar(e, cmdInsertTable(editorSchema, { rows: size, cols: size }))
+    setTableInsertOpen(false)
+  }
+
+  const tableActive = (() => {
+    const v = viewRef.current
+    if (!v) return false
+    try {
+      return pmIsInTable(v.state)
+    } catch {
+      return false
+    }
+  })()
+
   const insertLink = () => {
     const view = viewRef.current
     if (!view) return
@@ -370,146 +521,494 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
         </DropdownMenu>
       ) : null}
 
-      <div className="flex flex-wrap gap-2 border rounded-md p-2">
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, cmdToggleBold(editorSchema))}>
-          Bold
-        </button>
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, cmdToggleItalic(editorSchema))}>
-          Italic
-        </button>
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, cmdToggleCodeMark(editorSchema))}>
-          Code
-        </button>
-        <button
-          className="px-2 py-1 border rounded"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            insertLink()
-          }}
-        >
-          Link
-        </button>
+      {/* Toolbar: use theme-aware background for dark mode - 블럭 에디터 툴바 */}
+      <div className=" flex-wrap items-center hidden sm:flex">
+      <button
+        type="button"
+        className="flex w-fit items-center gap-1 p-1 text-foreground text-sm hover:bg-accent rounded-md"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => setToolbarOpen((v) => !v)}
+        aria-expanded={toolbarOpen}
+      >
+        {toolbarOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+        툴바
+      </button>
 
-        <span className="mx-2 opacity-40">|</span>
+      {toolbarOpen ? (
+        <div className="flex flex-wrap items-center gap-2 p-1">
+          {/* 텍스트 형식 */}
+          <ButtonGroup>
+            <ToolbarTooltip label="Bold">
+              <ButtonGroupItem                     
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => runFromToolbar(e, cmdToggleBold(editorSchema))}
+              >
+                <Bold />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Italic">
+              <ButtonGroupItem                
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => runFromToolbar(e, cmdToggleItalic(editorSchema))}
+              >
+                <Italic />
+              </ButtonGroupItem>
+            </ToolbarTooltip>            
+            <ToolbarTooltip label="Underline">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => runFromToolbar(e, cmdToggleUnderline(editorSchema))}
+              >
+                <Underline />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Strikethrough">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => runFromToolbar(e, cmdToggleStrikethrough(editorSchema))}
+              >
+                <Strikethrough />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Code">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => runFromToolbar(e, cmdToggleCodeMark(editorSchema))}
+              >
+                <CodeXml />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Link">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  insertLink()
+                }}
+              >
+                <Link />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
 
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, cmdParagraph(editorSchema))}>
-          P
-        </button>
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, cmdHeading(editorSchema, 1))}>
-          H1
-        </button>
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, cmdHeading(editorSchema, 2))}>
-          H2
-        </button>
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, cmdHeading(editorSchema, 3))}>
-          H3
-        </button>
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, cmdBlockquote(editorSchema))}>
-          Quote
-        </button>
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, cmdDuplicateBlock(editorSchema))}>
-          Duplicate Block
-        </button>
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, cmdCodeBlock(editorSchema))}>
-          Code Block
-        </button>
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, cmdBulletList(editorSchema))}>
-          Bullet
-        </button>
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, cmdOrderedList(editorSchema))}>
-          Ordered
-        </button>
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, cmdInsertHorizontalRule(editorSchema))}>
-          HR
-        </button>
+            <Popover open={textColorOpen} onOpenChange={setTextColorOpen}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <PopoverTrigger asChild>
+                    <ButtonGroupItem
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onMouseDown={(e) => e.preventDefault()}
+                    >
+                      <Palette />
+                    </ButtonGroupItem>
+                  </PopoverTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>
+                  Text Color
+                </TooltipContent>
+              </Tooltip>
+              <PopoverContent align="start" sideOffset={8} className="w-64 p-3">
+                <div className="text-xs font-semibold mb-2">Text color</div>
+                <div className="grid grid-cols-6 gap-2">
+                  {TEXT_COLOR_PRESETS_500.map((c) => (
+                    <button
+                      key={c.key}
+                      type="button"
+                      className={[
+                        "size-7 rounded-md border border-border",
+                        "hover:opacity-90",
+                        "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                        c.bgClass,
+                      ].join(" ")}
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        run(cmdSetTextColor(editorSchema, c.key))
+                        setTextColorOpen(false)
+                      }}
+                      aria-label={c.label}
+                      title={c.label}
+                    />
+                  ))}
+                </div>
+                <div className="mt-3 flex justify-between">
+                  <Button                    
+                    variant="outline"
+                    size="sm"
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      run(cmdClearTextColor(editorSchema))
+                      setTextColorOpen(false)
+                    }}
+                  >
+                    Reset
+                  </Button>                  
+                </div>
+              </PopoverContent>
+            </Popover>
+          </ButtonGroup>
 
-        <span className="mx-2 opacity-40">|</span>
+          {/* 블럭 형식 */}
+          <ButtonGroup>
+            <ToolbarTooltip label="Text(paragraph)">
+              <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdParagraph(editorSchema))}>
+                <Type />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="H1">
+              <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdHeading(editorSchema, 1))}>
+                <Heading1 />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="H2">
+              <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdHeading(editorSchema, 2))}>
+                <Heading2 />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="H3">
+              <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdHeading(editorSchema, 3))}>
+                <Heading3 />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Quote">
+              <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdBlockquote(editorSchema))}>
+                <Quote />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Duplicate Block">
+              <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdDuplicateBlock(editorSchema))}>
+                <CopyPlus />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Code Block">
+              <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdCodeBlock(editorSchema))}>
+                <SquareCode />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Bullet">
+              <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdBulletList(editorSchema))}>
+                <List />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Ordered">
+              <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdOrderedList(editorSchema))}>
+                <ListOrdered />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
 
-        <button
-          className="px-2 py-1 border rounded"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            const src = window.prompt("Image URL?", "https://")
-            if (!src) return
-            run(cmdInsertImage(editorSchema, { src }))
-          }}
-        >
-          Image
-        </button>
-        <button
-          className="px-2 py-1 border rounded"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            const label = window.prompt("Mention label?", "kangwoo") || ""
-            if (!label) return
-            run(cmdInsertMention(editorSchema, { id: `mock_${label}`, label, type: "user" }))
-          }}
-        >
-          Mention
-        </button>
-        <button
-          className="px-2 py-1 border rounded"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            const pageId = window.prompt("Target pageId (posts.id)?", "") || ""
-            if (!pageId) return
-            const title = window.prompt("Title (optional)", "") || ""
-            run(cmdInsertPageLink(editorSchema, { pageId, title, display: "link" }))
-          }}
-        >
-          Page Link
-        </button>
-        <button
-          className="px-2 py-1 border rounded"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            const token = localStorage.getItem("token")
-            if (!token) return
-            void (async () => {
-              const m = window.location.pathname.match(/^\/posts\/([^/]+)\/edit/)
-              const parent_id = m?.[1] && m[1] !== "new" ? m[1] : null
-              const r = await fetch(`/api/posts`, {
-                method: "POST",
-                headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-                body: JSON.stringify({ title: "New page", page_type: "page", status: "draft", visibility: "private", parent_id }),
-              })
-              if (!r.ok) return
-              const j = await r.json()
-              const pageId = typeof j.id === "string" ? j.id : ""
-              if (!pageId) return
-              window.dispatchEvent(new CustomEvent("reductai:page-created", { detail: { postId: pageId, parent_id, title: "New page" } }))
-              // Always leave a visible "title + link" in the parent page.
-              run(cmdInsertPageLink(editorSchema, { pageId, title: "New page", display: "embed" }))
-              window.dispatchEvent(
-                new CustomEvent("reductai:open-post", { detail: { postId: pageId, focusTitle: true, forceSave: true } })
-              )
-            })()
-          }}
-        >
-          Page Embed
-        </button>
+            <ToolbarTooltip label="Checklist">
+              <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdChecklist(editorSchema))}>
+                <ListTodo />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
 
-        <span className="mx-2 opacity-40">|</span>
+            <ToolbarTooltip label="HR">
+              <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdInsertHorizontalRule(editorSchema))}>
+                <Minus />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Background Color">
+              <Popover open={blockBgOpen} onOpenChange={setBlockBgOpen}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <PopoverTrigger asChild>
+                      <ButtonGroupItem
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onMouseDown={(e) => e.preventDefault()}
+                      >
+                        <PaintBucket />
+                      </ButtonGroupItem>
+                    </PopoverTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={6}>
+                    Background Color
+                  </TooltipContent>
+                </Tooltip>
+                <PopoverContent align="start" sideOffset={8} className="w-64 p-3">
+                  <div className="text-xs font-semibold mb-2">Block background Color</div>
+                  <div className="grid grid-cols-6 gap-2">
+                    {BLOCK_BG_PRESETS_100.map((c) => (
+                      <button
+                        key={c.key}
+                        type="button"
+                        className={[
+                          "size-7 rounded-md border border-border",
+                          "hover:opacity-90",
+                          "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                          c.bgClass,
+                        ].join(" ")}
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          run(cmdSetBlockBgColor(editorSchema, c.key))
+                          setBlockBgOpen(false)
+                        }}
+                        aria-label={c.label}
+                        title={c.label}
+                      />
+                    ))}
+                  </div>
+                  <div className="mt-3 flex justify-between">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        run(cmdClearBlockBgColor(editorSchema))
+                        setBlockBgOpen(false)
+                      }}
+                    >
+                      Reset
+                    </Button>                    
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </ToolbarTooltip>
+          </ButtonGroup>
 
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, tableCommands.addRowAfter)}>
-          Row+
-        </button>
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, tableCommands.addColumnAfter)}>
-          Col+
-        </button>
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, tableCommands.mergeCells)}>
-          Merge
-        </button>
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, tableCommands.splitCell)}>
-          Split
-        </button>
-        <button className="px-2 py-1 border rounded" onMouseDown={(e) => runFromToolbar(e, tableCommands.deleteTable)}>
-          Del Table
-        </button>
+          
+         
+
+          {/* 미디어 삽입 */}
+          <ButtonGroup>
+            <ToolbarTooltip label="Image">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  const src = window.prompt("Image URL?", "https://")
+                  if (!src) return
+                  run(cmdInsertImage(editorSchema, { src }))
+                }}
+              >
+                <Image />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Mention">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  const label = window.prompt("Mention label?", "kangwoo") || ""
+                  if (!label) return
+                  run(cmdInsertMention(editorSchema, { id: `mock_${label}`, label, type: "user" }))
+                }}
+              >
+               <AtSign />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Page Link">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  const pageId = window.prompt("Target pageId (posts.id)?", "") || ""
+                  if (!pageId) return
+                  const title = window.prompt("Title (optional)", "") || ""
+                  run(cmdInsertPageLink(editorSchema, { pageId, title, display: "link" }))
+                }}
+              >
+                <Link2 />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="New Page">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  const token = localStorage.getItem("token")
+                  if (!token) return
+                  void (async () => {
+                    const m = window.location.pathname.match(/^\/posts\/([^/]+)\/edit/)
+                    const parent_id = m?.[1] && m[1] !== "new" ? m[1] : null
+                    const r = await fetch(`/api/posts`, {
+                      method: "POST",
+                      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+                      body: JSON.stringify({ title: "New page", page_type: "page", status: "draft", visibility: "private", parent_id }),
+                    })
+                    if (!r.ok) return
+                    const j = await r.json()
+                    const pageId = typeof j.id === "string" ? j.id : ""
+                    if (!pageId) return
+                    window.dispatchEvent(new CustomEvent("reductai:page-created", { detail: { postId: pageId, parent_id, title: "New page" } }))
+                    // Always leave a visible "title + link" in the parent page.
+                    run(cmdInsertPageLink(editorSchema, { pageId, title: "New page", display: "embed" }))
+                    window.dispatchEvent(
+                      new CustomEvent("reductai:open-post", { detail: { postId: pageId, focusTitle: true, forceSave: true } })
+                    )
+                  })()
+                }}
+              >
+                <File />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+          </ButtonGroup>
+
+          {/* 테이블 형식 */}
+          <ButtonGroup>
+
+            <ToolbarTooltip label="Insert Table">
+              <Popover open={tableInsertOpen} onOpenChange={setTableInsertOpen}>
+                <PopoverTrigger asChild>
+                  <ButtonGroupItem
+                    variant="outline"
+                    size="sm"
+                    onMouseDown={(e) => {
+                      // Don't steal selection from editor; Popover will open on click.
+                      e.preventDefault()
+                    }}
+                  >
+                    <Grid2X2 />
+                  </ButtonGroupItem>
+                </PopoverTrigger>
+                <PopoverContent className="w-[220px] p-2" align="start">
+                  <div className="text-xs font-medium text-muted-foreground px-1 pb-2">Insert table</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <Button variant="outline" size="sm" onMouseDown={(e) => insertTableFromPopover(e, 2)}>
+                      2×2
+                    </Button>
+                    <Button variant="outline" size="sm" onMouseDown={(e) => insertTableFromPopover(e, 3)}>
+                      3×3
+                    </Button>
+                    <Button variant="outline" size="sm" onMouseDown={(e) => insertTableFromPopover(e, 4)}>
+                      4×4
+                    </Button>
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Block Align Left">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => runFromToolbar(e, cmdSetTableCellAlign(editorSchema, "left"))}
+              >
+               <TextAlignStart />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Block Align Center">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => runFromToolbar(e, cmdSetTableCellAlign(editorSchema, "center"))}
+              >
+               <TextAlignCenter />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Block Align Right">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => runFromToolbar(e, cmdSetTableCellAlign(editorSchema, "right"))}
+              >
+               <TextAlignEnd />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+
+
+            <ToolbarTooltip label="Row+">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => runFromToolbar(e, tableCommands.addRowAfter)}
+              >
+               <BetweenHorizontalStart />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Col+">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => runFromToolbar(e, tableCommands.addColumnAfter)}
+              >
+               <BetweenVerticalStart />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+
+
+            <ToolbarTooltip label="Row-">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => runFromToolbar(e, tableCommands.deleteRow)}
+              >
+               <FoldVertical />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Col-">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => runFromToolbar(e, tableCommands.deleteColumn)}
+              >
+               <FoldHorizontal />               
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+
+
+
+            <ToolbarTooltip label="Merge">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => runFromToolbar(e, tableCommands.mergeCells)}
+              >
+              <TableCellsMerge />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Split">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => runFromToolbar(e, tableCommands.splitCell)}
+              >
+              <TableCellsSplit />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Del Table">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => runFromToolbar(e, tableCommands.deleteTable)}
+              >
+                <Grid2X2X />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+          </ButtonGroup>
+
+
+
+
+
+
+        </div>
+      
+      ) : null}
       </div>
 
       {/* Editor surface: use theme-aware background for dark mode - 블럭 에디터  */}
-      <div className="mt-3 p-3 bg-background text-foreground">
+      <div className="p-3 bg-background text-foreground">
         <div ref={mountRef} />
       </div>
 

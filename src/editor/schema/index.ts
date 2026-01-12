@@ -20,6 +20,9 @@ import { strongMarkSpec } from "../marks/strong"
 import { emMarkSpec } from "../marks/em"
 import { codeMarkSpec } from "../marks/code"
 import { linkMarkSpec } from "../marks/link"
+import { underlineMarkSpec } from "../marks/underline"
+import { strikeMarkSpec } from "../marks/strike"
+import { textColorMarkSpec } from "../marks/text_color"
 
 // Notion-like: top-level blocks in doc.content
 const baseNodes = addListNodes(basicSchema.spec.nodes, "paragraph block*", "block")
@@ -59,7 +62,11 @@ export const editorSchema = new Schema({
     .addToEnd("image", imageNodeSpec)
     .addToEnd("page_link", pageLinkNodeSpec)
     .addToEnd("mention", mentionNodeSpec),
-  marks: baseMarks.addToEnd("link", linkMarkSpec),
+  marks: baseMarks
+    .addToEnd("underline", underlineMarkSpec)
+    .addToEnd("strike", strikeMarkSpec)
+    .addToEnd("text_color", textColorMarkSpec)
+    .addToEnd("link", linkMarkSpec),
 })
 
 

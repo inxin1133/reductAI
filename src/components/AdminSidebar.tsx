@@ -27,7 +27,21 @@ type AdminSidebarProps = {
 }
 
 export function AdminSidebar({ className }: AdminSidebarProps) {
-  const [isOpen, setIsOpen] = useState(true)
+  const ADMIN_SIDEBAR_OPEN_KEY = "reductai:adminSidebar:isOpen"
+  const getInitialIsOpen = () => {
+    try {
+      if (typeof window === "undefined") return true
+      const v = window.localStorage.getItem(ADMIN_SIDEBAR_OPEN_KEY)
+      if (v === "0") return false
+      if (v === "1") return true
+      return true
+    } catch {
+      return true
+    }
+  }
+
+  // Persist the user's desktop admin sidebar open/closed preference across route changes and resizes.
+  const [isOpen, setIsOpen] = useState<boolean>(() => getInitialIsOpen())
   const navigate = useNavigate()
   const location = useLocation()
   const [isHeaderHover, setIsHeaderHover] = useState(false)
@@ -65,9 +79,12 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
   // 모바일 감지
   useEffect(() => {
     const checkMobile = () => {
-      setIsMobile(window.innerWidth < 768)
-      if (window.innerWidth < 768) {
-        setIsOpen(true) // 모바일에서는 항상 펼침 상태 (오버레이)
+      const mobile = window.innerWidth < 768
+      setIsMobile(mobile)
+      if (!mobile) {
+        // If we resize back to desktop, close any mobile-only overlays/popovers.
+        setIsMobileMenuOpen(false)
+        setIsMobileProfileOpen(false)
       }
     }
     
@@ -75,6 +92,17 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
     window.addEventListener('resize', checkMobile)
     return () => window.removeEventListener('resize', checkMobile)
   }, [])
+
+  // Persist on desktop only (mobile uses a separate overlay UI).
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    if (isMobile) return
+    try {
+      window.localStorage.setItem(ADMIN_SIDEBAR_OPEN_KEY, isOpen ? "1" : "0")
+    } catch {
+      // ignore (storage might be blocked)
+    }
+  }, [isMobile, isOpen])
 
   // 임시 사용자 데이터
   const user = {

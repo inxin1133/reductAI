@@ -4,6 +4,8 @@ type CellAttrs = {
   colspan?: number
   rowspan?: number
   colwidth?: number[] | null
+  cellAlign?: "left" | "center" | "right"
+  bgColor?: string
 }
 
 function getColWidths(dom: HTMLElement) {
@@ -19,10 +21,13 @@ function getColWidths(dom: HTMLElement) {
 function getCellAttrs(dom: HTMLElement): CellAttrs {
   const colspan = dom.getAttribute("colspan")
   const rowspan = dom.getAttribute("rowspan")
+  const rawAlign = (dom.getAttribute("data-align") || (dom.style as any)?.textAlign || "").trim().toLowerCase()
+  const cellAlign = rawAlign === "center" || rawAlign === "right" ? rawAlign : "left"
   return {
     colspan: colspan ? parseInt(colspan, 10) || 1 : 1,
     rowspan: rowspan ? parseInt(rowspan, 10) || 1 : 1,
     colwidth: getColWidths(dom),
+    cellAlign,
   }
 }
 
@@ -33,6 +38,9 @@ function cellToDom(tag: "td" | "th", attrs: CellAttrs, className: string) {
   if (attrs.colspan && attrs.colspan !== 1) domAttrs.colspan = attrs.colspan
   if (attrs.rowspan && attrs.rowspan !== 1) domAttrs.rowspan = attrs.rowspan
   if (attrs.colwidth && attrs.colwidth.length) domAttrs["data-colwidth"] = attrs.colwidth.join(",")
+  // Optional block background color on table cells
+  if (attrs.bgColor) domAttrs["data-bg-color"] = String(attrs.bgColor)
+  if (attrs.cellAlign) domAttrs["data-align"] = attrs.cellAlign
   return [tag, domAttrs, 0] as DOMOutputSpec
 }
 
@@ -40,6 +48,7 @@ function cellToDom(tag: "td" | "th", attrs: CellAttrs, className: string) {
 export const tableNodeSpec: NodeSpec = {
   attrs: {
     blockId: { default: null },
+    indent: { default: 0 },
   },
   content: "table_row+",
   tableRole: "table",
@@ -48,18 +57,24 @@ export const tableNodeSpec: NodeSpec = {
   parseDOM: [
     {
       tag: "table",
-      getAttrs: (dom) => ({ blockId: (dom as HTMLElement).getAttribute("data-block-id") }),
+      getAttrs: (dom) => ({
+        blockId: (dom as HTMLElement).getAttribute("data-block-id"),
+        indent: Number((dom as HTMLElement).getAttribute("data-indent") || 0) || 0,
+      }),
     },
   ],
   toDOM: (node) => {
-    const attrs = (node.attrs || {}) as { blockId?: string | null }
+    const attrs = (node.attrs || {}) as { blockId?: string | null; indent?: number }
     const blockId = attrs.blockId || ""
+    const indent = Math.max(0, Math.min(8, Number(attrs.indent || 0)))
     return [
     "div",
     {
       class:
         "tableWrapper my-3 overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-sm",
       "data-block-id": blockId,
+      "data-indent": String(indent),
+      style: `margin-left: ${indent * 24}px;`,
     },
     ["table", { class: "w-full table-fixed text-sm", "data-block-id": blockId }, ["tbody", 0]],
     ] as DOMOutputSpec
@@ -90,15 +105,35 @@ export const tableCellNodeSpec: NodeSpec = {
     colspan: { default: 1 },
     rowspan: { default: 1 },
     colwidth: { default: null },
+    bgColor: { default: "" },
+    cellAlign: { default: "left" },
   },
   tableRole: "cell",
   isolating: true,
-  parseDOM: [{ tag: "td", getAttrs: (dom) => getCellAttrs(dom as HTMLElement) }],
+  parseDOM: [
+    {
+      tag: "td",
+      getAttrs: (dom) => ({
+        ...getCellAttrs(dom as HTMLElement),
+        bgColor: (dom as HTMLElement).getAttribute("data-bg-color") || "",
+      }),
+    },
+  ],
   toDOM: (node) =>
     cellToDom(
       "td",
       (node.attrs || {}) as CellAttrs,
-      "align-top border-b border-r border-border/60 p-2"
+      [
+        "align-top border-b border-r border-border/60 p-2",
+        (node.attrs as any).bgColor ? `bg-${(node.attrs as any).bgColor}` : "",
+        String((node.attrs as any).cellAlign || "left") === "center"
+          ? "text-center"
+          : String((node.attrs as any).cellAlign || "left") === "right"
+            ? "text-right"
+            : "text-left",
+      ]
+        .filter(Boolean)
+        .join(" ")
     ),
 }
 
@@ -108,15 +143,35 @@ export const tableHeaderNodeSpec: NodeSpec = {
     colspan: { default: 1 },
     rowspan: { default: 1 },
     colwidth: { default: null },
+    bgColor: { default: "" },
+    cellAlign: { default: "left" },
   },
   tableRole: "header_cell",
   isolating: true,
-  parseDOM: [{ tag: "th", getAttrs: (dom) => getCellAttrs(dom as HTMLElement) }],
+  parseDOM: [
+    {
+      tag: "th",
+      getAttrs: (dom) => ({
+        ...getCellAttrs(dom as HTMLElement),
+        bgColor: (dom as HTMLElement).getAttribute("data-bg-color") || "",
+      }),
+    },
+  ],
   toDOM: (node) =>
     cellToDom(
       "th",
       (node.attrs || {}) as CellAttrs,
-      "bg-muted/50 font-semibold text-foreground align-top border-b border-r border-border/60 p-2"
+      [
+        "bg-muted/50 font-semibold text-foreground align-top border-b border-r border-border/60 p-2",
+        (node.attrs as any).bgColor ? `bg-${(node.attrs as any).bgColor}` : "",
+        String((node.attrs as any).cellAlign || "left") === "center"
+          ? "text-center"
+          : String((node.attrs as any).cellAlign || "left") === "right"
+            ? "text-right"
+            : "text-left",
+      ]
+        .filter(Boolean)
+        .join(" ")
     ),
 }
 

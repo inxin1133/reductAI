@@ -5,6 +5,8 @@ export const codeBlockNodeSpec: NodeSpec = {
   attrs: {
     language: { default: "plain" }, // e.g. html | javascript | typescript | css | sql | plain
     blockId: { default: null },
+    bgColor: { default: "" },
+    indent: { default: 0 },
   },
   content: "text*",
   group: "block",
@@ -26,16 +28,25 @@ export const codeBlockNodeSpec: NodeSpec = {
             ?.replace(/^language-/, "") || ""
         const language = (dataLang || clsLang || "plain").trim()
         const blockId = el.getAttribute("data-block-id") || code?.getAttribute("data-block-id") || ""
-        return { language, blockId: blockId || null }
+        const bgColor = el.getAttribute("data-bg-color") || ""
+        const indent = Number(el.getAttribute("data-indent") || 0) || 0
+        return { language, blockId: blockId || null, bgColor, indent }
       },
     },
   ],
   toDOM: (node) => {
-    const attrs = node.attrs as { language?: string; blockId?: string | null }
+    const attrs = node.attrs as { language?: string; blockId?: string | null; bgColor?: string; indent?: number }
     const language = String(attrs.language || "plain")
     return [
       "pre",
-      { class: "pm-code-block", "data-language": language, "data-block-id": attrs.blockId || "" },
+      {
+        class: ["pm-code-block", attrs.bgColor ? `bg-${attrs.bgColor}` : ""].filter(Boolean).join(" "),
+        "data-language": language,
+        "data-block-id": attrs.blockId || "",
+        "data-bg-color": attrs.bgColor || "",
+        "data-indent": String(attrs.indent || 0),
+        style: `margin-left: ${Math.max(0, Math.min(8, Number(attrs.indent || 0))) * 24}px;`,
+      },
       ["code", { class: `pm-code-block-code language-${language}`, "data-language": language, "data-block-id": attrs.blockId || "" }, 0],
     ]
   },

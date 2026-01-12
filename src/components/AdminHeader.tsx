@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom"
 import { adminMenuGroups } from "@/config/adminMenu"
 import { useEffect, useState } from "react"
 import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
+import { Button } from "@/components/ui/button"
 
 export function AdminHeader() {
   const { toggleTheme } = useTheme()
@@ -50,12 +51,14 @@ export function AdminHeader() {
       </nav>
       <div className="flex items-center gap-4">
         {action}
-        <div 
-          className="size-4 cursor-pointer relative flex items-center justify-center text-foreground"
-          onClick={toggleTheme}
-        >
-           <Eclipse className="size-full" />
-        </div>
+        <Button         
+         variant="ghost"
+         className="size-8 shrink-0 hover:bg-accent"
+         onClick={toggleTheme}
+         aria-label="Toggle theme"
+       >
+         <Eclipse className="size-4 text-foreground" />
+       </Button>
       </div>
     </div>
   )

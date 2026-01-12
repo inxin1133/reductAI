@@ -167,7 +167,27 @@ function providerSlugToLogoKeyFallback(slug?: string | null): string | null {
 export default function Timeline() {
   const location = useLocation()
   const navigate = useNavigate()
-  const [isSidebarOpen, setIsSidebarOpen] = React.useState(true)
+  const TIMELINE_SIDEBAR_OPEN_KEY = "reductai:timeline:isSidebarOpen"
+  const getInitialDesktopSidebarOpen = () => {
+    try {
+      if (typeof window === "undefined") return true
+      const v = window.localStorage.getItem(TIMELINE_SIDEBAR_OPEN_KEY)
+      if (v === "0") return false
+      if (v === "1") return true
+      return true
+    } catch {
+      return true
+    }
+  }
+
+  // NOTE:
+  // - Desktop: persist the user's preference (open/closed)
+  // - Mobile: always start closed (overlay drawer), but never overwrite the desktop preference
+  const [isSidebarOpen, setIsSidebarOpen] = React.useState<boolean>(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return getInitialDesktopSidebarOpen()
+    const mobile = window.matchMedia("(max-width: 767px)").matches
+    return mobile ? false : getInitialDesktopSidebarOpen()
+  })
   const [isMobile, setIsMobile] = React.useState(false)
   const [conversations, setConversations] = React.useState<TimelineConversation[]>([])
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null)
@@ -186,9 +206,9 @@ export default function Timeline() {
 
   const initial = (location.state as TimelineNavState | null)?.initial
 
-  // 모바일 화면에서는 타임라인(로컬) 사이드바를 기본적으로 축소(닫힘) 상태로 유지합니다.
-  // - 모바일: 닫힘(false)
-  // - 데스크탑: 열림(true)
+  // Responsive behavior:
+  // - Entering mobile: close the overlay UI, but DO NOT overwrite the user's desktop preference.
+  // - Returning to desktop: restore the persisted desktop preference.
   React.useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return
     const mq = window.matchMedia("(max-width: 767px)")
@@ -196,7 +216,11 @@ export default function Timeline() {
     const apply = () => {
       const mobile = mq.matches
       setIsMobile(mobile)
-      setIsSidebarOpen(!mobile)
+      if (mobile) {
+        setIsSidebarOpen(false)
+      } else {
+        setIsSidebarOpen(getInitialDesktopSidebarOpen())
+      }
     }
 
     apply()
@@ -208,6 +232,17 @@ export default function Timeline() {
     mq.addListener(apply)
     return () => mq.removeListener(apply)
   }, [])
+
+  // Persist the desktop preference only (mobile uses overlay drawer UI).
+  React.useEffect(() => {
+    if (typeof window === "undefined") return
+    if (isMobile) return
+    try {
+      window.localStorage.setItem(TIMELINE_SIDEBAR_OPEN_KEY, isSidebarOpen ? "1" : "0")
+    } catch {
+      // ignore (storage might be blocked)
+    }
+  }, [isMobile, isSidebarOpen])
 
   // 보안: Timeline은 사용자별 히스토리를 다루므로 로그인(토큰)이 없으면 접근 불가
   React.useEffect(() => {
@@ -413,7 +448,7 @@ export default function Timeline() {
             <Button
               variant="ghost"
               size="icon"
-              className="size-4 p-0 hover:bg-transparent"
+              className="size-8 shrink-0 hover:bg-accent"
               onClick={() => setIsSidebarOpen(false)}
             >
               <ChevronsLeft className="size-4" />
@@ -422,7 +457,7 @@ export default function Timeline() {
             <Button
               variant="ghost"
               size="icon"
-              className="size-4 p-0 hover:bg-transparent"
+              className="size-8 shrink-0 hover:bg-accent"
               onClick={() => setIsSidebarOpen(true)}
             >
               <GalleryVerticalEnd className="size-4" />
@@ -433,7 +468,7 @@ export default function Timeline() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="size-4 p-0 hover:bg-transparent"
+                  className="size-8 shrink-0 hover:bg-accent"
                   onClick={() => setIsSidebarOpen(true)}
                 >
                   <GalleryVerticalEnd className="size-4" />

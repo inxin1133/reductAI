@@ -110,6 +110,48 @@ export function buildMarkdownSerializer(_schema: Schema) {
     em: { open: "*", close: "*", mixable: true, expelEnclosingWhitespace: true },
     strong: { open: "**", close: "**", mixable: true, expelEnclosingWhitespace: true },
     code: { open: "`", close: "`" },
+    // GFM doesn't have underline; use HTML tag so it round-trips through markdown export.
+    underline: { open: "<u>", close: "</u>", mixable: true, expelEnclosingWhitespace: true },
+    // GFM strikethrough
+    strike: { open: "~~", close: "~~", mixable: true, expelEnclosingWhitespace: true },
+    // Markdown doesn't standardize text color; export as inline HTML with best-effort hex mapping.
+    text_color: {
+      open: (_state: any, mark: any) => {
+        const key = String(mark.attrs?.color || "")
+        const hexByKey: Record<string, string> = {
+          "slate-500": "#64748b",
+          "gray-500": "#6b7280",
+          "zinc-500": "#71717a",
+          "neutral-500": "#737373",
+          "stone-500": "#78716c",
+          "red-500": "#ef4444",
+          "orange-500": "#f97316",
+          "amber-500": "#f59e0b",
+          "yellow-500": "#eab308",
+          "lime-500": "#84cc16",
+          "green-500": "#22c55e",
+          "emerald-500": "#10b981",
+          "teal-500": "#14b8a6",
+          "cyan-500": "#06b6d4",
+          "sky-500": "#0ea5e9",
+          "blue-500": "#3b82f6",
+          "indigo-500": "#6366f1",
+          "violet-500": "#8b5cf6",
+          "purple-500": "#a855f7",
+          "fuchsia-500": "#d946ef",
+          "pink-500": "#ec4899",
+          "rose-500": "#f43f5e",
+        }
+        const hex = hexByKey[key]
+        const style = hex ? ` style="color:${hex}"` : ""
+        // Keep the original key for debugging/round-tripping.
+        const data = key ? ` data-text-color="${esc(key)}"` : ""
+        return `<span${data}${style}>`
+      },
+      close: "</span>",
+      mixable: true,
+      expelEnclosingWhitespace: true,
+    },
     link: {
       open: "[",
       close: (_state: any, mark: any) => {
