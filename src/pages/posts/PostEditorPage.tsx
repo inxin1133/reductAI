@@ -684,7 +684,7 @@ export default function PostEditorPage() {
 
     return (
       <div key={id} className="flex flex-col">
-        <div className="flex items-center gap-1" style={{ paddingLeft: depth * 12 }}>
+        <div className="flex items-center" style={{ paddingLeft: depth * 12 }}>
           {hasKids ? (
             <Button
               variant="ghost"

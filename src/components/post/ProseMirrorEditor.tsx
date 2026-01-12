@@ -8,6 +8,7 @@ import { buildEditorPlugins } from "../../editor/plugins"
 import { PageLinkNodeView } from "../../editor/nodes/page_link_nodeview"
 import { CodeBlockNodeView } from "../../editor/nodes/code_block_nodeview"
 import { ListItemNodeView } from "../../editor/nodes/list_item_nodeview"
+import { TableNodeView } from "../../editor/nodes/table_nodeview"
 import { blockInserterKey, type BlockInserterState } from "../../editor/plugins/blockInserterPlugin"
 import { getBlockCommandRegistry } from "../../editor/commands/blockCommandRegistry"
 import {
@@ -48,7 +49,7 @@ import {
   tableCommands,
 } from "../../editor/commands"
 import { exportMarkdown } from "../../editor/serializers/markdown"
-import { isInTable as pmIsInTable } from "prosemirror-tables"
+import { isInTable as pmIsInTable, selectedRect as pmSelectedRect, selectionCell as pmSelectionCell } from "prosemirror-tables"
 import { 
   ChevronRight, 
   ChevronDown,
@@ -199,6 +200,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
   const blockMenuInputRef = useRef<HTMLInputElement | null>(null)
   const blockMenuSigRef = useRef<string>("")
   const [tableInsertOpen, setTableInsertOpen] = useState(false)
+  const [tableGridHover, setTableGridHover] = useState<{ rows: number; cols: number }>({ rows: 1, cols: 1 })
 
   // Mention (@) is temporarily disabled (it caused runaway update loops / freezes).
   const plugins = useMemo(() => buildEditorPlugins(editorSchema, { mention: { enabled: false } }), [])
@@ -237,6 +239,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
         page_link: (node, view, getPos) => new PageLinkNodeView(node, view, getPos as () => number),
         code_block: (node, view, getPos) => new CodeBlockNodeView(node, view, getPos as () => number),
         list_item: (node, view, getPos) => new ListItemNodeView(node, view, getPos as () => number),
+        table: (node, view, getPos) => new TableNodeView(node, view, getPos as () => number),
       },
       // NOTE:
       // ProseMirror can dispatch transactions during EditorView construction (e.g. plugin views).
@@ -384,8 +387,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
     run(cmd)
   }
 
-  const insertTableFromPopover = (e: React.MouseEvent, size: 2 | 3 | 4) => {
-    runFromToolbar(e, cmdInsertTable(editorSchema, { rows: size, cols: size }))
+  const insertTableFromPopover = (e: React.MouseEvent, rows: number, cols: number) => {
+    runFromToolbar(e, cmdInsertTable(editorSchema, { rows, cols }))
     setTableInsertOpen(false)
   }
 
@@ -396,6 +399,41 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
       return pmIsInTable(v.state)
     } catch {
       return false
+    }
+  })()
+
+  const tableCanSplit = (() => {
+    const v = viewRef.current
+    if (!v) return false
+    const state = v.state
+    try {
+      if (!pmIsInTable(state)) return false
+
+      // If there is a cell selection (drag selection), check whether any selected cell is merged.
+      const rect = pmSelectedRect(state)
+      const map = rect.map
+      for (let r = rect.top; r < rect.bottom; r += 1) {
+        for (let c = rect.left; c < rect.right; c += 1) {
+          const index = r * map.width + c
+          const offset = map.map[index]
+          const pos = rect.tableStart + offset
+          const cell = state.doc.nodeAt(pos)
+          if (!cell) continue
+          const attrs = cell.attrs as unknown as { colspan?: number; rowspan?: number }
+          if (Number(attrs.colspan || 1) > 1 || Number(attrs.rowspan || 1) > 1) return true
+        }
+      }
+      return false
+    } catch {
+      // Fallback for normal text selection in a single cell
+      try {
+        const $cell = pmSelectionCell(state)
+        const cell = $cell.parent
+        const attrs = cell.attrs as unknown as { colspan?: number; rowspan?: number }
+        return Number(attrs.colspan || 1) > 1 || Number(attrs.rowspan || 1) > 1
+      } catch {
+        return false
+      }
     }
   })()
 
@@ -872,17 +910,71 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
                     <Grid2X2 />
                   </ButtonGroupItem>
                 </PopoverTrigger>
-                <PopoverContent className="w-[220px] p-2" align="start">
-                  <div className="text-xs font-medium text-muted-foreground px-1 pb-2">Insert table</div>
-                  <div className="grid grid-cols-3 gap-2">
-                    <Button variant="outline" size="sm" onMouseDown={(e) => insertTableFromPopover(e, 2)}>
-                      2×2
-                    </Button>
-                    <Button variant="outline" size="sm" onMouseDown={(e) => insertTableFromPopover(e, 3)}>
-                      3×3
-                    </Button>
-                    <Button variant="outline" size="sm" onMouseDown={(e) => insertTableFromPopover(e, 4)}>
-                      4×4
+                <PopoverContent
+                  className="w-[180px] p-2"
+                  align="start"
+                  onOpenAutoFocus={(e) => {
+                    // Keep editor selection stable when opening the Popover.
+                    e.preventDefault()
+                  }}
+                >
+                  <div className="flex items-center justify-between px-1 pb-2">
+                    <div className="text-xs font-medium text-muted-foreground">Insert table</div>
+                    <div className="text-xs font-semibold tabular-nums">{tableGridHover.rows}×{tableGridHover.cols}</div>
+                  </div>
+
+                  {/* Notion-like grid picker (2~6) */}
+                  <div
+                    className="grid grid-cols-6 gap-1"
+                    onMouseLeave={() => setTableGridHover({ rows: 1, cols: 1 })}
+                  >
+                    {Array.from({ length: 6 }).map((_, r) =>
+                      Array.from({ length: 6 }).map((__, c) => {
+                        const rows = r + 1
+                        const cols = c + 1
+                        const active = rows <= tableGridHover.rows && cols <= tableGridHover.cols
+                        const enabled = true
+
+                        return (
+                          <button
+                            key={`${rows}-${cols}`}
+                            type="button"
+                            className={[
+                              "h-5 w-5 rounded-[3px] border transition-colors",
+                              enabled
+                                ? active
+                                  ? "border-primary bg-primary/20"
+                                  : "border-border bg-background hover:bg-accent"
+                                : "border-border/60 bg-muted/40",
+                            ].join(" ")}
+                            onMouseEnter={() => {
+                              if (!enabled) return
+                              setTableGridHover({ rows, cols })
+                            }}
+                            onMouseDown={(e) => {
+                              // Prevent focus from moving away from editor.
+                              e.preventDefault()
+                              if (!enabled) return
+                              insertTableFromPopover(e, rows, cols)
+                            }}
+                            aria-label={`Insert ${rows} by ${cols} table`}
+                            disabled={!enabled}
+                          />
+                        )
+                      })
+                    )}
+                  </div>
+
+                  <div className="pt-2 px-1 flex items-center justify-end">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        setTableInsertOpen(false)
+                      }}
+                    >
+                      Close
                     </Button>
                   </div>
                 </PopoverContent>
@@ -979,7 +1071,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
-                disabled={!tableActive}
+                disabled={!tableCanSplit}
                 onMouseDown={(e) => runFromToolbar(e, tableCommands.splitCell)}
               >
               <TableCellsSplit />

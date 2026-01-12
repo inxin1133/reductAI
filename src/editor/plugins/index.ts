@@ -39,7 +39,9 @@ export function buildEditorPlugins(schema: Schema, opts?: { mention?: { enabled?
   }
 
   // Tables
-  plugins.push(columnResizing())
+  // Keep column resizing (including last column). Also, disable prosemirror-tables from injecting
+  // its own TableView NodeView so our custom TableNodeView remains in control.
+  plugins.push(columnResizing({ View: null as any }))
   plugins.push(tableEditing())
 
   // Keymaps

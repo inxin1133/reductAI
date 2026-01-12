@@ -49,6 +49,8 @@ export const tableNodeSpec: NodeSpec = {
   attrs: {
     blockId: { default: null },
     indent: { default: 0 },
+    // Table wrapper width in px. 0/falsey means "auto" (full width).
+    width: { default: 0 },
   },
   content: "table_row+",
   tableRole: "table",
@@ -60,13 +62,15 @@ export const tableNodeSpec: NodeSpec = {
       getAttrs: (dom) => ({
         blockId: (dom as HTMLElement).getAttribute("data-block-id"),
         indent: Number((dom as HTMLElement).getAttribute("data-indent") || 0) || 0,
+        width: Number((dom as HTMLElement).getAttribute("data-width") || 0) || 0,
       }),
     },
   ],
   toDOM: (node) => {
-    const attrs = (node.attrs || {}) as { blockId?: string | null; indent?: number }
+    const attrs = (node.attrs || {}) as { blockId?: string | null; indent?: number; width?: number }
     const blockId = attrs.blockId || ""
     const indent = Math.max(0, Math.min(8, Number(attrs.indent || 0)))
+    const width = Math.max(0, Number(attrs.width || 0))
     return [
     "div",
     {
@@ -74,9 +78,9 @@ export const tableNodeSpec: NodeSpec = {
         "tableWrapper my-3 overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-sm",
       "data-block-id": blockId,
       "data-indent": String(indent),
-      style: `margin-left: ${indent * 24}px;`,
+      style: `margin-left: ${indent * 24}px;${width ? ` width: ${width}px;` : ""}`,
     },
-    ["table", { class: "w-full table-fixed text-sm", "data-block-id": blockId }, ["tbody", 0]],
+    ["table", { class: "w-full table-fixed text-sm", "data-block-id": blockId, "data-indent": String(indent), "data-width": String(width) }, ["tbody", 0]],
     ] as DOMOutputSpec
   },
 }

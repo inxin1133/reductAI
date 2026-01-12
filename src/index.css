@@ -393,8 +393,16 @@ body {
   margin: 0.5rem 0;
   border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 12px;
-  overflow: hidden;
+  /* Let wrapper shrink/grow to inner table width (sum of column widths) */
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
   background: rgba(255, 255, 255, 0.98);
+}
+.ProseMirror .tableWrapper > table {
+  /* Override global `.ProseMirror table { width: 100% }` so table can shrink-to-fit */
+  width: auto;
 }
 .ProseMirror table {
   border-collapse: separate;

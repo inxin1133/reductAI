@@ -215,7 +215,7 @@ export function cmdInsertTable(schema: Schema, opts: { rows: number; cols: numbe
     if (!dispatch) return true
 
     const tableNode = table.create(
-      { blockId: null, indent: 0 },
+      { blockId: null, indent: 0, width: 0 },
       Array.from({ length: rows }).map(() =>
         row.create(
           { blockId: null },
