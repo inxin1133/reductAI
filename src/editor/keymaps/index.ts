@@ -1,9 +1,11 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { keymap } from "prosemirror-keymap"
 import { baseKeymap, chainCommands, setBlockType, toggleMark } from "prosemirror-commands"
 import { undo, redo } from "prosemirror-history"
 import { sinkListItem, liftListItem, splitListItem } from "prosemirror-schema-list"
 import type { Schema } from "prosemirror-model"
 import { TextSelection } from "prosemirror-state"
+import { CellSelection, nextCell, selectionCell } from "prosemirror-tables"
 
 function isInListItem(state: any, schema: Schema) {
   const li = schema.nodes.list_item
@@ -136,6 +138,23 @@ function exitCodeMarkOnArrowRight(schema: Schema) {
   }
 }
 
+function moveCellSelection(axis: "horiz" | "vert", dir: -1 | 1) {
+  return (state: any, dispatch: any) => {
+    if (!(state.selection instanceof CellSelection)) return false
+    let $cell: any
+    try {
+      $cell = selectionCell(state)
+    } catch {
+      return false
+    }
+    const $next = nextCell($cell, axis, dir)
+    if (!$next) return false
+    if (!dispatch) return true
+    dispatch(state.tr.setSelection(new CellSelection($next)).scrollIntoView())
+    return true
+  }
+}
+
 function removeCodeMarkOnBackspace(schema: Schema) {
   const code = schema.marks.code
   if (!code) return () => false
@@ -182,6 +201,9 @@ function removeCodeMarkOnBackspace(schema: Schema) {
 
 export function buildEditorKeymap(schema: Schema) {
   const arrowRightBase = (baseKeymap as any)["ArrowRight"]
+  const arrowLeftBase = (baseKeymap as any)["ArrowLeft"]
+  const arrowUpBase = (baseKeymap as any)["ArrowUp"]
+  const arrowDownBase = (baseKeymap as any)["ArrowDown"]
   const keys: Record<string, any> = {
     "Mod-z": undo,
     "Mod-y": redo,
@@ -202,10 +224,42 @@ export function buildEditorKeymap(schema: Schema) {
       if (isInListItem(state, schema)) return liftListItem(schema.nodes.list_item)(state, dispatch)
       return indentBlock(-1)(state, dispatch)
     },
+
+    // Table UX:
+    // - F5 selects the whole current cell (works for both cursor-in-cell and cell selections).
+    //   Note: This intentionally prevents browser refresh only when the caret is inside a table cell.
+    F5: (state: any, dispatch: any) => {
+      try {
+        const $cell = selectionCell(state)
+        if (!$cell) return false
+        if (!dispatch) return true
+        dispatch(state.tr.setSelection(new CellSelection($cell)).scrollIntoView())
+        return true
+      } catch {
+        return false
+      }
+    },
+
+    Escape: (state: any, dispatch: any) => {
+      if (!(state.selection instanceof CellSelection)) return false
+      let $cell: any
+      try {
+        $cell = selectionCell(state)
+      } catch {
+        return false
+      }
+      const inside = Math.min($cell.pos + 1, state.doc.content.size)
+      if (!dispatch) return true
+      dispatch(state.tr.setSelection(TextSelection.near(state.doc.resolve(inside), 1)).scrollIntoView())
+      return true
+    },
   }
 
   // Code mark UX (inline `code`):
-  keys["ArrowRight"] = chainCommands(exitCodeMarkOnArrowRight(schema), arrowRightBase)
+  keys["ArrowRight"] = chainCommands(moveCellSelection("horiz", 1), exitCodeMarkOnArrowRight(schema), arrowRightBase)
+  keys["ArrowLeft"] = chainCommands(moveCellSelection("horiz", -1), arrowLeftBase)
+  keys["ArrowDown"] = chainCommands(moveCellSelection("vert", 1), arrowDownBase)
+  keys["ArrowUp"] = chainCommands(moveCellSelection("vert", -1), arrowUpBase)
 
   // Notion-like list behavior:
   // - Enter continues list

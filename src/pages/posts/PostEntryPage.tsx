@@ -12,6 +12,12 @@ type MyPage = {
   id: string
   page_order?: number
   title?: string
+  status?: string
+  deleted_at?: unknown
+}
+
+function isDeletedPage(p: MyPage) {
+  return String(p.status || "") === "deleted" || p.deleted_at != null
 }
 
 function sortPages(pages: MyPage[]) {
@@ -45,7 +51,7 @@ export default function PostEntryPage() {
         if (pagesRes.ok) {
           const pagesJson = await pagesRes.json().catch(() => [])
           const pages = Array.isArray(pagesJson) ? (pagesJson as MyPage[]) : []
-          const sorted = sortPages(pages)
+          const sorted = sortPages(pages.filter((p) => !isDeletedPage(p)))
           const firstId = sorted.length > 0 ? String(sorted[0].id || "") : ""
           if (firstId) {
             if (!cancelled) navigate(`/posts/${firstId}/edit`, { replace: true })

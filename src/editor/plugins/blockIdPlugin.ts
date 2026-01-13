@@ -43,6 +43,8 @@ export function blockIdPlugin(schema: Schema) {
 
         if (changed) {
           applying = true
+          // This is a normalization pass (internal IDs). Don't create undo steps.
+          tr.setMeta("addToHistory", false)
           view.dispatch(tr)
           applying = false
         }

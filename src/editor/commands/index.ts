@@ -261,6 +261,16 @@ export function cmdSetTableCellAlign(_schema: Schema, align: "left" | "center" |
   return setCellAttr("cellAlign", a)
 }
 
+export function cmdSetTableCellBgColor(_schema: Schema, bgColor: string) {
+  const c = String(bgColor || "").trim()
+  if (!c) return () => false
+  return setCellAttr("bgColor", c)
+}
+
+export function cmdClearTableCellBgColor(_schema: Schema) {
+  return setCellAttr("bgColor", "")
+}
+
 // prosemirror-transform 직접 사용 예시:
 // 현재 selection이 속한 "블록 노드" (paragraph/heading/blockquote/code_block 등)를 통째로 복제하여 아래에 삽입합니다.
 export function cmdDuplicateBlock(_schema: Schema) {

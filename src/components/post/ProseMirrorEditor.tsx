@@ -46,13 +46,13 @@ import {
   cmdToggleItalic,
   cmdInsertTable,
   cmdSetTableCellAlign,
+  cmdSetTableCellBgColor,
+  cmdClearTableCellBgColor,
   tableCommands,
 } from "../../editor/commands"
 import { exportMarkdown } from "../../editor/serializers/markdown"
 import { isInTable as pmIsInTable, selectedRect as pmSelectedRect, selectionCell as pmSelectionCell } from "prosemirror-tables"
 import { 
-  ChevronRight, 
-  ChevronDown,
   Bold,
   Italic,
   Underline,
@@ -78,6 +78,7 @@ import {
   Minus,  
   Link2,
   File,
+  Paintbrush,
   PaintBucket,  
   Grid2X2,
   TableCellsMerge,    
@@ -96,6 +97,7 @@ type MenuAnchor = { left: number; top: number; width: number; height: number }
 type Props = {
   initialDocJson?: PmDocJson
   onChange?: (docJson: PmDocJson) => void
+  toolbarOpen: boolean
 }
 
 function ToolbarTooltip({ label, children }: { label: string; children: React.ReactNode }) {
@@ -165,34 +167,16 @@ function getEmptyDoc() {
   return PMDOMParser.fromSchema(editorSchema).parse(wrap)
 }
 
-export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
+export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
   const embedIdsRef = useRef<Set<string>>(new Set())
 
   const [markdown, setMarkdown] = useState("")
   const [docJson, setDocJson] = useState<PmDocJson>(initialDocJson ?? null)
-
-  const TOOLBAR_OPEN_KEY = "reductai:pmEditor:toolbarOpen"
-  const [toolbarOpen, setToolbarOpen] = useState<boolean>(() => {
-    try {
-      if (typeof window === "undefined") return false
-      return window.localStorage.getItem(TOOLBAR_OPEN_KEY) === "1"
-    } catch {
-      return false
-    }
-  })
   const [textColorOpen, setTextColorOpen] = useState(false)
   const [blockBgOpen, setBlockBgOpen] = useState(false)
-
-  useEffect(() => {
-    try {
-      if (typeof window === "undefined") return
-      window.localStorage.setItem(TOOLBAR_OPEN_KEY, toolbarOpen ? "1" : "0")
-    } catch {
-      // ignore (storage might be blocked)
-    }
-  }, [toolbarOpen])
+  const [tableCellBgOpen, setTableCellBgOpen] = useState(false)
 
   const [blockMenuOpen, setBlockMenuOpen] = useState(false)
   const [blockMenuAnchor, setBlockMenuAnchor] = useState<MenuAnchor | null>(null)
@@ -345,6 +329,70 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
     }
     window.addEventListener("reductai:page-title-updated", onTitleUpdated as EventListener)
 
+    // Append an embed/link block to the end of the current document (used by page tree "+" UX).
+    const onAppendPageLink = (e: Event) => {
+      const ce = e as CustomEvent<{ pageId?: string; title?: string; display?: string }>
+      const pageId = String(ce.detail?.pageId || "")
+      if (!pageId) return
+      const title = String(ce.detail?.title || "New page")
+      const display = String(ce.detail?.display || "embed")
+      const v = viewRef.current
+      if (!v) return
+      const nodeType = editorSchema.nodes.page_link
+      if (!nodeType) return
+
+      const doc = v.state.doc
+      let insertPos = doc.content.size
+      const last = doc.lastChild
+      // Insert before a trailing empty paragraph if present (Notion-like).
+      if (last && last.type === editorSchema.nodes.paragraph && last.content.size === 0) {
+        insertPos = doc.content.size - last.nodeSize
+      }
+
+      const linkNode = nodeType.create({ pageId, title, display })
+      v.dispatch(v.state.tr.insert(insertPos, linkNode).scrollIntoView())
+    }
+    window.addEventListener("reductai:append-page-link", onAppendPageLink as EventListener)
+
+    // Insert a page_link block right after a specific existing page_link (by pageId).
+    const onInsertPageLinkAfter = (e: Event) => {
+      const ce = e as CustomEvent<{ afterPageId?: string; pageId?: string; title?: string; display?: string }>
+      const afterPageId = String(ce.detail?.afterPageId || "")
+      const pageId = String(ce.detail?.pageId || "")
+      if (!afterPageId || !pageId) return
+      const title = String(ce.detail?.title || "New page")
+      const display = String(ce.detail?.display || "embed")
+      const v = viewRef.current
+      if (!v) return
+      const nodeType = editorSchema.nodes.page_link
+      if (!nodeType) return
+
+      let insertPos: number | null = null
+      v.state.doc.descendants((node, pos) => {
+        if (insertPos != null) return false
+        if (node.type !== nodeType) return true
+        const attrs = (node.attrs || {}) as Record<string, unknown>
+        const pid = typeof attrs.pageId === "string" ? attrs.pageId : ""
+        if (pid !== afterPageId) return true
+        insertPos = pos + node.nodeSize
+        return false
+      })
+
+      if (insertPos == null) {
+        // Fallback: append near the end (before trailing empty paragraph if present)
+        const doc = v.state.doc
+        insertPos = doc.content.size
+        const last = doc.lastChild
+        if (last && last.type === editorSchema.nodes.paragraph && last.content.size === 0) {
+          insertPos = doc.content.size - last.nodeSize
+        }
+      }
+
+      const linkNode = nodeType.create({ pageId, title, display })
+      v.dispatch(v.state.tr.insert(insertPos, linkNode).scrollIntoView())
+    }
+    window.addEventListener("reductai:insert-page-link-after", onInsertPageLinkAfter as EventListener)
+
     // init derived views
     setMarkdown(exportMarkdown(editorSchema, doc))
     setDocJson(doc.toJSON())
@@ -352,6 +400,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
 
     return () => {
       window.removeEventListener("reductai:page-title-updated", onTitleUpdated as EventListener)
+      window.removeEventListener("reductai:append-page-link", onAppendPageLink as EventListener)
+      window.removeEventListener("reductai:insert-page-link-after", onInsertPageLinkAfter as EventListener)
       view.destroy()
       viewRef.current = null
     }
@@ -450,6 +500,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
 
   return (
     <div className="w-full">
+
       {/* Block inserter menu (React / shadcn DropdownMenu) - 블럭 삽입 메뉴 */}
       {blockMenuOpen && blockMenuAnchor ? (
         <DropdownMenu
@@ -560,20 +611,18 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
       ) : null}
 
       {/* Toolbar: use theme-aware background for dark mode - 블럭 에디터 툴바 */}
-      <div className=" flex-wrap items-center hidden sm:flex">
-      <button
-        type="button"
-        className="flex w-fit items-center gap-1 p-1 text-foreground text-sm hover:bg-accent rounded-md"
-        onMouseDown={(e) => e.preventDefault()}
-        onClick={() => setToolbarOpen((v) => !v)}
-        aria-expanded={toolbarOpen}
-      >
-        {toolbarOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-        툴바
-      </button>
-
       {toolbarOpen ? (
-        <div className="flex flex-wrap items-center gap-2 p-1">
+        <div
+          className={[
+            // Sticky toolbar: when the page title scrolls away, pin this toolbar to the top of the scroll container.
+            "sticky top-0 z-20",
+            // Layout + styling
+            "hidden sm:flex flex-wrap items-center",
+            "bg-accent/75 backdrop-blur supports-[backdrop-filter]:bg-accent/75",
+            "rounded-md",
+          ].join(" ")}
+        >
+          <div className="flex flex-wrap items-center gap-2 p-1">
           {/* 텍스트 형식 */}
           <ButtonGroup>
             <ToolbarTooltip label="Bold">
@@ -739,7 +788,6 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
                 <ListOrdered />
               </ButtonGroupItem>
             </ToolbarTooltip>
-
             <ToolbarTooltip label="Checklist">
               <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdChecklist(editorSchema))}>
                 <ListTodo />
@@ -762,7 +810,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
                         size="sm"
                         onMouseDown={(e) => e.preventDefault()}
                       >
-                        <PaintBucket />
+                        <Paintbrush />
                       </ButtonGroupItem>
                     </PopoverTrigger>
                   </TooltipTrigger>
@@ -895,7 +943,6 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
 
           {/* 테이블 형식 */}
           <ButtonGroup>
-
             <ToolbarTooltip label="Insert Table">
               <Popover open={tableInsertOpen} onOpenChange={setTableInsertOpen}>
                 <PopoverTrigger asChild>
@@ -1054,9 +1101,6 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
                <FoldHorizontal />               
               </ButtonGroupItem>
             </ToolbarTooltip>
-
-
-
             <ToolbarTooltip label="Merge">
               <ButtonGroupItem
                 variant="outline"
@@ -1077,6 +1121,64 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
               <TableCellsSplit />
               </ButtonGroupItem>
             </ToolbarTooltip>
+            <Popover open={tableCellBgOpen} onOpenChange={setTableCellBgOpen}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <PopoverTrigger asChild>
+                    <ButtonGroupItem
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={!tableActive}
+                      onMouseDown={(e) => e.preventDefault()}
+                    >
+                      <PaintBucket />
+                    </ButtonGroupItem>
+                  </PopoverTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>
+                  Cell Background Color
+                </TooltipContent>
+              </Tooltip>
+
+              <PopoverContent align="start" sideOffset={8} className="w-64 p-3">
+                <div className="text-xs font-semibold mb-2">Cell background color</div>
+                <div className="grid grid-cols-6 gap-2">
+                  {BLOCK_BG_PRESETS_100.map((c) => (
+                    <button
+                      key={c.key}
+                      type="button"
+                      className={[
+                        "size-7 rounded-md border border-border",
+                        "hover:opacity-90",
+                        "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                        c.bgClass,
+                      ].join(" ")}
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        run(cmdSetTableCellBgColor(editorSchema, c.key))
+                        setTableCellBgOpen(false)
+                      }}
+                      aria-label={c.label}
+                      title={c.label}
+                    />
+                  ))}
+                </div>
+                <div className="mt-3 flex justify-between">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      run(cmdClearTableCellBgColor(editorSchema))
+                      setTableCellBgOpen(false)
+                    }}
+                  >
+                    Reset
+                  </Button>
+                </div>
+              </PopoverContent>
+            </Popover>
             <ToolbarTooltip label="Del Table">
               <ButtonGroupItem
                 variant="outline"
@@ -1089,15 +1191,9 @@ export function ProseMirrorEditor({ initialDocJson, onChange }: Props) {
             </ToolbarTooltip>
           </ButtonGroup>
 
-
-
-
-
-
+          </div>
         </div>
-      
       ) : null}
-      </div>
 
       {/* Editor surface: use theme-aware background for dark mode - 블럭 에디터  */}
       <div className="p-3 bg-background text-foreground">

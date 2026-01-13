@@ -17,6 +17,8 @@ export function trailingParagraphPlugin(schema: Schema) {
       // Append a trailing empty paragraph
       const tr: Transaction = newState.tr
       tr.insert(newState.doc.content.size, paragraph.createAndFill()!)
+      // Normalization only; should not consume an undo step.
+      tr.setMeta("addToHistory", false)
       return tr
     },
   })

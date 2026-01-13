@@ -13,6 +13,7 @@ import { listStylePlugin } from "./listStylePlugin"
 import { trailingParagraphPlugin } from "./trailingParagraphPlugin"
 import { blockInserterPlugin } from "./blockInserterPlugin"
 import { blockIdPlugin } from "./blockIdPlugin"
+import { tableCellSelectionKeysPlugin } from "./tableCellSelectionKeysPlugin"
 
 export function buildEditorPlugins(schema: Schema, opts?: { mention?: { enabled?: boolean } }) {
   const plugins: any[] = []
@@ -42,6 +43,8 @@ export function buildEditorPlugins(schema: Schema, opts?: { mention?: { enabled?
   // Keep column resizing (including last column). Also, disable prosemirror-tables from injecting
   // its own TableView NodeView so our custom TableNodeView remains in control.
   plugins.push(columnResizing({ View: null as any }))
+  // IMPORTANT: must run before tableEditing() so Arrow keys keep CellSelection (F5-selected cells).
+  plugins.push(tableCellSelectionKeysPlugin())
   plugins.push(tableEditing())
 
   // Keymaps

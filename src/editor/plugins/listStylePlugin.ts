@@ -100,7 +100,10 @@ export function listStylePlugin(schema: Schema, opts?: Opts) {
         tr,
         changed,
       })
-      return changed.v ? tr : null
+      if (!changed.v) return null
+      // Normalization only; should not consume an undo step.
+      tr.setMeta("addToHistory", false)
+      return tr
     },
   })
 }
