@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { EditorState, TextSelection, type Transaction } from "prosemirror-state"
 import { EditorView } from "prosemirror-view"
-import { DOMParser as PMDOMParser } from "prosemirror-model"
+import { DOMParser as PMDOMParser, type Node as PMNode } from "prosemirror-model"
+import type { Slice } from "prosemirror-model"
 import { Button } from "@/components/ui/button"
 import { editorSchema } from "../../editor/schema"
 import { buildEditorPlugins } from "../../editor/plugins"
@@ -10,6 +11,7 @@ import { CodeBlockNodeView } from "../../editor/nodes/code_block_nodeview"
 import { ListItemNodeView } from "../../editor/nodes/list_item_nodeview"
 import { TableNodeView } from "../../editor/nodes/table_nodeview"
 import { blockInserterKey, type BlockInserterState } from "../../editor/plugins/blockInserterPlugin"
+import { selectionModeInitState, selectionModePluginKey } from "../../editor/plugins/tableCellSelectionKeysPlugin"
 import { getBlockCommandRegistry } from "../../editor/commands/blockCommandRegistry"
 import {
   DropdownMenu,
@@ -104,6 +106,26 @@ type Props = {
   initialDocJson?: PmDocJson
   onChange?: (docJson: PmDocJson) => void
   toolbarOpen: boolean
+}
+
+function topLevelIndexAtPos(doc: PMNode, pos: number): number | null {
+  let cur = 0
+  for (let i = 0; i < doc.childCount; i += 1) {
+    if (cur === pos) return i
+    cur += doc.child(i).nodeSize
+  }
+  return null
+}
+
+function posAtTopLevelIndex(doc: PMNode, index: number): { pos: number; node: PMNode } | null {
+  if (index < 0 || index >= doc.childCount) return null
+  let pos = 0
+  for (let i = 0; i < doc.childCount; i += 1) {
+    const child = doc.child(i)
+    if (i === index) return { pos, node: child }
+    pos += child.nodeSize
+  }
+  return null
 }
 
 function ToolbarTooltip({ label, children }: { label: string; children: React.ReactNode }) {
@@ -309,6 +331,122 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
         code_block: (node, view, getPos) => new CodeBlockNodeView(node, view, getPos as () => number),
         list_item: (node, view, getPos) => new ListItemNodeView(node, view, getPos as () => number),
         table: (node, view, getPos) => new TableNodeView(node, view, getPos as () => number),
+      },
+      handleDOMEvents: {
+        copy: (v, event) => {
+          // Fail-safe: ensure F5 block/cell selection can be copied even if another plugin swallows copy.
+          if (event.defaultPrevented) return false
+          const st = selectionModePluginKey.getState(v.state) || selectionModeInitState()
+          if (st.mode === 0) return false
+
+          const serializeForClipboard = (v as unknown as {
+            serializeForClipboard?: (slice: Slice) => { dom: HTMLElement; text: string }
+          }).serializeForClipboard
+          if (!serializeForClipboard) return false
+          const e = event as ClipboardEvent
+          const data: DataTransfer | null = e.clipboardData
+          if (!data) return false
+
+          // CellSelection: let ProseMirror compute the slice from the selection
+          if (st.kind === "cell" && v.state.selection instanceof CellSelection) {
+            const slice = v.state.selection.content()
+            const { dom, text } = serializeForClipboard(slice)
+            event.preventDefault()
+            data.setData("text/plain", text || "")
+            data.setData("text/html", dom?.innerHTML || "")
+            return true
+          }
+
+          // Block selection: copy the top-level block range from anchor/head
+          if (st.kind === "block" && st.anchorBlockPos != null && st.headBlockPos != null) {
+            const doc = v.state.doc as PMNode
+            const aPos = st.anchorBlockPos
+            const hPos = st.headBlockPos
+            const aIdx = topLevelIndexAtPos(doc, aPos)
+            const hIdx = topLevelIndexAtPos(doc, hPos)
+            if (aIdx == null || hIdx == null) return false
+            const fromIdx = Math.min(aIdx, hIdx)
+            const toIdx = Math.max(aIdx, hIdx)
+            const first = posAtTopLevelIndex(doc, fromIdx)
+            const last = posAtTopLevelIndex(doc, toIdx)
+            if (!first || !last) return false
+            const from = first.pos
+            const to = last.pos + last.node.nodeSize
+            if (to <= from) return false
+
+            const slice = doc.slice(from, to)
+            const { dom, text } = serializeForClipboard(slice)
+            event.preventDefault()
+            data.setData("text/plain", text || "")
+            data.setData("text/html", dom?.innerHTML || "")
+            return true
+          }
+
+          return false
+        },
+        cut: (v, event) => {
+          // Fail-safe: cut = copy + delete for F5 selection mode.
+          if (event.defaultPrevented) return false
+          const st = selectionModePluginKey.getState(v.state) || selectionModeInitState()
+          if (st.mode === 0) return false
+
+          const serializeForClipboard = (v as unknown as {
+            serializeForClipboard?: (slice: Slice) => { dom: HTMLElement; text: string }
+          }).serializeForClipboard
+          if (!serializeForClipboard) return false
+          const e = event as ClipboardEvent
+          const data: DataTransfer | null = e.clipboardData
+          if (!data) return false
+
+          if (st.kind === "cell" && v.state.selection instanceof CellSelection) {
+            const slice = v.state.selection.content()
+            const { dom, text } = serializeForClipboard(slice)
+            event.preventDefault()
+            data.setData("text/plain", text || "")
+            data.setData("text/html", dom?.innerHTML || "")
+            if (v.editable) {
+              v.dispatch(v.state.tr.deleteSelection().setMeta(selectionModePluginKey, selectionModeInitState()).scrollIntoView())
+            }
+            return true
+          }
+
+          if (st.kind === "block" && st.anchorBlockPos != null && st.headBlockPos != null) {
+            const doc = v.state.doc as PMNode
+            const aPos = st.anchorBlockPos
+            const hPos = st.headBlockPos
+            const aIdx = topLevelIndexAtPos(doc, aPos)
+            const hIdx = topLevelIndexAtPos(doc, hPos)
+            if (aIdx == null || hIdx == null) return false
+            const fromIdx = Math.min(aIdx, hIdx)
+            const toIdx = Math.max(aIdx, hIdx)
+            const first = posAtTopLevelIndex(doc, fromIdx)
+            const last = posAtTopLevelIndex(doc, toIdx)
+            if (!first || !last) return false
+            const from = first.pos
+            const to = last.pos + last.node.nodeSize
+            if (to <= from) return false
+
+            const slice = doc.slice(from, to)
+            const { dom, text } = serializeForClipboard(slice)
+            event.preventDefault()
+            data.setData("text/plain", text || "")
+            data.setData("text/html", dom?.innerHTML || "")
+
+            if (v.editable) {
+              const tr = v.state.tr.delete(from, to).setMeta(selectionModePluginKey, selectionModeInitState()).scrollIntoView()
+              const safe = Math.min(from, tr.doc.content.size)
+              try {
+                tr.setSelection(TextSelection.near(tr.doc.resolve(safe), -1))
+              } catch {
+                // ignore
+              }
+              v.dispatch(tr)
+            }
+            return true
+          }
+
+          return false
+        },
       },
       // NOTE:
       // ProseMirror can dispatch transactions during EditorView construction (e.g. plugin views).

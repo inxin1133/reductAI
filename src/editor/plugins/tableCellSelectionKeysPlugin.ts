@@ -17,9 +17,9 @@ type SelModeState = {
   headBlockPos: number | null
 }
 
-const pluginKey = new PluginKey<SelModeState>("reductai:selection-mode")
+export const selectionModePluginKey = new PluginKey<SelModeState>("reductai:selection-mode")
 
-function initState(): SelModeState {
+export function selectionModeInitState(): SelModeState {
   return { mode: 0, kind: null, anchorCellPos: null, headCellPos: null, anchorBlockPos: null, headBlockPos: null }
 }
 
@@ -33,6 +33,18 @@ function mapPos(mapping: any, pos: number | null) {
 }
 
 function findTopLevelBlockAtSelection(state: any): { pos: number; node: PMNode; index: number } | null {
+  // If we're on a NodeSelection at top-level, $from.depth can be 0 (loop below won't run).
+  // Handle this explicitly so F5 mode toggling works when a whole block is selected.
+  const sel = state.selection
+  if (sel instanceof NodeSelection) {
+    const pos = sel.from
+    const node = sel.node as PMNode
+    if (node?.isBlock) {
+      const idx = topLevelIndexAtPos(state.doc as PMNode, pos)
+      if (idx != null) return { pos, node, index: idx }
+    }
+  }
+
   const $from = state.selection?.$from
   if (!$from) return null
   for (let d = $from.depth; d > 0; d -= 1) {
@@ -67,37 +79,42 @@ function topLevelIndexAtPos(doc: PMNode, pos: number): number | null {
   return null
 }
 
-function clearToCaretInBlock(state: any, view: any, blockPos: number) {
-  const node = state.doc.nodeAt(blockPos)
-  if (!node) return
+function selectionNearInsideBlock(doc: PMNode, blockPos: number) {
+  const node = doc.nodeAt(blockPos)
+  if (!node) return null
   const inside = Math.min(blockPos + 1, blockPos + Math.max(1, node.nodeSize - 1))
-  view.dispatch(state.tr.setSelection(TextSelection.near(state.doc.resolve(inside), 1)).scrollIntoView())
+  try {
+    return TextSelection.near(doc.resolve(inside), 1)
+  } catch {
+    return null
+  }
 }
 
-function selectSingleBlock(state: any, view: any, blockPos: number) {
-  view.dispatch(state.tr.setSelection(NodeSelection.create(state.doc, blockPos)).scrollIntoView())
+function nodeSelectionAtTopLevel(doc: PMNode, blockPos: number) {
+  try {
+    return NodeSelection.create(doc, blockPos)
+  } catch {
+    return null
+  }
 }
 
-function selectBlockRangeAsText(state: any, view: any, aPos: number, bPos: number) {
-  const doc = state.doc as PMNode
+function selectionForBlockRange(doc: PMNode, aPos: number, bPos: number) {
   const aIdx = topLevelIndexAtPos(doc, aPos)
   const bIdx = topLevelIndexAtPos(doc, bPos)
-  if (aIdx == null || bIdx == null) return false
+  if (aIdx == null || bIdx == null) return null
   const fromIdx = Math.min(aIdx, bIdx)
   const toIdx = Math.max(aIdx, bIdx)
   const first = posAtTopLevelIndex(doc, fromIdx)
   const last = posAtTopLevelIndex(doc, toIdx)
-  if (!first || !last) return false
+  if (!first || !last) return null
 
   const fromInside = Math.min(first.pos + 1, doc.content.size)
   const toInside = Math.min(last.pos + Math.max(1, last.node.nodeSize - 1), doc.content.size)
   try {
-    view.dispatch(state.tr.setSelection(TextSelection.between(doc.resolve(fromInside), doc.resolve(toInside))).scrollIntoView())
-    return true
+    return TextSelection.between(doc.resolve(fromInside), doc.resolve(toInside))
   } catch {
     // fallback
-    selectSingleBlock(state, view, last.pos)
-    return true
+    return nodeSelectionAtTopLevel(doc, last.pos)
   }
 }
 
@@ -134,11 +151,11 @@ function buildBlockSelectionDecorations(doc: PMNode, anchorPos: number | null, h
  */
 export function tableCellSelectionKeysPlugin() {
   return new Plugin<SelModeState>({
-    key: pluginKey,
+    key: selectionModePluginKey,
     state: {
-      init: initState,
+      init: selectionModeInitState,
       apply(tr, prev) {
-        const meta = tr.getMeta(pluginKey) as Partial<SelModeState> | undefined
+        const meta = tr.getMeta(selectionModePluginKey) as Partial<SelModeState> | undefined
         let next = meta ? ({ ...prev, ...meta } as SelModeState) : prev
         if (tr.docChanged) {
           next = {
@@ -152,21 +169,166 @@ export function tableCellSelectionKeysPlugin() {
         if (next.mode !== 0) {
           // if selection no longer matches our kind, reset
           const sel = tr.selection
-          if (next.kind === "cell" && !(sel instanceof CellSelection)) return initState()
-          if (next.kind === "block" && !(sel instanceof NodeSelection) && !(sel instanceof TextSelection)) return initState()
+          if (next.kind === "cell" && !(sel instanceof CellSelection)) return selectionModeInitState()
+          if (next.kind === "block" && !(sel instanceof NodeSelection) && !(sel instanceof TextSelection)) return selectionModeInitState()
         }
         return next
       },
     },
     props: {
+      handleDOMEvents: {
+        copy(view, event) {
+          const state = view.state
+          const st = selectionModePluginKey.getState(state) || selectionModeInitState()
+          if (st.mode === 0) return false
+
+          const serializeForClipboard = (view as any).serializeForClipboard as
+            | ((slice: any) => { dom: HTMLElement; text: string })
+            | undefined
+          if (!serializeForClipboard) return false
+
+          const e = event as any
+          const data = e?.clipboardData
+          if (!data) return false
+
+          // Table cell selection: copy currently selected cells (works via selection slice)
+          if (st.kind === "cell" && state.selection instanceof CellSelection) {
+            const slice = state.selection.content()
+            const { dom, text } = serializeForClipboard(slice)
+            event.preventDefault()
+            try {
+              data.setData("text/plain", text || "")
+              data.setData("text/html", dom?.innerHTML || "")
+            } catch {
+              // ignore clipboard failures
+            }
+            return true
+          }
+
+          // Block selection: copy based on our anchor/head even when selection is just a single NodeSelection.
+          if (st.kind === "block") {
+            const doc = state.doc as PMNode
+            const aPos = st.anchorBlockPos
+            const hPos = st.headBlockPos
+            if (aPos == null || hPos == null) return false
+
+            const aIdx = topLevelIndexAtPos(doc, aPos)
+            const hIdx = topLevelIndexAtPos(doc, hPos)
+            if (aIdx == null || hIdx == null) return false
+
+            const fromIdx = Math.min(aIdx, hIdx)
+            const toIdx = Math.max(aIdx, hIdx)
+            const first = posAtTopLevelIndex(doc, fromIdx)
+            const last = posAtTopLevelIndex(doc, toIdx)
+            if (!first || !last) return false
+
+            const from = first.pos
+            const to = last.pos + last.node.nodeSize
+            if (to <= from) return false
+
+            const slice = state.doc.slice(from, to)
+            const { dom, text } = serializeForClipboard(slice)
+            event.preventDefault()
+            try {
+              data.setData("text/plain", text || "")
+              data.setData("text/html", dom?.innerHTML || "")
+            } catch {
+              // ignore clipboard failures
+            }
+            return true
+          }
+
+          return false
+        },
+
+        cut(view, event) {
+          const state = view.state
+          const st = selectionModePluginKey.getState(state) || selectionModeInitState()
+          if (st.mode === 0) return false
+
+          const serializeForClipboard = (view as any).serializeForClipboard as
+            | ((slice: any) => { dom: HTMLElement; text: string })
+            | undefined
+          if (!serializeForClipboard) return false
+
+          const e = event as any
+          const data = e?.clipboardData
+          if (!data) return false
+
+          // Table cell selection: copy selection, then delete selection contents.
+          if (st.kind === "cell" && state.selection instanceof CellSelection) {
+            const slice = state.selection.content()
+            const { dom, text } = serializeForClipboard(slice)
+            event.preventDefault()
+            try {
+              data.setData("text/plain", text || "")
+              data.setData("text/html", dom?.innerHTML || "")
+            } catch {
+              // ignore clipboard failures
+            }
+            if (view.editable) {
+              const tr = state.tr.deleteSelection().setMeta(selectionModePluginKey, selectionModeInitState()).scrollIntoView()
+              view.dispatch(tr)
+            }
+            return true
+          }
+
+          // Block selection: copy our block-range slice, then delete the blocks (like Delete key).
+          if (st.kind === "block") {
+            const doc = state.doc as PMNode
+            const aPos = st.anchorBlockPos
+            const hPos = st.headBlockPos
+            if (aPos == null || hPos == null) return false
+
+            const aIdx = topLevelIndexAtPos(doc, aPos)
+            const hIdx = topLevelIndexAtPos(doc, hPos)
+            if (aIdx == null || hIdx == null) return false
+
+            const fromIdx = Math.min(aIdx, hIdx)
+            const toIdx = Math.max(aIdx, hIdx)
+            const first = posAtTopLevelIndex(doc, fromIdx)
+            const last = posAtTopLevelIndex(doc, toIdx)
+            if (!first || !last) return false
+
+            const from = first.pos
+            const to = last.pos + last.node.nodeSize
+            if (to <= from) return false
+
+            const slice = state.doc.slice(from, to)
+            const { dom, text } = serializeForClipboard(slice)
+            event.preventDefault()
+            try {
+              data.setData("text/plain", text || "")
+              data.setData("text/html", dom?.innerHTML || "")
+            } catch {
+              // ignore clipboard failures
+            }
+
+            if (view.editable) {
+              const tr = state.tr.delete(from, to).setMeta(selectionModePluginKey, selectionModeInitState()).scrollIntoView()
+              // Place caret near the deletion point (best-effort).
+              const safe = Math.min(from, tr.doc.content.size)
+              try {
+                tr.setSelection(TextSelection.near(tr.doc.resolve(safe), -1))
+              } catch {
+                // ignore
+              }
+              view.dispatch(tr)
+            }
+            return true
+          }
+
+          return false
+        },
+      },
       decorations(state) {
-        const st = pluginKey.getState(state) || initState()
+        const st = selectionModePluginKey.getState(state) || selectionModeInitState()
         if (st.mode === 0 || st.kind !== "block") return null
         return buildBlockSelectionDecorations(state.doc as PMNode, st.anchorBlockPos, st.headBlockPos)
       },
       handleKeyDown(view, event) {
         const state = view.state
-        const st = pluginKey.getState(state) || initState()
+        const st = selectionModePluginKey.getState(state) || selectionModeInitState()
         const k = event.key
 
         // Delete selected blocks when we're in block selection mode.
@@ -188,7 +350,7 @@ export function tableCellSelectionKeysPlugin() {
           const from = first.pos
           const to = last.pos + last.node.nodeSize
 
-          const tr = state.tr.delete(from, to).setMeta(pluginKey, initState()).scrollIntoView()
+          const tr = state.tr.delete(from, to).setMeta(selectionModePluginKey, selectionModeInitState()).scrollIntoView()
 
           // Place caret near the deletion point (best-effort).
           const safe = Math.min(from, tr.doc.content.size)
@@ -210,7 +372,7 @@ export function tableCellSelectionKeysPlugin() {
             const inside = Math.min(st.headCellPos + 1, state.doc.content.size)
             const tr = state.tr
               .setSelection(TextSelection.near(state.doc.resolve(inside), 1))
-              .setMeta(pluginKey, initState())
+              .setMeta(selectionModePluginKey, selectionModeInitState())
               .scrollIntoView()
             view.dispatch(tr)
             event.preventDefault()
@@ -218,12 +380,20 @@ export function tableCellSelectionKeysPlugin() {
           }
           if (st.kind === "block") {
             const headPos = st.headBlockPos ?? findTopLevelBlockAtSelection(state)?.pos
-            if (headPos != null) clearToCaretInBlock(state, view, headPos)
-            view.dispatch(state.tr.setMeta(pluginKey, initState()))
+            if (headPos != null) {
+              const sel = selectionNearInsideBlock(state.doc as PMNode, headPos)
+              const tr = state.tr
+                .setSelection(sel || state.selection)
+                .setMeta(selectionModePluginKey, selectionModeInitState())
+                .scrollIntoView()
+              view.dispatch(tr)
+            } else {
+              view.dispatch(state.tr.setMeta(selectionModePluginKey, selectionModeInitState()))
+            }
             event.preventDefault()
             return true
           }
-          view.dispatch(state.tr.setMeta(pluginKey, initState()))
+          view.dispatch(state.tr.setMeta(selectionModePluginKey, selectionModeInitState()))
           event.preventDefault()
           return true
         }
@@ -239,7 +409,7 @@ export function tableCellSelectionKeysPlugin() {
             if (nextMode === 0) {
               const tr = state.tr
                 .setSelection(TextSelection.near(state.doc.resolve(Math.min(cellPos + 1, state.doc.content.size)), 1))
-                .setMeta(pluginKey, initState())
+                .setMeta(selectionModePluginKey, selectionModeInitState())
                 .scrollIntoView()
               view.dispatch(tr)
               event.preventDefault()
@@ -249,7 +419,7 @@ export function tableCellSelectionKeysPlugin() {
             const sel = state.selection instanceof CellSelection ? state.selection : new CellSelection($cell)
             const tr = state.tr
               .setSelection(sel)
-              .setMeta(pluginKey, {
+              .setMeta(selectionModePluginKey, {
                 mode: nextMode,
                 kind: "cell",
                 anchorCellPos: sel.$anchorCell.pos,
@@ -271,17 +441,23 @@ export function tableCellSelectionKeysPlugin() {
 
           const nextMode: Mode = st.mode === 0 ? 1 : st.mode === 1 ? 2 : 0
           if (nextMode === 0) {
-            clearToCaretInBlock(state, view, st.headBlockPos ?? info.pos)
-            view.dispatch(state.tr.setMeta(pluginKey, initState()))
+            const headPos = st.headBlockPos ?? info.pos
+            const sel = selectionNearInsideBlock(state.doc as PMNode, headPos)
+            const tr = state.tr
+              .setSelection(sel || state.selection)
+              .setMeta(selectionModePluginKey, selectionModeInitState())
+              .scrollIntoView()
+            view.dispatch(tr)
             event.preventDefault()
             return true
           }
 
           // keep anchor when toggling 1 -> 2
           const anchorPos = st.mode === 0 ? info.pos : st.anchorBlockPos ?? info.pos
-          selectSingleBlock(state, view, info.pos)
-          view.dispatch(
-            state.tr.setMeta(pluginKey, {
+          const sel = nodeSelectionAtTopLevel(state.doc as PMNode, info.pos)
+          const tr = state.tr
+            .setSelection(sel || state.selection)
+            .setMeta(selectionModePluginKey, {
               mode: nextMode,
               kind: "block",
               anchorBlockPos: anchorPos,
@@ -289,7 +465,8 @@ export function tableCellSelectionKeysPlugin() {
               anchorCellPos: null,
               headCellPos: null,
             })
-          )
+            .scrollIntoView()
+          view.dispatch(tr)
           event.preventDefault()
           return true
         }
@@ -334,7 +511,7 @@ export function tableCellSelectionKeysPlugin() {
 
           const tr = state.tr
             .setSelection(nextSel)
-            .setMeta(pluginKey, { ...st, anchorCellPos: nextAnchorPos, headCellPos: nextHeadPos })
+            .setMeta(selectionModePluginKey, { ...st, anchorCellPos: nextAnchorPos, headCellPos: nextHeadPos })
             .scrollIntoView()
           view.dispatch(tr)
           event.preventDefault()
@@ -354,19 +531,26 @@ export function tableCellSelectionKeysPlugin() {
           if (!next) return false
 
           if (!expand) {
-            selectSingleBlock(state, view, next.pos)
-            view.dispatch(state.tr.setMeta(pluginKey, { ...st, anchorBlockPos: next.pos, headBlockPos: next.pos }))
+            const sel = nodeSelectionAtTopLevel(state.doc as PMNode, next.pos)
+            const tr = state.tr
+              .setSelection(sel || state.selection)
+              .setMeta(selectionModePluginKey, { ...st, anchorBlockPos: next.pos, headBlockPos: next.pos })
+              .scrollIntoView()
+            view.dispatch(tr)
             event.preventDefault()
             return true
           }
 
           const anchor = st.anchorBlockPos ?? headPos
-          const ok = selectBlockRangeAsText(state, view, anchor, next.pos)
-          if (ok) {
-            view.dispatch(state.tr.setMeta(pluginKey, { ...st, anchorBlockPos: anchor, headBlockPos: next.pos }))
-            event.preventDefault()
-            return true
-          }
+          const sel = selectionForBlockRange(state.doc as PMNode, anchor, next.pos)
+          if (!sel) return false
+          const tr = state.tr
+            .setSelection(sel)
+            .setMeta(selectionModePluginKey, { ...st, anchorBlockPos: anchor, headBlockPos: next.pos })
+            .scrollIntoView()
+          view.dispatch(tr)
+          event.preventDefault()
+          return true
         }
 
         return false

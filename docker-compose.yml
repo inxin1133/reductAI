@@ -14,7 +14,7 @@ services:
     # NOTE:
     # /app/node_modules is a Docker volume for dev performance.
     # When package.json changes, that volume can become stale; install deps on container start.
-    command: sh -c "npm ci --no-audit --no-fund || npm install --no-audit --no-fund; npm run dev -- --host"
+    command: sh -c "npm ci --legacy-peer-deps --no-audit --no-fund || npm install --legacy-peer-deps --no-audit --no-fund; npm run dev -- --host"
     environment:
       - VITE_API_BASE_URL=http://localhost:3001
       - AUTH_SERVICE_URL=http://auth-service:3001

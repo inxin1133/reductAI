@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronsLeft,
   ChevronRight,
+  File,
   FileText,
   ListTree,
   Plus,
@@ -16,6 +17,18 @@ import {
   SquareChevronUp,
   Settings2,
   Ellipsis,
+  Smile,
+  Star,
+  Book,
+  Calendar,
+  CheckSquare,
+  Hash,
+  Code,
+  PenLine,
+  Image,
+  Link,
+  Globe,
+  Bot,
 } from "lucide-react"
 
 import { AppShell } from "@/components/layout/AppShell"
@@ -38,12 +51,16 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
+import EmojiPicker from "@emoji-mart/react"
+import emojiData from "@emoji-mart/data"
 
 function authHeaders() {
   const token = localStorage.getItem("token")
@@ -62,6 +79,32 @@ type MyPage = {
 }
 
 type DocJson = unknown
+
+type PageIconChoice =
+  | { kind: "emoji"; value: string }
+  | { kind: "lucide"; value: string }
+
+const PAGE_ICON_KEY = "reductai:postEditor:pageIcons"
+
+function loadPageIconMap(): Record<string, PageIconChoice> {
+  try {
+    const raw = localStorage.getItem(PAGE_ICON_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== "object") return {}
+    return parsed as Record<string, PageIconChoice>
+  } catch {
+    return {}
+  }
+}
+
+function savePageIconMap(next: Record<string, PageIconChoice>) {
+  try {
+    localStorage.setItem(PAGE_ICON_KEY, JSON.stringify(next))
+  } catch {
+    // ignore
+  }
+}
 
 function appendPageLinkToDocJson(docJson: unknown, args: { pageId: string; title: string; display?: "link" | "embed" }) {
   const pageId = String(args.pageId || "").trim()
@@ -282,6 +325,17 @@ export default function PostEditorPage() {
   const [isMobile, setIsMobile] = useState(false)
   const [isNavDrawerOpen, setIsNavDrawerOpen] = useState(false)
   const [myPages, setMyPages] = useState<MyPage[]>([])
+  const [pageHasContent, setPageHasContent] = useState<Record<string, boolean>>({})
+  const [pageIcons, setPageIcons] = useState<Record<string, PageIconChoice>>(() => loadPageIconMap())
+  const [iconPickerOpenId, setIconPickerOpenId] = useState<string | null>(null)
+  const [visiblePageIds, setVisiblePageIds] = useState<Set<string>>(() => new Set())
+  const ioRef = useRef<IntersectionObserver | null>(null)
+  const observedElsRef = useRef<Map<string, HTMLElement>>(new Map())
+  const [iconPickerTab, setIconPickerTab] = useState<"emoji" | "icon">("emoji")
+  const [lucideQuery, setLucideQuery] = useState("")
+  const [lucideAll, setLucideAll] = useState<Record<string, React.ElementType> | null>(null)
+  const [lucideLoading, setLucideLoading] = useState(false)
+  const lucideLoadSeqRef = useRef(0)
   const [pageTitle, setPageTitle] = useState<string>("")
   const titleInputRef = useRef<HTMLInputElement | null>(null)
   const [isDeletedPage, setIsDeletedPage] = useState(false)
@@ -487,6 +541,159 @@ export default function PostEditorPage() {
       cancelled = true
     }
   }, [filterNonDeleted, postId, isNew, navigate, sortPages])
+
+  // Persist page icon choices
+  useEffect(() => {
+    savePageIconMap(pageIcons)
+  }, [pageIcons])
+
+  // Reset picker UI when closing / switching rows
+  useEffect(() => {
+    if (!iconPickerOpenId) {
+      setIconPickerTab("emoji")
+      setLucideQuery("")
+      // Cancel any in-flight lucide import (best-effort) and clear loading state.
+      lucideLoadSeqRef.current += 1
+      setLucideLoading(false)
+    }
+  }, [iconPickerOpenId])
+
+  // Lazy-load the full lucide icon map only when the user searches.
+  useEffect(() => {
+    if (!iconPickerOpenId) return
+    if (iconPickerTab !== "icon") return
+    const q = lucideQuery.trim()
+    if (!q) return
+    if (lucideAll || lucideLoading) return
+
+    const seq = (lucideLoadSeqRef.current += 1)
+    setLucideLoading(true)
+    void import("lucide-react")
+      .then((mod) => {
+        if (lucideLoadSeqRef.current !== seq) return
+        // lucide-react exposes *all* icons under `icons` as a namespace import.
+        const iconsNs = (mod as unknown as Record<string, unknown>)["icons"]
+        if (iconsNs && typeof iconsNs === "object") {
+          setLucideAll(iconsNs as Record<string, React.ElementType>)
+          return
+        }
+
+        // Fallback: derive icons from named exports. Note: many icons are forwardRef components (objects), not functions.
+        const blacklist = new Set(["default", "createLucideIcon", "Icon", "LucideIcon", "LucideProps", "toKebabCase"])
+        const map: Record<string, React.ElementType> = {}
+        for (const k of Object.keys(mod)) {
+          if (blacklist.has(k)) continue
+          if (!/^[A-Z]/.test(k)) continue
+          const v = (mod as unknown as Record<string, unknown>)[k]
+          if (!v) continue
+          const t = typeof v
+          if (t !== "function" && t !== "object") continue
+          map[k] = v as React.ElementType
+        }
+        setLucideAll(map)
+      })
+      .finally(() => {
+        if (lucideLoadSeqRef.current === seq) setLucideLoading(false)
+      })
+  }, [iconPickerOpenId, iconPickerTab, lucideAll, lucideLoading, lucideQuery])
+
+  // Track which tree rows are actually visible (or near-visible) in the viewport.
+  useEffect(() => {
+    let cancelled = false
+    const observedMap = observedElsRef.current
+    ioRef.current = new IntersectionObserver(
+      (entries) => {
+        if (cancelled) return
+        setVisiblePageIds((prev) => {
+          let changed = false
+          const next = new Set(prev)
+          for (const entry of entries) {
+            const el = entry.target as HTMLElement
+            const id = String(el.dataset.pageId || "")
+            if (!id) continue
+            if (entry.isIntersecting) {
+              if (!next.has(id)) {
+                next.add(id)
+                changed = true
+              }
+            } else {
+              if (next.delete(id)) changed = true
+            }
+          }
+          return changed ? next : prev
+        })
+      },
+      // root=null: viewport. IntersectionObserver still respects scroll/clip ancestors.
+      { root: null, threshold: 0, rootMargin: "200px 0px 200px 0px" }
+    )
+    const io = ioRef.current
+    // Observe any rows already mounted
+    for (const el of observedMap.values()) io.observe(el)
+    return () => {
+      cancelled = true
+      io.disconnect()
+      ioRef.current = null
+      observedMap.clear()
+    }
+  }, [])
+
+  const observeTreeRow = useCallback((id: string) => {
+    return (el: HTMLElement | null) => {
+      const prevEl = observedElsRef.current.get(id)
+      if (prevEl && prevEl !== el) {
+        ioRef.current?.unobserve(prevEl)
+        observedElsRef.current.delete(id)
+      }
+      if (!el) return
+      el.dataset.pageId = id
+      observedElsRef.current.set(id, el)
+      ioRef.current?.observe(el)
+    }
+  }, [])
+
+  // Fetch lightweight content presence only for visible (or near-visible) pages.
+  useEffect(() => {
+    let cancelled = false
+    async function run() {
+      const token = localStorage.getItem("token")
+      if (!token) return
+      if (!myPages.length) return
+      if (!visiblePageIds.size) return
+
+      const visible = visiblePageIds
+      const missing = myPages
+        .map((p) => String(p.id))
+        .filter((id) => id && visible.has(id) && pageHasContent[id] == null)
+      if (!missing.length) return
+
+      const headers = { Authorization: `Bearer ${token}` }
+      const concurrency = 6
+      let idx = 0
+      const worker = async () => {
+        while (!cancelled) {
+          const cur = missing[idx]
+          idx += 1
+          if (!cur) return
+          const r = await fetch(`/api/posts/${cur}/preview`, { headers }).catch(() => null)
+          if (!r || !r.ok) {
+            if (cancelled) return
+            setPageHasContent((prev) => (prev[cur] != null ? prev : { ...prev, [cur]: false }))
+            continue
+          }
+          const j = (await r.json().catch(() => ({}))) as Record<string, unknown>
+          const summary = typeof j.summary === "string" ? j.summary : ""
+          const has = Boolean(summary.trim())
+          if (cancelled) return
+          setPageHasContent((prev) => ({ ...prev, [cur]: has }))
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(concurrency, missing.length) }, () => worker()))
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [myPages, pageHasContent, visiblePageIds])
 
   const saveNow = useCallback(async (args?: { silent?: boolean }): Promise<boolean> => {
     if (!postId || !draftRef.current) return false
@@ -1351,6 +1558,63 @@ export default function PostEditorPage() {
     const hasKids = kids.length > 0
     const isExpanded = expanded.has(id)
     const isActive = id === postId
+    const chosenIcon = pageIcons[id]
+    const hasContent = pageHasContent[id] ?? false
+    const isDark = document.documentElement.classList.contains("dark")
+
+    const lucideIconMap: Record<
+      string,
+      React.ComponentType<{ className?: string }>
+    > = {
+      File,
+      FileText,
+      Smile,
+      Star,
+      Book,
+      Calendar,
+      CheckSquare,
+      Hash,
+      Code,
+      PenLine,
+      Image,
+      Link,
+      Globe,
+      Bot,
+    }
+
+    const DefaultIcon = hasContent ? FileText : File
+    const iconNode = (() => {
+      if (!chosenIcon) return <DefaultIcon className={["size-4", depth > 0 ? "opacity-70" : ""].join(" ")} />
+      if (chosenIcon.kind === "emoji") {
+        return (
+          <span className={["text-[15px] leading-none", depth > 0 ? "opacity-70" : ""].join(" ")}>
+            {chosenIcon.value}
+          </span>
+        )
+      }
+      const Cmp = lucideIconMap[chosenIcon.value]
+      const Dyn = lucideAll?.[chosenIcon.value]
+      const Final = Cmp || Dyn
+      if (!Final) return <DefaultIcon className={["size-4", depth > 0 ? "opacity-70" : ""].join(" ")} />
+      return <Final className={["size-4", depth > 0 ? "opacity-70" : ""].join(" ")} />
+    })()
+
+    const LUCIDE_PRESETS = [
+      { key: "File", label: "File", Icon: File },
+      { key: "FileText", label: "FileText", Icon: FileText },
+      { key: "Smile", label: "Smile", Icon: Smile },
+      { key: "Star", label: "Star", Icon: Star },
+      { key: "Book", label: "Book", Icon: Book },
+      { key: "Calendar", label: "Calendar", Icon: Calendar },
+      { key: "CheckSquare", label: "CheckSquare", Icon: CheckSquare },
+      { key: "Hash", label: "Hash", Icon: Hash },
+      { key: "Code", label: "Code", Icon: Code },
+      { key: "PenLine", label: "Pen", Icon: PenLine },
+      { key: "Image", label: "Image", Icon: Image },
+      { key: "Link", label: "Link", Icon: Link },
+      { key: "Globe", label: "Globe", Icon: Globe },
+      { key: "Bot", label: "Bot", Icon: Bot },
+    ]
 
     return (
       <div key={id} className="flex flex-col w-full min-w-0">
@@ -1368,6 +1632,7 @@ export default function PostEditorPage() {
                 ? "bg-accent text-secondary-foreground shadow-xs"
                 : "hover:bg-accent hover:text-accent-foreground",
             ].join(" ")}
+            ref={observeTreeRow(id) as unknown as React.Ref<HTMLDivElement>}
             onClick={() => navigate(`/posts/${id}/edit`)}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
@@ -1392,7 +1657,151 @@ export default function PostEditorPage() {
             ) : (
               <div className="flex h-4 w-4 shrink-0"></div>
             )}
-            <FileText className={["size-4", depth > 0 ? "opacity-70" : ""].join(" ")} />
+            <Popover open={iconPickerOpenId === id} onOpenChange={(open) => setIconPickerOpenId(open ? id : null)}>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md hover:bg-neutral-200"
+                  title="아이콘 변경"
+                  // Prevent row navigation, but allow Radix PopoverTrigger to toggle.
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {iconNode}
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="start" sideOffset={6} className="w-[360px] p-3" onPointerDown={(e) => e.stopPropagation()}>
+                <Tabs value={iconPickerTab} onValueChange={(v) => setIconPickerTab(v === "icon" ? "icon" : "emoji")}>
+                  <TabsList>
+                    <TabsTrigger value="emoji">이모지</TabsTrigger>
+                    <TabsTrigger value="icon">아이콘</TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="emoji">
+                    <div className="max-h-[360px] overflow-auto pr-1">
+                      <EmojiPicker
+                        data={emojiData as unknown}
+                        theme={isDark ? "dark" : "light"}
+                        previewPosition="none"
+                        onEmojiSelect={(emoji: unknown) => {
+                          const em = emoji && typeof emoji === "object" ? (emoji as Record<string, unknown>) : null
+                          const native = em && typeof em.native === "string" ? String(em.native) : ""
+                          if (!native) return
+                          setPageIcons((prev) => ({ ...prev, [id]: { kind: "emoji", value: native } }))
+                          setIconPickerOpenId(null)
+                        }}
+                      />
+                    </div>
+                    <div className="mt-2 flex justify-end">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setPageIcons((prev) => {
+                            const next = { ...prev }
+                            delete next[id]
+                            return next
+                          })
+                          setIconPickerOpenId(null)
+                        }}
+                      >
+                        Reset
+                      </Button>
+                    </div>
+                  </TabsContent>
+                  <TabsContent value="icon">
+                    <div className="mb-2">
+                      <Input
+                        value={lucideQuery}
+                        onChange={(e) => setLucideQuery(e.target.value)}
+                        placeholder="Search icons (e.g. calendar, bot, file...)"
+                        className="h-8 text-sm"
+                      />
+                    </div>
+
+                    {lucideQuery.trim() ? (
+                      <>
+                        {lucideLoading && !lucideAll ? (
+                          <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
+                        ) : null}
+                        <div className="max-h-[300px] overflow-auto pr-1">
+                          <div className="grid grid-cols-7 gap-1">
+                            {(() => {
+                              const q = lucideQuery.trim().toLowerCase()
+                              const map = lucideAll || {}
+                              const keys = Object.keys(map)
+                                .filter((k) => k.toLowerCase().includes(q))
+                                .slice(0, 98)
+                              if (!lucideLoading && lucideAll && keys.length === 0) {
+                                return (
+                                  <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
+                                    No matches. Try a different keyword.
+                                  </div>
+                                )
+                              }
+                              return keys.map((k) => {
+                                const Cmp = map[k]
+                                return (
+                                  <button
+                                    key={k}
+                                    type="button"
+                                    className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                    onClick={() => {
+                                      setPageIcons((prev) => ({ ...prev, [id]: { kind: "lucide", value: k } }))
+                                      setIconPickerOpenId(null)
+                                    }}
+                                    title={k}
+                                    aria-label={k}
+                                  >
+                                    <Cmp className="size-4" />
+                                  </button>
+                                )
+                              })
+                            })()}
+                          </div>
+                        </div>
+                        <div className="mt-2 text-[11px] text-muted-foreground">
+                          Showing up to 98 matches. Refine your search to narrow results.
+                        </div>
+                      </>
+                    ) : (
+                      <div className="grid grid-cols-7 gap-1">
+                        {LUCIDE_PRESETS.map((it) => (
+                          <button
+                            key={it.key}
+                            type="button"
+                            className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                            onClick={() => {
+                              setPageIcons((prev) => ({ ...prev, [id]: { kind: "lucide", value: it.key } }))
+                              setIconPickerOpenId(null)
+                            }}
+                            title={it.label}
+                            aria-label={it.label}
+                          >
+                            <it.Icon className="size-4" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <div className="mt-2 flex justify-end">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setPageIcons((prev) => {
+                            const next = { ...prev }
+                            delete next[id]
+                            return next
+                          })
+                          setIconPickerOpenId(null)
+                        }}
+                      >
+                        Reset
+                      </Button>
+                    </div>
+                  </TabsContent>
+                </Tabs>
+              </PopoverContent>
+            </Popover>
             <div className="flex flex-1" title={p.title || "New page"}>
               <p className="line-clamp-1">{p.title || "New page"}</p>   
             </div>   
