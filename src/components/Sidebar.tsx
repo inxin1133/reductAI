@@ -15,6 +15,9 @@ import {
   Sun,
   Moon,
   ChevronRight,
+  GripVertical,
+  MoreHorizontal,
+  Pencil,
   LogOut,
   Menu,
   X
@@ -23,6 +26,13 @@ import { cn } from "@/lib/utils"
 import { useState, useEffect, useRef } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
 import { useTheme } from "@/hooks/useTheme"
@@ -55,6 +65,20 @@ export function Sidebar({ className }: SidebarProps) {
   const [isPersonalOpen, setIsPersonalOpen] = useState(true)
   const [isTeamOpen, setIsTeamOpen] = useState(true)
   const [isHeaderHover, setIsHeaderHover] = useState(false)
+
+  type PersonalCategory = { id: string; name: string; icon?: string | null; display_order?: number }
+  const [personalCategories, setPersonalCategories] = useState<PersonalCategory[]>([])
+  const [personalCatsLoading, setPersonalCatsLoading] = useState(false)
+
+  type TeamCategory = { id: string; name: string; icon?: string | null; display_order?: number }
+  const [teamCategories, setTeamCategories] = useState<TeamCategory[]>([])
+  const [teamCatsLoading, setTeamCatsLoading] = useState(false)
+  const [tenantType, setTenantType] = useState<string>("") // personal | team | enterprise (or empty while loading)
+
+  const [editingCat, setEditingCat] = useState<{ type: "personal" | "team"; id: string; name: string } | null>(null)
+  const [draggingCat, setDraggingCat] = useState<{ type: "personal" | "team"; id: string } | null>(null)
+  const editingInputRef = useRef<HTMLInputElement | null>(null)
+  const renameFocusUntilRef = useRef<number>(0)
   
   // Mobile menu state
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
@@ -102,6 +126,167 @@ export function Sidebar({ className }: SidebarProps) {
     localStorage.removeItem('user_id')
     // 로그인 페이지(인트로)로 이동
     navigate('/')
+  }
+
+  const authHeaders = () => {
+    const token = localStorage.getItem("token")
+    const headers: Record<string, string> = {}
+    if (token) headers.Authorization = `Bearer ${token}`
+    return headers
+  }
+
+  const loadPersonalCategories = async () => {
+    const h = authHeaders()
+    if (!h.Authorization) {
+      alert("로그인이 필요합니다.")
+      return
+    }
+    setPersonalCatsLoading(true)
+    try {
+      const r = await fetch("/api/posts/categories/mine", { headers: h })
+      if (!r.ok) {
+        const msg = await r.text().catch(() => "")
+        alert(msg || "카테고리 목록을 불러오지 못했습니다.")
+        return
+      }
+      const j = await r.json().catch(() => [])
+      const arr = Array.isArray(j) ? (j as PersonalCategory[]) : []
+      setPersonalCategories(arr)
+    } finally {
+      setPersonalCatsLoading(false)
+    }
+  }
+
+  const createPersonalCategory = async () => {
+    const h = authHeaders()
+    if (!h.Authorization) {
+      alert("로그인이 필요합니다.")
+      return
+    }
+    try {
+      const r = await fetch("/api/posts/categories", {
+        method: "POST",
+        headers: { ...h, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "New category" }),
+      })
+      if (!r.ok) {
+        const msg = await r.text().catch(() => "")
+        alert(msg || "카테고리 생성에 실패했습니다.")
+        return
+      }
+      const cat = (await r.json().catch(() => null)) as PersonalCategory | null
+      if (!cat?.id) return
+      // Insert at top (before the default "나의 페이지" entry)
+      setPersonalCategories((prev) => [cat, ...prev])
+      if (!isPersonalOpen) setIsPersonalOpen(true)
+    } catch {
+      // ignore
+    }
+  }
+
+  useEffect(() => {
+    if (!isOpen) return
+    if (!isPersonalOpen) return
+    void loadPersonalCategories()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, isPersonalOpen])
+
+  const loadTenantName = async () => {
+    const h = authHeaders()
+    if (!h.Authorization) return
+    const r = await fetch("/api/posts/tenant/current", { headers: h }).catch(() => null)
+    if (!r || !r.ok) return
+    const j = (await r.json().catch(() => ({}))) as Record<string, unknown>
+    const type = typeof j.tenant_type === "string" ? String(j.tenant_type) : ""
+    if (type) setTenantType(type)
+  }
+
+  const loadTeamCategories = async () => {
+    const h = authHeaders()
+    if (!h.Authorization) return
+    setTeamCatsLoading(true)
+    try {
+      const r = await fetch("/api/posts/categories/mine?type=team_page", { headers: h })
+      if (!r.ok) return
+      const j = await r.json().catch(() => [])
+      const arr = Array.isArray(j) ? (j as TeamCategory[]) : []
+      setTeamCategories(arr)
+    } finally {
+      setTeamCatsLoading(false)
+    }
+  }
+
+  const createTeamCategory = async () => {
+    const h = authHeaders()
+    if (!h.Authorization) return
+    // Shared categories are allowed for team + enterprise (exclude personal).
+    if (tenantType === "personal") return
+    try {
+      const r = await fetch("/api/posts/categories", {
+        method: "POST",
+        headers: { ...h, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "New category", type: "team_page" }),
+      })
+      if (!r.ok) return
+      const cat = (await r.json().catch(() => null)) as TeamCategory | null
+      if (!cat?.id) return
+      setTeamCategories((prev) => [cat, ...prev])
+      if (!isTeamOpen) setIsTeamOpen(true)
+    } catch {
+      // ignore
+    }
+  }
+
+  useEffect(() => {
+    if (!isOpen) return
+    if (!isTeamOpen) return
+    void loadTenantName()
+    void loadTeamCategories()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, isTeamOpen])
+
+  const renameCategory = async (args: { type: "personal" | "team"; id: string; name: string }) => {
+    const h = authHeaders()
+    if (!h.Authorization) return
+    const next = String(args.name || "").trim()
+    if (!next) return
+    const r = await fetch(`/api/posts/categories/${encodeURIComponent(args.id)}`, {
+      method: "PATCH",
+      headers: { ...h, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: next }),
+    }).catch(() => null)
+    if (!r || !r.ok) {
+      alert("카테고리 이름 변경에 실패했습니다.")
+      return
+    }
+    if (args.type === "personal") setPersonalCategories((prev) => prev.map((c) => (c.id === args.id ? { ...c, name: next } : c)))
+    else setTeamCategories((prev) => prev.map((c) => (c.id === args.id ? { ...c, name: next } : c)))
+  }
+
+  const deleteCategory = async (args: { type: "personal" | "team"; id: string }) => {
+    const h = authHeaders()
+    if (!h.Authorization) return
+    if (!confirm("카테고리를 삭제할까요? (카테고리 내 모든 페이지가 삭제된 상태여야 합니다)")) return
+    const r = await fetch(`/api/posts/categories/${encodeURIComponent(args.id)}`, { method: "DELETE", headers: h }).catch(() => null)
+    if (!r) return
+    if (!r.ok) {
+      const msg = await r.text().catch(() => "")
+      alert(msg || "카테고리 삭제에 실패했습니다.")
+      return
+    }
+    if (args.type === "personal") setPersonalCategories((prev) => prev.filter((c) => c.id !== args.id))
+    else setTeamCategories((prev) => prev.filter((c) => c.id !== args.id))
+  }
+
+  const reorder = async (args: { type: "personal" | "team"; orderedIds: string[] }) => {
+    const h = authHeaders()
+    if (!h.Authorization) return
+    const type = args.type === "team" ? "team_page" : "personal_page"
+    await fetch("/api/posts/categories/reorder", {
+      method: "POST",
+      headers: { ...h, "Content-Type": "application/json" },
+      body: JSON.stringify({ type, orderedIds: args.orderedIds }),
+    }).catch(() => null)
   }
 
   // 토큰이 없거나 만료된 경우 접근 차단
@@ -491,21 +676,159 @@ export function Sidebar({ className }: SidebarProps) {
           <div className="flex flex-col p-2 gap-1">
              <div className="flex items-center gap-2 px-2 h-8 opacity-70 cursor-pointer select-none">
                 <span className="flex-1 text-left text-xs text-sidebar-foreground" onClick={() => setIsPersonalOpen((prev) => !prev)}>개인 페이지</span>
-                <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
+                <div
+                  className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground"
+                  role="button"
+                  title="카테고리 추가"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    void createPersonalCategory()
+                  }}
+                >
                     <Plus className="size-full" />
                 </div>
              </div>
              {isPersonalOpen && (
                <>
-                 <div
-                   className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50"
-                   onClick={() => navigate("/posts")}
-                 >
-                    <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-                      <BookOpen className="size-full" />
-                    </div>
-                    <span className="text-sm text-sidebar-foreground">나의 페이지</span>
-                 </div>
+                 {personalCatsLoading ? (
+                   <div className="px-2 py-1 text-xs text-sidebar-foreground/60">Loading…</div>
+                 ) : null}
+
+                 {personalCategories.map((c) => (
+                   <div
+                     key={c.id}
+                     className="group flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50"
+                     onClick={() => {
+                       if (editingCat && editingCat.type === "personal" && editingCat.id === c.id) return
+                       navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
+                     }}
+                     onDragOver={(e) => {
+                       if (!draggingCat || draggingCat.type !== "personal") return
+                       e.preventDefault()
+                     }}
+                     onDrop={(e) => {
+                       if (!draggingCat || draggingCat.type !== "personal") return
+                       e.preventDefault()
+                       const fromId = draggingCat.id
+                       const toId = c.id
+                       if (!fromId || fromId === toId) return
+                       setPersonalCategories((prev) => {
+                         const next = prev.slice()
+                         const fromIdx = next.findIndex((x) => x.id === fromId)
+                         const toIdx = next.findIndex((x) => x.id === toId)
+                         if (fromIdx < 0 || toIdx < 0) return prev
+                         const [moved] = next.splice(fromIdx, 1)
+                         next.splice(toIdx, 0, moved)
+                         void reorder({ type: "personal", orderedIds: next.map((x) => x.id) })
+                         return next
+                       })
+                       setDraggingCat(null)
+                     }}
+                   >
+                     <div
+                       className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-60 group-hover:opacity-100 cursor-grab"
+                       draggable
+                       onDragStart={(e) => {
+                         e.stopPropagation()
+                         setDraggingCat({ type: "personal", id: c.id })
+                         try {
+                           e.dataTransfer.setData("text/plain", c.id)
+                           e.dataTransfer.effectAllowed = "move"
+                         } catch {
+                           // ignore
+                         }
+                       }}
+                       onDragEnd={() => setDraggingCat(null)}
+                       title="순서 변경"
+                     >
+                       <GripVertical className="size-full" />
+                     </div>
+
+                     {editingCat && editingCat.type === "personal" && editingCat.id === c.id ? (
+                       <input
+                         autoFocus
+                        ref={editingInputRef}
+                         className="flex-1 min-w-0 text-sm bg-background outline-none rounded-sm px-2 py-1 border border-border"
+                         value={editingCat.name}
+                         onChange={(e) => setEditingCat({ ...editingCat, name: e.target.value })}
+                         onClick={(e) => e.stopPropagation()}
+                         onKeyDown={(e) => {
+                           if (e.key === "Enter") {
+                             e.preventDefault()
+                             void renameCategory({ type: "personal", id: c.id, name: editingCat.name })
+                             setEditingCat(null)
+                           } else if (e.key === "Escape") {
+                             e.preventDefault()
+                             setEditingCat(null)
+                           }
+                         }}
+                         onBlur={() => {
+                          if (Date.now() < renameFocusUntilRef.current) return
+                           void renameCategory({ type: "personal", id: c.id, name: editingCat.name })
+                           setEditingCat(null)
+                         }}
+                       />
+                     ) : (
+                       <span className="text-sm text-sidebar-foreground truncate flex-1 min-w-0">{c.name || "New category"}</span>
+                     )}
+
+                     <DropdownMenu>
+                       <DropdownMenuTrigger asChild>
+                         <button
+                           type="button"
+                           className="size-6 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-accent"
+                           onClick={(e) => e.stopPropagation()}
+                           onPointerDown={(e) => e.stopPropagation()}
+                           title="메뉴"
+                         >
+                           <MoreHorizontal className="size-4" />
+                         </button>
+                       </DropdownMenuTrigger>
+                      <DropdownMenuContent
+                        align="end"
+                        className="w-40"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onCloseAutoFocus={(e) => {
+                          // Prevent Radix from restoring focus to the trigger button (it steals focus from our rename input).
+                          e.preventDefault()
+                        }}
+                      >
+                        <DropdownMenuItem asChild>
+                          <button
+                            type="button"
+                            className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent focus:bg-accent"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setEditingCat({ type: "personal", id: c.id, name: c.name || "" })
+                              renameFocusUntilRef.current = Date.now() + 250
+                              window.setTimeout(() => {
+                                editingInputRef.current?.focus()
+                              }, 0)
+                            }}
+                          >
+                            <Pencil className="size-4 mr-2" />
+                            이름 바꾸기
+                          </button>
+                        </DropdownMenuItem>
+                         <DropdownMenuSeparator />
+                        <DropdownMenuItem asChild>
+                          <button
+                            type="button"
+                            className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm text-destructive outline-none hover:bg-accent focus:bg-accent"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void deleteCategory({ type: "personal", id: c.id })
+                            }}
+                          >
+                            <Trash2 className="size-4 mr-2" />
+                            삭제
+                          </button>
+                        </DropdownMenuItem>
+                       </DropdownMenuContent>
+                     </DropdownMenu>
+                   </div>
+                 ))}
                  <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50">
                    <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
                      <Save className="size-full" />
@@ -516,31 +839,177 @@ export function Sidebar({ className }: SidebarProps) {
              )}
           </div>
 
-          {/* Team Pages - 팀 페이지 */}
-          <div className="flex flex-col p-2 gap-1">
-             <div className="flex items-center gap-2 px-2 h-8 opacity-70 cursor-pointer select-none">
-                <span className="flex-1 text-left text-xs text-sidebar-foreground" onClick={() => setIsTeamOpen((prev) => !prev)}>팀/그룹 페이지</span>
-                <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-                    <Plus className="size-full" />
+          {/* Team Pages - 팀 페이지 (Team + Enterprise; exclude Personal) */}
+          {tenantType !== "personal" ? (
+            <div className="flex flex-col p-2 gap-1">
+              <div className="flex items-center gap-2 px-2 h-8 opacity-70 cursor-pointer select-none">
+                <span className="flex-1 text-left text-xs text-sidebar-foreground" onClick={() => setIsTeamOpen((prev) => !prev)}>
+                  팀 페이지
+                </span>
+                <div
+                  className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground"
+                  role="button"
+                  title="카테고리 추가"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    void createTeamCategory()
+                  }}
+                >
+                  <Plus className="size-full" />
                 </div>
-             </div>
-             {isTeamOpen && (
-               <>
-                 <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50">
-                    <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-                      <Share2 className="size-full" />
+              </div>
+              {isTeamOpen && (
+                <>
+                  {teamCatsLoading ? (
+                    <div className="px-2 py-1 text-xs text-sidebar-foreground/60">Loading…</div>
+                  ) : null}
+
+                  {teamCategories.map((c) => (
+                    <div
+                      key={c.id}
+                      className="group flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50"
+                      onClick={() => {
+                        if (editingCat && editingCat.type === "team" && editingCat.id === c.id) return
+                        navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
+                      }}
+                      onDragOver={(e) => {
+                        if (!draggingCat || draggingCat.type !== "team") return
+                        e.preventDefault()
+                      }}
+                      onDrop={(e) => {
+                        if (!draggingCat || draggingCat.type !== "team") return
+                        e.preventDefault()
+                        const fromId = draggingCat.id
+                        const toId = c.id
+                        if (!fromId || fromId === toId) return
+                        setTeamCategories((prev) => {
+                          const next = prev.slice()
+                          const fromIdx = next.findIndex((x) => x.id === fromId)
+                          const toIdx = next.findIndex((x) => x.id === toId)
+                          if (fromIdx < 0 || toIdx < 0) return prev
+                          const [moved] = next.splice(fromIdx, 1)
+                          next.splice(toIdx, 0, moved)
+                          void reorder({ type: "team", orderedIds: next.map((x) => x.id) })
+                          return next
+                        })
+                        setDraggingCat(null)
+                      }}
+                    >
+                      <div
+                        className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-60 group-hover:opacity-100 cursor-grab"
+                        draggable
+                        onDragStart={(e) => {
+                          e.stopPropagation()
+                          setDraggingCat({ type: "team", id: c.id })
+                          try {
+                            e.dataTransfer.setData("text/plain", c.id)
+                            e.dataTransfer.effectAllowed = "move"
+                          } catch {
+                            // ignore
+                          }
+                        }}
+                        onDragEnd={() => setDraggingCat(null)}
+                        title="순서 변경"
+                      >
+                        <GripVertical className="size-full" />
+                      </div>
+
+                      {editingCat && editingCat.type === "team" && editingCat.id === c.id ? (
+                        <input
+                          autoFocus
+                          ref={editingInputRef}
+                          className="flex-1 min-w-0 text-sm bg-background outline-none rounded-sm px-2 py-1 border border-border"
+                          value={editingCat.name}
+                          onChange={(e) => setEditingCat({ ...editingCat, name: e.target.value })}
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault()
+                              void renameCategory({ type: "team", id: c.id, name: editingCat.name })
+                              setEditingCat(null)
+                            } else if (e.key === "Escape") {
+                              e.preventDefault()
+                              setEditingCat(null)
+                            }
+                          }}
+                          onBlur={() => {
+                            if (Date.now() < renameFocusUntilRef.current) return
+                            void renameCategory({ type: "team", id: c.id, name: editingCat.name })
+                            setEditingCat(null)
+                          }}
+                        />
+                      ) : (
+                        <span className="text-sm text-sidebar-foreground truncate flex-1 min-w-0">{c.name || "New category"}</span>
+                      )}
+
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className="size-6 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-accent"
+                            onClick={(e) => e.stopPropagation()}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            title="메뉴"
+                          >
+                            <MoreHorizontal className="size-4" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent
+                          align="end"
+                          className="w-40"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onCloseAutoFocus={(e) => {
+                            // Prevent Radix from restoring focus to the trigger button (it steals focus from our rename input).
+                            e.preventDefault()
+                          }}
+                        >
+                          <DropdownMenuItem asChild>
+                            <button
+                              type="button"
+                              className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent focus:bg-accent"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setEditingCat({ type: "team", id: c.id, name: c.name || "" })
+                                renameFocusUntilRef.current = Date.now() + 250
+                                window.setTimeout(() => {
+                                  editingInputRef.current?.focus()
+                                }, 0)
+                              }}
+                            >
+                              <Pencil className="size-4 mr-2" />
+                              이름 바꾸기
+                            </button>
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem asChild>
+                            <button
+                              type="button"
+                              className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm text-destructive outline-none hover:bg-accent focus:bg-accent"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                void deleteCategory({ type: "team", id: c.id })
+                              }}
+                            >
+                              <Trash2 className="size-4 mr-2" />
+                              삭제
+                            </button>
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
-                    <span className="text-sm text-sidebar-foreground">공유 페이지</span>
-                 </div>
-                 <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50">
-                   <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-                     <Save className="size-full" />
-                   </div>
-                   <span className="text-sm text-sidebar-foreground">공유 파일</span>
-                 </div>
-               </>
-             )}
-          </div>
+                  ))}
+
+                  <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50">
+                    <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
+                      <Save className="size-full" />
+                    </div>
+                    <span className="text-sm text-sidebar-foreground">공유 파일</span>
+                  </div>
+                </>
+              )}
+            </div>
+          ) : null}
         </>
       ) : (
         // Collapsed Menu Icons for Pages

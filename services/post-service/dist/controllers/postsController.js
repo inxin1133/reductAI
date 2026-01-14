@@ -37,7 +37,16 @@ exports.getPostContent = getPostContent;
 exports.savePostContent = savePostContent;
 exports.createPost = createPost;
 exports.listMyPages = listMyPages;
+exports.listMyPageCategories = listMyPageCategories;
+exports.createMyPageCategory = createMyPageCategory;
+exports.updateCategory = updateCategory;
+exports.deleteCategory = deleteCategory;
+exports.reorderCategories = reorderCategories;
+exports.getCategory = getCategory;
+exports.getCurrentTenant = getCurrentTenant;
+exports.updatePostCategory = updatePostCategory;
 exports.getPostPreview = getPostPreview;
+exports.updatePost = updatePost;
 const db_1 = __importStar(require("../config/db"));
 const docMapping_1 = require("../services/docMapping");
 const systemTenantService_1 = require("../services/systemTenantService");
@@ -45,6 +54,46 @@ const crypto_1 = require("crypto");
 function parseIntOrNull(v) {
     const n = typeof v === "number" ? v : typeof v === "string" ? parseInt(v, 10) : NaN;
     return Number.isFinite(n) ? n : null;
+}
+function slugify(input) {
+    return String(input || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, "")
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-")
+        .slice(0, 60);
+}
+async function assertCategoryAccess(args) {
+    const { categoryId, tenantId, userId } = args;
+    const r = await (0, db_1.query)(`SELECT id, category_type, author_id
+     FROM board_categories
+     WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+     LIMIT 1`, [categoryId, tenantId]);
+    if (r.rows.length === 0)
+        throw new Error("Invalid category_id");
+    const row = r.rows[0];
+    const type = String(row.category_type || "");
+    if (type === "personal_page") {
+        if (String(row.author_id || "") !== String(userId))
+            throw new Error("Forbidden category_id");
+    }
+    return { id: row.id, category_type: type };
+}
+async function resolveTenantId(req) {
+    const tid = req.tenantId ? String(req.tenantId) : "";
+    if (tid) {
+        const r = await (0, db_1.query)(`SELECT id FROM tenants WHERE id = $1 AND deleted_at IS NULL LIMIT 1`, [tid]);
+        if (r.rows.length > 0)
+            return tid;
+    }
+    return await (0, systemTenantService_1.ensureSystemTenantId)();
+}
+async function tenantAllowsSharedPages(tenantId) {
+    const r = await (0, db_1.query)(`SELECT tenant_type FROM tenants WHERE id = $1 AND deleted_at IS NULL LIMIT 1`, [tenantId]);
+    const tt = String(r.rows[0]?.tenant_type || "");
+    // User request: Team + Enterprise both should show "팀 페이지" section (exclude Personal)
+    return tt !== "personal";
 }
 async function getPostMetaVersion(postId) {
     const r = await (0, db_1.query)(`SELECT COALESCE((metadata->>'doc_version')::int, 0) AS v FROM posts WHERE id = $1`, [
@@ -58,12 +107,26 @@ async function getPostContent(req, res) {
     try {
         const { id } = req.params;
         const version = await getPostMetaVersion(id);
+        const p = await (0, db_1.query)(`SELECT id, title, icon, status, deleted_at
+       FROM posts
+       WHERE id = $1
+       LIMIT 1`, [id]);
+        if (p.rows.length === 0)
+            return res.status(404).json({ message: "Post not found" });
         const r = await (0, db_1.query)(`SELECT id, post_id, parent_block_id, block_type, sort_key, content, content_text, ref_post_id, external_embed_id
        FROM post_blocks
        WHERE post_id = $1 AND parent_block_id IS NULL AND is_deleted = FALSE
        ORDER BY sort_key ASC`, [id]);
         const docJson = (0, docMapping_1.blocksToDocJson)(r.rows);
-        return res.json({ docJson, version });
+        const row = p.rows[0];
+        return res.json({
+            docJson,
+            version,
+            title: row.title,
+            icon: row.icon ?? null,
+            status: row.status,
+            deleted_at: row.deleted_at,
+        });
     }
     catch (e) {
         console.error("post-service getPostContent error:", e);
@@ -74,6 +137,7 @@ async function savePostContent(req, res) {
     const client = await db_1.default.connect();
     try {
         const { id } = req.params;
+        const userId = req.userId;
         const body = req.body;
         if (!body?.docJson || typeof body.docJson !== "object") {
             return res.status(400).json({ message: "docJson is required" });
@@ -81,7 +145,7 @@ async function savePostContent(req, res) {
         const requestedVersion = parseIntOrNull(body.version);
         const pmSchemaVersion = typeof body.pmSchemaVersion === "number" ? body.pmSchemaVersion : 1;
         await client.query("BEGIN");
-        const postRow = await client.query(`SELECT id, metadata
+        const postRow = await client.query(`SELECT id, author_id, metadata
        FROM posts
        WHERE id = $1
        FOR UPDATE`, [id]);
@@ -97,9 +161,34 @@ async function savePostContent(req, res) {
                 currentVersion: cur,
             });
         }
+        // If embed blocks were removed, mark the corresponding child pages as deleted.
+        // We only delete pages that are true children (posts.parent_id = this post id) and owned by the same user.
+        const prevBlocks = await client.query(`SELECT ref_post_id, content
+       FROM post_blocks
+       WHERE post_id = $1 AND block_type = 'page_link'`, [id]);
+        const prevEmbedIds = new Set();
+        for (const row of prevBlocks.rows) {
+            const pid = typeof row.ref_post_id === "string" ? row.ref_post_id : null;
+            if (!pid)
+                continue;
+            const pm = row.content?.pm || row.content;
+            const display = pm?.attrs?.display;
+            if (display === "embed")
+                prevEmbedIds.add(pid);
+        }
         // Replace-all strategy for MVP: delete existing blocks and re-insert from docJson.
         await client.query(`DELETE FROM post_blocks WHERE post_id = $1`, [id]);
         const blocks = (0, docMapping_1.docJsonToBlocks)({ postId: id, docJson: body.docJson, pmSchemaVersion });
+        const nextEmbedIds = new Set();
+        for (const b of blocks) {
+            if (b.block_type !== "page_link")
+                continue;
+            const pm = b.content?.pm || b.content;
+            const display = pm?.attrs?.display;
+            const pid = typeof b.ref_post_id === "string" ? b.ref_post_id : null;
+            if (display === "embed" && pid)
+                nextEmbedIds.add(pid);
+        }
         for (const b of blocks) {
             await client.query(`INSERT INTO post_blocks (
            post_id, parent_block_id, block_type, sort_key, content, content_text, ref_post_id, external_embed_id,
@@ -116,6 +205,58 @@ async function savePostContent(req, res) {
                 b.external_embed_id,
                 pmSchemaVersion,
             ]);
+        }
+        // Mark removed embeds' pages as deleted.
+        const removed = [];
+        for (const pid of prevEmbedIds) {
+            if (!nextEmbedIds.has(pid))
+                removed.push(pid);
+        }
+        if (removed.length) {
+            await client.query(`UPDATE posts
+         SET status = 'deleted', deleted_at = NOW(), updated_at = NOW()
+         WHERE id = ANY($1::uuid[])
+           AND parent_id = $2
+           AND author_id = $3
+           AND deleted_at IS NULL`, [removed, id, userId]);
+        }
+        // If embeds were re-added (undo), restore those child pages.
+        const restoreIds = Array.from(nextEmbedIds);
+        if (restoreIds.length) {
+            await client.query(`UPDATE posts
+         SET status = 'draft', deleted_at = NULL, updated_at = NOW()
+         WHERE id = ANY($1::uuid[])
+           AND parent_id = $2
+           AND author_id = $3
+           AND (deleted_at IS NOT NULL OR COALESCE(status,'') = 'deleted')`, [restoreIds, id, userId]);
+        }
+        // Keep children ordering in sync with the embed order inside this parent page.
+        // Topmost embed block => smallest page_order (appears first in tree).
+        const embedOrder = [];
+        const embedSeen = new Set();
+        for (const b of blocks) {
+            if (b.block_type !== "page_link")
+                continue;
+            const pm = b.content?.pm || b.content;
+            const display = pm?.attrs?.display;
+            const pid = typeof b.ref_post_id === "string" ? b.ref_post_id : null;
+            if (display === "embed" && pid && !embedSeen.has(pid)) {
+                embedSeen.add(pid);
+                embedOrder.push(pid);
+            }
+        }
+        if (embedOrder.length) {
+            const ords = embedOrder.map((_, i) => i + 1);
+            await client.query(`WITH ord AS (
+           SELECT *
+           FROM unnest($1::uuid[], $2::int[]) AS t(id, ord)
+         )
+         UPDATE posts p
+         SET page_order = ord.ord
+         FROM ord
+         WHERE p.id = ord.id
+           AND p.parent_id = $3
+           AND p.author_id = $4`, [embedOrder, ords, id, userId]);
         }
         const nextVersion = cur + 1;
         await client.query(`UPDATE posts
@@ -138,19 +279,36 @@ async function createPost(req, res) {
     try {
         const userId = req.userId;
         const body = (req.body || {});
-        const tenantId = req.tenantId || (await (0, systemTenantService_1.ensureSystemTenantId)());
+        const tenantId = await resolveTenantId(req);
         const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : "Untitled";
         const pageType = typeof body.page_type === "string" ? body.page_type : "page";
         const visibility = typeof body.visibility === "string" ? body.visibility : "private";
         const status = typeof body.status === "string" ? body.status : "draft";
+        const parentId = typeof body.parent_id === "string" && body.parent_id.trim() ? body.parent_id.trim() : null;
+        const categoryId = typeof body.category_id === "string" && body.category_id.trim() ? body.category_id.trim() : null;
         // slug must be unique within (tenant_id,parent_id)
         const slug = `page-${(0, crypto_1.randomUUID)().slice(0, 8)}`;
         await client.query("BEGIN");
+        // Validate parent_id (must exist and be owned by same user) if provided
+        if (parentId) {
+            const p = await client.query(`SELECT id
+         FROM posts
+         WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
+         LIMIT 1`, [parentId, userId]);
+            if (p.rows.length === 0) {
+                await client.query("ROLLBACK");
+                return res.status(400).json({ message: "Invalid parent_id" });
+            }
+        }
+        // Validate category if provided
+        if (categoryId) {
+            await assertCategoryAccess({ categoryId, tenantId, userId });
+        }
         const r = await client.query(`INSERT INTO posts (
          tenant_id, parent_id, category_id, author_id, title, slug, page_type, status, visibility, metadata
        )
-       VALUES ($1,NULL,NULL,$2,$3,$4,$5,$6,$7,$8::jsonb)
-       RETURNING id, title, slug, created_at, updated_at`, [tenantId, userId, title, slug, pageType, status, visibility, JSON.stringify({ doc_version: 0 })]);
+       VALUES ($1,$9,$10,$2,$3,$4,$5,$6,$7,$8::jsonb)
+       RETURNING id, parent_id, title, slug, created_at, updated_at`, [tenantId, userId, title, slug, pageType, status, visibility, JSON.stringify({ doc_version: 0 }), parentId, categoryId]);
         await client.query("COMMIT");
         return res.status(201).json(r.rows[0]);
     }
@@ -166,10 +324,25 @@ async function createPost(req, res) {
 async function listMyPages(req, res) {
     try {
         const userId = req.userId;
-        const r = await (0, db_1.query)(`SELECT id, parent_id, title, slug, page_type, status, visibility, child_count, page_order, updated_at
+        const categoryId = typeof req.query.categoryId === "string" ? String(req.query.categoryId).trim() : "";
+        const tenantId = await resolveTenantId(req);
+        let sql = `SELECT id, parent_id, category_id, title, icon, slug, page_type, status, visibility, child_count, page_order, updated_at
        FROM posts
-       WHERE author_id = $1 AND deleted_at IS NULL
-       ORDER BY parent_id NULLS FIRST, page_order ASC, updated_at DESC`, [userId]);
+       WHERE tenant_id = $1 AND author_id = $2 AND deleted_at IS NULL AND COALESCE(status, '') <> 'deleted'`;
+        const params = [tenantId, userId];
+        if (categoryId) {
+            if (categoryId === "null") {
+                sql += ` AND category_id IS NULL`;
+            }
+            else {
+                sql += ` AND category_id = $3`;
+                params.push(categoryId);
+            }
+        }
+        sql += `
+       -- IMPORTANT: keep ordering stable; opening/saving a page updates updated_at and should NOT reshuffle the tree.
+       ORDER BY parent_id NULLS FIRST, page_order ASC, created_at ASC, id ASC`;
+        const r = await (0, db_1.query)(sql, params);
         return res.json(r.rows);
     }
     catch (e) {
@@ -177,10 +350,322 @@ async function listMyPages(req, res) {
         return res.status(500).json({ message: "Failed to list pages" });
     }
 }
+// Personal page categories (for Sidebar grouping)
+async function listMyPageCategories(req, res) {
+    const client = await db_1.default.connect();
+    try {
+        const userId = req.userId;
+        const tenantId = await resolveTenantId(req);
+        const type = typeof req.query.type === "string" ? String(req.query.type) : "personal_page";
+        const categoryType = type === "team_page" ? "team_page" : "personal_page";
+        // Shared/Team categories exist when the current tenant is NOT personal (team + enterprise).
+        if (categoryType === "team_page") {
+            const ok = await tenantAllowsSharedPages(tenantId);
+            if (!ok)
+                return res.json([]);
+        }
+        await client.query("BEGIN");
+        // Ensure default category exists ONLY once:
+        // - Create when there has never been any category row for this scope (including deleted rows).
+        // - If user deletes all categories (soft delete), we do NOT recreate.
+        const defaultName = categoryType === "team_page" ? "공유 페이지" : "나의 페이지";
+        const anyEver = await client.query(`SELECT 1
+       FROM board_categories
+       WHERE tenant_id = $1
+         AND category_type = $3
+         AND ($3 <> 'personal_page' OR author_id = $2)
+       LIMIT 1`, [tenantId, userId, categoryType]);
+        const existsActive = await client.query(`SELECT 1
+       FROM board_categories
+       WHERE tenant_id = $1
+         AND category_type = $3
+         AND ($3 <> 'personal_page' OR author_id = $2)
+         AND deleted_at IS NULL
+       LIMIT 1`, [tenantId, userId, categoryType]);
+        if (anyEver.rows.length === 0 && existsActive.rows.length === 0) {
+            const base = slugify(defaultName) || "category";
+            const slug = `${base}-${(0, crypto_1.randomUUID)().slice(0, 8)}`;
+            const maxR = await client.query(`SELECT COALESCE(MAX(display_order), 0) AS m
+         FROM board_categories
+         WHERE tenant_id = $1 AND category_type = $3 AND ($3 <> 'personal_page' OR author_id = $2) AND deleted_at IS NULL`, [tenantId, userId, categoryType]);
+            const nextOrder = Number(maxR.rows[0]?.m || 0) + 1;
+            await client.query(`INSERT INTO board_categories (tenant_id, author_id, category_type, parent_id, name, slug, icon, display_order, is_active, metadata)
+         VALUES ($1, $2, $3, NULL, $4, $5, NULL, $6, TRUE, '{}'::jsonb)`, [tenantId, userId, categoryType, defaultName, slug, nextOrder]);
+        }
+        const r = await client.query(`SELECT id, parent_id, name, slug, icon, display_order, created_at, updated_at
+       FROM board_categories
+       WHERE tenant_id = $1
+         AND category_type = $3
+         AND ($3 <> 'personal_page' OR author_id = $2)
+         AND deleted_at IS NULL
+       ORDER BY display_order ASC, created_at ASC, id ASC`, [tenantId, userId, categoryType]);
+        await client.query("COMMIT");
+        return res.json(r.rows);
+    }
+    catch (e) {
+        await client.query("ROLLBACK");
+        console.error("post-service listMyPageCategories error:", e);
+        return res.status(500).json({ message: "Failed to list categories" });
+    }
+    finally {
+        client.release();
+    }
+}
+async function createMyPageCategory(req, res) {
+    const client = await db_1.default.connect();
+    try {
+        const userId = req.userId;
+        const tenantId = await resolveTenantId(req);
+        const body = (req.body || {});
+        const type = typeof body.type === "string" ? body.type : "personal_page";
+        const categoryType = type === "team_page" ? "team_page" : "personal_page";
+        const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "New category";
+        const icon = typeof body.icon === "string" ? body.icon.trim().slice(0, 100) : null;
+        if (categoryType === "team_page") {
+            const ok = await tenantAllowsSharedPages(tenantId);
+            if (!ok)
+                return res.status(400).json({ message: "Shared categories require a non-personal tenant" });
+        }
+        const base = slugify(name) || "category";
+        const slug = `${base}-${(0, crypto_1.randomUUID)().slice(0, 8)}`;
+        await client.query("BEGIN");
+        const maxR = await client.query(`SELECT COALESCE(MAX(display_order), 0) AS m
+       FROM board_categories
+       WHERE tenant_id = $1 AND category_type = $3 AND ($3 <> 'personal_page' OR author_id = $2) AND deleted_at IS NULL`, [tenantId, userId, categoryType]);
+        const nextOrder = Number(maxR.rows[0]?.m || 0) + 1;
+        const ins = await client.query(`INSERT INTO board_categories (tenant_id, author_id, category_type, parent_id, name, slug, icon, display_order, is_active, metadata)
+       VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, TRUE, '{}'::jsonb)
+       RETURNING id, parent_id, name, slug, icon, display_order, created_at, updated_at`, [tenantId, userId, categoryType, name, slug, icon, nextOrder]);
+        await client.query("COMMIT");
+        return res.status(201).json(ins.rows[0]);
+    }
+    catch (e) {
+        await client.query("ROLLBACK");
+        console.error("post-service createMyPageCategory error:", e);
+        return res.status(500).json({ message: "Failed to create category" });
+    }
+    finally {
+        client.release();
+    }
+}
+async function updateCategory(req, res) {
+    const client = await db_1.default.connect();
+    try {
+        const userId = req.userId;
+        const tenantId = await resolveTenantId(req);
+        const { id } = req.params;
+        const body = (req.body || {});
+        const name = typeof body.name === "string" ? body.name.trim() : "";
+        const iconProvided = "icon" in body;
+        const iconRaw = iconProvided ? body.icon : undefined;
+        const icon = typeof iconRaw === "string" ? iconRaw.trim().slice(0, 100) : iconRaw === null ? null : undefined;
+        const displayOrder = typeof body.display_order === "number" ? body.display_order : null;
+        if (!name && icon === undefined && displayOrder === null) {
+            return res.status(400).json({ message: "name, icon or display_order is required" });
+        }
+        // Ensure category exists & ownership rules (personal_page requires author match)
+        const cur = await (0, db_1.query)(`SELECT id, category_type, author_id
+       FROM board_categories
+       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+       LIMIT 1`, [id, tenantId]);
+        if (cur.rows.length === 0)
+            return res.status(404).json({ message: "Category not found" });
+        const row = cur.rows[0];
+        if (String(row.category_type) === "personal_page" && String(row.author_id || "") !== String(userId)) {
+            return res.status(403).json({ message: "Forbidden" });
+        }
+        const sets = [];
+        const vals = [id, tenantId];
+        let idx = 3;
+        if (name) {
+            sets.push(`name = $${idx}`);
+            vals.push(name);
+            idx += 1;
+        }
+        if (icon !== undefined) {
+            sets.push(`icon = $${idx}`);
+            vals.push(icon);
+            idx += 1;
+        }
+        if (displayOrder !== null) {
+            sets.push(`display_order = $${idx}`);
+            vals.push(displayOrder);
+            idx += 1;
+        }
+        sets.push(`updated_at = NOW()`);
+        await client.query("BEGIN");
+        const r = await client.query(`UPDATE board_categories
+       SET ${sets.join(", ")}
+       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+       RETURNING id, parent_id, name, slug, icon, display_order, updated_at`, vals);
+        await client.query("COMMIT");
+        return res.json(r.rows[0]);
+    }
+    catch (e) {
+        await client.query("ROLLBACK");
+        console.error("post-service updateCategory error:", e);
+        return res.status(500).json({ message: "Failed to update category" });
+    }
+    finally {
+        client.release();
+    }
+}
+async function deleteCategory(req, res) {
+    try {
+        const userId = req.userId;
+        const tenantId = await resolveTenantId(req);
+        const { id } = req.params;
+        const cur = await (0, db_1.query)(`SELECT id, category_type, author_id
+       FROM board_categories
+       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+       LIMIT 1`, [id, tenantId]);
+        if (cur.rows.length === 0)
+            return res.status(404).json({ message: "Category not found" });
+        const row = cur.rows[0];
+        if (String(row.category_type) === "personal_page" && String(row.author_id || "") !== String(userId)) {
+            return res.status(403).json({ message: "Forbidden" });
+        }
+        // Can delete ONLY when all pages in this category are already deleted.
+        const alive = await (0, db_1.query)(`SELECT COUNT(*)::int AS c
+       FROM posts
+       WHERE category_id = $1
+         AND deleted_at IS NULL
+         AND COALESCE(status, '') <> 'deleted'`, [id]);
+        const c = Number(alive.rows[0]?.c || 0);
+        if (c > 0) {
+            return res.status(400).json({ message: "Category can be deleted only when all pages are deleted" });
+        }
+        await (0, db_1.query)(`UPDATE board_categories SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1 AND tenant_id = $2`, [
+            id,
+            tenantId,
+        ]);
+        // Unassign posts in this category (best-effort)
+        await (0, db_1.query)(`UPDATE posts SET category_id = NULL WHERE category_id = $1`, [id]).catch(() => null);
+        return res.json({ ok: true });
+    }
+    catch (e) {
+        console.error("post-service deleteCategory error:", e);
+        return res.status(500).json({ message: "Failed to delete category" });
+    }
+}
+async function reorderCategories(req, res) {
+    const client = await db_1.default.connect();
+    try {
+        const userId = req.userId;
+        const tenantId = await resolveTenantId(req);
+        const body = (req.body || {});
+        const type = typeof body.type === "string" ? body.type : "personal_page";
+        const categoryType = type === "team_page" ? "team_page" : "personal_page";
+        const orderedIds = Array.isArray(body.orderedIds) ? body.orderedIds.map(String).filter(Boolean) : [];
+        if (!orderedIds.length)
+            return res.status(400).json({ message: "orderedIds is required" });
+        await client.query("BEGIN");
+        // ownership check for personal
+        if (categoryType === "personal_page") {
+            const owned = await client.query(`SELECT id FROM board_categories
+         WHERE tenant_id = $1 AND category_type = 'personal_page' AND author_id = $2 AND deleted_at IS NULL`, [tenantId, userId]);
+            const set = new Set((owned.rows || []).map((r) => String(r.id)));
+            for (const id of orderedIds)
+                if (!set.has(String(id)))
+                    throw new Error("Forbidden reorder");
+        }
+        for (let i = 0; i < orderedIds.length; i += 1) {
+            await client.query(`UPDATE board_categories
+         SET display_order = $4, updated_at = NOW()
+         WHERE id = $1 AND tenant_id = $2 AND category_type = $3 AND deleted_at IS NULL`, [orderedIds[i], tenantId, categoryType, i + 1]);
+        }
+        await client.query("COMMIT");
+        return res.json({ ok: true });
+    }
+    catch (e) {
+        await client.query("ROLLBACK");
+        console.error("post-service reorderCategories error:", e);
+        return res.status(500).json({ message: "Failed to reorder categories" });
+    }
+    finally {
+        client.release();
+    }
+}
+async function getCategory(req, res) {
+    try {
+        const userId = req.userId;
+        const tenantId = await resolveTenantId(req);
+        const { id } = req.params;
+        if (!id)
+            return res.status(400).json({ message: "Missing category id" });
+        const r = await (0, db_1.query)(`SELECT id, tenant_id, author_id, category_type, name, icon, deleted_at
+       FROM board_categories
+       WHERE id = $1 AND tenant_id = $2
+       LIMIT 1`, [id, tenantId]);
+        if (r.rows.length === 0)
+            return res.status(404).json({ message: "Category not found" });
+        const row = r.rows[0];
+        const type = String(row.category_type || "");
+        if (type === "personal_page") {
+            if (String(row.author_id || "") !== String(userId))
+                return res.status(403).json({ message: "Forbidden" });
+        }
+        else if (type === "team_page") {
+            const ok = await tenantAllowsSharedPages(tenantId);
+            if (!ok)
+                return res.status(403).json({ message: "Forbidden" });
+        }
+        return res.json({
+            id: row.id,
+            category_type: type,
+            name: row.name,
+            icon: row.icon ?? null,
+            deleted_at: row.deleted_at ?? null,
+        });
+    }
+    catch (e) {
+        console.error("post-service getCategory error:", e);
+        return res.status(500).json({ message: "Failed to load category" });
+    }
+}
+async function getCurrentTenant(req, res) {
+    try {
+        const tenantId = await resolveTenantId(req);
+        const r = await (0, db_1.query)(`SELECT id, name, tenant_type FROM tenants WHERE id = $1 AND deleted_at IS NULL LIMIT 1`, [tenantId]);
+        if (r.rows.length === 0)
+            return res.status(404).json({ message: "Tenant not found" });
+        return res.json({ id: r.rows[0].id, name: r.rows[0].name, tenant_type: r.rows[0].tenant_type });
+    }
+    catch (e) {
+        console.error("post-service getCurrentTenant error:", e);
+        return res.status(500).json({ message: "Failed to load tenant" });
+    }
+}
+async function updatePostCategory(req, res) {
+    const client = await db_1.default.connect();
+    try {
+        const userId = req.userId;
+        const tenantId = await resolveTenantId(req);
+        const { id } = req.params;
+        const body = (req.body || {});
+        const categoryId = typeof body.category_id === "string" && body.category_id.trim() ? body.category_id.trim() : null;
+        if (categoryId)
+            await assertCategoryAccess({ categoryId, tenantId, userId });
+        const r = await client.query(`UPDATE posts
+       SET category_id = $3, updated_at = NOW()
+       WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
+       RETURNING id, category_id`, [id, userId, categoryId]);
+        if (r.rows.length === 0)
+            return res.status(404).json({ message: "Post not found" });
+        return res.json(r.rows[0]);
+    }
+    catch (e) {
+        console.error("post-service updatePostCategory error:", e);
+        return res.status(500).json({ message: "Failed to update post category" });
+    }
+    finally {
+        client.release();
+    }
+}
 async function getPostPreview(req, res) {
     try {
         const { id } = req.params;
-        const p = await (0, db_1.query)(`SELECT id, title, excerpt, updated_at
+        const p = await (0, db_1.query)(`SELECT id, title, icon, excerpt, updated_at
        FROM posts
        WHERE id = $1 AND deleted_at IS NULL
        LIMIT 1`, [id]);
@@ -202,10 +687,71 @@ async function getPostPreview(req, res) {
         }
         if (summary.length > 140)
             summary = summary.slice(0, 140) + "…";
-        return res.json({ id: row.id, title: row.title, summary, updated_at: row.updated_at });
+        return res.json({ id: row.id, title: row.title, icon: row.icon ?? null, summary, updated_at: row.updated_at });
     }
     catch (e) {
         console.error("post-service getPostPreview error:", e);
         return res.status(500).json({ message: "Failed to load preview" });
+    }
+}
+async function updatePost(req, res) {
+    const client = await db_1.default.connect();
+    try {
+        const userId = req.userId;
+        const { id } = req.params;
+        const body = (req.body || {});
+        const title = typeof body.title === "string" ? body.title.trim() : "";
+        const status = typeof body.status === "string" ? body.status.trim() : "";
+        const iconProvided = "icon" in body;
+        const iconRaw = iconProvided ? body.icon : undefined;
+        const icon = typeof iconRaw === "string"
+            ? iconRaw.trim() || null
+            : iconRaw === null
+                ? null
+                : undefined;
+        if (!title && !status && icon === undefined)
+            return res.status(400).json({ message: "title, status or icon is required" });
+        if (typeof icon === "string" && icon.length > 100)
+            return res.status(400).json({ message: "icon is too long" });
+        const updates = [];
+        const values = [id, userId];
+        let idx = 3;
+        if (title) {
+            updates.push(`title = $${idx}`);
+            values.push(title);
+            idx += 1;
+        }
+        if (status) {
+            // MVP: support "deleted" (trash) and "draft" (restore)
+            if (status !== "deleted" && status !== "draft")
+                return res.status(400).json({ message: "invalid status" });
+            updates.push(`status = $${idx}`);
+            values.push(status);
+            idx += 1;
+            if (status === "deleted")
+                updates.push(`deleted_at = NOW()`);
+            if (status === "draft")
+                updates.push(`deleted_at = NULL`);
+        }
+        if (icon !== undefined) {
+            updates.push(`icon = $${idx}`);
+            values.push(icon);
+            idx += 1;
+        }
+        updates.push(`updated_at = NOW()`);
+        const r = await client.query(`UPDATE posts
+       SET ${updates.join(", ")}
+       WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
+       RETURNING id, parent_id, title, icon, status, deleted_at, updated_at`, values);
+        if (r.rows.length === 0)
+            return res.status(404).json({ message: "Post not found" });
+        return res.json(r.rows[0]);
+    }
+    catch (e) {
+        console.error("post-service updatePost error:", e);
+        return res.status(500).json({ message: "Failed to update post" });
+    }
+    finally {
+        client.release();
     }
 }

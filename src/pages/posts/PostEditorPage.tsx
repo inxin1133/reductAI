@@ -73,6 +73,7 @@ type MyPage = {
   id: string
   parent_id: string | null
   title: string
+  icon?: string | null
   child_count: number
   page_order: number
   updated_at: string
@@ -80,30 +81,78 @@ type MyPage = {
 
 type DocJson = unknown
 
+const LUCIDE_PRESETS = [
+  { key: "File", label: "File", Icon: File },
+  { key: "FileText", label: "FileText", Icon: FileText },
+  { key: "Smile", label: "Smile", Icon: Smile },
+  { key: "Star", label: "Star", Icon: Star },
+  { key: "Book", label: "Book", Icon: Book },
+  { key: "Calendar", label: "Calendar", Icon: Calendar },
+  { key: "CheckSquare", label: "CheckSquare", Icon: CheckSquare },
+  { key: "Hash", label: "Hash", Icon: Hash },
+  { key: "Code", label: "Code", Icon: Code },
+  { key: "PenLine", label: "Pen", Icon: PenLine },
+  { key: "Image", label: "Image", Icon: Image },
+  { key: "Link", label: "Link", Icon: Link },
+  { key: "Globe", label: "Globe", Icon: Globe },
+  { key: "Bot", label: "Bot", Icon: Bot },
+] as const
+
+const LUCIDE_PRESET_MAP: Record<string, React.ElementType> = Object.fromEntries(
+  LUCIDE_PRESETS.map((x) => [x.key, x.Icon])
+) as Record<string, React.ElementType>
+
+function docJsonHasMeaningfulContent(docJson: unknown): boolean {
+  if (!docJson || typeof docJson !== "object") return false
+  const root = docJson as Record<string, unknown>
+  const content = Array.isArray(root.content) ? (root.content as unknown[]) : []
+  if (!content.length) return false
+
+  for (const n of content) {
+    if (!n || typeof n !== "object") continue
+    const node = n as Record<string, unknown>
+    const type = String(node.type || "")
+    if (!type) continue
+
+    // Ignore a single empty trailing paragraph.
+    if (type === "paragraph") {
+      const kids = Array.isArray(node.content) ? (node.content as unknown[]) : []
+      const hasText = kids.some((c) => {
+        if (!c || typeof c !== "object") return false
+        const cc = c as Record<string, unknown>
+        if (String(cc.type || "") !== "text") return false
+        const t = typeof cc.text === "string" ? cc.text : ""
+        return Boolean(t.trim())
+      })
+      if (hasText) return true
+      continue
+    }
+
+    // Any other top-level block counts as content.
+    return true
+  }
+  return false
+}
+
 type PageIconChoice =
   | { kind: "emoji"; value: string }
   | { kind: "lucide"; value: string }
 
-const PAGE_ICON_KEY = "reductai:postEditor:pageIcons"
-
-function loadPageIconMap(): Record<string, PageIconChoice> {
-  try {
-    const raw = localStorage.getItem(PAGE_ICON_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as unknown
-    if (!parsed || typeof parsed !== "object") return {}
-    return parsed as Record<string, PageIconChoice>
-  } catch {
-    return {}
-  }
+function encodePageIcon(choice: PageIconChoice | null): string | null {
+  if (!choice) return null
+  if (choice.kind === "emoji") return `emoji:${choice.value}`
+  return `lucide:${choice.value}`
 }
 
-function savePageIconMap(next: Record<string, PageIconChoice>) {
-  try {
-    localStorage.setItem(PAGE_ICON_KEY, JSON.stringify(next))
-  } catch {
-    // ignore
-  }
+function decodePageIcon(raw: unknown): PageIconChoice | null {
+  if (raw == null) return null
+  const s = typeof raw === "string" ? raw : ""
+  if (!s) return null
+  if (s.startsWith("emoji:")) return { kind: "emoji", value: s.slice("emoji:".length) }
+  if (s.startsWith("lucide:")) return { kind: "lucide", value: s.slice("lucide:".length) }
+  // Back-compat: if it's non-ascii-ish, assume emoji; otherwise assume lucide name.
+  if (/[^\w]/.test(s)) return { kind: "emoji", value: s }
+  return { kind: "lucide", value: s }
 }
 
 function appendPageLinkToDocJson(docJson: unknown, args: { pageId: string; title: string; display?: "link" | "embed" }) {
@@ -282,6 +331,12 @@ export default function PostEditorPage() {
   const isNew = rawId === "new"
   const postId = rawId
 
+  const categoryId = useMemo(() => {
+    const qs = new URLSearchParams(location.search || "")
+    return String(qs.get("category") || "").trim()
+  }, [location.search])
+  const categoryQS = useMemo(() => (categoryId ? `?category=${encodeURIComponent(categoryId)}` : ""), [categoryId])
+
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [serverVersion, setServerVersion] = useState<number>(0)
@@ -326,7 +381,6 @@ export default function PostEditorPage() {
   const [isNavDrawerOpen, setIsNavDrawerOpen] = useState(false)
   const [myPages, setMyPages] = useState<MyPage[]>([])
   const [pageHasContent, setPageHasContent] = useState<Record<string, boolean>>({})
-  const [pageIcons, setPageIcons] = useState<Record<string, PageIconChoice>>(() => loadPageIconMap())
   const [iconPickerOpenId, setIconPickerOpenId] = useState<string | null>(null)
   const [visiblePageIds, setVisiblePageIds] = useState<Set<string>>(() => new Set())
   const ioRef = useRef<IntersectionObserver | null>(null)
@@ -337,6 +391,8 @@ export default function PostEditorPage() {
   const [lucideLoading, setLucideLoading] = useState(false)
   const lucideLoadSeqRef = useRef(0)
   const [pageTitle, setPageTitle] = useState<string>("")
+  const [pageIconRaw, setPageIconRaw] = useState<string | null>(null)
+  const [titleIconOpen, setTitleIconOpen] = useState(false)
   const titleInputRef = useRef<HTMLInputElement | null>(null)
   const [isDeletedPage, setIsDeletedPage] = useState(false)
 
@@ -463,7 +519,10 @@ export default function PostEditorPage() {
         // - If the user already has pages, open the topmost one.
         // - Otherwise, show empty state (user creates via +)
         if (isNew) {
-          const pagesRes = await fetch(`/api/posts/mine`, { headers: authOnly })
+          const pagesRes = await fetch(
+            categoryId ? `/api/posts/mine?categoryId=${encodeURIComponent(categoryId)}` : `/api/posts/mine`,
+            { headers: authOnly }
+          )
           if (pagesRes.ok) {
             const pagesJson = await pagesRes.json()
             const pages = Array.isArray(pagesJson) ? (pagesJson as MyPage[]) : []
@@ -473,7 +532,7 @@ export default function PostEditorPage() {
             if (sorted.length > 0) {
               const firstId = String(sorted[0].id || "")
               if (firstId) {
-                navigate(`/posts/${firstId}/edit`, { replace: true })
+                navigate(`/posts/${firstId}/edit${categoryQS}`, { replace: true })
                 return
               }
             }
@@ -484,6 +543,7 @@ export default function PostEditorPage() {
             setInitialDocJson(null)
             setDraftDocJson(null)
             setServerVersion(0)
+            setPageIconRaw(null)
             const s = JSON.stringify(null)
             lastSavedRef.current = s
             setDirty(false)
@@ -492,7 +552,10 @@ export default function PostEditorPage() {
         }
 
         // Load sidebar tree (my pages)
-        const pagesRes = await fetch(`/api/posts/mine`, { headers: authOnly })
+        const pagesRes = await fetch(
+          categoryId ? `/api/posts/mine?categoryId=${encodeURIComponent(categoryId)}` : `/api/posts/mine`,
+          { headers: authOnly }
+        )
         let nonDeletedSorted: MyPage[] = []
         if (pagesRes.ok) {
           const pagesJson = await pagesRes.json()
@@ -512,6 +575,7 @@ export default function PostEditorPage() {
         setDraftDocJson(j.docJson || null)
         const title = typeof j.title === "string" && j.title.trim() ? j.title : "New page"
         setPageTitle(title)
+        setPageIconRaw(typeof j.icon === "string" ? j.icon : null)
         const status = typeof j.status === "string" ? j.status : ""
         const deletedAt = j.deleted_at != null
         const isDeleted = status === "deleted" || deletedAt
@@ -520,7 +584,7 @@ export default function PostEditorPage() {
         // Safety: if the user somehow lands on a deleted page, redirect away.
         if (isDeleted) {
           const firstId = nonDeletedSorted.length ? String(nonDeletedSorted[0].id || "") : ""
-          navigate(firstId ? `/posts/${firstId}/edit` : `/posts/new/edit`, { replace: true })
+          navigate(firstId ? `/posts/${firstId}/edit${categoryQS}` : `/posts/new/edit${categoryQS}`, { replace: true })
           return
         }
         // reset autosave baseline
@@ -540,27 +604,79 @@ export default function PostEditorPage() {
     return () => {
       cancelled = true
     }
-  }, [filterNonDeleted, postId, isNew, navigate, sortPages])
+  }, [categoryId, categoryQS, filterNonDeleted, postId, isNew, navigate, sortPages])
 
-  // Persist page icon choices
+  // If current page has a saved Lucide icon, lazy-load lucide map so the title can render it.
   useEffect(() => {
-    savePageIconMap(pageIcons)
-  }, [pageIcons])
+    if (!postId || postId === "new") return
+    if (!pageIconRaw || !pageIconRaw.startsWith("lucide:")) return
+    if (lucideAll || lucideLoading) return
+    const seq = (lucideLoadSeqRef.current += 1)
+    setLucideLoading(true)
+    void import("lucide-react")
+      .then((mod) => {
+        if (lucideLoadSeqRef.current !== seq) return
+        const iconsNs = (mod as unknown as Record<string, unknown>)["icons"]
+        if (iconsNs && typeof iconsNs === "object") setLucideAll(iconsNs as Record<string, React.ElementType>)
+      })
+      .finally(() => {
+        if (lucideLoadSeqRef.current === seq) setLucideLoading(false)
+      })
+  }, [lucideAll, lucideLoading, pageIconRaw, postId])
 
   // Reset picker UI when closing / switching rows
   useEffect(() => {
-    if (!iconPickerOpenId) {
+    if (!iconPickerOpenId && !titleIconOpen) {
       setIconPickerTab("emoji")
       setLucideQuery("")
       // Cancel any in-flight lucide import (best-effort) and clear loading state.
       lucideLoadSeqRef.current += 1
       setLucideLoading(false)
     }
-  }, [iconPickerOpenId])
+  }, [iconPickerOpenId, titleIconOpen])
+
+  const savePageIcon = useCallback(
+    async (pageId: string, choice: PageIconChoice | null) => {
+      const token = localStorage.getItem("token")
+      if (!token) return
+      const nextIcon = encodePageIcon(choice)
+
+      // Optimistic update in the tree
+      setMyPages((prev) =>
+        prev.map((p) => (String(p.id) === String(pageId) ? ({ ...p, icon: nextIcon } as MyPage) : p))
+      )
+      if (String(pageId) === String(postId || "")) {
+        setPageIconRaw(nextIcon)
+      }
+
+      try {
+        const r = await fetch(`/api/posts/${pageId}`, {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ icon: nextIcon }),
+        })
+        if (!r.ok) throw new Error(await r.text())
+        const j = (await r.json().catch(() => ({}))) as Record<string, unknown>
+        const serverIconRaw = "icon" in j ? (j.icon as unknown) : nextIcon
+        const serverIcon =
+          serverIconRaw === null ? null : typeof serverIconRaw === "string" ? serverIconRaw : (nextIcon ?? null)
+        setMyPages((prev) =>
+          prev.map((p) => (String(p.id) === String(pageId) ? ({ ...p, icon: serverIcon } as MyPage) : p))
+        )
+        if (String(pageId) === String(postId || "")) {
+          setPageIconRaw(serverIcon)
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : "Failed to update icon"
+        toast.error(msg)
+      }
+    },
+    [postId]
+  )
 
   // Lazy-load the full lucide icon map only when the user searches.
   useEffect(() => {
-    if (!iconPickerOpenId) return
+    if (!iconPickerOpenId && !titleIconOpen) return
     if (iconPickerTab !== "icon") return
     const q = lucideQuery.trim()
     if (!q) return
@@ -595,7 +711,7 @@ export default function PostEditorPage() {
       .finally(() => {
         if (lucideLoadSeqRef.current === seq) setLucideLoading(false)
       })
-  }, [iconPickerOpenId, iconPickerTab, lucideAll, lucideLoading, lucideQuery])
+  }, [iconPickerOpenId, titleIconOpen, iconPickerTab, lucideAll, lucideLoading, lucideQuery])
 
   // Track which tree rows are actually visible (or near-visible) in the viewport.
   useEffect(() => {
@@ -991,8 +1107,8 @@ export default function PostEditorPage() {
     if (isNew) return
     if (!postId || postId === "new") return
     if (myPages.length > 0) return
-    navigate(`/posts/new/edit`, { replace: true })
-  }, [isNew, loading, myPages.length, navigate, postId])
+    navigate(`/posts/new/edit${categoryQS}`, { replace: true })
+  }, [categoryQS, isNew, loading, myPages.length, navigate, postId])
 
   const pageById = useMemo(() => {
     const m = new Map<string, MyPage>()
@@ -1070,6 +1186,54 @@ export default function PostEditorPage() {
       hidden,
     }
   }, [pageById, pageTitle, parentById, postId])
+
+  // Breadcrumb icon rendering (emoji/lucide) + lucide lazy-load when needed.
+  const breadcrumbNeedsLucide = useMemo(() => {
+    const ids: string[] = []
+    for (const c of breadcrumbData.visible) if (c.id && c.id !== "__ellipsis__") ids.push(String(c.id))
+    for (const h of breadcrumbData.hidden) if (h.id) ids.push(String(h.id))
+
+    for (const id of ids) {
+      const p = pageById.get(String(id))
+      const raw = typeof p?.icon === "string" ? p.icon : null
+      const choice = decodePageIcon(raw)
+      if (!choice || choice.kind !== "lucide") continue
+      if (LUCIDE_PRESET_MAP[choice.value]) continue
+      return true
+    }
+    return false
+  }, [breadcrumbData.hidden, breadcrumbData.visible, pageById])
+
+  useEffect(() => {
+    if (!breadcrumbNeedsLucide) return
+    if (lucideAll || lucideLoading) return
+    const seq = (lucideLoadSeqRef.current += 1)
+    setLucideLoading(true)
+    void import("lucide-react")
+      .then((mod) => {
+        if (lucideLoadSeqRef.current !== seq) return
+        const iconsNs = (mod as unknown as Record<string, unknown>)["icons"]
+        if (iconsNs && typeof iconsNs === "object") setLucideAll(iconsNs as Record<string, React.ElementType>)
+      })
+      .finally(() => {
+        if (lucideLoadSeqRef.current === seq) setLucideLoading(false)
+      })
+  }, [breadcrumbNeedsLucide, lucideAll, lucideLoading])
+
+  const renderHeaderIcon = useCallback(
+    (pageId: string) => {
+      const p = pageById.get(String(pageId))
+      const raw = typeof p?.icon === "string" ? p.icon : null
+      const choice = decodePageIcon(raw)
+      if (!choice) return null
+      if (choice.kind === "emoji") return <span className="text-[14px] leading-none">{choice.value}</span>
+      const Preset = LUCIDE_PRESET_MAP[choice.value]
+      const Dyn = Preset || lucideAll?.[choice.value]
+      if (!Dyn) return <span className="text-[12px] leading-none opacity-60">□</span>
+      return <Dyn className="size-4" />
+    },
+    [lucideAll, pageById]
+  )
 
   const openNav = () => {
     if (isMobile) setIsNavDrawerOpen(true)
@@ -1203,6 +1367,7 @@ export default function PostEditorPage() {
             status: "draft",
             visibility: "private",
             parent_id: parentId,
+            category_id: categoryId || null,
           }),
         })
         if (!r.ok) throw new Error(await r.text())
@@ -1248,13 +1413,13 @@ export default function PostEditorPage() {
           ])
           return next
         })
-        navigate(`/posts/${newId}/edit`)
+        navigate(`/posts/${newId}/edit${categoryQS}`)
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Failed to create"
         setError(msg)
       }
     },
-    [canSave, navigate, postId, saveNow]
+    [canSave, categoryId, categoryQS, navigate, postId, saveNow]
   )
 
   const softDeletePage = useCallback(
@@ -1347,18 +1512,18 @@ export default function PostEditorPage() {
 
         // If there are no remaining pages at all, always go to /posts/new/edit (even if the subtree check misfires).
         if (noRemainingPages) {
-          navigate(`/posts/new/edit`, { replace: true })
+          navigate(`/posts/new/edit${categoryQS}`, { replace: true })
           // Some states (editor + route) may not fully reset without a hard navigation.
           // Force a "refresh-like" transition so the intro skeleton reliably appears.
           if (typeof window !== "undefined") {
-            window.location.replace("/posts/new/edit")
+            window.location.replace(`/posts/new/edit${categoryQS}`)
           }
         } else if (currentIsInDeletedSubtree) {
           if (parentId) {
-            navigate(`/posts/${parentId}/edit`, { replace: true })
+            navigate(`/posts/${parentId}/edit${categoryQS}`, { replace: true })
           } else {
             // If top-level page: navigate to the first remaining root page (exclude deleted).
-            navigate(nextRootAfterDelete ? `/posts/${nextRootAfterDelete}/edit` : `/posts/new/edit`, { replace: true })
+            navigate(nextRootAfterDelete ? `/posts/${nextRootAfterDelete}/edit${categoryQS}` : `/posts/new/edit${categoryQS}`, { replace: true })
           }
         }
 
@@ -1428,7 +1593,7 @@ export default function PostEditorPage() {
         setError(msg)
       }
     },
-    [myPages, navigate, pageById, parentById, postId, sortPages]
+    [categoryQS, myPages, navigate, pageById, parentById, postId, sortPages]
   )
 
   const duplicatePage = useCallback(
@@ -1558,7 +1723,7 @@ export default function PostEditorPage() {
     const hasKids = kids.length > 0
     const isExpanded = expanded.has(id)
     const isActive = id === postId
-    const chosenIcon = pageIcons[id]
+    const chosenIcon = decodePageIcon((p as unknown as Record<string, unknown>).icon)
     const hasContent = pageHasContent[id] ?? false
     const isDark = document.documentElement.classList.contains("dark")
 
@@ -1599,22 +1764,7 @@ export default function PostEditorPage() {
       return <Final className={["size-4", depth > 0 ? "opacity-70" : ""].join(" ")} />
     })()
 
-    const LUCIDE_PRESETS = [
-      { key: "File", label: "File", Icon: File },
-      { key: "FileText", label: "FileText", Icon: FileText },
-      { key: "Smile", label: "Smile", Icon: Smile },
-      { key: "Star", label: "Star", Icon: Star },
-      { key: "Book", label: "Book", Icon: Book },
-      { key: "Calendar", label: "Calendar", Icon: Calendar },
-      { key: "CheckSquare", label: "CheckSquare", Icon: CheckSquare },
-      { key: "Hash", label: "Hash", Icon: Hash },
-      { key: "Code", label: "Code", Icon: Code },
-      { key: "PenLine", label: "Pen", Icon: PenLine },
-      { key: "Image", label: "Image", Icon: Image },
-      { key: "Link", label: "Link", Icon: Link },
-      { key: "Globe", label: "Globe", Icon: Globe },
-      { key: "Bot", label: "Bot", Icon: Bot },
-    ]
+    // use file-level LUCIDE_PRESETS
 
     return (
       <div key={id} className="flex flex-col w-full min-w-0">
@@ -1633,11 +1783,11 @@ export default function PostEditorPage() {
                 : "hover:bg-accent hover:text-accent-foreground",
             ].join(" ")}
             ref={observeTreeRow(id) as unknown as React.Ref<HTMLDivElement>}
-            onClick={() => navigate(`/posts/${id}/edit`)}
+            onClick={() => navigate(`/posts/${id}/edit${categoryQS}`)}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault()
-                navigate(`/posts/${id}/edit`)
+                navigate(`/posts/${id}/edit${categoryQS}`)
               }
             }}
           >
@@ -1670,7 +1820,7 @@ export default function PostEditorPage() {
                   {iconNode}
                 </button>
               </PopoverTrigger>
-              <PopoverContent align="start" sideOffset={6} className="w-[360px] p-3" onPointerDown={(e) => e.stopPropagation()}>
+              <PopoverContent align="start" sideOffset={6} className="w-[370px] p-3" onPointerDown={(e) => e.stopPropagation()}>
                 <Tabs value={iconPickerTab} onValueChange={(v) => setIconPickerTab(v === "icon" ? "icon" : "emoji")}>
                   <TabsList>
                     <TabsTrigger value="emoji">이모지</TabsTrigger>
@@ -1686,7 +1836,7 @@ export default function PostEditorPage() {
                           const em = emoji && typeof emoji === "object" ? (emoji as Record<string, unknown>) : null
                           const native = em && typeof em.native === "string" ? String(em.native) : ""
                           if (!native) return
-                          setPageIcons((prev) => ({ ...prev, [id]: { kind: "emoji", value: native } }))
+                          void savePageIcon(id, { kind: "emoji", value: native })
                           setIconPickerOpenId(null)
                         }}
                       />
@@ -1696,11 +1846,7 @@ export default function PostEditorPage() {
                         variant="ghost"
                         size="sm"
                         onClick={() => {
-                          setPageIcons((prev) => {
-                            const next = { ...prev }
-                            delete next[id]
-                            return next
-                          })
+                          void savePageIcon(id, null)
                           setIconPickerOpenId(null)
                         }}
                       >
@@ -1746,7 +1892,7 @@ export default function PostEditorPage() {
                                     type="button"
                                     className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
                                     onClick={() => {
-                                      setPageIcons((prev) => ({ ...prev, [id]: { kind: "lucide", value: k } }))
+                                      void savePageIcon(id, { kind: "lucide", value: k })
                                       setIconPickerOpenId(null)
                                     }}
                                     title={k}
@@ -1771,7 +1917,7 @@ export default function PostEditorPage() {
                             type="button"
                             className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
                             onClick={() => {
-                              setPageIcons((prev) => ({ ...prev, [id]: { kind: "lucide", value: it.key } }))
+                              void savePageIcon(id, { kind: "lucide", value: it.key })
                               setIconPickerOpenId(null)
                             }}
                             title={it.label}
@@ -1787,11 +1933,7 @@ export default function PostEditorPage() {
                         variant="ghost"
                         size="sm"
                         onClick={() => {
-                          setPageIcons((prev) => {
-                            const next = { ...prev }
-                            delete next[id]
-                            return next
-                          })
+                          void savePageIcon(id, null)
                           setIconPickerOpenId(null)
                         }}
                       >
@@ -1882,13 +2024,13 @@ export default function PostEditorPage() {
       const r = await fetch(`/api/posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authOnly },
-        body: JSON.stringify({ title: "New page", page_type: "page", status: "draft", visibility: "private" }),
+        body: JSON.stringify({ title: "New page", page_type: "page", status: "draft", visibility: "private", category_id: categoryId || null }),
       })
       if (!r.ok) throw new Error(await r.text())
       const j = await r.json()
       const newId = String(j.id || "")
       if (!newId) throw new Error("Failed to create post (missing id)")
-      navigate(`/posts/${newId}/edit`)
+      navigate(`/posts/${newId}/edit${categoryQS}`)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to create"
       setError(msg)
@@ -1966,10 +2108,13 @@ export default function PostEditorPage() {
                               key={h.id}
                               onSelect={() => {
                                 if (isMobile) setIsNavDrawerOpen(false)
-                                navigate(`/posts/${h.id}/edit`)
+                                navigate(`/posts/${h.id}/edit${categoryQS}`)
                               }}
                             >
-                              <span className="truncate">{h.title || "New page"}</span>
+                              <span className="flex min-w-0 items-center gap-2">
+                                <span className="shrink-0">{renderHeaderIcon(h.id)}</span>
+                                <span className="truncate">{h.title || "New page"}</span>
+                              </span>
                             </DropdownMenuItem>
                           ))}
                         </DropdownMenuContent>
@@ -1978,8 +2123,12 @@ export default function PostEditorPage() {
                     </BreadcrumbItem>
                   )
                 }
+                const iconEl = renderHeaderIcon(c.id)
                 const label = (
-                  <span className="max-w-[120px] min-w-[30px] w-full truncate inline-block align-bottom">{c.title || "New page"}</span>
+                  <span className="inline-flex items-center gap-1.5 max-w-[160px] min-w-[30px] min-w-0 align-bottom">
+                    {iconEl ? <span className="shrink-0">{iconEl}</span> : null}
+                    <span className="min-w-0 truncate">{c.title || "New page"}</span>
+                  </span>
                 )
                 return (
                   <BreadcrumbItem key={c.id} className="min-w-0">
@@ -1992,7 +2141,7 @@ export default function PostEditorPage() {
                         onClick={(e) => {
                           e.preventDefault()
                           if (isMobile) setIsNavDrawerOpen(false)
-                          navigate(`/posts/${c.id}/edit`)
+                          navigate(`/posts/${c.id}/edit${categoryQS}`)
                         }}
                       >
                         <span className="min-w-0">{label}</span>
@@ -2159,14 +2308,210 @@ export default function PostEditorPage() {
                 {isDeletedPage ? (
                   <div className="mb-2 text-sm font-semibold text-red-600">Deleted Page</div>
                 ) : null}
-                <input
-                  ref={titleInputRef}
-                  className="w-full text-3xl font-bold outline-none placeholder:text-muted-foreground truncate"
-                  title={pageTitle}
-                  value={pageTitle}
-                  placeholder="New page"
-                  onChange={(e) => setPageTitle(e.target.value)}
-                />
+                {(() => {
+                  const chosen = decodePageIcon(pageIconRaw)
+                  const hasCustom = Boolean(chosen)
+                  const hasTitleContent = docJsonHasMeaningfulContent(draftDocJson)
+                  const InsertIcon = hasTitleContent ? FileText : File
+                  const iconEl = (() => {
+                    if (!chosen) return null
+                    if (chosen.kind === "emoji") return <span className="text-[28px] leading-none">{chosen.value}</span>
+                    const Preset = LUCIDE_PRESET_MAP[chosen.value]
+                    const Dyn = Preset || lucideAll?.[chosen.value]
+                    if (!Dyn) return <span className="text-[18px] leading-none opacity-60">□</span>
+                    return <Dyn className="size-7" />
+                  })()
+
+                  return (
+                    <Popover open={titleIconOpen} onOpenChange={setTitleIconOpen}>
+                      <div className="relative group/title flex items-center gap-2">
+                        {hasCustom ? (
+                          <PopoverTrigger asChild>
+                            <button
+                              type="button"
+                              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md hover:bg-accent"
+                              title="아이콘 변경"
+                              onPointerDown={(e) => e.stopPropagation()}
+                            >
+                              {iconEl}
+                            </button>
+                          </PopoverTrigger>
+                        ) : (
+                          <PopoverTrigger asChild>
+                            <button
+                              type="button"
+                              className={[
+                                // Keep inside the title container so it won't be covered by the sticky header,
+                                // and so hover doesn't drop when moving the mouse to the button.
+                                // Float OUTSIDE the title (no title indent), but keep hover stable via an invisible bridge.
+                                "absolute top-1 -left-10",
+                                "h-8 w-8",
+                                "rounded-md border border-border bg-background shadow-sm flex items-center justify-center",
+                                "z-[100]",
+                                "opacity-0 invisible pointer-events-none",
+                                "group-hover/title:opacity-100 group-hover/title:visible group-hover/title:pointer-events-auto",
+                                "transition-opacity",
+                              ].join(" ")}
+                              onPointerDown={(e) => e.stopPropagation()}
+                            >
+                              <InsertIcon className="size-4" />
+                            </button>
+                          </PopoverTrigger>
+                        )}
+
+                        {/* Hover bridge: extends the group's hover hitbox to the floating button area so it doesn't disappear while moving the mouse. */}
+                        {!hasCustom ? (
+                          <span
+                            aria-hidden
+                            className={[
+                              "absolute top-0 -left-10 h-full w-10",
+                              "bg-transparent",
+                            ].join(" ")}
+                          />
+                        ) : null}
+
+                        <input
+                          ref={titleInputRef}
+                          className="w-full text-3xl font-bold outline-none placeholder:text-muted-foreground truncate"
+                          title={pageTitle}
+                          value={pageTitle}
+                          placeholder="New page"
+                          onChange={(e) => setPageTitle(e.target.value)}
+                        />
+                      </div>
+
+                      <PopoverContent align="start" sideOffset={8} className="w-[370px] p-3 z-[90]">
+                        <Tabs value={iconPickerTab} onValueChange={(v) => setIconPickerTab(v === "icon" ? "icon" : "emoji")}>
+                          <TabsList>
+                            <TabsTrigger value="emoji">이모지</TabsTrigger>
+                            <TabsTrigger value="icon">아이콘</TabsTrigger>
+                          </TabsList>
+                          <TabsContent value="emoji">
+                            <div className="max-h-[360px] overflow-auto pr-1">
+                              <EmojiPicker
+                                data={emojiData as unknown}
+                                theme={document.documentElement.classList.contains("dark") ? "dark" : "light"}
+                                previewPosition="none"
+                                onEmojiSelect={(emoji: unknown) => {
+                                  const em = emoji && typeof emoji === "object" ? (emoji as Record<string, unknown>) : null
+                                  const native = em && typeof em.native === "string" ? String(em.native) : ""
+                                  if (!native || !postId) return
+                                  void savePageIcon(postId, { kind: "emoji", value: native })
+                                  setTitleIconOpen(false)
+                                }}
+                              />
+                            </div>
+                            <div className="mt-2 flex justify-end">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  if (!postId) return
+                                  void savePageIcon(postId, null)
+                                  setTitleIconOpen(false)
+                                }}
+                              >
+                                Reset
+                              </Button>
+                            </div>
+                          </TabsContent>
+                          <TabsContent value="icon">
+                            <div className="mb-2">
+                              <Input
+                                value={lucideQuery}
+                                onChange={(e) => setLucideQuery(e.target.value)}
+                                placeholder="Search icons (e.g. calendar, bot, file...)"
+                                className="h-8 text-sm"
+                              />
+                            </div>
+
+                            {lucideQuery.trim() ? (
+                              <>
+                                {lucideLoading && !lucideAll ? (
+                                  <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
+                                ) : null}
+                                <div className="max-h-[300px] overflow-auto pr-1">
+                                  <div className="grid grid-cols-7 gap-1">
+                                    {(() => {
+                                      const q = lucideQuery.trim().toLowerCase()
+                                      const map = lucideAll || {}
+                                      const keys = Object.keys(map)
+                                        .filter((k) => k.toLowerCase().includes(q))
+                                        .slice(0, 98)
+                                      if (!lucideLoading && lucideAll && keys.length === 0) {
+                                        return (
+                                          <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
+                                            No matches. Try a different keyword.
+                                          </div>
+                                        )
+                                      }
+                                      return keys.map((k) => {
+                                        const Cmp = map[k]
+                                        return (
+                                          <button
+                                            key={k}
+                                            type="button"
+                                            className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                            onClick={() => {
+                                              if (!postId) return
+                                              void savePageIcon(postId, { kind: "lucide", value: k })
+                                              setTitleIconOpen(false)
+                                            }}
+                                            title={k}
+                                            aria-label={k}
+                                          >
+                                            <Cmp className="size-4" />
+                                          </button>
+                                        )
+                                      })
+                                    })()}
+                                  </div>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div className="grid grid-cols-7 gap-1">
+                                  {LUCIDE_PRESETS.map((it) => (
+                                    <button
+                                      key={it.key}
+                                      type="button"
+                                      className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                      onClick={() => {
+                                        if (!postId) return
+                                        void savePageIcon(postId, { kind: "lucide", value: it.key })
+                                        setTitleIconOpen(false)
+                                      }}
+                                      title={it.label}
+                                      aria-label={it.label}
+                                    >
+                                      <it.Icon className="size-4" />
+                                    </button>
+                                  ))}
+                                </div>
+                                <div className="mt-2 text-[11px] text-muted-foreground px-0.5">
+                                  검색어를 입력하면 전체 아이콘 목록을 불러옵니다.
+                                </div>
+                              </>
+                            )}
+                            <div className="mt-2 flex justify-end">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  if (!postId) return
+                                  void savePageIcon(postId, null)
+                                  setTitleIconOpen(false)
+                                }}
+                              >
+                                Reset
+                              </Button>
+                            </div>
+                          </TabsContent>
+                        </Tabs>
+                      </PopoverContent>
+                    </Popover>
+                  )
+                })()}
               </div>
             ) : null}
           </div>

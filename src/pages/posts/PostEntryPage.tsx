@@ -1,5 +1,5 @@
 import * as React from "react"
-import { useNavigate } from "react-router-dom"
+import { useLocation, useNavigate } from "react-router-dom"
 
 function authHeaders() {
   const token = localStorage.getItem("token")
@@ -36,6 +36,7 @@ function sortPages(pages: MyPage[]) {
 // - else go to /posts/new/edit (empty state; user can create via +)
 export default function PostEntryPage() {
   const navigate = useNavigate()
+  const location = useLocation()
 
   React.useEffect(() => {
     let cancelled = false
@@ -47,29 +48,34 @@ export default function PostEntryPage() {
       }
 
       try {
-        const pagesRes = await fetch(`/api/posts/mine`, { headers })
+        const qs = new URLSearchParams(location.search || "")
+        const categoryId = qs.get("category") || ""
+        const url = categoryId ? `/api/posts/mine?categoryId=${encodeURIComponent(categoryId)}` : `/api/posts/mine`
+        const pagesRes = await fetch(url, { headers })
         if (pagesRes.ok) {
           const pagesJson = await pagesRes.json().catch(() => [])
           const pages = Array.isArray(pagesJson) ? (pagesJson as MyPage[]) : []
           const sorted = sortPages(pages.filter((p) => !isDeletedPage(p)))
           const firstId = sorted.length > 0 ? String(sorted[0].id || "") : ""
           if (firstId) {
-            if (!cancelled) navigate(`/posts/${firstId}/edit`, { replace: true })
+            if (!cancelled) navigate(`/posts/${firstId}/edit${categoryId ? `?category=${encodeURIComponent(categoryId)}` : ""}`, { replace: true })
             return
           }
         }
 
         // No pages -> show empty state (user creates via +)
-        if (!cancelled) navigate(`/posts/new/edit`, { replace: true })
+        if (!cancelled) navigate(`/posts/new/edit${categoryId ? `?category=${encodeURIComponent(categoryId)}` : ""}`, { replace: true })
       } catch {
-        if (!cancelled) navigate(`/posts/new/edit`, { replace: true })
+        const qs = new URLSearchParams(location.search || "")
+        const categoryId = qs.get("category") || ""
+        if (!cancelled) navigate(`/posts/new/edit${categoryId ? `?category=${encodeURIComponent(categoryId)}` : ""}`, { replace: true })
       }
     }
     void run()
     return () => {
       cancelled = true
     }
-  }, [navigate])
+  }, [location.search, navigate])
 
   // Minimal blank screen while redirecting
   return <div className="w-full h-screen bg-background" />

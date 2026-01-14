@@ -335,6 +335,85 @@ COMMENT ON COLUMN tenant_service_access.granted_at IS '서비스 접근 권한�
 COMMENT ON COLUMN tenant_service_access.expires_at IS '접근 권한 만료 시각 (NULL이면 만료되지 않음)';
 
 -- ============================================
+-- 8.5. POST / BLOCK EDITOR (Categories + Posts + Blocks)
+-- ============================================
+-- NOTE:
+-- - post-service가 사용하는 핵심 테이블들입니다.
+-- - DB를 초기화할 때 schema.sql만 적용해도 편집기 기능이 동작하도록 최소 구성을 포함합니다.
+
+CREATE TABLE IF NOT EXISTS board_categories (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    author_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    category_type VARCHAR(50) NOT NULL DEFAULT 'board' CHECK (category_type IN ('board', 'personal_page', 'team_page')),
+    parent_id UUID REFERENCES board_categories(id) ON DELETE SET NULL,
+    name VARCHAR(255) NOT NULL,
+    slug VARCHAR(100) NOT NULL,
+    description TEXT,
+    icon VARCHAR(100),
+    display_order INTEGER DEFAULT 0,
+    is_active BOOLEAN DEFAULT TRUE,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    UNIQUE(tenant_id, slug),
+    CHECK (parent_id IS NULL OR parent_id != id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_board_categories_tenant_id ON board_categories(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_board_categories_author_id ON board_categories(author_id);
+CREATE INDEX IF NOT EXISTS idx_board_categories_type ON board_categories(tenant_id, category_type);
+CREATE INDEX IF NOT EXISTS idx_board_categories_parent_id ON board_categories(parent_id);
+CREATE INDEX IF NOT EXISTS idx_board_categories_slug ON board_categories(tenant_id, slug);
+CREATE INDEX IF NOT EXISTS idx_board_categories_display_order ON board_categories(tenant_id, display_order);
+
+CREATE TABLE IF NOT EXISTS posts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    parent_id UUID REFERENCES posts(id) ON DELETE SET NULL,
+    category_id UUID REFERENCES board_categories(id) ON DELETE SET NULL,
+    author_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    title VARCHAR(255) NOT NULL DEFAULT 'Untitled',
+    slug VARCHAR(100) NOT NULL,
+    icon VARCHAR(100),
+    page_type VARCHAR(50) NOT NULL DEFAULT 'page',
+    status VARCHAR(50) NOT NULL DEFAULT 'draft',
+    visibility VARCHAR(50) NOT NULL DEFAULT 'private',
+    child_count INTEGER DEFAULT 0,
+    page_order INTEGER DEFAULT 0,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP WITH TIME ZONE
+);
+
+CREATE INDEX IF NOT EXISTS idx_posts_tenant_id ON posts(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_posts_author_id ON posts(author_id);
+CREATE INDEX IF NOT EXISTS idx_posts_parent_id ON posts(parent_id);
+CREATE INDEX IF NOT EXISTS idx_posts_category_id ON posts(category_id);
+CREATE INDEX IF NOT EXISTS idx_posts_deleted_at ON posts(deleted_at) WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS post_blocks (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    post_id UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    parent_block_id UUID,
+    block_type VARCHAR(100) NOT NULL,
+    sort_key NUMERIC(20, 6) NOT NULL DEFAULT 0,
+    content JSONB DEFAULT '{}',
+    content_text TEXT,
+    ref_post_id UUID,
+    external_embed_id VARCHAR(255),
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_post_blocks_post_id ON post_blocks(post_id);
+CREATE INDEX IF NOT EXISTS idx_post_blocks_parent_block_id ON post_blocks(parent_block_id);
+CREATE INDEX IF NOT EXISTS idx_post_blocks_sort_key ON post_blocks(post_id, sort_key);
+CREATE INDEX IF NOT EXISTS idx_post_blocks_ref_post_id ON post_blocks(ref_post_id);
+
+-- ============================================
 -- 9. AUDIT LOG
 -- ============================================
 

@@ -50,20 +50,26 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE board_categories (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    author_id UUID REFERENCES users(id) ON DELETE SET NULL, -- 개인 카테고리 소유자 (개인 페이지용)
+    category_type VARCHAR(50) NOT NULL DEFAULT 'board' CHECK (category_type IN ('board', 'personal_page', 'team_page')),
     parent_id UUID REFERENCES board_categories(id) ON DELETE SET NULL,
     name VARCHAR(255) NOT NULL,
     slug VARCHAR(100) NOT NULL,
     description TEXT,
+    icon VARCHAR(100), -- 카테고리 아이콘 (이모지 또는 아이콘 이름)
     display_order INTEGER DEFAULT 0,
     is_active BOOLEAN DEFAULT TRUE,
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP WITH TIME ZONE,
     UNIQUE(tenant_id, slug),
     CHECK (parent_id IS NULL OR parent_id != id)
 );
 
 CREATE INDEX idx_board_categories_tenant_id ON board_categories(tenant_id);
+CREATE INDEX idx_board_categories_author_id ON board_categories(author_id);
+CREATE INDEX idx_board_categories_type ON board_categories(tenant_id, category_type);
 CREATE INDEX idx_board_categories_parent_id ON board_categories(parent_id);
 CREATE INDEX idx_board_categories_slug ON board_categories(tenant_id, slug);
 CREATE INDEX idx_board_categories_display_order ON board_categories(tenant_id, display_order);
