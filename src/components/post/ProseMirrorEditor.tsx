@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react"
-import { EditorState, type Transaction } from "prosemirror-state"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { EditorState, TextSelection, type Transaction } from "prosemirror-state"
 import { EditorView } from "prosemirror-view"
 import { DOMParser as PMDOMParser } from "prosemirror-model"
 import { Button } from "@/components/ui/button"
@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { ButtonGroup, ButtonGroupItem } from "@/components/ui/button-group"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   cmdBlockquote,
   cmdBulletList,
@@ -51,7 +51,12 @@ import {
   tableCommands,
 } from "../../editor/commands"
 import { exportMarkdown } from "../../editor/serializers/markdown"
-import { isInTable as pmIsInTable, selectedRect as pmSelectedRect, selectionCell as pmSelectionCell } from "prosemirror-tables"
+import {
+  CellSelection,
+  isInTable as pmIsInTable,
+  selectedRect as pmSelectedRect,
+  selectionCell as pmSelectionCell,
+} from "prosemirror-tables"
 import { 
   Bold,
   Italic,
@@ -87,7 +92,8 @@ import {
   BetweenVerticalStart,   
   FoldHorizontal,
   FoldVertical,
-  Grid2X2X, 
+  Grid2X2X,
+  ChevronLeft
 } from "lucide-react"
 
 type PmDocJson = unknown
@@ -169,12 +175,14 @@ function getEmptyDoc() {
 
 export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null)
+  const surfaceRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
   const embedIdsRef = useRef<Set<string>>(new Set())
 
   const [markdown, setMarkdown] = useState("")
   const [docJson, setDocJson] = useState<PmDocJson>(initialDocJson ?? null)
   const [textColorOpen, setTextColorOpen] = useState(false)
+  const [selectionTextColorOpen, setSelectionTextColorOpen] = useState(false)
   const [blockBgOpen, setBlockBgOpen] = useState(false)
   const [tableCellBgOpen, setTableCellBgOpen] = useState(false)
 
@@ -185,6 +193,83 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
   const blockMenuSigRef = useRef<string>("")
   const [tableInsertOpen, setTableInsertOpen] = useState(false)
   const [tableGridHover, setTableGridHover] = useState<{ rows: number; cols: number }>({ rows: 1, cols: 1 })
+
+  // Selection bubble toolbar (Notion-like): show when text is selected.
+  const [selectionToolbarOpen, setSelectionToolbarOpen] = useState(false)
+  const [selectionAnchor, setSelectionAnchor] = useState<{ left: number; top: number } | null>(null)
+  const bubbleRafRef = useRef<number | null>(null)
+  const bubbleInteractingRef = useRef(false)
+
+  const updateSelectionToolbar = useCallback(() => {
+    const v = viewRef.current
+    const surfaceEl = surfaceRef.current
+    if (!v || !surfaceEl) {
+      setSelectionToolbarOpen(false)
+      setSelectionTextColorOpen(false)
+      return
+    }
+
+    // Keep the bubble open while the user is interacting with the bubble itself (or nested popovers like text color),
+    // even if focus temporarily moves away from the editor.
+    const keepOpenWhileInteracting = selectionTextColorOpen || bubbleInteractingRef.current
+
+    // Only show while editor is focused (unless we're interacting with nested popovers).
+    if (!v.hasFocus() && !keepOpenWhileInteracting) {
+      setSelectionToolbarOpen(false)
+      setSelectionTextColorOpen(false)
+      return
+    }
+
+    const sel = v.state.selection
+    if (sel.empty) {
+      setSelectionToolbarOpen(false)
+      setSelectionTextColorOpen(false)
+      return
+    }
+
+    // Hide for non-text selections (e.g., table cell selection / node selection).
+    if (!(sel instanceof TextSelection)) {
+      setSelectionToolbarOpen(false)
+      setSelectionTextColorOpen(false)
+      return
+    }
+    if (sel instanceof CellSelection) {
+      setSelectionToolbarOpen(false)
+      setSelectionTextColorOpen(false)
+      return
+    }
+
+    try {
+      const start = v.coordsAtPos(sel.from)
+      const end = v.coordsAtPos(sel.to)
+      const rect = surfaceEl.getBoundingClientRect()
+
+      const midX = (start.left + end.right) / 2
+      const topY = Math.min(start.top, end.top)
+
+      const left = midX - rect.left
+      const top = topY - rect.top
+
+      // Avoid useless re-renders when the anchor didn't move meaningfully.
+      setSelectionAnchor((prev) => {
+        if (!prev) return { left, top }
+        if (Math.abs(prev.left - left) < 0.5 && Math.abs(prev.top - top) < 0.5) return prev
+        return { left, top }
+      })
+      setSelectionToolbarOpen(true)
+    } catch {
+      setSelectionToolbarOpen(false)
+      setSelectionTextColorOpen(false)
+    }
+  }, [selectionTextColorOpen])
+
+  const scheduleSelectionToolbarUpdate = useCallback(() => {
+    if (bubbleRafRef.current) window.cancelAnimationFrame(bubbleRafRef.current)
+    bubbleRafRef.current = window.requestAnimationFrame(() => {
+      bubbleRafRef.current = null
+      updateSelectionToolbar()
+    })
+  }, [updateSelectionToolbar])
 
   // Mention (@) is temporarily disabled (it caused runaway update loops / freezes).
   const plugins = useMemo(() => buildEditorPlugins(editorSchema, { mention: { enabled: false } }), [])
@@ -236,6 +321,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
         const result = this.state.applyTransaction(tr)
         const nextState = result.state
         this.updateState(nextState)
+        // Keep the selection bubble anchored to the latest selection.
+        scheduleSelectionToolbarUpdate()
 
         // Detect removed embed blocks (page_link with display=embed) so we can soft-delete the underlying child pages.
         // This is an optimistic UX layer; server also enforces deletion on save.
@@ -397,6 +484,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     setMarkdown(exportMarkdown(editorSchema, doc))
     setDocJson(doc.toJSON())
     onChange?.(doc.toJSON())
+    scheduleSelectionToolbarUpdate()
 
     return () => {
       window.removeEventListener("reductai:page-title-updated", onTitleUpdated as EventListener)
@@ -407,6 +495,22 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    scheduleSelectionToolbarUpdate()
+  }, [selectionTextColorOpen, scheduleSelectionToolbarUpdate])
+
+  // Reposition the selection bubble on scroll/resize while it's visible.
+  useEffect(() => {
+    if (!selectionToolbarOpen) return
+    const onScrollOrResize = () => scheduleSelectionToolbarUpdate()
+    window.addEventListener("scroll", onScrollOrResize, true)
+    window.addEventListener("resize", onScrollOrResize)
+    return () => {
+      window.removeEventListener("scroll", onScrollOrResize, true)
+      window.removeEventListener("resize", onScrollOrResize)
+    }
+  }, [scheduleSelectionToolbarUpdate, selectionToolbarOpen])
 
   // Focus the menu search input when opened.
   useEffect(() => {
@@ -503,7 +607,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
 
       {/* Block inserter menu (React / shadcn DropdownMenu) - 블럭 삽입 메뉴 */}
       {blockMenuOpen && blockMenuAnchor ? (
-        <DropdownMenu
+        <DropdownMenu          
           open={blockMenuOpen}
           onOpenChange={(open) => {
             if (!open) closeBlockMenu()
@@ -529,7 +633,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
             side="right"
             align="start"
             sideOffset={6}
-            className="w-[320px] p-0"
+            // block inserter rail uses z-60; keep menu above it
+            className="w-[320px] p-0 z-[70]"
             onCloseAutoFocus={(e) => {
               // Keep selection stable; the plugin will close the menu and keep the rail visible.
               e.preventDefault()
@@ -682,7 +787,6 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                 <Link />
               </ButtonGroupItem>
             </ToolbarTooltip>
-
             <Popover open={textColorOpen} onOpenChange={setTextColorOpen}>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -1196,7 +1300,153 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
       ) : null}
 
       {/* Editor surface: use theme-aware background for dark mode - 블럭 에디터  */}
-      <div className="p-3 bg-background text-foreground">
+      <div ref={surfaceRef} className="relative p-3 bg-background text-foreground">
+        <Popover open={selectionToolbarOpen && !!selectionAnchor} onOpenChange={setSelectionToolbarOpen}>
+          <PopoverAnchor asChild>
+            <div
+              aria-hidden
+              className="absolute"
+              style={{
+                left: Math.round(selectionAnchor?.left || 0),
+                top: Math.round(selectionAnchor?.top || 0),
+                width: 1,
+                height: 1,
+                opacity: 0,
+                pointerEvents: "none",
+              }}
+            />
+          </PopoverAnchor>
+          <PopoverContent
+            side="top"
+            align="center"
+            sideOffset={10}
+            className="w-auto p-2 z-[70]"
+            onOpenAutoFocus={(e) => e.preventDefault()}
+            onCloseAutoFocus={(e) => e.preventDefault()}
+            onPointerDownCapture={() => {
+              // Clicking the bubble moves focus away from the editor.
+              // Keep the bubble open so nested popovers (e.g. palette) can open reliably.
+              bubbleInteractingRef.current = true
+            }}
+            onPointerUpCapture={() => {
+              bubbleInteractingRef.current = false
+            }}
+            onPointerCancelCapture={() => {
+              bubbleInteractingRef.current = false
+            }}
+          >
+            {/* 텍스트 형식 (selection bubble) - 선택 영역 팝업 */}
+            {selectionTextColorOpen ? (
+              // Color Picker Mode
+              <div className="w-64">
+                 <div className="flex items-center justify-between px-1 mb-2">
+                   <div className="flex items-center gap-1">
+                     <Button
+                       variant="ghost"
+                       size="icon"
+                       className="h-6 w-6"
+                       onMouseDown={(e) => {
+                         e.preventDefault()
+                         setSelectionTextColorOpen(false)
+                       }}
+                     >
+                       <ChevronLeft className="h-4 w-4" />
+                     </Button>
+                     <span className="text-xs font-semibold">Text color</span>
+                   </div>
+                 </div>
+                 <div className="grid grid-cols-6 gap-2 p-1">
+                   {TEXT_COLOR_PRESETS_500.map((c) => (
+                     <button
+                       key={c.key}
+                       type="button"
+                       className={[
+                         "size-7 rounded-md border border-border",
+                         "hover:opacity-90",
+                         "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                         c.bgClass,
+                       ].join(" ")}
+                       onMouseDown={(e) => {
+                         e.preventDefault()
+                         run(cmdSetTextColor(editorSchema, c.key))
+                         setSelectionTextColorOpen(false)
+                       }}
+                       aria-label={c.label}
+                       title={c.label}
+                     />
+                   ))}
+                 </div>
+                 <div className="mt-2 flex justify-end px-1">
+                   <Button
+                     variant="ghost"
+                     size="sm"
+                     className="h-7 text-xs"
+                     onMouseDown={(e) => {
+                       e.preventDefault()
+                       run(cmdClearTextColor(editorSchema))
+                       setSelectionTextColorOpen(false)
+                     }}
+                   >
+                     Reset
+                   </Button>
+                 </div>
+              </div>
+            ) : (
+              // Normal Toolbar Mode
+              <ButtonGroup>
+                <ToolbarTooltip label="Bold">
+                  <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdToggleBold(editorSchema))}>
+                    <Bold />
+                  </ButtonGroupItem>
+                </ToolbarTooltip>
+                <ToolbarTooltip label="Italic">
+                  <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdToggleItalic(editorSchema))}>
+                    <Italic />
+                  </ButtonGroupItem>
+                </ToolbarTooltip>
+                <ToolbarTooltip label="Underline">
+                  <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdToggleUnderline(editorSchema))}>
+                    <Underline />
+                  </ButtonGroupItem>
+                </ToolbarTooltip>
+                <ToolbarTooltip label="Strikethrough">
+                  <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdToggleStrikethrough(editorSchema))}>
+                    <Strikethrough />
+                  </ButtonGroupItem>
+                </ToolbarTooltip>
+                <ToolbarTooltip label="Code">
+                  <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdToggleCodeMark(editorSchema))}>
+                    <CodeXml />
+                  </ButtonGroupItem>
+                </ToolbarTooltip>
+                <ToolbarTooltip label="Link">
+                  <ButtonGroupItem
+                    variant="outline"
+                    size="sm"
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      insertLink()
+                    }}
+                  >
+                    <Link />
+                  </ButtonGroupItem>
+                </ToolbarTooltip>
+                <ToolbarTooltip label="Text Color">
+                  <ButtonGroupItem
+                    variant="outline"
+                    size="sm"
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      setSelectionTextColorOpen(true)
+                    }}
+                  >
+                    <Palette />
+                  </ButtonGroupItem>
+                </ToolbarTooltip>
+              </ButtonGroup>
+            )}
+          </PopoverContent>
+        </Popover>
         <div ref={mountRef} />
       </div>
 

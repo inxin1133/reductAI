@@ -246,6 +246,9 @@ export default function PostEditorPage() {
   const [draftDocJson, setDraftDocJson] = useState<DocJson>(null)
 
   const NAV_OPEN_KEY = "reductai:postEditor:navOpen"
+  const NAV_WIDTH_KEY = "reductai:postEditor:navWidth"
+  const NAV_MIN_W = 220
+  const NAV_MAX_W = 380
   const getInitialNavOpen = () => {
     try {
       if (typeof window === "undefined") return true
@@ -257,10 +260,25 @@ export default function PostEditorPage() {
       return true
     }
   }
+  const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n))
+  const getInitialNavWidth = () => {
+    try {
+      if (typeof window === "undefined") return NAV_MIN_W
+      const raw = window.localStorage.getItem(NAV_WIDTH_KEY)
+      const n = Number(raw)
+      if (!Number.isFinite(n)) return NAV_MIN_W
+      return clamp(Math.round(n), NAV_MIN_W, NAV_MAX_W)
+    } catch {
+      return NAV_MIN_W
+    }
+  }
 
   // Persist the user's preference for the left page tree visibility across route changes.
   const [navOpen, setNavOpen] = useState<boolean>(() => getInitialNavOpen())
   const navOpenRef = useRef<boolean>(getInitialNavOpen())
+  const [navWidth, setNavWidth] = useState<number>(() => getInitialNavWidth())
+  const [navResizing, setNavResizing] = useState(false)
+  const navResizeRef = useRef<{ startX: number; startW: number } | null>(null)
   const [isMobile, setIsMobile] = useState(false)
   const [isNavDrawerOpen, setIsNavDrawerOpen] = useState(false)
   const [myPages, setMyPages] = useState<MyPage[]>([])
@@ -292,6 +310,15 @@ export default function PostEditorPage() {
       // ignore (storage might be blocked)
     }
   }, [pmToolbarOpen])
+
+  useEffect(() => {
+    try {
+      if (typeof window === "undefined") return
+      window.localStorage.setItem(NAV_WIDTH_KEY, String(clamp(navWidth, NAV_MIN_W, NAV_MAX_W)))
+    } catch {
+      // ignore (storage might be blocked)
+    }
+  }, [NAV_MAX_W, NAV_MIN_W, NAV_WIDTH_KEY, navWidth])
 
   const CONTENT_WIDE_KEY_PREFIX = "reductai:postEditor:isWideLayout:"
   const wideKeyFor = useCallback(
@@ -749,6 +776,17 @@ export default function PostEditorPage() {
     return m
   }, [myPages])
 
+  // Safety redirect:
+  // If the user ends up on /posts/:id/edit but has no remaining (non-deleted) pages,
+  // push them to /posts/new/edit immediately (same outcome as a hard refresh).
+  useEffect(() => {
+    if (loading) return
+    if (isNew) return
+    if (!postId || postId === "new") return
+    if (myPages.length > 0) return
+    navigate(`/posts/new/edit`, { replace: true })
+  }, [isNew, loading, myPages.length, navigate, postId])
+
   const pageById = useMemo(() => {
     const m = new Map<string, MyPage>()
     for (const p of myPages) m.set(String(p.id), p)
@@ -829,6 +867,40 @@ export default function PostEditorPage() {
   const openNav = () => {
     if (isMobile) setIsNavDrawerOpen(true)
     else setNavOpen(true)
+  }
+
+  const startNavResize = (e: React.PointerEvent) => {
+    if (isMobile) return
+    if (typeof e.button === "number" && e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+
+    setNavResizing(true)
+    navResizeRef.current = { startX: e.clientX, startW: navWidth }
+
+    const prevCursor = document.body.style.cursor
+    const prevUserSelect = document.body.style.userSelect
+    document.body.style.cursor = "col-resize"
+    document.body.style.userSelect = "none"
+
+    const onMove = (ev: PointerEvent) => {
+      const cur = navResizeRef.current
+      if (!cur) return
+      const next = clamp(cur.startW + (ev.clientX - cur.startX), NAV_MIN_W, NAV_MAX_W)
+      setNavWidth(next)
+    }
+    const stop = () => {
+      navResizeRef.current = null
+      setNavResizing(false)
+      document.body.style.cursor = prevCursor
+      document.body.style.userSelect = prevUserSelect
+      window.removeEventListener("pointermove", onMove)
+      window.removeEventListener("pointerup", stop)
+      window.removeEventListener("pointercancel", stop)
+    }
+    window.addEventListener("pointermove", onMove)
+    window.addEventListener("pointerup", stop)
+    window.addEventListener("pointercancel", stop)
   }
 
   // Expand roots and the ancestor chain of the current page so it stays visible.
@@ -999,11 +1071,34 @@ export default function PostEditorPage() {
             }
           : null
 
-        await fetch(`/api/posts/${targetId}`, {
-          method: "PATCH",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "deleted" }),
-        })
+        // Compute subtree ids (target + descendants) from the current tree snapshot.
+        const byParent = new Map<string, string[]>()
+        for (const p of myPages) {
+          if (!p.parent_id) continue
+          const k = String(p.parent_id)
+          const arr = byParent.get(k) || []
+          arr.push(String(p.id))
+          byParent.set(k, arr)
+        }
+        const toRemoveSet = new Set<string>()
+        const stack: string[] = [targetId]
+        while (stack.length) {
+          const cur = stack.pop()!
+          if (toRemoveSet.has(cur)) continue
+          toRemoveSet.add(cur)
+          const kids = byParent.get(cur) || []
+          for (const kid of kids) stack.push(kid)
+        }
+        const toRemoveIds = Array.from(toRemoveSet)
+
+        // Cascade soft-delete on server for the whole subtree.
+        for (const pid of toRemoveIds) {
+          await fetch(`/api/posts/${pid}`, {
+            method: "PATCH",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "deleted" }),
+          }).catch(() => null)
+        }
 
         // Remove the link block from the parent page content (if any).
         if (parentId) {
@@ -1012,25 +1107,7 @@ export default function PostEditorPage() {
 
         // Remove this page + its descendants from tree (UX: disappears immediately).
         setMyPages((prev) => {
-          const byParent = new Map<string, string[]>()
-          for (const p of prev) {
-            if (!p.parent_id) continue
-            const k = String(p.parent_id)
-            const arr = byParent.get(k) || []
-            arr.push(String(p.id))
-            byParent.set(k, arr)
-          }
-
-          const toRemove = new Set<string>()
-          const stack: string[] = [String(id)]
-          while (stack.length) {
-            const cur = stack.pop()!
-            if (toRemove.has(cur)) continue
-            toRemove.add(cur)
-            const kids = byParent.get(cur) || []
-            for (const kid of kids) stack.push(kid)
-          }
-          return prev.filter((p) => !toRemove.has(String(p.id)))
+          return prev.filter((p) => !toRemoveSet.has(String(p.id)))
         })
 
         // Navigation rules:
@@ -1052,88 +1129,70 @@ export default function PostEditorPage() {
         // If top-level page deleted, choose the next remaining root (exclude deleted subtree).
         const nextRootAfterDelete = (() => {
           if (parentId) return ""
-          const byParent = new Map<string, string[]>()
-          for (const p of myPages) {
-            if (!p.parent_id) continue
-            const k = String(p.parent_id)
-            const arr = byParent.get(k) || []
-            arr.push(String(p.id))
-            byParent.set(k, arr)
-          }
-          const toRemove = new Set<string>()
-          const stack: string[] = [targetId]
-          while (stack.length) {
-            const cur = stack.pop()!
-            if (toRemove.has(cur)) continue
-            toRemove.add(cur)
-            const kids = byParent.get(cur) || []
-            for (const kid of kids) stack.push(kid)
-          }
-          const remainingRoots = sortPages(myPages.filter((p) => !p.parent_id && !toRemove.has(String(p.id))))
+          const remainingRoots = sortPages(myPages.filter((p) => !p.parent_id && !toRemoveSet.has(String(p.id))))
           return remainingRoots.length ? String(remainingRoots[0].id) : ""
         })()
 
         const noRemainingPages = (() => {
-          const byParent = new Map<string, string[]>()
-          for (const p of myPages) {
-            if (!p.parent_id) continue
-            const k = String(p.parent_id)
-            const arr = byParent.get(k) || []
-            arr.push(String(p.id))
-            byParent.set(k, arr)
-          }
-          const toRemove = new Set<string>()
-          const stack: string[] = [targetId]
-          while (stack.length) {
-            const cur = stack.pop()!
-            if (toRemove.has(cur)) continue
-            toRemove.add(cur)
-            const kids = byParent.get(cur) || []
-            for (const kid of kids) stack.push(kid)
-          }
-          const remaining = myPages.filter((p) => !toRemove.has(String(p.id)))
+          const remaining = myPages.filter((p) => !toRemoveSet.has(String(p.id)))
           return remaining.length === 0
         })()
 
-        if (currentIsInDeletedSubtree) {
+        // If there are no remaining pages at all, always go to /posts/new/edit (even if the subtree check misfires).
+        if (noRemainingPages) {
+          navigate(`/posts/new/edit`, { replace: true })
+          // Some states (editor + route) may not fully reset without a hard navigation.
+          // Force a "refresh-like" transition so the intro skeleton reliably appears.
+          if (typeof window !== "undefined") {
+            window.location.replace("/posts/new/edit")
+          }
+        } else if (currentIsInDeletedSubtree) {
           if (parentId) {
             navigate(`/posts/${parentId}/edit`, { replace: true })
           } else {
             // If top-level page: navigate to the first remaining root page (exclude deleted).
-            if (noRemainingPages) {
-              navigate(`/posts/new/edit`, { replace: true })
-            } else {
-              navigate(nextRootAfterDelete ? `/posts/${nextRootAfterDelete}/edit` : `/posts/new/edit`, { replace: true })
-            }
+            navigate(nextRootAfterDelete ? `/posts/${nextRootAfterDelete}/edit` : `/posts/new/edit`, { replace: true })
           }
         }
 
         // Toast with undo
+        // Snapshots for undo (subtree)
+        const subtreeSnapshots: MyPage[] = toRemoveIds
+          .map((pid) => pageById.get(String(pid)) || null)
+          .filter(Boolean)
+          .map((p) => ({
+            id: String(p!.id),
+            parent_id: p!.parent_id ? String(p!.parent_id) : null,
+            title: p!.title,
+            child_count: p!.child_count,
+            page_order: p!.page_order,
+            updated_at: p!.updated_at,
+          }))
+
         toast("페이지가 삭제 되었습니다.", {
           action: snapshot
             ? {
                 label: "undo",
                 onClick: () => {
-                  const pid = String(snapshot.id)
                   void (async () => {
                     const t = localStorage.getItem("token")
                     if (!t) return
-                    await fetch(`/api/posts/${pid}`, {
-                      method: "PATCH",
-                      headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" },
-                      body: JSON.stringify({ status: "draft" }),
-                    }).catch(() => null)
+                    // Restore server status for whole subtree
+                    for (const s of subtreeSnapshots) {
+                      await fetch(`/api/posts/${String(s.id)}`, {
+                        method: "PATCH",
+                        headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" },
+                        body: JSON.stringify({ status: "draft" }),
+                      }).catch(() => null)
+                    }
 
                     // Restore tree entry (best-effort)
                     setMyPages((prev) => {
-                      if (prev.some((p) => String(p.id) === pid)) return prev
-                      // Insert near previous location; if missing, append.
-                      const parent_id = snapshot.parent_id ? String(snapshot.parent_id) : null
-                      const idx = prev.findIndex((p) => String(p.parent_id || "") === String(parent_id || "") && Number(p.page_order || 0) > Number(snapshot.page_order || 0))
+                      const existing = new Set(prev.map((p) => String(p.id)))
+                      const toAdd = subtreeSnapshots.filter((s) => !existing.has(String(s.id)))
+                      if (!toAdd.length) return prev
                       const next = prev.slice()
-                      const entry: MyPage = { ...snapshot, parent_id }
-                      if (idx < 0) next.push(entry)
-                      else next.splice(idx, 0, entry)
+                      for (const s of toAdd) next.push(s)
                       return next
                     })
 
@@ -1143,12 +1202,12 @@ export default function PostEditorPage() {
                       if (String(postId || "") === par) {
                         window.dispatchEvent(
                           new CustomEvent("reductai:append-page-link", {
-                            detail: { pageId: pid, title: snapshot.title || "New page", display: "embed" },
+                            detail: { pageId: String(snapshot.id), title: snapshot.title || "New page", display: "embed" },
                           })
                         )
                       } else {
                         void updatePostContent(par, (doc) =>
-                          appendPageLinkToDocJson(doc, { pageId: pid, title: snapshot.title || "New page", display: "embed" })
+                          appendPageLinkToDocJson(doc, { pageId: String(snapshot.id), title: snapshot.title || "New page", display: "embed" })
                         )
                       }
                     }
@@ -1180,7 +1239,7 @@ export default function PostEditorPage() {
         const idMap = new Map<string, string>() // old -> new
         const titleMap = new Map<string, string>() // old -> newTitle
 
-        const duplicateSubtree = async (srcId: string, parentId: string | null, isRoot: boolean): Promise<string> => {
+        const duplicateSubtree = async (srcId: string, parentId: string | null): Promise<string> => {
           // Load source content + title
           const srcRes = await fetch(`/api/posts/${srcId}/content`, { headers: authOnly })
           if (!srcRes.ok) throw new Error(await srcRes.text())
@@ -1209,7 +1268,7 @@ export default function PostEditorPage() {
           // Duplicate children first (so we can rewrite links in this doc)
           const kids = childrenByParent.get(String(srcId)) || []
           for (const c of kids) {
-            await duplicateSubtree(String(c.id), newId, false)
+            await duplicateSubtree(String(c.id), newId)
           }
 
           // Rewrite embedded links to duplicated child ids/titles
@@ -1225,7 +1284,8 @@ export default function PostEditorPage() {
           // Track for local tree
           const srcMeta = pageById.get(String(srcId)) || null
           const orderBase = Number(srcMeta?.page_order || 0)
-          const page_order = isRoot ? orderBase + 0.5 : orderBase
+          // Keep the same page_order and rely on stable insertion to show "copy" right under the source.
+          const page_order = orderBase
           createdPages.push({
             id: newId,
             parent_id: parentId,
@@ -1238,7 +1298,7 @@ export default function PostEditorPage() {
           return newId
         }
 
-        const newRootId = await duplicateSubtree(String(id), rootParentId, true)
+        const newRootId = await duplicateSubtree(String(id), rootParentId)
         const rootTitle = titleMap.get(String(id)) || "New page (copy)"
 
         // Insert the duplicate link block right under the original link block in the parent page (if parent exists).
@@ -1615,7 +1675,14 @@ export default function PostEditorPage() {
           ) : navOpen ? (
             <>
               {/* Desktop: NavDrawer - 데스크탑 왼쪽 페이지 트리 */}    
-              <div className="h-full w-[280px] border-r text-sidebar-foreground bg-background transition-all duration-200 shrink-0">
+              <div
+                className={[
+                  "relative h-full shrink-0 border-r border-border text-sidebar-foreground bg-background",
+                  "min-w-[220px] max-w-[380px]",
+                  navResizing ? "transition-none" : "transition-[width] duration-200",
+                ].join(" ")}
+                style={{ width: navWidth }}
+              >
                 <div className="h-14 flex items-center justify-between px-3">
                   <div className="text-sm font-semibold">나의 페이지</div>
                   <div className="flex items-center gap-0">
@@ -1643,6 +1710,21 @@ export default function PostEditorPage() {
                      <div className="flex min-w-0 flex-col gap-1">{roots.map((p) => renderTreeNode(p, 0))}</div>
                   </div>
                 </ScrollArea>
+
+                {/* Right-edge resize handle (full height, above all sidebar content) */}
+                <div
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label="Resize page tree"
+                  className={[
+                    "absolute inset-y-0 right-0 w-2",
+                    "cursor-col-resize",
+                    "z-50",
+                    "hover:bg-border/60",
+                    navResizing ? "bg-border/70" : "bg-transparent",
+                  ].join(" ")}
+                  onPointerDown={startNavResize}
+                />
               </div>
             </>
           ) : (
