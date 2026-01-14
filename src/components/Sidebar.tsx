@@ -67,11 +67,31 @@ export function Sidebar({ className }: SidebarProps) {
   const [isHeaderHover, setIsHeaderHover] = useState(false)
 
   type PersonalCategory = { id: string; name: string; icon?: string | null; display_order?: number }
-  const [personalCategories, setPersonalCategories] = useState<PersonalCategory[]>([])
+  const PERSONAL_CATS_CACHE_KEY = "reductai:sidebar:personalCategories:v1"
+  const [personalCategories, setPersonalCategories] = useState<PersonalCategory[]>(() => {
+    try {
+      if (typeof window === "undefined") return []
+      const raw = window.localStorage.getItem(PERSONAL_CATS_CACHE_KEY)
+      const j = raw ? JSON.parse(raw) : null
+      return Array.isArray(j) ? (j as PersonalCategory[]) : []
+    } catch {
+      return []
+    }
+  })
   const [personalCatsLoading, setPersonalCatsLoading] = useState(false)
 
   type TeamCategory = { id: string; name: string; icon?: string | null; display_order?: number }
-  const [teamCategories, setTeamCategories] = useState<TeamCategory[]>([])
+  const TEAM_CATS_CACHE_KEY = "reductai:sidebar:teamCategories:v1"
+  const [teamCategories, setTeamCategories] = useState<TeamCategory[]>(() => {
+    try {
+      if (typeof window === "undefined") return []
+      const raw = window.localStorage.getItem(TEAM_CATS_CACHE_KEY)
+      const j = raw ? JSON.parse(raw) : null
+      return Array.isArray(j) ? (j as TeamCategory[]) : []
+    } catch {
+      return []
+    }
+  })
   const [teamCatsLoading, setTeamCatsLoading] = useState(false)
   const [tenantType, setTenantType] = useState<string>("") // personal | team | enterprise (or empty while loading)
 
@@ -152,6 +172,11 @@ export function Sidebar({ className }: SidebarProps) {
       const j = await r.json().catch(() => [])
       const arr = Array.isArray(j) ? (j as PersonalCategory[]) : []
       setPersonalCategories(arr)
+      try {
+        window.localStorage.setItem(PERSONAL_CATS_CACHE_KEY, JSON.stringify(arr))
+      } catch {
+        // ignore
+      }
     } finally {
       setPersonalCatsLoading(false)
     }
@@ -211,6 +236,11 @@ export function Sidebar({ className }: SidebarProps) {
       const j = await r.json().catch(() => [])
       const arr = Array.isArray(j) ? (j as TeamCategory[]) : []
       setTeamCategories(arr)
+      try {
+        window.localStorage.setItem(TEAM_CATS_CACHE_KEY, JSON.stringify(arr))
+      } catch {
+        // ignore
+      }
     } finally {
       setTeamCatsLoading(false)
     }
@@ -691,9 +721,12 @@ export function Sidebar({ className }: SidebarProps) {
              </div>
              {isPersonalOpen && (
                <>
-                 {personalCatsLoading ? (
-                   <div className="px-2 py-1 text-xs text-sidebar-foreground/60">Loading…</div>
-                 ) : null}
+                  <div
+                    className="px-2 py-1 text-xs text-sidebar-foreground/60 h-6 hidden"
+                    style={{ visibility: personalCatsLoading ? "visible" : "hidden" }}
+                  >
+                    Loading…
+                  </div>
 
                  {personalCategories.map((c) => (
                    <div
@@ -861,9 +894,12 @@ export function Sidebar({ className }: SidebarProps) {
               </div>
               {isTeamOpen && (
                 <>
-                  {teamCatsLoading ? (
-                    <div className="px-2 py-1 text-xs text-sidebar-foreground/60">Loading…</div>
-                  ) : null}
+                   <div
+                     className="px-2 py-1 text-xs text-sidebar-foreground/60 h-6 hidden"
+                     style={{ visibility: teamCatsLoading ? "visible" : "hidden" }}
+                   >
+                     Loading…
+                   </div>
 
                   {teamCategories.map((c) => (
                     <div

@@ -1,5 +1,7 @@
 import * as React from "react"
 import { useLocation, useNavigate } from "react-router-dom"
+import { AppShell } from "@/components/layout/AppShell"
+import { Skeleton } from "@/components/ui/skeleton"
 
 function authHeaders() {
   const token = localStorage.getItem("token")
@@ -77,8 +79,18 @@ export default function PostEntryPage() {
     }
   }, [location.search, navigate])
 
-  // Minimal blank screen while redirecting
-  return <div className="w-full h-screen bg-background" />
+  // Keep layout stable while redirecting (avoid flicker between routes)
+  return (
+    <AppShell>
+      <div className="h-full w-full overflow-auto">
+        <div className="max-w-4xl mx-auto px-12 pt-10 space-y-3">
+          <Skeleton className="h-8 w-48" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-[420px] w-full" />
+        </div>
+      </div>
+    </AppShell>
+  )
 }
 
 
