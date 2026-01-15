@@ -1,4 +1,5 @@
 import type { NodeSpec } from "prosemirror-model"
+import { getBgColorClasses } from "./bgColor"
 
 // Override skeleton: customize tag/class for code blocks here.
 export const codeBlockNodeSpec: NodeSpec = {
@@ -40,7 +41,7 @@ export const codeBlockNodeSpec: NodeSpec = {
     return [
       "pre",
       {
-        class: ["pm-code-block", attrs.bgColor ? `bg-${attrs.bgColor}` : ""].filter(Boolean).join(" "),
+        class: ["pm-code-block", getBgColorClasses(attrs.bgColor)].filter(Boolean).join(" "),
         "data-language": language,
         "data-block-id": attrs.blockId || "",
         "data-bg-color": attrs.bgColor || "",

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { EditorState, TextSelection, type Transaction } from "prosemirror-state"
+import { EditorState, NodeSelection, TextSelection, type Transaction } from "prosemirror-state"
 import { EditorView } from "prosemirror-view"
 import { DOMParser as PMDOMParser, type Node as PMNode } from "prosemirror-model"
 import type { Slice } from "prosemirror-model"
@@ -19,6 +19,10 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { ButtonGroup, ButtonGroupItem } from "@/components/ui/button-group"
@@ -48,9 +52,12 @@ import {
   cmdToggleItalic,
   cmdInsertTable,
   cmdSetTableCellAlign,
+  cmdSetTableCellVAlign,
+  cmdToggleTableBorder,
+  cmdToggleTableRounded,
   cmdSetTableCellBgColor,
   cmdClearTableCellBgColor,
-  tableCommands,
+  tableCommands,  
 } from "../../editor/commands"
 import { exportMarkdown } from "../../editor/serializers/markdown"
 import {
@@ -95,7 +102,24 @@ import {
   FoldHorizontal,
   FoldVertical,
   Grid2X2X,
-  ChevronLeft
+  ChevronLeft,
+  Ellipsis,
+  X,
+  MoveLeft,
+  MoveRight,
+  MoveUp,
+  MoveDown,
+  // RulerDimensionLine,
+  //MoveHorizontal,
+  ArrowUpToLine,
+  ArrowDownToLine,
+  ChevronsDownUp,
+  SquareDashed,
+  SquareRoundCorner,
+  SquareMousePointer,
+  ArrowUp,
+  ArrowDown,
+  Repeat,
 } from "lucide-react"
 
 type PmDocJson = unknown
@@ -139,54 +163,60 @@ function ToolbarTooltip({ label, children }: { label: string; children: React.Re
   )
 }
 
-const TEXT_COLOR_PRESETS_500: Array<{ key: string; label: string; textClass: string; bgClass: string }> = [
-  { key: "slate-500", label: "slate-500", textClass: "text-slate-500", bgClass: "bg-slate-500" },
-  { key: "gray-500", label: "gray-500", textClass: "text-gray-500", bgClass: "bg-gray-500" },
-  { key: "zinc-500", label: "zinc-500", textClass: "text-zinc-500", bgClass: "bg-zinc-500" },
-  { key: "neutral-500", label: "neutral-500", textClass: "text-neutral-500", bgClass: "bg-neutral-500" },
-  { key: "stone-500", label: "stone-500", textClass: "text-stone-500", bgClass: "bg-stone-500" },
-  { key: "red-500", label: "red-500", textClass: "text-red-500", bgClass: "bg-red-500" },
-  { key: "orange-500", label: "orange-500", textClass: "text-orange-500", bgClass: "bg-orange-500" },
-  { key: "amber-500", label: "amber-500", textClass: "text-amber-500", bgClass: "bg-amber-500" },
-  { key: "yellow-500", label: "yellow-500", textClass: "text-yellow-500", bgClass: "bg-yellow-500" },
-  { key: "lime-500", label: "lime-500", textClass: "text-lime-500", bgClass: "bg-lime-500" },
-  { key: "green-500", label: "green-500", textClass: "text-green-500", bgClass: "bg-green-500" },
-  { key: "emerald-500", label: "emerald-500", textClass: "text-emerald-500", bgClass: "bg-emerald-500" },
-  { key: "teal-500", label: "teal-500", textClass: "text-teal-500", bgClass: "bg-teal-500" },
-  { key: "cyan-500", label: "cyan-500", textClass: "text-cyan-500", bgClass: "bg-cyan-500" },
-  { key: "sky-500", label: "sky-500", textClass: "text-sky-500", bgClass: "bg-sky-500" },
-  { key: "blue-500", label: "blue-500", textClass: "text-blue-500", bgClass: "bg-blue-500" },
-  { key: "indigo-500", label: "indigo-500", textClass: "text-indigo-500", bgClass: "bg-indigo-500" },
-  { key: "violet-500", label: "violet-500", textClass: "text-violet-500", bgClass: "bg-violet-500" },
-  { key: "purple-500", label: "purple-500", textClass: "text-purple-500", bgClass: "bg-purple-500" },
-  { key: "fuchsia-500", label: "fuchsia-500", textClass: "text-fuchsia-500", bgClass: "bg-fuchsia-500" },
-  { key: "pink-500", label: "pink-500", textClass: "text-pink-500", bgClass: "bg-pink-500" },
-  { key: "rose-500", label: "rose-500", textClass: "text-rose-500", bgClass: "bg-rose-500" },
+const TEXT_COLOR_PRESETS_500: Array<{
+  key: string
+  label: string
+  textClass: string
+  bgClass: string
+  darkBgClass?: string
+}> = [
+  { key: "slate-500", label: "slate-500", textClass: "text-slate-500", bgClass: "bg-slate-500", darkBgClass: "dark:bg-slate-400" },
+  { key: "gray-500", label: "gray-500", textClass: "text-gray-500", bgClass: "bg-gray-500", darkBgClass: "dark:bg-gray-400" },
+  { key: "zinc-500", label: "zinc-500", textClass: "text-zinc-500", bgClass: "bg-zinc-500", darkBgClass: "dark:bg-zinc-400" },
+  { key: "neutral-500", label: "neutral-500", textClass: "text-neutral-500", bgClass: "bg-neutral-500", darkBgClass: "dark:bg-neutral-400" },
+  { key: "stone-500", label: "stone-500", textClass: "text-stone-500", bgClass: "bg-stone-500", darkBgClass: "dark:bg-stone-400" },
+  { key: "red-500", label: "red-500", textClass: "text-red-500", bgClass: "bg-red-500", darkBgClass: "dark:bg-red-400" },
+  { key: "orange-500", label: "orange-500", textClass: "text-orange-500", bgClass: "bg-orange-500", darkBgClass: "dark:bg-orange-400" },
+  { key: "amber-500", label: "amber-500", textClass: "text-amber-500", bgClass: "bg-amber-500", darkBgClass: "dark:bg-amber-400" },
+  { key: "yellow-500", label: "yellow-500", textClass: "text-yellow-500", bgClass: "bg-yellow-500", darkBgClass: "dark:bg-yellow-400" },
+  { key: "lime-500", label: "lime-500", textClass: "text-lime-500", bgClass: "bg-lime-500", darkBgClass: "dark:bg-lime-400" },
+  { key: "green-500", label: "green-500", textClass: "text-green-500", bgClass: "bg-green-500", darkBgClass: "dark:bg-green-400" },
+  { key: "emerald-500", label: "emerald-500", textClass: "text-emerald-500", bgClass: "bg-emerald-500", darkBgClass: "dark:bg-emerald-400" },
+  { key: "teal-500", label: "teal-500", textClass: "text-teal-500", bgClass: "bg-teal-500", darkBgClass: "dark:bg-teal-400" },
+  { key: "cyan-500", label: "cyan-500", textClass: "text-cyan-500", bgClass: "bg-cyan-500", darkBgClass: "dark:bg-cyan-400" },
+  { key: "sky-500", label: "sky-500", textClass: "text-sky-500", bgClass: "bg-sky-500", darkBgClass: "dark:bg-sky-400" },
+  { key: "blue-500", label: "blue-500", textClass: "text-blue-500", bgClass: "bg-blue-500", darkBgClass: "dark:bg-blue-400" },
+  { key: "indigo-500", label: "indigo-500", textClass: "text-indigo-500", bgClass: "bg-indigo-500", darkBgClass: "dark:bg-indigo-400" },
+  { key: "violet-500", label: "violet-500", textClass: "text-violet-500", bgClass: "bg-violet-500", darkBgClass: "dark:bg-violet-400" },
+  { key: "purple-500", label: "purple-500", textClass: "text-purple-500", bgClass: "bg-purple-500", darkBgClass: "dark:bg-purple-400" },
+  { key: "fuchsia-500", label: "fuchsia-500", textClass: "text-fuchsia-500", bgClass: "bg-fuchsia-500", darkBgClass: "dark:bg-fuchsia-400" },
+  { key: "pink-500", label: "pink-500", textClass: "text-pink-500", bgClass: "bg-pink-500", darkBgClass: "dark:bg-pink-400" },
+  { key: "rose-500", label: "rose-500", textClass: "text-rose-500", bgClass: "bg-rose-500", darkBgClass: "dark:bg-rose-400" },
 ]
 
-const BLOCK_BG_PRESETS_100: Array<{ key: string; label: string; bgClass: string }> = [
-  { key: "slate-100", label: "slate-100", bgClass: "bg-slate-100" },
-  { key: "gray-100", label: "gray-100", bgClass: "bg-gray-100" },
-  { key: "zinc-100", label: "zinc-100", bgClass: "bg-zinc-100" },
-  { key: "neutral-100", label: "neutral-100", bgClass: "bg-neutral-100" },
-  { key: "stone-100", label: "stone-100", bgClass: "bg-stone-100" },
-  { key: "red-100", label: "red-100", bgClass: "bg-red-100" },
-  { key: "orange-100", label: "orange-100", bgClass: "bg-orange-100" },
-  { key: "amber-100", label: "amber-100", bgClass: "bg-amber-100" },
-  { key: "yellow-100", label: "yellow-100", bgClass: "bg-yellow-100" },
-  { key: "lime-100", label: "lime-100", bgClass: "bg-lime-100" },
-  { key: "green-100", label: "green-100", bgClass: "bg-green-100" },
-  { key: "emerald-100", label: "emerald-100", bgClass: "bg-emerald-100" },
-  { key: "teal-100", label: "teal-100", bgClass: "bg-teal-100" },
-  { key: "cyan-100", label: "cyan-100", bgClass: "bg-cyan-100" },
-  { key: "sky-100", label: "sky-100", bgClass: "bg-sky-100" },
-  { key: "blue-100", label: "blue-100", bgClass: "bg-blue-100" },
-  { key: "indigo-100", label: "indigo-100", bgClass: "bg-indigo-100" },
-  { key: "violet-100", label: "violet-100", bgClass: "bg-violet-100" },
-  { key: "purple-100", label: "purple-100", bgClass: "bg-purple-100" },
-  { key: "fuchsia-100", label: "fuchsia-100", bgClass: "bg-fuchsia-100" },
-  { key: "pink-100", label: "pink-100", bgClass: "bg-pink-100" },
-  { key: "rose-100", label: "rose-100", bgClass: "bg-rose-100" },
+const BLOCK_BG_PRESETS_100: Array<{ key: string; label: string; bgClass: string; darkBgClass?: string }> = [
+  { key: "slate-100", label: "slate-100", bgClass: "bg-slate-100", darkBgClass: "dark:bg-slate-800" },
+  { key: "gray-100", label: "gray-100", bgClass: "bg-gray-100", darkBgClass: "dark:bg-gray-800" },
+  { key: "zinc-100", label: "zinc-100", bgClass: "bg-zinc-100", darkBgClass: "dark:bg-zinc-800" },
+  { key: "neutral-100", label: "neutral-100", bgClass: "bg-neutral-100", darkBgClass: "dark:bg-neutral-800" },
+  { key: "stone-100", label: "stone-100", bgClass: "bg-stone-100", darkBgClass: "dark:bg-stone-800" },
+  { key: "red-100", label: "red-100", bgClass: "bg-red-100", darkBgClass: "dark:bg-red-900/60" },
+  { key: "orange-100", label: "orange-100", bgClass: "bg-orange-100", darkBgClass: "dark:bg-orange-900/60" },
+  { key: "amber-100", label: "amber-100", bgClass: "bg-amber-100", darkBgClass: "dark:bg-amber-900/60" },
+  { key: "yellow-100", label: "yellow-100", bgClass: "bg-yellow-100", darkBgClass: "dark:bg-yellow-900/60" },
+  { key: "lime-100", label: "lime-100", bgClass: "bg-lime-100", darkBgClass: "dark:bg-lime-900/60" },
+  { key: "green-100", label: "green-100", bgClass: "bg-green-100", darkBgClass: "dark:bg-green-900/60" },
+  { key: "emerald-100", label: "emerald-100", bgClass: "bg-emerald-100", darkBgClass: "dark:bg-emerald-900/60" },
+  { key: "teal-100", label: "teal-100", bgClass: "bg-teal-100", darkBgClass: "dark:bg-teal-900/60" },
+  { key: "cyan-100", label: "cyan-100", bgClass: "bg-cyan-100", darkBgClass: "dark:bg-cyan-900/60" },
+  { key: "sky-100", label: "sky-100", bgClass: "bg-sky-100", darkBgClass: "dark:bg-sky-900/60" },
+  { key: "blue-100", label: "blue-100", bgClass: "bg-blue-100", darkBgClass: "dark:bg-blue-900/60" },
+  { key: "indigo-100", label: "indigo-100", bgClass: "bg-indigo-100", darkBgClass: "dark:bg-indigo-900/60" },
+  { key: "violet-100", label: "violet-100", bgClass: "bg-violet-100", darkBgClass: "dark:bg-violet-900/60" },
+  { key: "purple-100", label: "purple-100", bgClass: "bg-purple-100", darkBgClass: "dark:bg-purple-900/60" },
+  { key: "fuchsia-100", label: "fuchsia-100", bgClass: "bg-fuchsia-100", darkBgClass: "dark:bg-fuchsia-900/60" },
+  { key: "pink-100", label: "pink-100", bgClass: "bg-pink-100", darkBgClass: "dark:bg-pink-900/60" },
+  { key: "rose-100", label: "rose-100", bgClass: "bg-rose-100", darkBgClass: "dark:bg-rose-900/60" },
 ]
 
 function getEmptyDoc() {
@@ -201,18 +231,56 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
   const viewRef = useRef<EditorView | null>(null)
   const embedIdsRef = useRef<Set<string>>(new Set())
 
+  const modEnterShortcutLabel = useMemo(() => {
+    if (typeof navigator === "undefined") return "Ctrl+⏎"
+    const platform = navigator.platform || ""
+    const ua = navigator.userAgent || ""
+    const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua)
+    return isMac ? "⌘+⏎" : "Ctrl+⏎"
+  }, [])
+
+  const modBackspaceShortcutLabel = useMemo(() => {
+    if (typeof navigator === "undefined") return "Ctrl+⌫"
+    const platform = navigator.platform || ""
+    const ua = navigator.userAgent || ""
+    const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua)
+    return isMac ? "⌘+⌫" : "Ctrl+⌫"
+  }, [])
+
+  const modShiftEnterShortcutLabel = useMemo(() => {
+    if (typeof navigator === "undefined") return "Ctrl+Shift+⏎"
+    const platform = navigator.platform || ""
+    const ua = navigator.userAgent || ""
+    const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua)
+    return isMac ? "⌘+⇧+⏎" : "Ctrl+Shift+⏎"
+  }, [])
+
+  const modShiftBackspaceShortcutLabel = useMemo(() => {
+    if (typeof navigator === "undefined") return "Ctrl+Shift+⌫"
+    const platform = navigator.platform || ""
+    const ua = navigator.userAgent || ""
+    const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua)
+    return isMac ? "⌘+⇧+⌫" : "Ctrl+Shift+⌫"
+  }, [])
+
   const [markdown, setMarkdown] = useState("")
   const [docJson, setDocJson] = useState<PmDocJson>(initialDocJson ?? null)
   const [textColorOpen, setTextColorOpen] = useState(false)
   const [selectionTextColorOpen, setSelectionTextColorOpen] = useState(false)
   const [blockBgOpen, setBlockBgOpen] = useState(false)
   const [tableCellBgOpen, setTableCellBgOpen] = useState(false)
+  const [selectionTableCellBgOpen, setSelectionTableCellBgOpen] = useState(false)
 
   const [blockMenuOpen, setBlockMenuOpen] = useState(false)
   const [blockMenuAnchor, setBlockMenuAnchor] = useState<MenuAnchor | null>(null)
   const [blockMenuQuery, setBlockMenuQuery] = useState("")
   const blockMenuInputRef = useRef<HTMLInputElement | null>(null)
   const blockMenuSigRef = useRef<string>("")
+  const [handleMenuOpen, setHandleMenuOpen] = useState(false)
+  const [handleMenuAnchor, setHandleMenuAnchor] = useState<MenuAnchor | null>(null)
+  const [handleMenuKind, setHandleMenuKind] = useState<BlockInserterState["kind"] | null>(null)
+  const [handleMenuRange, setHandleMenuRange] = useState<{ from: number; to: number } | null>(null)
+  const handleMenuSigRef = useRef<string>("")
   const [tableInsertOpen, setTableInsertOpen] = useState(false)
   const [tableGridHover, setTableGridHover] = useState<{ rows: number; cols: number }>({ rows: 1, cols: 1 })
 
@@ -221,6 +289,15 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
   const [selectionAnchor, setSelectionAnchor] = useState<{ left: number; top: number } | null>(null)
   const bubbleRafRef = useRef<number | null>(null)
   const bubbleInteractingRef = useRef(false)
+
+  // Table cell quick menu (ellipsis) when cursor is inside a table cell.
+  const [tableCellMenuAnchor, setTableCellMenuAnchor] = useState<{ left: number; top: number } | null>(null)
+  const [tableCellMenuOpen, setTableCellMenuOpen] = useState(false)
+  const tableMenuRafRef = useRef<number | null>(null)
+  // Table cell selection toolbar (drag/F5 selection).
+  const [tableCellSelectionAnchor, setTableCellSelectionAnchor] = useState<{ left: number; top: number } | null>(null)
+  const tableSelectionRafRef = useRef<number | null>(null)
+  const tableSelectionInteractingRef = useRef(false)
 
   const updateSelectionToolbar = useCallback(() => {
     const v = viewRef.current
@@ -266,10 +343,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
       const end = v.coordsAtPos(sel.to)
       const rect = surfaceEl.getBoundingClientRect()
 
-      const midX = (start.left + end.right) / 2
       const topY = Math.min(start.top, end.top)
-
-      const left = midX - rect.left
+      const left = start.left - rect.left
       const top = topY - rect.top
 
       // Avoid useless re-renders when the anchor didn't move meaningfully.
@@ -293,13 +368,140 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     })
   }, [updateSelectionToolbar])
 
+  const updateTableCellMenu = useCallback(() => {
+    const v = viewRef.current
+    const surfaceEl = surfaceRef.current
+    if (!v || !surfaceEl) {
+      setTableCellMenuAnchor(null)
+      setTableCellMenuOpen(false)
+      setTableCellSelectionAnchor(null)
+      return
+    }
+
+    const keepOpenWhileInteracting = tableCellMenuOpen
+    if (!v.hasFocus() && !keepOpenWhileInteracting) {
+      setTableCellMenuAnchor(null)
+      setTableCellMenuOpen(false)
+      setTableCellSelectionAnchor(null)
+      return
+    }
+
+    if (!pmIsInTable(v.state)) {
+      setTableCellMenuAnchor(null)
+      setTableCellMenuOpen(false)
+      setTableCellSelectionAnchor(null)
+      return
+    }
+
+    if (v.state.selection instanceof CellSelection) {
+      setTableCellMenuAnchor(null)
+      setTableCellMenuOpen(false)
+      return
+    }
+
+    try {
+      const $cell = pmSelectionCell(v.state)
+      let cellEl: HTMLElement | null = null
+      const domAt = v.nodeDOM($cell.pos)
+      if (domAt && domAt instanceof HTMLElement) {
+        cellEl = domAt
+      } else {
+        const near = v.domAtPos($cell.pos)
+        const node = near.node.nodeType === Node.ELEMENT_NODE ? (near.node as HTMLElement) : near.node.parentElement
+        cellEl = node?.closest("td,th") || null
+      }
+
+      if (!cellEl) {
+        setTableCellMenuAnchor(null)
+        return
+      }
+
+      const rect = cellEl.getBoundingClientRect()
+      const surfaceRect = surfaceEl.getBoundingClientRect()
+      const left = rect.right - surfaceRect.left - 6
+      const top = rect.top - surfaceRect.top + 6
+
+      setTableCellMenuAnchor((prev) => {
+        if (!prev) return { left, top }
+        if (Math.abs(prev.left - left) < 0.5 && Math.abs(prev.top - top) < 0.5) return prev
+        return { left, top }
+      })
+    } catch {
+      setTableCellMenuAnchor(null)
+    }
+  }, [tableCellMenuOpen])
+
+  const scheduleTableCellMenuUpdate = useCallback(() => {
+    if (tableMenuRafRef.current) window.cancelAnimationFrame(tableMenuRafRef.current)
+    tableMenuRafRef.current = window.requestAnimationFrame(() => {
+      tableMenuRafRef.current = null
+      updateTableCellMenu()
+    })
+  }, [updateTableCellMenu])
+
+  const updateTableCellSelectionToolbar = useCallback(() => {
+    const v = viewRef.current
+    const surfaceEl = surfaceRef.current
+    if (!v || !surfaceEl) {
+      setTableCellSelectionAnchor(null)
+      return
+    }
+    const keepOpenWhileInteracting = selectionTableCellBgOpen || tableSelectionInteractingRef.current
+    if (!v.hasFocus() && !keepOpenWhileInteracting) {
+      setTableCellSelectionAnchor(null)
+      return
+    }
+    if (!pmIsInTable(v.state) && !keepOpenWhileInteracting) {
+      setTableCellSelectionAnchor(null)
+      return
+    }
+    if (!(v.state.selection instanceof CellSelection)) {
+      setTableCellSelectionAnchor(null)
+      setSelectionTableCellBgOpen(false)
+      return
+    }
+
+    try {
+      const rect = pmSelectedRect(v.state)
+      const tableDom = v.nodeDOM(rect.tableStart)
+      const tableEl =
+        tableDom && tableDom instanceof HTMLElement
+          ? tableDom
+          : (tableDom as Node | null)?.parentElement?.closest(".tableWrapper")
+      if (!tableEl) {
+        setTableCellSelectionAnchor(null)
+        return
+      }
+      const tableRect = tableEl.getBoundingClientRect()
+      const surfaceRect = surfaceEl.getBoundingClientRect()
+      const left = tableRect.left - surfaceRect.left
+      const top = tableRect.top - surfaceRect.top - 8
+      setTableCellSelectionAnchor((prev) => {
+        if (!prev) return { left, top }
+        if (Math.abs(prev.left - left) < 0.5 && Math.abs(prev.top - top) < 0.5) return prev
+        return { left, top }
+      })
+    } catch {
+      setTableCellSelectionAnchor(null)
+    }
+  }, [selectionTableCellBgOpen])
+
+  const scheduleTableCellSelectionUpdate = useCallback(() => {
+    if (tableSelectionRafRef.current) window.cancelAnimationFrame(tableSelectionRafRef.current)
+    tableSelectionRafRef.current = window.requestAnimationFrame(() => {
+      tableSelectionRafRef.current = null
+      updateTableCellSelectionToolbar()
+    })
+  }, [updateTableCellSelectionToolbar])
+
   // Mention (@) is temporarily disabled (it caused runaway update loops / freezes).
   const plugins = useMemo(() => buildEditorPlugins(editorSchema, { mention: { enabled: false } }), [])
 
+  const blockCommandsFull = useMemo(() => getBlockCommandRegistry(editorSchema), [])
   const blockCommands = useMemo(() => {
-    const items = getBlockCommandRegistry(editorSchema)
+    const items = blockCommandsFull
     return items.map((c) => ({ key: c.key, title: c.title, keywords: c.keywords }))
-  }, [])
+  }, [blockCommandsFull])
 
   const filteredBlockCommands = useMemo(() => {
     const q = blockMenuQuery.trim().toLowerCase()
@@ -461,6 +663,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
         this.updateState(nextState)
         // Keep the selection bubble anchored to the latest selection.
         scheduleSelectionToolbarUpdate()
+        scheduleTableCellMenuUpdate()
+        scheduleTableCellSelectionUpdate()
 
         // Detect removed embed blocks (page_link with display=embed) so we can soft-delete the underlying child pages.
         // This is an optimistic UX layer; server also enforces deletion on save.
@@ -505,6 +709,20 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
           setBlockMenuOpen(open)
           setBlockMenuAnchor(anchor)
           if (!open) setBlockMenuQuery("")
+        }
+
+        const handleOpen = Boolean(ui?.handleMenuOpen)
+        const handleAnchor = ui?.handleMenuAnchor || null
+        const handleKind = (ui?.handleMenuKind as BlockInserterState["kind"] | null) || null
+        const handleFrom = typeof ui?.handleMenuFrom === "number" ? ui.handleMenuFrom : null
+        const handleTo = typeof ui?.handleMenuTo === "number" ? ui.handleMenuTo : null
+        const handleSig = `${handleOpen ? 1 : 0}:${handleAnchor ? `${Math.round(handleAnchor.left)},${Math.round(handleAnchor.top)},${Math.round(handleAnchor.width)},${Math.round(handleAnchor.height)}` : ""}:${handleKind || ""}:${handleFrom ?? ""}:${handleTo ?? ""}`
+        if (handleSig !== handleMenuSigRef.current) {
+          handleMenuSigRef.current = handleSig
+          setHandleMenuOpen(handleOpen)
+          setHandleMenuAnchor(handleAnchor)
+          setHandleMenuKind(handleKind)
+          setHandleMenuRange(handleFrom != null && handleTo != null ? { from: handleFrom, to: handleTo } : null)
         }
       },
       attributes: {
@@ -650,6 +868,28 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     }
   }, [scheduleSelectionToolbarUpdate, selectionToolbarOpen])
 
+  useEffect(() => {
+    if (!tableCellMenuAnchor) return
+    const onScrollOrResize = () => scheduleTableCellMenuUpdate()
+    window.addEventListener("scroll", onScrollOrResize, true)
+    window.addEventListener("resize", onScrollOrResize)
+    return () => {
+      window.removeEventListener("scroll", onScrollOrResize, true)
+      window.removeEventListener("resize", onScrollOrResize)
+    }
+  }, [scheduleTableCellMenuUpdate, tableCellMenuAnchor])
+
+  useEffect(() => {
+    if (!tableCellSelectionAnchor) return
+    const onScrollOrResize = () => scheduleTableCellSelectionUpdate()
+    window.addEventListener("scroll", onScrollOrResize, true)
+    window.addEventListener("resize", onScrollOrResize)
+    return () => {
+      window.removeEventListener("scroll", onScrollOrResize, true)
+      window.removeEventListener("resize", onScrollOrResize)
+    }
+  }, [scheduleTableCellSelectionUpdate, tableCellSelectionAnchor])
+
   // Focus the menu search input when opened.
   useEffect(() => {
     if (!blockMenuOpen) return
@@ -662,8 +902,127 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     v.dispatch(v.state.tr.setMeta(blockInserterKey, { menuOpen: false, query: "", menuAnchor: null }))
   }
 
+  const closeHandleMenu = () => {
+    const v = viewRef.current
+    if (!v) return
+    v.dispatch(
+      v.state.tr.setMeta(blockInserterKey, {
+        handleMenuOpen: false,
+        handleMenuAnchor: null,
+        handleMenuKind: null,
+        handleMenuFrom: null,
+        handleMenuTo: null,
+      })
+    )
+  }
+
   const runBlockMenuCommand = (commandKey: string, side: "before" | "after") => {
     window.dispatchEvent(new CustomEvent("reductai:block-inserter:run", { detail: { commandKey, side } }))
+  }
+
+  const selectHandleBlock = useCallback(() => {
+    const v = viewRef.current
+    if (!v || !handleMenuRange || !handleMenuKind) return
+    const { from, to } = handleMenuRange
+    const state = v.state
+    if (handleMenuKind === "table_row") {
+      let firstCell: number | null = null
+      let lastCell: number | null = null
+      state.doc.nodesBetween(from, to, (node, pos) => {
+        if (node.type === editorSchema.nodes.table_cell || node.type === editorSchema.nodes.table_header) {
+          if (firstCell == null) firstCell = pos
+          lastCell = pos
+        }
+        return true
+      })
+      if (firstCell != null && lastCell != null) {
+        const sel = CellSelection.create(state.doc, firstCell, lastCell)
+        v.dispatch(
+          state.tr
+            .setSelection(sel)
+            .setMeta(selectionModePluginKey, {
+              mode: 1,
+              kind: "cell",
+              anchorCellPos: sel.$anchorCell.pos,
+              headCellPos: sel.$headCell.pos,
+              anchorBlockPos: null,
+              headBlockPos: null,
+            })
+            .scrollIntoView()
+        )
+        v.focus()
+      }
+      return
+    }
+
+    const sel = NodeSelection.create(state.doc, from)
+    v.dispatch(
+      state.tr
+        .setSelection(sel)
+        .setMeta(selectionModePluginKey, {
+          mode: 1,
+          kind: "block",
+          anchorBlockPos: from,
+          headBlockPos: from,
+          anchorCellPos: null,
+          headCellPos: null,
+        })
+        .scrollIntoView()
+    )
+    v.focus()
+  }, [handleMenuKind, handleMenuRange])
+
+  useEffect(() => {
+    if (!handleMenuOpen) return
+    selectHandleBlock()
+  }, [handleMenuOpen, selectHandleBlock])
+
+  const duplicateHandleBlock = () => {
+    const v = viewRef.current
+    if (!v || !handleMenuRange || !handleMenuKind) return
+    const { from, to } = handleMenuRange
+    const state = v.state
+    if (handleMenuKind === "table_row") {
+      const row = state.doc.nodeAt(from)
+      if (!row) return
+      v.dispatch(state.tr.insert(to, row.copy(row.content)).scrollIntoView())
+      v.focus()
+      return
+    }
+    run(cmdDuplicateBlock(editorSchema))
+  }
+
+  const deleteHandleBlock = () => {
+    const v = viewRef.current
+    if (!v || !handleMenuRange || !handleMenuKind) return
+    const { from, to } = handleMenuRange
+    const state = v.state
+    if (handleMenuKind === "table_row") {
+      // Ensure selection is inside the row, then delete row.
+      let firstCell: number | null = null
+      state.doc.nodesBetween(from, to, (node, pos) => {
+        if (node.type === editorSchema.nodes.table_cell || node.type === editorSchema.nodes.table_header) {
+          firstCell = pos
+          return false
+        }
+        return true
+      })
+      if (firstCell != null) {
+        v.dispatch(state.tr.setSelection(TextSelection.near(state.doc.resolve(firstCell + 1), 1)))
+      }
+      run(tableCommands.deleteRow)
+      return
+    }
+    v.dispatch(state.tr.delete(from, to).scrollIntoView())
+    v.focus()
+  }
+
+  const runHandleReplaceCommand = (commandKey: string) => {
+    const v = viewRef.current
+    if (!v) return
+    const cmd = blockCommandsFull.find((c) => c.key === commandKey)
+    if (!cmd) return
+    cmd.applyReplace(v)
   }
 
   const run = (cmd: PmCommand) => {
@@ -671,6 +1030,98 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     if (!view) return
     cmd(view.state, view.dispatch, view)
     view.focus()
+  }
+
+  const cycleTableCellSelectionMode = () => {
+    const v = viewRef.current
+    if (!v) return
+    const state = v.state
+    const st = selectionModePluginKey.getState(state) || selectionModeInitState()
+    try {
+      const $cell = pmSelectionCell(state)
+      const cellPos = $cell.pos
+      const nextMode = st.mode === 0 ? 1 : st.mode === 1 ? 2 : 0
+
+      if (nextMode === 0) {
+        const tr = state.tr
+          .setSelection(TextSelection.near(state.doc.resolve(Math.min(cellPos + 1, state.doc.content.size)), 1))
+          .setMeta(selectionModePluginKey, selectionModeInitState())
+          .scrollIntoView()
+        v.dispatch(tr)
+        v.focus()
+        return
+      }
+
+      const sel = state.selection instanceof CellSelection ? state.selection : new CellSelection($cell)
+      const tr = state.tr
+        .setSelection(sel)
+        .setMeta(selectionModePluginKey, {
+          mode: nextMode,
+          kind: "cell",
+          anchorCellPos: sel.$anchorCell.pos,
+          headCellPos: sel.$headCell.pos,
+          anchorBlockPos: null,
+          headBlockPos: null,
+        })
+        .scrollIntoView()
+      v.dispatch(tr)
+      v.focus()
+    } catch {
+      // not in table
+    }
+  }
+
+  const enterTableCellSelectionMode = () => {
+    const v = viewRef.current
+    if (!v) return
+    const state = v.state
+    try {
+      const $cell = pmSelectionCell(state)
+      const sel = state.selection instanceof CellSelection ? state.selection : new CellSelection($cell)
+      const tr = state.tr
+        .setSelection(sel)
+        .setMeta(selectionModePluginKey, {
+          mode: 1,
+          kind: "cell",
+          anchorCellPos: sel.$anchorCell.pos,
+          headCellPos: sel.$headCell.pos,
+          anchorBlockPos: null,
+          headBlockPos: null,
+        })
+        .scrollIntoView()
+      v.dispatch(tr)
+      v.focus()
+      window.requestAnimationFrame(() => {
+        const v2 = viewRef.current
+        if (!v2) return
+        if (v2.state.selection instanceof CellSelection) {
+          v2.focus()
+          return
+        }
+        try {
+          const $cell2 = pmSelectionCell(v2.state)
+          const sel2 = new CellSelection($cell2)
+          v2.dispatch(
+            v2.state.tr
+              .setSelection(sel2)
+              .setMeta(selectionModePluginKey, {
+                mode: 1,
+                kind: "cell",
+                anchorCellPos: sel2.$anchorCell.pos,
+                headCellPos: sel2.$headCell.pos,
+                anchorBlockPos: null,
+                headBlockPos: null,
+              })
+              .scrollIntoView()
+          )
+          v2.focus()
+        } catch {
+          // ignore if selection moved out of table
+        }
+      })
+    } catch {
+      // not in table
+    }
   }
 
   const runFromToolbar = (e: React.MouseEvent, cmd: PmCommand) => {
@@ -743,7 +1194,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
   return (
     <div className="w-full">
 
-      {/* Block inserter menu (React / shadcn DropdownMenu) - 블럭 삽입 메뉴 */}
+      {/* Block inserter menu - 블럭 삽입 메뉴 */}
       {blockMenuOpen && blockMenuAnchor ? (
         <DropdownMenu          
           open={blockMenuOpen}
@@ -778,7 +1229,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
               e.preventDefault()
             }}
           >
-            <DropdownMenuLabel className="px-2 py-2">Insert</DropdownMenuLabel>
+            <DropdownMenuLabel className="px-2 py-2">Insert Block</DropdownMenuLabel>
             <div className="px-2 pb-2">
               <input
                 ref={blockMenuInputRef}
@@ -821,8 +1272,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                     </button>
                     <div className="flex items-center gap-1">
                       <button
-                        type="button"
-                        className="rounded-sm border border-border px-2 py-1 text-xs hover:bg-accent"
+                        type="button"                        
+                        className="rounded-sm border border-border size-6 text-xs hover:bg-background flex items-center justify-center"
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={(e) => {
                           e.preventDefault()
@@ -830,11 +1281,11 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                           runBlockMenuCommand(it.key, "before")
                         }}
                       >
-                        Above
+                        <ArrowUp className="size-4" />
                       </button>
                       <button
                         type="button"
-                        className="rounded-sm border border-border px-2 py-1 text-xs hover:bg-accent"
+                        className="rounded-sm border border-border size-6 text-xs hover:bg-background flex items-center justify-center"
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={(e) => {
                           e.preventDefault()
@@ -842,13 +1293,195 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                           runBlockMenuCommand(it.key, "after")
                         }}
                       >
-                        Below
+                        <ArrowDown className="size-4" />
                       </button>
                     </div>
                   </DropdownMenuItem>
                 ))
               )}
             </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : null}
+
+      {/* Block handle menu */}
+      {handleMenuOpen && handleMenuAnchor ? (
+        <DropdownMenu
+          open={handleMenuOpen}
+          onOpenChange={(open) => {
+            if (!open) closeHandleMenu()
+          }}
+        >
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-hidden="true"
+              tabIndex={-1}
+              style={{
+                position: "fixed",
+                left: Math.round(handleMenuAnchor.left),
+                top: Math.round(handleMenuAnchor.top),
+                width: Math.max(1, Math.round(handleMenuAnchor.width)),
+                height: Math.max(1, Math.round(handleMenuAnchor.height)),
+                opacity: 0,
+                pointerEvents: "none",
+              }}
+            />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            side="right"
+            align="start"
+            sideOffset={6}
+            className="min-w-[220px] p-1 z-[80]"
+            onCloseAutoFocus={(e) => {
+              e.preventDefault()
+            }}
+          >
+            {handleMenuKind === "table_row" ? (
+              <>
+                <DropdownMenuItem
+                  onSelect={(e) => {
+                    e.preventDefault()
+                    duplicateHandleBlock()
+                    closeHandleMenu()
+                  }}
+                >
+                  <CopyPlus className="size-4" />
+                  복제
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={(e) => {
+                    e.preventDefault()
+                    deleteHandleBlock()
+                    closeHandleMenu()
+                  }}
+                >
+                  <X className="size-4" />
+                  삭제
+                </DropdownMenuItem>
+              </>
+            ) : (
+              <>
+                <DropdownMenuItem
+                  onSelect={(e) => {
+                    e.preventDefault()
+                    duplicateHandleBlock()
+                    closeHandleMenu()
+                  }}
+                >
+                  <CopyPlus className="size-4" />
+                  복제
+                </DropdownMenuItem>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <Repeat className="size-4" />
+                    전환
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-56 p-1">
+                    {[
+                      { key: "text", label: "텍스트", icon: <Type className="size-4" /> },
+                      { key: "h1", label: "H1", icon: <Heading1 className="size-4" /> },
+                      { key: "h2", label: "H2", icon: <Heading2 className="size-4" /> },
+                      { key: "h3", label: "H3", icon: <Heading3 className="size-4" /> },
+                      { key: "quote", label: "인용", icon: <Quote className="size-4" /> },
+                      { key: "code", label: "코드 블럭", icon: <SquareCode className="size-4" /> },
+                      { key: "list", label: "글머리 기호 목록", icon: <List className="size-4" /> },
+                      { key: "ordered", label: "번호 매기기 목록", icon: <ListOrdered className="size-4" /> },
+                      { key: "checklist", label: "할 일 목록", icon: <ListTodo className="size-4" /> },
+                      { key: "page", label: "페이지", icon: <File className="size-4" /> },
+                    ].map((it) => (
+                      <DropdownMenuItem
+                        key={it.key}
+                        onSelect={(e) => {
+                          e.preventDefault()
+                          runHandleReplaceCommand(it.key)
+                          closeHandleMenu()
+                        }}
+                        className="flex items-center justify-between"
+                      >
+                        <span className="flex items-center gap-2">
+                          {it.icon}
+                          {it.label}
+                        </span>
+                        {(() => {
+                          const v = viewRef.current
+                          const node = handleMenuRange?.from != null ? v?.state.doc.nodeAt(handleMenuRange.from) : null
+                          const type = node?.type?.name || ""
+                          const attrs = (node?.attrs || {}) as { level?: number; listKind?: string }
+                          const matches =
+                            (it.key === "text" && type === "paragraph") ||
+                            (it.key === "h1" && type === "heading" && attrs.level === 1) ||
+                            (it.key === "h2" && type === "heading" && attrs.level === 2) ||
+                            (it.key === "h3" && type === "heading" && attrs.level === 3) ||
+                            (it.key === "quote" && type === "blockquote") ||
+                            (it.key === "code" && type === "code_block") ||
+                            (it.key === "list" && type === "bullet_list") ||
+                            (it.key === "ordered" && type === "ordered_list") ||
+                            (it.key === "checklist" && type === "bullet_list" && attrs.listKind === "check") ||
+                            (it.key === "page" && type === "page_link")
+                          return matches ? <span>✓</span> : null
+                        })()}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <Paintbrush className="size-4" />
+                    배경색
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-56 p-2">
+                    <div className="grid grid-cols-6 gap-2">
+                      {BLOCK_BG_PRESETS_100.map((c) => (
+                        <button
+                          key={c.key}
+                          type="button"
+                          className={[
+                            "size-7 rounded-md border border-border",
+                            "hover:opacity-90",
+                            "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                            c.bgClass,
+                            c.darkBgClass || "",
+                          ].join(" ")}
+                          onMouseDown={(e) => {
+                            e.preventDefault()
+                            run(cmdSetBlockBgColor(editorSchema, c.key))
+                            closeHandleMenu()
+                          }}
+                          aria-label={c.label}
+                          title={c.label}
+                        />
+                      ))}
+                    </div>
+                    <div className="mt-3 flex justify-between">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          run(cmdClearBlockBgColor(editorSchema))
+                          closeHandleMenu()
+                        }}
+                      >
+                        Reset
+                      </Button>
+                    </div>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={(e) => {
+                    e.preventDefault()
+                    deleteHandleBlock()
+                    closeHandleMenu()
+                  }}
+                >
+                  <X className="size-4" />
+                  삭제
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       ) : null}
@@ -955,6 +1588,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                         "hover:opacity-90",
                         "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
                         c.bgClass,
+                        c.darkBgClass || "",
                       ].join(" ")}
                       onMouseDown={(e) => {
                         e.preventDefault()
@@ -1035,7 +1669,6 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                 <ListTodo />
               </ButtonGroupItem>
             </ToolbarTooltip>
-
             <ToolbarTooltip label="HR">
               <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdInsertHorizontalRule(editorSchema))}>
                 <Minus />
@@ -1269,6 +1902,19 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                 </PopoverContent>
               </Popover>
             </ToolbarTooltip>
+            <ToolbarTooltip label="Select Cell">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  cycleTableCellSelectionMode()
+                }}
+              >
+               <SquareMousePointer />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
             <ToolbarTooltip label="Block Align Left">
               <ButtonGroupItem
                 variant="outline"
@@ -1299,8 +1945,76 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                <TextAlignEnd />
               </ButtonGroupItem>
             </ToolbarTooltip>
-
-
+            <ToolbarTooltip label="Top">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => runFromToolbar(e, cmdSetTableCellVAlign(editorSchema, "top"))}
+              >
+               <ArrowUpToLine />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Middle">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => runFromToolbar(e, cmdSetTableCellVAlign(editorSchema, "middle"))}
+              >
+               <ChevronsDownUp />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="Bottom">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => runFromToolbar(e, cmdSetTableCellVAlign(editorSchema, "bottom"))}
+              >
+               <ArrowDownToLine />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="border toggle">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => runFromToolbar(e, cmdToggleTableBorder(editorSchema))}
+              >
+               <SquareDashed />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            <ToolbarTooltip label="round toggle">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}
+                onMouseDown={(e) => runFromToolbar(e, cmdToggleTableRounded(editorSchema))}
+              >
+               <SquareRoundCorner />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
+            {/* 테이블 너비 조절
+            <ToolbarTooltip label="Table width wideen">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}                
+              >
+               <MoveHorizontal />
+              </ButtonGroupItem>
+            </ToolbarTooltip> */}
+            {/* 너비 조절
+            <ToolbarTooltip label="Adjust the width">
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableActive}                
+              >
+               <RulerDimensionLine />
+              </ButtonGroupItem>
+            </ToolbarTooltip> */}
             <ToolbarTooltip label="Row+">
               <ButtonGroupItem
                 variant="outline"
@@ -1321,8 +2035,6 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                <BetweenVerticalStart />
               </ButtonGroupItem>
             </ToolbarTooltip>
-
-
             <ToolbarTooltip label="Row-">
               <ButtonGroupItem
                 variant="outline"
@@ -1395,6 +2107,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                         "hover:opacity-90",
                         "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
                         c.bgClass,
+                        c.darkBgClass || "",
                       ].join(" ")}
                       onMouseDown={(e) => {
                         e.preventDefault()
@@ -1437,8 +2150,415 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
         </div>
       ) : null}
 
-      {/* Editor surface: use theme-aware background for dark mode - 블럭 에디터  */}
+      
       <div ref={surfaceRef} className="relative p-3 bg-background text-foreground">
+        {/* 셀 영역 선택 시 팝오버 버튼 그룹 */}
+        {tableCellSelectionAnchor ? (
+          <Popover open onOpenChange={() => {}}>
+            <PopoverAnchor asChild>
+              <div
+                aria-hidden
+                className="absolute"
+                style={{
+                  left: Math.round(tableCellSelectionAnchor.left),
+                  top: Math.round(tableCellSelectionAnchor.top),
+                  width: 1,
+                  height: 1,
+                  opacity: 0,
+                  pointerEvents: "none",
+                }}
+              />
+            </PopoverAnchor>
+            <PopoverContent
+              side="top"
+              align="start"
+              sideOffset={10}
+              className="w-auto z-[80] p-0"
+              onOpenAutoFocus={(e) => e.preventDefault()}
+              onCloseAutoFocus={(e) => e.preventDefault()}
+              onPointerDownCapture={() => {
+                tableSelectionInteractingRef.current = true
+              }}
+              onPointerUpCapture={() => {
+                tableSelectionInteractingRef.current = false
+              }}
+              onPointerCancelCapture={() => {
+                tableSelectionInteractingRef.current = false
+              }}
+            >
+              {selectionTableCellBgOpen ? (
+                <div className="w-64 p-2">
+                  <div className="flex items-center gap-1 mb-2">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6"
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        setSelectionTableCellBgOpen(false)
+                      }}
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
+                    <span className="text-xs font-semibold">Cell background color</span>
+                  </div>
+                  <div className="grid grid-cols-6 gap-2">
+                    {BLOCK_BG_PRESETS_100.map((c) => (
+                      <button
+                        key={c.key}
+                        type="button"
+                        className={[
+                          "size-7 rounded-md border border-border",
+                          "hover:opacity-90",
+                          "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                          c.bgClass,
+                          c.darkBgClass || "",
+                        ].join(" ")}
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          run(cmdSetTableCellBgColor(editorSchema, c.key))
+                          setSelectionTableCellBgOpen(false)
+                        }}
+                        aria-label={c.label}
+                        title={c.label}
+                      />
+                    ))}
+                  </div>
+                  <div className="mt-3 flex justify-between">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        run(cmdClearTableCellBgColor(editorSchema))
+                        setSelectionTableCellBgOpen(false)
+                      }}
+                    >
+                      Reset
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+              <ButtonGroup>
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => runFromToolbar(e, cmdSetTableCellAlign(editorSchema, "left"))}
+              >
+                <TextAlignStart />
+              </ButtonGroupItem>
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => runFromToolbar(e, cmdSetTableCellAlign(editorSchema, "center"))}
+              >
+                <TextAlignCenter />
+              </ButtonGroupItem>
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => runFromToolbar(e, cmdSetTableCellAlign(editorSchema, "right"))}
+              >
+                <TextAlignEnd />
+              </ButtonGroupItem>
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => runFromToolbar(e, cmdSetTableCellVAlign(editorSchema, "top"))}
+              >
+                <ArrowUpToLine />
+              </ButtonGroupItem>
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => runFromToolbar(e, cmdSetTableCellVAlign(editorSchema, "middle"))}
+              >
+                <ChevronsDownUp />
+              </ButtonGroupItem>
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => runFromToolbar(e, cmdSetTableCellVAlign(editorSchema, "bottom"))}
+              >
+                <ArrowDownToLine />
+              </ButtonGroupItem>
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => runFromToolbar(e, cmdToggleTableBorder(editorSchema))}
+              >
+                <SquareDashed />
+              </ButtonGroupItem>
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => runFromToolbar(e, cmdToggleTableRounded(editorSchema))}
+              >
+                <SquareRoundCorner />
+              </ButtonGroupItem>
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => runFromToolbar(e, tableCommands.mergeCells)}
+              >
+                <TableCellsMerge />
+              </ButtonGroupItem>
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                disabled={!tableCanSplit}
+                onMouseDown={(e) => runFromToolbar(e, tableCommands.splitCell)}
+              >
+                <TableCellsSplit />
+              </ButtonGroupItem>
+              <ButtonGroupItem
+                type="button"
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  setSelectionTableCellBgOpen(true)
+                }}
+              >
+                <PaintBucket />
+              </ButtonGroupItem>
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => runFromToolbar(e, tableCommands.deleteTable)}
+              >
+                <Grid2X2X />
+              </ButtonGroupItem>
+              </ButtonGroup>
+              )}
+            </PopoverContent>
+          </Popover>
+        ) : null}
+        {/* 셀 커서 위치 시 드롭다운 메뉴 */}
+        {tableCellMenuAnchor ? (
+          <DropdownMenu open={tableCellMenuOpen} onOpenChange={setTableCellMenuOpen}>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Table cell menu"
+                className="absolute z-20 inline-flex size-6 items-center justify-center rounded-full hover:border bg-accent/80 text-foreground hover:bg-accent hover:shadow-sm"
+                style={{
+                  left: tableCellMenuAnchor.left,
+                  top: tableCellMenuAnchor.top,
+                  transform: "translate(-100%, 0)",
+                }}
+                onMouseDown={(e) => {
+                  // Prevent editor selection from being disturbed.
+                  e.preventDefault()
+                }}
+              >
+                <Ellipsis className="size-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" side="bottom" sideOffset={6} className="min-w-56">    
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  enterTableCellSelectionMode()
+                  setTableCellMenuOpen(false)
+                }}
+              >
+                <SquareMousePointer className="size-4" />
+                셀 선택
+                <DropdownMenuShortcut>F5</DropdownMenuShortcut>
+              </DropdownMenuItem>            
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  run(cmdSetTableCellAlign(editorSchema, "left"))
+                  setTableCellMenuOpen(false)
+                }}
+              >
+                <TextAlignStart className="size-4" />
+                좌정렬
+              </DropdownMenuItem>              
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  run(cmdSetTableCellAlign(editorSchema, "center"))
+                  setTableCellMenuOpen(false)
+                }}
+              >
+                <TextAlignCenter className="size-4" />
+                중앙정렬
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  run(cmdSetTableCellAlign(editorSchema, "right"))
+                  setTableCellMenuOpen(false)
+                }}
+              >
+                <TextAlignEnd className="size-4" />
+                우정렬
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  run(cmdSetTableCellVAlign(editorSchema, "top"))
+                  setTableCellMenuOpen(false)
+                }}
+              >
+                <ArrowUpToLine className="size-4" />
+                상단 정렬
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  run(cmdSetTableCellVAlign(editorSchema, "middle"))
+                  setTableCellMenuOpen(false)
+                }}
+              >
+                <ChevronsDownUp className="size-4" />
+                가운데 정렬
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  run(cmdSetTableCellVAlign(editorSchema, "bottom"))
+                  setTableCellMenuOpen(false)
+                }}
+              >
+                <ArrowDownToLine className="size-4" />
+                하단 정렬
+              </DropdownMenuItem>
+
+              <DropdownMenuSeparator />
+
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  run(tableCommands.addRowBefore)
+                  setTableCellMenuOpen(false)
+                }}
+              >
+                <MoveUp className="size-4" />
+                줄 삽입                
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  run(tableCommands.addRowAfter)
+                  setTableCellMenuOpen(false)
+                }}
+              >
+                <MoveDown className="size-4" />
+                줄 삽입
+                <DropdownMenuShortcut>{modEnterShortcutLabel}</DropdownMenuShortcut>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  run(tableCommands.addColumnBefore)
+                  setTableCellMenuOpen(false)
+                }}
+              >
+                <MoveLeft className="size-4" />
+                열 삽입
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  run(tableCommands.addColumnAfter)
+                  setTableCellMenuOpen(false)
+                }}
+              >
+                <MoveRight className="size-4" />
+                열 삽입
+                <DropdownMenuShortcut>{modShiftEnterShortcutLabel}</DropdownMenuShortcut>
+              </DropdownMenuItem>
+
+              <DropdownMenuSeparator />
+
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  run(tableCommands.deleteRow)
+                  setTableCellMenuOpen(false)
+                }}
+              >
+                <X className="size-4" />
+                줄 삭제
+                <DropdownMenuShortcut>{modBackspaceShortcutLabel}</DropdownMenuShortcut>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  run(tableCommands.deleteColumn)
+                  setTableCellMenuOpen(false)
+                }}
+              >
+                <X className="size-4" />
+                열 삭제
+                <DropdownMenuShortcut>{modShiftBackspaceShortcutLabel}</DropdownMenuShortcut>
+              </DropdownMenuItem>
+
+              <DropdownMenuSeparator />
+
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger className="flex items-center gap-2 text-accent-foreground">
+                  <PaintBucket className="size-4 text-muted-foreground" />
+                  <span>셀배경색상</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="w-56 p-2">
+                  <div className="grid grid-cols-6 gap-2">
+                    {BLOCK_BG_PRESETS_100.map((c) => (
+                      <button
+                        key={c.key}
+                        type="button"
+                        className={[
+                          "size-7 rounded-md border border-border",
+                          "hover:opacity-90",
+                          "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                          c.bgClass,
+                        ].join(" ")}
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          run(cmdSetTableCellBgColor(editorSchema, c.key))
+                          setTableCellMenuOpen(false)
+                        }}
+                        aria-label={c.label}
+                        title={c.label}
+                      />
+                    ))}
+                  </div>
+                  <div className="mt-3 flex justify-between">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        run(cmdClearTableCellBgColor(editorSchema))
+                        setTableCellMenuOpen(false)
+                      }}
+                    >
+                      Reset
+                    </Button>
+                  </div>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+
+              <DropdownMenuSeparator />
+
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  run(tableCommands.deleteTable)
+                  setTableCellMenuOpen(false)
+                }}
+              >
+                <Grid2X2X className="size-4" />
+                표전체 지우기
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
+        {/* 텍스트 드래그 선택 시 팝오버 버튼 그룹 */}
         <Popover open={selectionToolbarOpen && !!selectionAnchor} onOpenChange={setSelectionToolbarOpen}>
           <PopoverAnchor asChild>
             <div
@@ -1456,9 +2576,9 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
           </PopoverAnchor>
           <PopoverContent
             side="top"
-            align="center"
+            align="start"
             sideOffset={10}
-            className="w-auto p-2 z-[70]"
+            className="w-auto z-[70] p-0"
             onOpenAutoFocus={(e) => e.preventDefault()}
             onCloseAutoFocus={(e) => e.preventDefault()}
             onPointerDownCapture={() => {

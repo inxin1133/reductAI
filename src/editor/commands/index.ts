@@ -1,6 +1,6 @@
 import { toggleMark, setBlockType, wrapIn } from "prosemirror-commands"
 import { EditorState, Transaction } from "prosemirror-state"
-import type { Schema } from "prosemirror-model"
+import type { Node as PMNode, Schema } from "prosemirror-model"
 import { TextSelection } from "prosemirror-state"
 import { wrapInList } from "prosemirror-schema-list"
 import { ReplaceStep } from "prosemirror-transform"
@@ -259,6 +259,48 @@ export function cmdInsertTable(schema: Schema, opts: { rows: number; cols: numbe
 export function cmdSetTableCellAlign(_schema: Schema, align: "left" | "center" | "right") {
   const a = align === "center" || align === "right" ? align : "left"
   return setCellAttr("cellAlign", a)
+}
+
+export function cmdSetTableCellVAlign(_schema: Schema, align: "top" | "middle" | "bottom") {
+  const a = align === "middle" || align === "bottom" ? align : "top"
+  return setCellAttr("cellVAlign", a)
+}
+
+function findTablePos(schema: Schema, state: EditorState): { pos: number; node: PMNode } | null {
+  const table = schema.nodes.table
+  if (!table) return null
+  const $from = state.selection.$from
+  for (let d = $from.depth; d > 0; d -= 1) {
+    const n = $from.node(d)
+    if (n.type === table) {
+      return { pos: $from.before(d), node: n }
+    }
+  }
+  return null
+}
+
+export function cmdToggleTableBorder(_schema: Schema) {
+  return (state: EditorState, dispatch?: (tr: Transaction) => void) => {
+    const found = findTablePos(_schema, state)
+    if (!found) return false
+    if (!dispatch) return true
+    const attrs = (found.node.attrs || {}) as { borderless?: boolean }
+    const borderless = !Boolean(attrs.borderless)
+    dispatch(state.tr.setNodeMarkup(found.pos, undefined, { ...attrs, borderless }).scrollIntoView())
+    return true
+  }
+}
+
+export function cmdToggleTableRounded(_schema: Schema) {
+  return (state: EditorState, dispatch?: (tr: Transaction) => void) => {
+    const found = findTablePos(_schema, state)
+    if (!found) return false
+    if (!dispatch) return true
+    const attrs = (found.node.attrs || {}) as { rounded?: boolean }
+    const rounded = attrs.rounded === false ? true : false
+    dispatch(state.tr.setNodeMarkup(found.pos, undefined, { ...attrs, rounded }).scrollIntoView())
+    return true
+  }
 }
 
 export function cmdSetTableCellBgColor(_schema: Schema, bgColor: string) {

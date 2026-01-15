@@ -1558,7 +1558,7 @@ export default function PostEditorPage() {
           void updatePostContent(String(parentId), (doc) => appendPageLinkToDocJson(doc, { pageId: newId, title: "New page", display: "embed" }))
         }
 
-        // Ensure parent is expanded so the new child is visible.
+        // Ensure parent is expanded so the new child is visible. 
         setExpanded((prev) => {
           const next = new Set(prev)
           next.add(String(parentId))
@@ -1707,7 +1707,7 @@ export default function PostEditorPage() {
             updated_at: p!.updated_at,
           }))
 
-        toast("페이지가 삭제 되었습니다.", {
+        toast("페이지가 삭제되어 휴지통으로 이동되었습니다.", {
           action: snapshot
             ? {
                 label: "undo",
@@ -1930,7 +1930,8 @@ export default function PostEditorPage() {
       return <Final className={["size-4", depth > 0 ? "opacity-70" : ""].join(" ")} />
     })()
 
-    // use file-level LUCIDE_PRESETS
+    // use file-level LUCIDE_PRESETS for icon picker (emoji, lucide)
+    // 아이콘 선택기(이모지, lucide)를 위해 파일 레벨의 LUCIDE_PRESETS 사용
 
     return (
       <div key={id} className="flex flex-col w-full min-w-0">
@@ -2404,7 +2405,7 @@ export default function PostEditorPage() {
     <AppShell
       headerLeftContent={
         <div className="flex items-center gap-2 min-w-0 overflow-hidden flex-nowrap">
-          {/* When collapsed, show ListTree icon + breadcrumb */}
+          {/* When collapsed, show ListTree icon + breadcrumb - 목록 트리 아이콘 + 브레드크럼 표시 */}
           {(isMobile ? !isNavDrawerOpen : !navOpen) ? (
             <HoverCard openDelay={0} closeDelay={120}>
               <HoverCardTrigger asChild>
@@ -2528,10 +2529,14 @@ export default function PostEditorPage() {
             <Save className="size-4 mr-2" />
             Save{dirty ? "*" : ""}
           </Button>
+          <Button variant="ghost" size="sm" className="sm:hidden" onClick={createNewFromNav} title="새 페이지">
+            <Plus className="size-4" />
+          </Button>
           <Button
             variant="ghost"
             size="sm"
             title="툴바"
+            className="hidden sm:block"
             onClick={() => setPmToolbarOpen((v) => !v)}
             aria-pressed={pmToolbarOpen}
           >

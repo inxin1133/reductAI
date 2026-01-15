@@ -1,4 +1,5 @@
 import type { NodeSpec } from "prosemirror-model"
+import { getBgColorClasses } from "./bgColor"
 
 // Override skeleton: customize tag/class for paragraphs here.
 export const paragraphNodeSpec: NodeSpec = {
@@ -23,7 +24,10 @@ export const paragraphNodeSpec: NodeSpec = {
   toDOM: (node) => [
     "p",
     {
-      class: ["my-1 text-foreground leading-7", (node.attrs as any).bgColor ? `bg-${(node.attrs as any).bgColor}` : ""]
+      class: [
+        "my-1 text-foreground leading-7",
+        getBgColorClasses((node.attrs as any).bgColor),
+      ]
         .filter(Boolean)
         .join(" "),
       "data-block-id": (node.attrs as any).blockId || "",

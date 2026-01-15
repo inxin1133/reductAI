@@ -1,4 +1,5 @@
 import type { NodeSpec } from "prosemirror-model"
+import { getBgColorClasses } from "./bgColor"
 
 // Override skeleton: customize tag/class for blockquotes here.
 export const blockquoteNodeSpec: NodeSpec = {
@@ -26,7 +27,7 @@ export const blockquoteNodeSpec: NodeSpec = {
     {
       class: [
         "my-3 border-l-2 border-border pl-4 italic text-muted-foreground",
-        (node.attrs as any).bgColor ? `bg-${(node.attrs as any).bgColor}` : "",
+        getBgColorClasses((node.attrs as any).bgColor),
       ]
         .filter(Boolean)
         .join(" "),

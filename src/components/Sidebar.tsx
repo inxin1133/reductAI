@@ -27,6 +27,7 @@ import { useLocation, useNavigate } from "react-router-dom"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Input } from "@/components/ui/input"
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -34,6 +35,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
 import { useTheme } from "@/hooks/useTheme"
@@ -184,6 +186,8 @@ export function Sidebar({ className }: SidebarProps) {
   const [catLucideAll, setCatLucideAll] = useState<Record<string, React.ElementType> | null>(null)
   const [catLucideLoading, setCatLucideLoading] = useState(false)
   const catLucideLoadSeqRef = useRef(0)
+  const [collapsedPersonalHoverOpen, setCollapsedPersonalHoverOpen] = useState(false)
+  const [collapsedTeamHoverOpen, setCollapsedTeamHoverOpen] = useState(false)
   const editingInputRef = useRef<HTMLInputElement | null>(null)
   const renameFocusUntilRef = useRef<number>(0)
   const dragBlockClickUntilRef = useRef<number>(0)
@@ -527,6 +531,18 @@ export function Sidebar({ className }: SidebarProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, isPersonalOpen])
 
+  // Mobile: load categories when the mobile menu is opened (desktop effect above won't run when sidebar is collapsed).
+  useEffect(() => {
+    if (!isMobile) return
+    if (!isMobileMenuOpen) return
+    if (isPersonalOpen) void loadPersonalCategories()
+    if (isTeamOpen && tenantType !== "personal") {
+      void loadTenantName()
+      void loadTeamCategories()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobile, isMobileMenuOpen, isPersonalOpen, isTeamOpen, tenantType])
+
   const loadTenantName = async () => {
     const h = authHeaders()
     if (!h.Authorization) return
@@ -831,7 +847,7 @@ export function Sidebar({ className }: SidebarProps) {
              <div 
                className={cn(
                  "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                 isFrontAIActive ? "bg-accent text-accent-foreground font-medium border border-border/10" : "hover:bg-accent/50"
+                 isFrontAIActive ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10" : "hover:bg-neutral-200"
                )}
                onClick={() => {
                  setIsMobileMenuOpen(false)
@@ -844,7 +860,7 @@ export function Sidebar({ className }: SidebarProps) {
              <div 
                className={cn(
                  "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                 isTimelineActive ? "bg-accent text-accent-foreground font-medium border border-border/10" : "hover:bg-accent/50"
+                 isTimelineActive ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10" : "hover:bg-neutral-200"
                )}
                onClick={() => {
                  setIsMobileMenuOpen(false)
@@ -854,7 +870,7 @@ export function Sidebar({ className }: SidebarProps) {
                <div className="size-5 flex items-center justify-center"><Clock className="size-full" /></div>
                <span className="text-base text-foreground">타임라인</span>
              </div>
-             <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer">
+             <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
                <div className="size-5 flex items-center justify-center"><Save className="size-full" /></div>
                <span className="text-base text-foreground">생성 파일</span>
              </div>
@@ -869,21 +885,54 @@ export function Sidebar({ className }: SidebarProps) {
                  >
                    개인 페이지
                  </span>
-                 <Plus className="size-4" />
+                 <button
+                   type="button"
+                   className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200"
+                   title="카테고리 추가"
+                   onClick={(e) => {
+                     e.preventDefault()
+                     e.stopPropagation()
+                     void createPersonalCategory()
+                   }}
+                 >
+                   <Plus className="size-4" />
+                 </button>
               </div>
               {isPersonalOpen && (
                 <>
-                  <div
-                    className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50"
-                    onClick={() => {
-                      setIsMobileMenuOpen(false)
-                      navigate("/posts")
-                    }}
-                  >
-                     <BookOpen className="size-5" />
-                     <span className="text-base text-foreground">나의 페이지</span>
-                  </div>
-                  <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer">
+                  {personalCatsLoading ? (
+                    <div className="px-2 py-1 text-xs text-muted-foreground">Loading…</div>
+                  ) : null}
+                  {personalCategories.map((c) => {
+                    const isActive = isPostsActive && activeCategoryId === String(c.id)
+                    const choice = decodeIcon(c.icon)
+                    const DefaultIcon = BookOpen
+                    const IconEl = (() => {
+                      if (!choice) return <DefaultIcon className="size-5" />
+                      if (choice.kind === "emoji") return <span className="text-[18px] leading-none">{choice.value}</span>
+                      const Preset = LUCIDE_PRESET_MAP[choice.value]
+                      const Dyn = Preset || catLucideAll?.[choice.value]
+                      if (!Dyn) return <DefaultIcon className="size-5" />
+                      return <Dyn className="size-5" />
+                    })()
+                    return (
+                      <div
+                        key={c.id}
+                        className={cn(
+                          "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                          isActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                        )}
+                        onClick={() => {
+                          setIsMobileMenuOpen(false)
+                          navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
+                        }}
+                      >
+                        <div className="size-5 flex items-center justify-center">{IconEl}</div>
+                        <span className="text-base text-foreground truncate">{c.name || "New category"}</span>
+                      </div>
+                    )
+                  })}
+                  <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
                      <Save className="size-5" />
                      <span className="text-base text-foreground">개인 파일</span>
                   </div>
@@ -892,6 +941,7 @@ export function Sidebar({ className }: SidebarProps) {
            </div>
 
            {/* 팀/그룹 페이지 */}
+           {tenantType && tenantType !== "personal" ? (
            <div className="flex flex-col gap-1 mb-2">
               <div className="flex items-center justify-between px-2 h-8 opacity-70">
                  <span 
@@ -900,34 +950,74 @@ export function Sidebar({ className }: SidebarProps) {
                  >
                    팀/그룹 페이지
                  </span>
-                 <Plus className="size-4" />
+                 <button
+                   type="button"
+                   className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200"
+                   title="카테고리 추가"
+                   onClick={(e) => {
+                     e.preventDefault()
+                     e.stopPropagation()
+                     void createTeamCategory()
+                   }}
+                 >
+                   <Plus className="size-4" />
+                 </button>
               </div>
               {isTeamOpen && (
                 <>
-                  <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer">
-                     <Share2 className="size-5" />
-                     <span className="text-base text-foreground">공유 페이지</span>
-                  </div>
-                  <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer">
+                  {teamCatsLoading ? (
+                    <div className="px-2 py-1 text-xs text-muted-foreground">Loading…</div>
+                  ) : null}
+                  {teamCategories.map((c) => {
+                    const isActive = isPostsActive && activeCategoryId === String(c.id)
+                    const choice = decodeIcon(c.icon)
+                    const DefaultIcon = Share2
+                    const IconEl = (() => {
+                      if (!choice) return <DefaultIcon className="size-5" />
+                      if (choice.kind === "emoji") return <span className="text-[18px] leading-none">{choice.value}</span>
+                      const Preset = LUCIDE_PRESET_MAP[choice.value]
+                      const Dyn = Preset || catLucideAll?.[choice.value]
+                      if (!Dyn) return <DefaultIcon className="size-5" />
+                      return <Dyn className="size-5" />
+                    })()
+                    return (
+                      <div
+                        key={c.id}
+                        className={cn(
+                          "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                          isActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                        )}
+                        onClick={() => {
+                          setIsMobileMenuOpen(false)
+                          navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
+                        }}
+                      >
+                        <div className="size-5 flex items-center justify-center">{IconEl}</div>
+                        <span className="text-base text-foreground truncate">{c.name || "New category"}</span>
+                      </div>
+                    )
+                  })}
+                  <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
                      <Save className="size-5" />
                      <span className="text-base text-foreground">공유 파일</span>
                   </div>
                 </>
               )}
            </div>
+           ) : null}
 
            {/* 관리 섹션 */}
            <div className="flex flex-col gap-1 mt-4">
               <div className="px-2 h-8 opacity-70 flex items-center"><span className="text-sm text-foreground">관리</span></div>
-              <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer">
+              <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
                  <Trash2 className="size-5" />
                  <span className="text-base text-foreground">휴지통</span>
               </div>
-              <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer">
+              <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
                  <PieChart className="size-5" />
                  <span className="text-base text-foreground">대시보드</span>
               </div>
-              <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer">
+              <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
                  <Settings className="size-5" />
                  <span className="text-base text-foreground">서비스</span>
               </div>
@@ -1166,7 +1256,7 @@ export function Sidebar({ className }: SidebarProps) {
                           <PopoverTrigger asChild>
                             <button
                               type="button"
-                              className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-200 rounded-sm"
+                              className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-300 rounded-sm"
                               title="아이콘 변경"
                               draggable={false}
                               onDragStart={(e) => {
@@ -1357,7 +1447,7 @@ export function Sidebar({ className }: SidebarProps) {
                        <DropdownMenuTrigger asChild>
                          <button
                            type="button"
-                           className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-200"
+                           className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300"
                            onClick={(e) => e.stopPropagation()}
                            onPointerDown={(e) => e.stopPropagation()}
                            title="메뉴"
@@ -1410,7 +1500,7 @@ export function Sidebar({ className }: SidebarProps) {
                     </div>
                    )
                  })}
-                 <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50">
+                 <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
                    <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
                      <Save className="size-full" />
                    </div>
@@ -1543,7 +1633,7 @@ export function Sidebar({ className }: SidebarProps) {
                             <PopoverTrigger asChild>
                               <button
                                 type="button"
-                                className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-200 rounded-sm"
+                                className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-300 rounded-sm"
                                 title="아이콘 변경"
                                 draggable={false}
                                 onDragStart={(e) => {
@@ -1734,7 +1824,7 @@ export function Sidebar({ className }: SidebarProps) {
                         <DropdownMenuTrigger asChild>
                           <button
                             type="button"
-                            className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-200"
+                            className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300"
                             onClick={(e) => e.stopPropagation()}
                             onPointerDown={(e) => e.stopPropagation()}
                             title="메뉴"
@@ -1788,7 +1878,7 @@ export function Sidebar({ className }: SidebarProps) {
                     )
                   })}
 
-                  <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50">
+                  <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
                     <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
                       <Save className="size-full" />
                     </div>
@@ -1802,38 +1892,187 @@ export function Sidebar({ className }: SidebarProps) {
       ) : (
         // Collapsed Menu Icons for Pages
         <div className="flex flex-col p-2 gap-1">
-           <div
-             className={cn(
-               "flex items-center justify-center h-8 rounded-md cursor-pointer",
-               // active when current category belongs to personal categories
-               isPostsActive && activeCategoryId && personalCategories.some((c) => String(c.id) === String(activeCategoryId))
-                 ? "bg-neutral-200"
-                 : "hover:bg-neutral-200"
-             )}
-             title="개인 페이지"
-             onClick={() => {
-               void goToTopCategory("personal")
-             }}
-           >
-             <BookOpen className="size-4 text-sidebar-foreground" />
-           </div>
-           {tenantType && tenantType !== "personal" ? (
-             <div
-               className={cn(
-                 "flex items-center justify-center h-8 rounded-md cursor-pointer",
-                 // active when current category belongs to team categories
-                 isPostsActive && activeCategoryId && teamCategories.some((c) => String(c.id) === String(activeCategoryId))
-                   ? "bg-neutral-200"
-                   : "hover:bg-neutral-200"
-               )}
-               title="팀 페이지"
-               onClick={() => {
-                 void goToTopCategory("team")
-               }}
-             >
-               <Share2 className="size-4 text-sidebar-foreground" />
-             </div>
-           ) : null}
+          <HoverCard
+            openDelay={0}
+            closeDelay={120}
+            open={collapsedPersonalHoverOpen}
+            onOpenChange={(open) => {
+              setCollapsedPersonalHoverOpen(open)
+              if (open && personalCategories.length === 0) void loadPersonalCategories()
+            }}
+          >
+            <HoverCardTrigger asChild>
+              <div
+                className={cn(
+                  "flex items-center justify-center h-8 rounded-md cursor-pointer",
+                  // active when current category belongs to personal categories
+                  isPostsActive && activeCategoryId && personalCategories.some((c) => String(c.id) === String(activeCategoryId))
+                    ? "bg-neutral-200"
+                    : "hover:bg-neutral-200"
+                )}
+                title="개인 페이지"
+                onClick={() => {
+                  void goToTopCategory("personal")
+                }}
+              >
+                <BookOpen className="size-4 text-sidebar-foreground" />
+              </div>
+            </HoverCardTrigger>
+            <HoverCardContent side="right" align="start" className="w-[280px] p-2">
+              <div className="flex items-center justify-between px-1 pb-2">
+                <div className="text-sm font-semibold">개인 페이지</div>
+                <button
+                  type="button"
+                  className="size-8 rounded-md hover:bg-neutral-200 flex items-center justify-center"
+                  title="카테고리 추가"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    void createPersonalCategory()
+                  }}
+                >
+                  <Plus className="size-4" />
+                </button>
+              </div>
+              <Separator />
+              <ScrollArea className="h-[360px]">
+                <div className="pt-2">
+                  {personalCategories.length === 0 ? (
+                    <div className="text-sm text-muted-foreground px-2 py-2">
+                      {personalCatsLoading ? "Loading…" : "아직 카테고리가 없습니다."}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-1">
+                      {personalCategories.map((c) => {
+                        const isActive =
+                          isPostsActive && activeCategoryId && String(activeCategoryId) === String(c.id)
+                        const choice = decodeIcon(c.icon)
+                        const DefaultIcon = BookOpen
+                        const IconEl = (() => {
+                          if (!choice) return <DefaultIcon className="size-4" />
+                          if (choice.kind === "emoji") return <span className="text-[16px] leading-none">{choice.value}</span>
+                          const Preset = LUCIDE_PRESET_MAP[choice.value]
+                          const Dyn = Preset || catLucideAll?.[choice.value]
+                          if (!Dyn) return <DefaultIcon className="size-4" />
+                          return <Dyn className="size-4" />
+                        })()
+                        return (
+                          <div
+                            key={c.id}
+                            className={cn(
+                              "flex items-center gap-2 px-2 h-8 rounded-md cursor-pointer",
+                              isActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                            )}
+                            onClick={() => {
+                              setCollapsedPersonalHoverOpen(false)
+                              navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
+                            }}
+                          >
+                            <div className="size-6 shrink-0 flex items-center justify-center text-sidebar-foreground">
+                              {IconEl}
+                            </div>
+                            <span className="text-sm text-sidebar-foreground truncate">{c.name || "New category"}</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </ScrollArea>
+            </HoverCardContent>
+          </HoverCard>
+
+          {tenantType && tenantType !== "personal" ? (
+            <HoverCard
+              openDelay={0}
+              closeDelay={120}
+              open={collapsedTeamHoverOpen}
+              onOpenChange={(open) => {
+                setCollapsedTeamHoverOpen(open)
+                if (open && teamCategories.length === 0) void loadTeamCategories()
+              }}
+            >
+              <HoverCardTrigger asChild>
+                <div
+                  className={cn(
+                    "flex items-center justify-center h-8 rounded-md cursor-pointer",
+                    // active when current category belongs to team categories
+                    isPostsActive && activeCategoryId && teamCategories.some((c) => String(c.id) === String(activeCategoryId))
+                      ? "bg-neutral-200"
+                      : "hover:bg-neutral-200"
+                  )}
+                  title="팀 페이지"
+                  onClick={() => {
+                    void goToTopCategory("team")
+                  }}
+                >
+                  <Share2 className="size-4 text-sidebar-foreground" />
+                </div>
+              </HoverCardTrigger>
+              <HoverCardContent side="right" align="start" className="w-[280px] p-2">
+                <div className="flex items-center justify-between px-1 pb-2">
+                  <div className="text-sm font-semibold">팀 페이지</div>
+                  <button
+                    type="button"
+                    className="size-8 rounded-md hover:bg-neutral-200 flex items-center justify-center"
+                    title="카테고리 추가"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      void createTeamCategory()
+                    }}
+                  >
+                    <Plus className="size-4" />
+                  </button>
+                </div>
+                <Separator />
+                <ScrollArea className="h-[360px]">
+                  <div className="pt-2">
+                    {teamCategories.length === 0 ? (
+                      <div className="text-sm text-muted-foreground px-2 py-2">
+                        {teamCatsLoading ? "Loading…" : "아직 카테고리가 없습니다."}
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-1">
+                        {teamCategories.map((c) => {
+                          const isActive =
+                            isPostsActive && activeCategoryId && String(activeCategoryId) === String(c.id)
+                          const choice = decodeIcon(c.icon)
+                          const DefaultIcon = Share2
+                          const IconEl = (() => {
+                            if (!choice) return <DefaultIcon className="size-4" />
+                            if (choice.kind === "emoji") return <span className="text-[16px] leading-none">{choice.value}</span>
+                            const Preset = LUCIDE_PRESET_MAP[choice.value]
+                            const Dyn = Preset || catLucideAll?.[choice.value]
+                            if (!Dyn) return <DefaultIcon className="size-4" />
+                            return <Dyn className="size-4" />
+                          })()
+                          return (
+                            <div
+                              key={c.id}
+                              className={cn(
+                                "flex items-center gap-2 px-2 h-8 rounded-md cursor-pointer",
+                                isActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                              )}
+                              onClick={() => {
+                                setCollapsedTeamHoverOpen(false)
+                                navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
+                              }}
+                            >
+                              <div className="size-6 shrink-0 flex items-center justify-center text-sidebar-foreground">
+                                {IconEl}
+                              </div>
+                              <span className="text-sm text-sidebar-foreground truncate">{c.name || "New category"}</span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </ScrollArea>
+              </HoverCardContent>
+            </HoverCard>
+          ) : null}
         </div>
       )}
 
@@ -1844,19 +2083,19 @@ export function Sidebar({ className }: SidebarProps) {
               <span className="text-xs text-sidebar-foreground">관리</span>
            </div>
          )}
-         <div className={cn("flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50", !isOpen && "justify-center")}>
+         <div className={cn("flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200", !isOpen && "justify-center")}>
            <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
              <Trash2 className="size-full" />
            </div>
            {isOpen && <span className="text-sm text-sidebar-foreground">휴지통</span>}
          </div>
-         <div className={cn("flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50", !isOpen && "justify-center")}>
+         <div className={cn("flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200", !isOpen && "justify-center")}>
            <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
              <PieChart className="size-full" />
            </div>
            {isOpen && <span className="text-sm text-sidebar-foreground">대시보드</span>}
          </div>
-         <div className={cn("flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50", !isOpen && "justify-center")}>
+         <div className={cn("flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200", !isOpen && "justify-center")}>
            <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
              <Settings className="size-full" />
            </div>

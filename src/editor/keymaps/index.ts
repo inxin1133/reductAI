@@ -5,7 +5,15 @@ import { undo, redo } from "prosemirror-history"
 import { sinkListItem, liftListItem, splitListItem } from "prosemirror-schema-list"
 import type { Schema } from "prosemirror-model"
 import { TextSelection } from "prosemirror-state"
-import { CellSelection, nextCell, selectionCell } from "prosemirror-tables"
+import {
+  addColumnAfter,
+  addRowAfter,
+  CellSelection,
+  deleteColumn,
+  deleteRow,
+  nextCell,
+  selectionCell,
+} from "prosemirror-tables"
 
 function isInListItem(state: any, schema: Schema) {
   const li = schema.nodes.list_item
@@ -286,6 +294,50 @@ export function buildEditorKeymap(schema: Schema) {
       return true
     }
   }
+
+  // Mod+Enter: insert row below when cursor is inside a table cell
+  keys["Mod-Enter"] = (state: any, dispatch: any) => {
+    try {
+      selectionCell(state)
+    } catch {
+      return false
+    }
+    return addRowAfter(state, dispatch)
+  }
+
+  // Mod+Backspace / Mod+Delete: delete current row when cursor is inside a table cell
+  const deleteRowInTable = (state: any, dispatch: any) => {
+    try {
+      selectionCell(state)
+    } catch {
+      return false
+    }
+    return deleteRow(state, dispatch)
+  }
+  keys["Mod-Backspace"] = deleteRowInTable
+  keys["Mod-Delete"] = deleteRowInTable
+
+  // Mod+Shift+Enter: add column to the right when cursor is inside a table cell
+  keys["Mod-Shift-Enter"] = (state: any, dispatch: any) => {
+    try {
+      selectionCell(state)
+    } catch {
+      return false
+    }
+    return addColumnAfter(state, dispatch)
+  }
+
+  // Mod+Shift+Backspace / Mod+Shift+Delete: delete current column when cursor is inside a table cell
+  const deleteColumnInTable = (state: any, dispatch: any) => {
+    try {
+      selectionCell(state)
+    } catch {
+      return false
+    }
+    return deleteColumn(state, dispatch)
+  }
+  keys["Mod-Shift-Backspace"] = deleteColumnInTable
+  keys["Mod-Shift-Delete"] = deleteColumnInTable
 
   // Optional: Enter on empty heading could become paragraph, etc. (kept minimal for MVP)
   if (schema.nodes.paragraph) {

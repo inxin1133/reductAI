@@ -17,6 +17,11 @@ export type BlockInserterState = {
   dropPos: number | null
   placeholderHeight: number
   menuAnchor: { left: number; top: number; width: number; height: number } | null
+  handleMenuOpen: boolean
+  handleMenuAnchor: { left: number; top: number; width: number; height: number } | null
+  handleMenuKind: "top" | "list_item" | "table_row" | null
+  handleMenuFrom: number | null
+  handleMenuTo: number | null
 }
 
 export const blockInserterKey = new PluginKey<BlockInserterState>("blockInserter")
@@ -90,6 +95,11 @@ export function blockInserterPlugin(schema: Schema) {
         dropPos: null,
         placeholderHeight: 36,
         menuAnchor: null,
+        handleMenuOpen: false,
+        handleMenuAnchor: null,
+        handleMenuKind: null,
+        handleMenuFrom: null,
+        handleMenuTo: null,
       }),
       apply: (tr, prev) => {
         const meta = tr.getMeta(blockInserterKey) as Partial<BlockInserterState> | undefined
@@ -287,7 +297,7 @@ export function blockInserterPlugin(schema: Schema) {
 
       function scheduleHideIfNeeded() {
         const st = blockInserterKey.getState(view.state) as BlockInserterState
-        if (st.menuOpen) return
+        if (st.menuOpen || st.handleMenuOpen) return
         if (st.hover) return
         if (overUI) return
         if (hideTimer) window.clearTimeout(hideTimer)
@@ -300,7 +310,7 @@ export function blockInserterPlugin(schema: Schema) {
       }
 
       function positionButton(st: BlockInserterState) {
-        if ((!st.hover && !overUI) && !st.menuOpen) {
+        if ((!st.hover && !overUI) && !st.menuOpen && !st.handleMenuOpen) {
           rail.style.display = "none"
           return
         }
@@ -435,6 +445,29 @@ export function blockInserterPlugin(schema: Schema) {
       // Handle (6-dot) - for now, just prevent focus stealing
       // NOTE: don't preventDefault on mousedown here — it cancels native dragstart in some browsers.
       handle.addEventListener("mousedown", (e) => e.stopPropagation())
+      handle.addEventListener("click", (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        const st = blockInserterKey.getState(view.state) as BlockInserterState
+        const range = findKindedRangeAtPos(view, st.blockFrom, schema)
+        if (!range) return
+        const rect = handle.getBoundingClientRect()
+        view.dispatch(
+          view.state.tr.setMeta(blockInserterKey, {
+            handleMenuOpen: true,
+            handleMenuAnchor: {
+              left: Math.round(rect.left),
+              top: Math.round(rect.top),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+            },
+            handleMenuKind: range.kind,
+            handleMenuFrom: range.from,
+            handleMenuTo: range.to,
+            menuOpen: false,
+          })
+        )
+      })
       handle.addEventListener("dragstart", (e) => {
         const st = blockInserterKey.getState(view.state) as BlockInserterState
         const range = findKindedRangeAtPos(view, st.blockFrom, schema)

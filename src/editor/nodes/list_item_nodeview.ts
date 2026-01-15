@@ -1,4 +1,5 @@
 import type { Node as PMNode } from "prosemirror-model"
+import { getBgColorClasses } from "./bgColor"
 import type { EditorView, NodeView } from "prosemirror-view"
 
 type ListItemAttrs = {
@@ -44,7 +45,7 @@ export class ListItemNodeView implements NodeView {
     const checked = Boolean(attrs.checked)
 
     // Base classes
-    const cls = ["pm-list-item", bgColor ? `bg-${bgColor}` : ""].filter(Boolean).join(" ")
+    const cls = ["pm-list-item", getBgColorClasses(bgColor)].filter(Boolean).join(" ")
     this.dom.className = cls
     this.dom.setAttribute("data-block-id", String(attrs.blockId || ""))
     this.dom.setAttribute("data-bg-color", bgColor)

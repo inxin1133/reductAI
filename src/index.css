@@ -394,12 +394,22 @@ body {
   margin: 0.5rem 0;
   border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 8px;
-  /* Let wrapper shrink/grow to inner table width (sum of column widths) */
-  display: inline-block;
+  /* Keep each table on its own line without forcing full-width */
+  display: block;
+  width: fit-content;
   max-width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
   background: rgba(255, 255, 255, 0.98);
+}
+.ProseMirror .tableWrapper[data-borderless="true"] {
+  border: 0;
+  box-shadow: none;
+}
+.ProseMirror .tableWrapper[data-borderless="true"] th,
+.ProseMirror .tableWrapper[data-borderless="true"] td,
+.ProseMirror .tableWrapper[data-borderless="true"] tr {
+  border: 0 !important;
 }
 .ProseMirror .tableWrapper > table {
   
@@ -414,10 +424,18 @@ body {
 .ProseMirror th,
 .ProseMirror td {
   position: relative;
-  border-right: 1px solid rgba(0, 0, 0, 0.12);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.12);
-  padding: 4px 12px;
+  /* border-right: 1px solid rgba(0, 0, 0, 0.12);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.12); */
+  padding: 2px 12px;
   vertical-align: top;
+}
+.ProseMirror td[data-valign="middle"],
+.ProseMirror th[data-valign="middle"] {
+  vertical-align: middle;
+}
+.ProseMirror td[data-valign="bottom"],
+.ProseMirror th[data-valign="bottom"] {
+  vertical-align: bottom;
 }
 .ProseMirror tr:last-child td,
 .ProseMirror tr:last-child th {

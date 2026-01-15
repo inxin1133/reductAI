@@ -1,4 +1,5 @@
 import type { NodeSpec } from "prosemirror-model"
+import { getBgColorClasses } from "./bgColor"
 
 // Override skeleton: customize tag/class for headings here.
 export const headingNodeSpec: NodeSpec = {
@@ -82,7 +83,7 @@ export const headingNodeSpec: NodeSpec = {
       {
         class: [
           `${base} ${byLevel}`,
-          (node.attrs as any).bgColor ? `bg-${(node.attrs as any).bgColor}` : "",
+          getBgColorClasses((node.attrs as any).bgColor),
         ]
           .filter(Boolean)
           .join(" "),

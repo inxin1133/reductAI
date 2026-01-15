@@ -5,6 +5,8 @@ import { TableView } from "prosemirror-tables"
 type TableAttrs = {
   blockId?: string | null
   indent?: number
+  borderless?: boolean
+  rounded?: boolean
 }
 
 type Options = {
@@ -64,26 +66,49 @@ export class TableNodeView implements NodeView {
     const a = (node.attrs || {}) as unknown as TableAttrs
     const blockId = typeof a.blockId === "string" ? a.blockId : ""
     const indent = clamp(Number(a.indent || 0), 0, 8)
+    const borderless = Boolean(a.borderless)
+    const rounded = a.rounded !== false
 
     // Keep the prosemirror-tables default class but add our design classes
+    // prosemirror-tables의 기본 클래스를 유지하면서, 우리 디자인 클래스를 추가합니다
     this.dom.className = [
       "tableWrapper",
-      "my-3 overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-sm",
+      "my-3 overflow-hidden rounded-md border border-border bg-card shadow-sm",
     ].join(" ")
     // Ensure positioning works even if Tailwind styles are not applied for some reason.
     this.dom.style.position = "relative"
     this.dom.setAttribute("data-block-id", blockId)
     this.dom.setAttribute("data-indent", String(indent))
+    this.dom.setAttribute("data-borderless", String(borderless))
+    this.dom.setAttribute("data-rounded", String(rounded))
 
     // Indent
     this.dom.style.marginLeft = `${indent * 24}px`
     // Let the wrapper width be determined by the inner table (shrink-to-fit via CSS)
     this.dom.style.removeProperty("width")
+    // Border / rounded toggles
+    if (borderless) {
+      this.dom.style.border = "0"
+    } else {
+      this.dom.style.removeProperty("border")
+    }
+    if (borderless) {
+      this.dom.style.boxShadow = "none"
+    } else {
+      this.dom.style.removeProperty("box-shadow")
+    }
+    if (!rounded) {
+      this.dom.style.borderRadius = "0"
+    } else {
+      this.dom.style.removeProperty("border-radius")
+    }
 
     // Attach attrs on the inner <table> too so parseDOM can recover if needed.
     this.base.table.className = "table-fixed text-sm"
     this.base.table.setAttribute("data-block-id", blockId)
     this.base.table.setAttribute("data-indent", String(indent))
+    this.base.table.setAttribute("data-borderless", String(borderless))
+    this.base.table.setAttribute("data-rounded", String(rounded))
     this.base.table.removeAttribute("data-width")
   }
 }
