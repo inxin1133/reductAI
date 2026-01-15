@@ -20,6 +20,7 @@ import {
   Smile,
   Star,
   Book,
+  BookOpen,
   Calendar,
   CheckSquare,
   Hash,
@@ -29,6 +30,7 @@ import {
   Link,
   Globe,
   Bot,
+  Share2,
 } from "lucide-react"
 
 import { AppShell } from "@/components/layout/AppShell"
@@ -62,6 +64,22 @@ import { toast } from "sonner"
 import EmojiPicker from "@emoji-mart/react"
 import emojiData from "@emoji-mart/data"
 
+type CategoryUpdatedDetail = {
+  id: string
+  name?: string
+  icon?: string | null
+  deleted?: boolean
+}
+
+function emitCategoryUpdated(detail: CategoryUpdatedDetail) {
+  try {
+    if (typeof window === "undefined") return
+    window.dispatchEvent(new CustomEvent("reductai:categoryUpdated", { detail }))
+  } catch {
+    // ignore
+  }
+}
+
 function authHeaders() {
   const token = localStorage.getItem("token")
   const headers: Record<string, string> = {}
@@ -80,6 +98,12 @@ type MyPage = {
 }
 
 type DocJson = unknown
+
+type MyPageCategory = {
+  id: string
+  name: string
+  icon?: string | null
+}
 
 const LUCIDE_PRESETS = [
   { key: "File", label: "File", Icon: File },
@@ -396,6 +420,148 @@ export default function PostEditorPage() {
   const titleInputRef = useRef<HTMLInputElement | null>(null)
   const [isDeletedPage, setIsDeletedPage] = useState(false)
 
+  const [activeCategory, setActiveCategory] = useState<{
+    id: string
+    type: "personal" | "team" | "unknown"
+    name: string
+    icon: string | null
+  } | null>(null)
+  const [categoryIconOpen, setCategoryIconOpen] = useState(false)
+  const [categoryRenameOpen, setCategoryRenameOpen] = useState(false)
+  const [categoryRenameValue, setCategoryRenameValue] = useState("")
+  const categoryRenameInputRef = useRef<HTMLInputElement | null>(null)
+  const categoryRenameFocusUntilRef = useRef<number>(0)
+
+  // Keep category header in sync with Sidebar edits (rename/icon) without refresh.
+  useEffect(() => {
+    const onUpdated = (ev: Event) => {
+      const ce = ev as CustomEvent<CategoryUpdatedDetail>
+      const d = ce?.detail
+      const id = d && typeof d.id === "string" ? d.id : ""
+      if (!id) return
+      if (!categoryId || String(categoryId) !== id) return
+
+      const nextName = typeof d.name === "string" ? d.name : undefined
+      const nextIcon = "icon" in (d || {}) ? (d.icon as string | null | undefined) : undefined
+
+      setActiveCategory((prev) => {
+        if (!prev || String(prev.id) !== id) return prev
+        return {
+          ...prev,
+          ...(nextName !== undefined ? { name: nextName } : null),
+          ...(nextIcon !== undefined ? { icon: nextIcon } : null),
+        }
+      })
+
+      // If we're currently renaming, keep the input value in sync only if user hasn't diverged.
+      if (nextName !== undefined) {
+        setCategoryRenameValue((v) => (categoryRenameOpen ? v : nextName))
+      }
+    }
+    window.addEventListener("reductai:categoryUpdated", onUpdated as EventListener)
+    return () => window.removeEventListener("reductai:categoryUpdated", onUpdated as EventListener)
+  }, [categoryId, categoryRenameOpen])
+
+  const saveCategory = useCallback(
+    async (args: { id: string; patch: { name?: string; icon?: string | null } }) => {
+      const token = localStorage.getItem("token")
+      if (!token) return
+      const id = String(args.id || "").trim()
+      if (!id) return
+      const patch = args.patch || {}
+      const r = await fetch(`/api/posts/categories/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      }).catch(() => null)
+      if (!r || !r.ok) {
+        const msg = r ? await r.text().catch(() => "") : ""
+        toast.error(msg || "카테고리 업데이트에 실패했습니다.")
+        return
+      }
+      const j = (await r.json().catch(() => ({}))) as Record<string, unknown>
+      setActiveCategory((prev) => {
+        if (!prev || String(prev.id) !== id) return prev
+        const nextName = typeof j.name === "string" ? j.name : typeof patch.name === "string" ? patch.name : prev.name
+        const serverIconRaw = "icon" in j ? (j.icon as unknown) : patch.icon
+        const nextIcon = serverIconRaw === null ? null : typeof serverIconRaw === "string" ? serverIconRaw : prev.icon
+        return { ...prev, name: nextName, icon: nextIcon }
+      })
+      emitCategoryUpdated({
+        id,
+        ...(typeof patch.name === "string" ? { name: patch.name } : null),
+        ...("icon" in patch ? { icon: patch.icon } : null),
+      })
+    },
+    []
+  )
+
+  const saveCategoryIcon = useCallback(
+    async (choice: PageIconChoice | null) => {
+      if (!categoryId) return
+      setActiveCategory((prev) => {
+        if (!prev || String(prev.id) !== String(categoryId)) return prev
+        return { ...prev, icon: encodePageIcon(choice) }
+      })
+      await saveCategory({ id: categoryId, patch: { icon: encodePageIcon(choice) } })
+    },
+    [categoryId, saveCategory]
+  )
+
+  const commitCategoryRename = useCallback(async () => {
+    if (!categoryId) return
+    const next = String(categoryRenameValue || "").trim()
+    if (!next) return
+    setActiveCategory((prev) => {
+      if (!prev || String(prev.id) !== String(categoryId)) return prev
+      return { ...prev, name: next }
+    })
+    await saveCategory({ id: categoryId, patch: { name: next } })
+  }, [categoryId, categoryRenameValue, saveCategory])
+
+  useEffect(() => {
+    if (!categoryRenameOpen) return
+    categoryRenameFocusUntilRef.current = Date.now() + 250
+    window.setTimeout(() => {
+      categoryRenameInputRef.current?.focus()
+    }, 0)
+  }, [categoryRenameOpen])
+
+  // Load current category (icon + name) from server for the header display.
+  useEffect(() => {
+    let cancelled = false
+    async function run() {
+      if (!categoryId) {
+        setActiveCategory(null)
+        return
+      }
+      const h = authHeaders()
+      if (!h.Authorization) return
+      try {
+        const [pRes, tRes] = await Promise.all([
+          fetch("/api/posts/categories/mine", { headers: h }).catch(() => null),
+          fetch("/api/posts/categories/mine?type=team_page", { headers: h }).catch(() => null),
+        ])
+        const personal: MyPageCategory[] = pRes && pRes.ok ? ((await pRes.json().catch(() => [])) as MyPageCategory[]) : []
+        const team: MyPageCategory[] = tRes && tRes.ok ? ((await tRes.json().catch(() => [])) as MyPageCategory[]) : []
+        const pid = String(categoryId)
+        const pMatch = Array.isArray(personal) ? personal.find((c) => String(c.id) === pid) : undefined
+        const tMatch = Array.isArray(team) ? team.find((c) => String(c.id) === pid) : undefined
+        const found = pMatch || tMatch
+        const type = tMatch ? "team" : pMatch ? "personal" : "unknown"
+        const name = found && typeof found.name === "string" ? found.name : "카테고리"
+        const icon = found && typeof found.icon === "string" ? found.icon : found && found.icon === null ? null : null
+        if (!cancelled) setActiveCategory({ id: pid, type, name, icon })
+      } catch {
+        // ignore
+      }
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [categoryId])
+
   // Tree row actions (rename / duplicate / delete / add child)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameTargetId, setRenameTargetId] = useState<string>("")
@@ -626,14 +792,14 @@ export default function PostEditorPage() {
 
   // Reset picker UI when closing / switching rows
   useEffect(() => {
-    if (!iconPickerOpenId && !titleIconOpen) {
+    if (!iconPickerOpenId && !titleIconOpen && !categoryIconOpen) {
       setIconPickerTab("emoji")
       setLucideQuery("")
       // Cancel any in-flight lucide import (best-effort) and clear loading state.
       lucideLoadSeqRef.current += 1
       setLucideLoading(false)
     }
-  }, [iconPickerOpenId, titleIconOpen])
+  }, [categoryIconOpen, iconPickerOpenId, titleIconOpen])
 
   const savePageIcon = useCallback(
     async (pageId: string, choice: PageIconChoice | null) => {
@@ -676,7 +842,7 @@ export default function PostEditorPage() {
 
   // Lazy-load the full lucide icon map only when the user searches.
   useEffect(() => {
-    if (!iconPickerOpenId && !titleIconOpen) return
+    if (!iconPickerOpenId && !titleIconOpen && !categoryIconOpen) return
     if (iconPickerTab !== "icon") return
     const q = lucideQuery.trim()
     if (!q) return
@@ -711,7 +877,7 @@ export default function PostEditorPage() {
       .finally(() => {
         if (lucideLoadSeqRef.current === seq) setLucideLoading(false)
       })
-  }, [iconPickerOpenId, titleIconOpen, iconPickerTab, lucideAll, lucideLoading, lucideQuery])
+  }, [categoryIconOpen, iconPickerOpenId, titleIconOpen, iconPickerTab, lucideAll, lucideLoading, lucideQuery])
 
   // Track which tree rows are actually visible (or near-visible) in the viewport.
   useEffect(() => {
@@ -2037,6 +2203,202 @@ export default function PostEditorPage() {
     }
   }
 
+  const renderCategoryHeader = (titleClassName?: string) => {
+    const isDark = typeof document !== "undefined" && document.documentElement.classList.contains("dark")
+    const displayName = String(activeCategory?.name || "나의 페이지")
+    const canEdit = Boolean(categoryId && activeCategory?.id)
+    const type = activeCategory?.type || "personal"
+    const DefaultCatIcon = type === "team" ? Share2 : BookOpen
+    const chosen = decodePageIcon(activeCategory?.icon)
+    const iconEl = (() => {
+      if (!chosen) return <DefaultCatIcon className="size-4 opacity-80" />
+      if (chosen.kind === "emoji") return <span className="text-[18px] leading-none">{chosen.value}</span>
+      const Preset = LUCIDE_PRESET_MAP[chosen.value]
+      const Dyn = Preset || lucideAll?.[chosen.value]
+      if (!Dyn) return <DefaultCatIcon className="size-4 opacity-80" />
+      return <Dyn className="size-4" />
+    })()
+
+    return (
+      <div className="flex items-center gap-2 min-w-0">
+        {canEdit ? (
+          <Popover open={categoryIconOpen} onOpenChange={setCategoryIconOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-accent"
+                title="카테고리 아이콘 변경"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                {iconEl}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" sideOffset={6} className="w-[370px] p-3" onPointerDown={(e) => e.stopPropagation()}>
+              <Tabs value={iconPickerTab} onValueChange={(v) => setIconPickerTab(v === "icon" ? "icon" : "emoji")}>
+                <TabsList>
+                  <TabsTrigger value="emoji">이모지</TabsTrigger>
+                  <TabsTrigger value="icon">아이콘</TabsTrigger>
+                </TabsList>
+                <TabsContent value="emoji">
+                  <div className="max-h-[360px] overflow-auto pr-1">
+                    <EmojiPicker
+                      data={emojiData as unknown}
+                      theme={isDark ? "dark" : "light"}
+                      previewPosition="none"
+                      onEmojiSelect={(emoji: unknown) => {
+                        const em = emoji && typeof emoji === "object" ? (emoji as Record<string, unknown>) : null
+                        const native = em && typeof em.native === "string" ? String(em.native) : ""
+                        if (!native) return
+                        void saveCategoryIcon({ kind: "emoji", value: native })
+                        setCategoryIconOpen(false)
+                      }}
+                    />
+                  </div>
+                  <div className="mt-2 flex justify-end">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void saveCategoryIcon(null)
+                        setCategoryIconOpen(false)
+                      }}
+                    >
+                      Reset
+                    </Button>
+                  </div>
+                </TabsContent>
+                <TabsContent value="icon">
+                  <div className="mb-2">
+                    <Input
+                      value={lucideQuery}
+                      onChange={(e) => setLucideQuery(e.target.value)}
+                      placeholder="Search icons (e.g. calendar, bot, file...)"
+                      className="h-8 text-sm"
+                    />
+                  </div>
+
+                  {lucideQuery.trim() ? (
+                    <>
+                      {lucideLoading && !lucideAll ? <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div> : null}
+                      <div className="max-h-[300px] overflow-auto pr-1">
+                        <div className="grid grid-cols-7 gap-1">
+                          {(() => {
+                            const q = lucideQuery.trim().toLowerCase()
+                            const map = lucideAll || {}
+                            const keys = Object.keys(map)
+                              .filter((k) => k.toLowerCase().includes(q))
+                              .slice(0, 98)
+                            if (!lucideLoading && lucideAll && keys.length === 0) {
+                              return (
+                                <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
+                                  No matches. Try a different keyword.
+                                </div>
+                              )
+                            }
+                            return keys.map((k) => {
+                              const Cmp = map[k]
+                              return (
+                                <button
+                                  key={k}
+                                  type="button"
+                                  className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                  onClick={() => {
+                                    void saveCategoryIcon({ kind: "lucide", value: k })
+                                    setCategoryIconOpen(false)
+                                  }}
+                                  title={k}
+                                  aria-label={k}
+                                >
+                                  <Cmp className="size-4" />
+                                </button>
+                              )
+                            })
+                          })()}
+                        </div>
+                      </div>
+                      <div className="mt-2 text-[11px] text-muted-foreground">
+                        Showing up to 98 matches. Refine your search to narrow results.
+                      </div>
+                    </>
+                  ) : (
+                    <div className="grid grid-cols-7 gap-1">
+                      {LUCIDE_PRESETS.map((it) => (
+                        <button
+                          key={it.key}
+                          type="button"
+                          className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                          onClick={() => {
+                            void saveCategoryIcon({ kind: "lucide", value: it.key })
+                            setCategoryIconOpen(false)
+                          }}
+                          title={it.label}
+                          aria-label={it.label}
+                        >
+                          <it.Icon className="size-4" />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-2 flex justify-end">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void saveCategoryIcon(null)
+                        setCategoryIconOpen(false)
+                      }}
+                    >
+                      Reset
+                    </Button>
+                  </div>
+                </TabsContent>
+              </Tabs>
+            </PopoverContent>
+          </Popover>
+        ) : (
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center">{iconEl}</div>
+        )}
+
+        {canEdit && categoryRenameOpen ? (
+          <input
+            ref={categoryRenameInputRef}
+            className="min-w-0 flex-1 bg-background outline-none rounded-sm px-2 py-1 border border-border text-sm"
+            value={categoryRenameValue}
+            onChange={(e) => setCategoryRenameValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault()
+                void commitCategoryRename()
+                setCategoryRenameOpen(false)
+              } else if (e.key === "Escape") {
+                e.preventDefault()
+                setCategoryRenameOpen(false)
+              }
+            }}
+            onBlur={() => {
+              if (Date.now() < categoryRenameFocusUntilRef.current) return
+              void commitCategoryRename()
+              setCategoryRenameOpen(false)
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            className={["min-w-0 truncate text-left", titleClassName || ""].join(" ").trim()}
+            title={displayName}
+            onClick={() => {
+              if (!canEdit) return
+              setCategoryRenameValue(displayName)
+              setCategoryRenameOpen(true)
+            }}
+          >
+            {displayName}
+          </button>
+        )}
+      </div>
+    )
+  }
+
   return (
     <>
     <AppShell
@@ -2053,7 +2415,7 @@ export default function PostEditorPage() {
               {!isMobile ? (
                 <HoverCardContent side="right" align="start" className="w-[280px] p-2">
                   <div className="flex items-center justify-between px-1 pb-2">
-                    <div className="text-sm font-semibold">나의 페이지</div>
+                    {renderCategoryHeader("text-sm font-semibold")}
                     <div className="flex items-center gap-1">
                       <Button
                         variant="ghost"
@@ -2196,7 +2558,7 @@ export default function PostEditorPage() {
                   <div className="fixed inset-0 top-[56px] z-30 bg-black/30" onClick={() => setIsNavDrawerOpen(false)} />
                   <div className="fixed top-[56px] left-0 bottom-0 z-40 w-[320px] border-r border-border bg-background shadow-lg">
                     <div className="h-12 flex items-center justify-between px-3">
-                      <div className="font-semibold">나의 페이지</div>
+                      {renderCategoryHeader("font-semibold")}
                       <div className="flex items-center gap-2">
                         <Button
                           variant="ghost"
@@ -2242,7 +2604,7 @@ export default function PostEditorPage() {
                 style={{ width: navWidth }}
               >
                 <div className="h-14 flex items-center justify-between px-3">
-                  <div className="text-sm font-semibold">나의 페이지</div>
+                  {renderCategoryHeader("text-sm font-semibold")}
                   <div className="flex items-center gap-0">
                     <Button
                       variant="ghost"

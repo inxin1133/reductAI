@@ -15,17 +15,18 @@ import {
   Sun,
   Moon,
   ChevronRight,
-  GripVertical,
-  MoreHorizontal,
   Pencil,
   LogOut,
   Menu,
-  X
+  X,
+  Ellipsis
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useState, useEffect, useRef } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Input } from "@/components/ui/input"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -37,6 +38,24 @@ import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
 import { useTheme } from "@/hooks/useTheme"
 import { IconReduct } from "@/components/icons/IconReduct"
+import EmojiPicker from "@emoji-mart/react"
+import emojiData from "@emoji-mart/data"
+
+type CategoryUpdatedDetail = {
+  id: string
+  name?: string
+  icon?: string | null
+  deleted?: boolean
+}
+
+function emitCategoryUpdated(detail: CategoryUpdatedDetail) {
+  try {
+    if (typeof window === "undefined") return
+    window.dispatchEvent(new CustomEvent("reductai:categoryUpdated", { detail }))
+  } catch {
+    // ignore
+  }
+}
 
 type SidebarProps = {
   className?: string
@@ -47,6 +66,8 @@ export function Sidebar({ className }: SidebarProps) {
   const location = useLocation()
 
   const SIDEBAR_OPEN_KEY = "reductai:sidebar:isOpen"
+  const PERSONAL_OPEN_KEY = "reductai:sidebar:isPersonalOpen"
+  const TEAM_OPEN_KEY = "reductai:sidebar:isTeamOpen"
   const getInitialIsOpen = () => {
     try {
       if (typeof window === "undefined") return true
@@ -58,13 +79,68 @@ export function Sidebar({ className }: SidebarProps) {
       return true
     }
   }
+  const getInitialSectionOpen = (key: string, fallback: boolean) => {
+    try {
+      if (typeof window === "undefined") return fallback
+      const v = window.localStorage.getItem(key)
+      if (v === "0") return false
+      if (v === "1") return true
+      if (v === "false") return false
+      if (v === "true") return true
+      return fallback
+    } catch {
+      return fallback
+    }
+  }
 
   // Persist the user's desktop sidebar open/closed preference across route changes and resizes.
   const [isOpen, setIsOpen] = useState<boolean>(() => getInitialIsOpen())
   const [isProfileOpen, setIsProfileOpen] = useState(false)
-  const [isPersonalOpen, setIsPersonalOpen] = useState(true)
-  const [isTeamOpen, setIsTeamOpen] = useState(true)
+  const [isPersonalOpen, setIsPersonalOpen] = useState(() => getInitialSectionOpen(PERSONAL_OPEN_KEY, true))
+  const [isTeamOpen, setIsTeamOpen] = useState(() => getInitialSectionOpen(TEAM_OPEN_KEY, true))
   const [isHeaderHover, setIsHeaderHover] = useState(false)
+
+  type IconChoice =
+    | { kind: "emoji"; value: string }
+    | { kind: "lucide"; value: string }
+
+  const encodeIcon = (choice: IconChoice | null): string | null => {
+    if (!choice) return null
+    if (choice.kind === "emoji") return `emoji:${choice.value}`
+    return `lucide:${choice.value}`
+  }
+
+  const decodeIcon = (raw: unknown): IconChoice | null => {
+    if (raw == null) return null
+    const s = typeof raw === "string" ? raw : ""
+    if (!s) return null
+    if (s.startsWith("emoji:")) return { kind: "emoji", value: s.slice("emoji:".length) }
+    if (s.startsWith("lucide:")) return { kind: "lucide", value: s.slice("lucide:".length) }
+    // Back-compat: if it's non-ascii-ish, assume emoji; otherwise assume lucide name.
+    if (/[^\w]/.test(s)) return { kind: "emoji", value: s }
+    return { kind: "lucide", value: s }
+  }
+
+  const LUCIDE_PRESETS = useMemo(
+    () => [
+      { key: "BookOpen", label: "BookOpen", Icon: BookOpen },
+      { key: "Share2", label: "Share2", Icon: Share2 },
+      { key: "Bot", label: "Bot", Icon: Bot },
+      { key: "Save", label: "Save", Icon: Save },
+      { key: "Clock", label: "Clock", Icon: Clock },
+      { key: "Trash2", label: "Trash2", Icon: Trash2 },
+      { key: "Settings", label: "Settings", Icon: Settings },
+      { key: "User", label: "User", Icon: User },
+      { key: "Wallet", label: "Wallet", Icon: Wallet },
+      { key: "Sun", label: "Sun", Icon: Sun },
+      { key: "Moon", label: "Moon", Icon: Moon },
+    ],
+    []
+  )
+
+  const LUCIDE_PRESET_MAP = useMemo(() => {
+    return Object.fromEntries(LUCIDE_PRESETS.map((x) => [x.key, x.Icon])) as Record<string, React.ElementType>
+  }, [LUCIDE_PRESETS])
 
   type PersonalCategory = { id: string; name: string; icon?: string | null; display_order?: number }
   const PERSONAL_CATS_CACHE_KEY = "reductai:sidebar:personalCategories:v1"
@@ -97,8 +173,223 @@ export function Sidebar({ className }: SidebarProps) {
 
   const [editingCat, setEditingCat] = useState<{ type: "personal" | "team"; id: string; name: string } | null>(null)
   const [draggingCat, setDraggingCat] = useState<{ type: "personal" | "team"; id: string } | null>(null)
+  const [categoryDropIndicator, setCategoryDropIndicator] = useState<{
+    type: "personal" | "team"
+    id: string
+    position: "before" | "after"
+  } | null>(null)
+  const [catIconOpen, setCatIconOpen] = useState<{ type: "personal" | "team"; id: string } | null>(null)
+  const [catIconTab, setCatIconTab] = useState<"emoji" | "icon">("emoji")
+  const [catLucideQuery, setCatLucideQuery] = useState("")
+  const [catLucideAll, setCatLucideAll] = useState<Record<string, React.ElementType> | null>(null)
+  const [catLucideLoading, setCatLucideLoading] = useState(false)
+  const catLucideLoadSeqRef = useRef(0)
   const editingInputRef = useRef<HTMLInputElement | null>(null)
   const renameFocusUntilRef = useRef<number>(0)
+  const dragBlockClickUntilRef = useRef<number>(0)
+  const startCategoryDrag = (
+    type: "personal" | "team",
+    id: string,
+    e: React.DragEvent<HTMLElement>
+  ) => {
+    e.stopPropagation()
+    dragBlockClickUntilRef.current = Date.now() + 250
+    setDraggingCat({ type, id })
+    setCategoryDropIndicator(null)
+    try {
+      e.dataTransfer.setData("text/plain", id)
+      e.dataTransfer.effectAllowed = "move"
+    } catch {
+      // ignore
+    }
+  }
+  const endCategoryDrag = () => {
+    setDraggingCat(null)
+    setCategoryDropIndicator(null)
+  }
+
+  // Keep Sidebar category lists in sync with PostEditorPage (and vice versa) without refresh.
+  useEffect(() => {
+    const onUpdated = (ev: Event) => {
+      const ce = ev as CustomEvent<CategoryUpdatedDetail>
+      const d = ce?.detail
+      const id = d && typeof d.id === "string" ? d.id : ""
+      if (!id) return
+
+      const deleted = Boolean(d.deleted)
+      const nextName = typeof d.name === "string" ? d.name : undefined
+      const nextIcon = "icon" in (d || {}) ? (d.icon as string | null | undefined) : undefined
+
+      setPersonalCategories((prev) => {
+        let changed = false
+        const next = deleted
+          ? prev.filter((c) => {
+              const keep = String(c.id) !== id
+              if (!keep) changed = true
+              return keep
+            })
+          : prev.map((c) => {
+              if (String(c.id) !== id) return c
+              const patched = {
+                ...c,
+                ...(nextName !== undefined ? { name: nextName } : null),
+                ...(nextIcon !== undefined ? { icon: nextIcon } : null),
+              }
+              changed = true
+              return patched
+            })
+        if (changed) {
+          try {
+            window.localStorage.setItem(PERSONAL_CATS_CACHE_KEY, JSON.stringify(next))
+          } catch {
+            // ignore
+          }
+          return next
+        }
+        return prev
+      })
+
+      setTeamCategories((prev) => {
+        let changed = false
+        const next = deleted
+          ? prev.filter((c) => {
+              const keep = String(c.id) !== id
+              if (!keep) changed = true
+              return keep
+            })
+          : prev.map((c) => {
+              if (String(c.id) !== id) return c
+              const patched = {
+                ...c,
+                ...(nextName !== undefined ? { name: nextName } : null),
+                ...(nextIcon !== undefined ? { icon: nextIcon } : null),
+              }
+              changed = true
+              return patched
+            })
+        if (changed) {
+          try {
+            window.localStorage.setItem(TEAM_CATS_CACHE_KEY, JSON.stringify(next))
+          } catch {
+            // ignore
+          }
+          return next
+        }
+        return prev
+      })
+    }
+
+    window.addEventListener("reductai:categoryUpdated", onUpdated as EventListener)
+    return () => window.removeEventListener("reductai:categoryUpdated", onUpdated as EventListener)
+  }, [PERSONAL_CATS_CACHE_KEY, TEAM_CATS_CACHE_KEY])
+
+  // Reset picker UI when closing / switching
+  useEffect(() => {
+    if (!catIconOpen) {
+      setCatIconTab("emoji")
+      setCatLucideQuery("")
+      catLucideLoadSeqRef.current += 1
+      setCatLucideLoading(false)
+    }
+  }, [catIconOpen])
+
+  // Lazy-load full lucide map only when searching (category icon picker).
+  useEffect(() => {
+    if (!catIconOpen) return
+    if (catIconTab !== "icon") return
+    const q = catLucideQuery.trim()
+    if (!q) return
+    if (catLucideAll || catLucideLoading) return
+
+    const seq = (catLucideLoadSeqRef.current += 1)
+    setCatLucideLoading(true)
+    void import("lucide-react")
+      .then((mod) => {
+        if (catLucideLoadSeqRef.current !== seq) return
+        const iconsNs = (mod as unknown as Record<string, unknown>)["icons"]
+        if (iconsNs && typeof iconsNs === "object") {
+          setCatLucideAll(iconsNs as Record<string, React.ElementType>)
+          return
+        }
+        const blacklist = new Set(["default", "createLucideIcon", "Icon", "LucideIcon", "LucideProps", "toKebabCase"])
+        const map: Record<string, React.ElementType> = {}
+        for (const k of Object.keys(mod)) {
+          if (blacklist.has(k)) continue
+          if (!/^[A-Z]/.test(k)) continue
+          const v = (mod as unknown as Record<string, unknown>)[k]
+          if (!v) continue
+          const t = typeof v
+          if (t !== "function" && t !== "object") continue
+          map[k] = v as React.ElementType
+        }
+        setCatLucideAll(map)
+      })
+      .finally(() => {
+        if (catLucideLoadSeqRef.current === seq) setCatLucideLoading(false)
+      })
+  }, [catIconOpen, catIconTab, catLucideAll, catLucideLoading, catLucideQuery])
+
+  // If a category uses a non-preset lucide icon, load lucide map so we can render it in the list.
+  useEffect(() => {
+    if (catLucideAll || catLucideLoading) return
+    const hasNonPresetLucide = [...personalCategories, ...teamCategories].some((c) => {
+      const raw = typeof c.icon === "string" ? c.icon : ""
+      if (!raw.startsWith("lucide:")) return false
+      const name = raw.slice("lucide:".length)
+      return !LUCIDE_PRESET_MAP[name]
+    })
+    if (!hasNonPresetLucide) return
+    const seq = (catLucideLoadSeqRef.current += 1)
+    setCatLucideLoading(true)
+    void import("lucide-react")
+      .then((mod) => {
+        if (catLucideLoadSeqRef.current !== seq) return
+        const iconsNs = (mod as unknown as Record<string, unknown>)["icons"]
+        if (iconsNs && typeof iconsNs === "object") setCatLucideAll(iconsNs as Record<string, React.ElementType>)
+      })
+      .finally(() => {
+        if (catLucideLoadSeqRef.current === seq) setCatLucideLoading(false)
+      })
+  }, [LUCIDE_PRESET_MAP, catLucideAll, catLucideLoading, personalCategories, teamCategories])
+
+  const saveCategoryIcon = async (args: { type: "personal" | "team"; id: string; choice: IconChoice | null }) => {
+    const h = authHeaders()
+    if (!h.Authorization) return
+    const nextIcon = encodeIcon(args.choice)
+    emitCategoryUpdated({ id: String(args.id), icon: nextIcon })
+
+    if (args.type === "personal") {
+      setPersonalCategories((prev) => {
+        const next = prev.map((c) => (c.id === args.id ? { ...c, icon: nextIcon } : c))
+        try {
+          window.localStorage.setItem(PERSONAL_CATS_CACHE_KEY, JSON.stringify(next))
+        } catch {
+          // ignore
+        }
+        return next
+      })
+    } else {
+      setTeamCategories((prev) => {
+        const next = prev.map((c) => (c.id === args.id ? { ...c, icon: nextIcon } : c))
+        try {
+          window.localStorage.setItem(TEAM_CATS_CACHE_KEY, JSON.stringify(next))
+        } catch {
+          // ignore
+        }
+        return next
+      })
+    }
+
+    const r = await fetch(`/api/posts/categories/${encodeURIComponent(args.id)}`, {
+      method: "PATCH",
+      headers: { ...h, "Content-Type": "application/json" },
+      body: JSON.stringify({ icon: nextIcon }),
+    }).catch(() => null)
+    if (!r || !r.ok) {
+      const msg = r ? await r.text().catch(() => "") : ""
+      alert(msg || "카테고리 아이콘 변경에 실패했습니다.")
+    }
+  }
   
   // Mobile menu state
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
@@ -110,6 +401,15 @@ export function Sidebar({ className }: SidebarProps) {
   // 현재 페이지에 따라 GNB 메뉴 활성화 표시를 결정
   const isFrontAIActive = location.pathname.startsWith("/front-ai")
   const isTimelineActive = location.pathname.startsWith("/timeline")
+  const isPostsActive = location.pathname.startsWith("/posts")
+  const activeCategoryId = (() => {
+    try {
+      const qs = new URLSearchParams(location.search || "")
+      return String(qs.get("category") || "")
+    } catch {
+      return ""
+    }
+  })()
 
   useEffect(() => {
     const checkMobile = () => {
@@ -137,6 +437,17 @@ export function Sidebar({ className }: SidebarProps) {
       // ignore (storage might be blocked)
     }
   }, [isMobile, isOpen])
+
+  // Persist section open/closed preferences across route changes.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      window.localStorage.setItem(PERSONAL_OPEN_KEY, isPersonalOpen ? "1" : "0")
+      window.localStorage.setItem(TEAM_OPEN_KEY, isTeamOpen ? "1" : "0")
+    } catch {
+      // ignore
+    }
+  }, [isPersonalOpen, isTeamOpen])
 
   const handleLogout = () => {
     // 세션/토큰 정리
@@ -226,6 +537,34 @@ export function Sidebar({ className }: SidebarProps) {
     if (type) setTenantType(type)
   }
 
+  // Ensure tenantType is available even when the sidebar is collapsed (isOpen=false),
+  // so we can hide/show the team icon correctly.
+  useEffect(() => {
+    if (tenantType) return
+    void loadTenantName()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const goToTopCategory = async (kind: "personal" | "team") => {
+    const list = kind === "personal" ? personalCategories : teamCategories
+    const fromState = list.length ? String(list[0]?.id || "") : ""
+    if (fromState) {
+      navigate(`/posts?category=${encodeURIComponent(fromState)}`)
+      return
+    }
+
+    const h = authHeaders()
+    if (!h.Authorization) return
+    const url = kind === "personal" ? "/api/posts/categories/mine" : "/api/posts/categories/mine?type=team_page"
+    const r = await fetch(url, { headers: h }).catch(() => null)
+    if (!r || !r.ok) return
+    const j = await r.json().catch(() => [])
+    const arr = Array.isArray(j) ? (j as Array<{ id?: unknown }>) : []
+    const firstId = arr.length ? String(arr[0]?.id || "") : ""
+    if (!firstId) return
+    navigate(`/posts?category=${encodeURIComponent(firstId)}`)
+  }
+
   const loadTeamCategories = async () => {
     const h = authHeaders()
     if (!h.Authorization) return
@@ -291,6 +630,7 @@ export function Sidebar({ className }: SidebarProps) {
     }
     if (args.type === "personal") setPersonalCategories((prev) => prev.map((c) => (c.id === args.id ? { ...c, name: next } : c)))
     else setTeamCategories((prev) => prev.map((c) => (c.id === args.id ? { ...c, name: next } : c)))
+    emitCategoryUpdated({ id: String(args.id), name: next })
   }
 
   const deleteCategory = async (args: { type: "personal" | "team"; id: string }) => {
@@ -670,7 +1010,7 @@ export function Sidebar({ className }: SidebarProps) {
            className={cn(
              "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
              !isOpen && "justify-center",
-             isFrontAIActive ? "bg-accent" : "hover:bg-accent/50"
+             isFrontAIActive ? "bg-neutral-200" : "hover:bg-neutral-200"
            )}
            onClick={() => navigate('/front-ai')}
          >
@@ -683,7 +1023,7 @@ export function Sidebar({ className }: SidebarProps) {
           className={cn(
             "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
             !isOpen && "justify-center",
-            isTimelineActive ? "bg-accent" : "hover:bg-accent/50"
+            isTimelineActive ? "bg-neutral-200" : "hover:bg-neutral-200"
           )}
           onClick={() => navigate('/timeline')}
          >
@@ -728,55 +1068,255 @@ export function Sidebar({ className }: SidebarProps) {
                     Loading…
                   </div>
 
-                 {personalCategories.map((c) => (
-                   <div
-                     key={c.id}
-                     className="group flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50"
-                     onClick={() => {
-                       if (editingCat && editingCat.type === "personal" && editingCat.id === c.id) return
-                       navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
-                     }}
-                     onDragOver={(e) => {
-                       if (!draggingCat || draggingCat.type !== "personal") return
-                       e.preventDefault()
-                     }}
-                     onDrop={(e) => {
-                       if (!draggingCat || draggingCat.type !== "personal") return
-                       e.preventDefault()
-                       const fromId = draggingCat.id
-                       const toId = c.id
-                       if (!fromId || fromId === toId) return
-                       setPersonalCategories((prev) => {
-                         const next = prev.slice()
-                         const fromIdx = next.findIndex((x) => x.id === fromId)
-                         const toIdx = next.findIndex((x) => x.id === toId)
-                         if (fromIdx < 0 || toIdx < 0) return prev
-                         const [moved] = next.splice(fromIdx, 1)
-                         next.splice(toIdx, 0, moved)
-                         void reorder({ type: "personal", orderedIds: next.map((x) => x.id) })
-                         return next
-                       })
-                       setDraggingCat(null)
-                     }}
-                   >
+                 {personalCategories.map((c) => {
+                   const isActive = isPostsActive && activeCategoryId === String(c.id)
+                   const isDropTarget =
+                     !!categoryDropIndicator &&
+                     categoryDropIndicator.type === "personal" &&
+                     categoryDropIndicator.id === String(c.id)
+                   const dropPosition = isDropTarget ? categoryDropIndicator!.position : null
+                   return (
                      <div
-                       className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-60 group-hover:opacity-100 cursor-grab"
+                       key={c.id}
+                       className={cn(
+                         "group relative flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer cursor-grab active:cursor-grabbing",
+                         isActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                       )}
                        draggable
-                       onDragStart={(e) => {
-                         e.stopPropagation()
-                         setDraggingCat({ type: "personal", id: c.id })
-                         try {
-                           e.dataTransfer.setData("text/plain", c.id)
-                           e.dataTransfer.effectAllowed = "move"
-                         } catch {
-                           // ignore
-                         }
+                       onDragStart={(e) => startCategoryDrag("personal", c.id, e)}
+                       onDragEnd={endCategoryDrag}
+                       onClick={() => {
+                         if (Date.now() < dragBlockClickUntilRef.current) return
+                         if (editingCat && editingCat.type === "personal" && editingCat.id === c.id) return
+                         navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
                        }}
-                       onDragEnd={() => setDraggingCat(null)}
-                       title="순서 변경"
+                       onDragOver={(e) => {
+                         if (!draggingCat || draggingCat.type !== "personal") return
+                         e.preventDefault()
+                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                          const before = e.clientY < rect.top + rect.height / 2
+                          setCategoryDropIndicator({
+                            type: "personal",
+                            id: String(c.id),
+                            position: before ? "before" : "after",
+                          })
+                       }}
+                        onDragLeave={(e) => {
+                          // Clear indicator when leaving this row (helps avoid stale line).
+                          const related = (e.relatedTarget as Node | null) || null
+                          if (related && (e.currentTarget as HTMLElement).contains(related)) return
+                          setCategoryDropIndicator((prev) => {
+                            if (!prev) return null
+                            if (prev.type !== "personal") return prev
+                            if (prev.id !== String(c.id)) return prev
+                            return null
+                          })
+                        }}
+                       onDrop={(e) => {
+                         if (!draggingCat || draggingCat.type !== "personal") return
+                         e.preventDefault()
+                         const fromId = draggingCat.id
+                         const toId = c.id
+                         if (!fromId || fromId === toId) return
+                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                          const before = e.clientY < rect.top + rect.height / 2
+                         setPersonalCategories((prev) => {
+                           const next = prev.slice()
+                           const fromIdx = next.findIndex((x) => x.id === fromId)
+                            if (fromIdx < 0) return prev
+                            const [moved] = next.splice(fromIdx, 1)
+                            const toIdx = next.findIndex((x) => x.id === toId)
+                            if (toIdx < 0) return prev
+                            const insertIdx = toIdx + (before ? 0 : 1)
+                            next.splice(insertIdx, 0, moved)
+                           void reorder({ type: "personal", orderedIds: next.map((x) => x.id) })
+                           return next
+                         })
+                         setDraggingCat(null)
+                          setCategoryDropIndicator(null)
+                       }}
                      >
-                       <GripVertical className="size-full" />
-                     </div>
+                      {isDropTarget ? (
+                        <div
+                          className={cn(
+                            "pointer-events-none absolute left-6 right-2 h-0.5 rounded bg-primary/80",
+                            dropPosition === "before" ? "top-0" : "bottom-0"
+                          )}
+                        />
+                      ) : null}
+                    {(() => {
+                      const isDark = typeof document !== "undefined" && document.documentElement.classList.contains("dark")
+                      const open = !!catIconOpen && catIconOpen.type === "personal" && catIconOpen.id === String(c.id)
+                      const choice = decodeIcon(c.icon)
+                      const DefaultIcon = BookOpen
+                      const IconEl = (() => {
+                        if (!choice) return <DefaultIcon className="size-4" />
+                        if (choice.kind === "emoji") return <span className="text-[16px] leading-none">{choice.value}</span>
+                        const Preset = LUCIDE_PRESET_MAP[choice.value]
+                        const Dyn = Preset || catLucideAll?.[choice.value]
+                        if (!Dyn) return <DefaultIcon className="size-4" />
+                        return <Dyn className="size-4" />
+                      })()
+
+                      return (
+                        <Popover
+                          open={open}
+                          onOpenChange={(o) => setCatIconOpen(o ? { type: "personal", id: String(c.id) } : null)}
+                        >
+                          <PopoverTrigger asChild>
+                            <button
+                              type="button"
+                              className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-200 rounded-sm"
+                              title="아이콘 변경"
+                              draggable={false}
+                              onDragStart={(e) => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                              }}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {IconEl}
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent
+                            align="start"
+                            sideOffset={6}
+                            className="w-[370px] p-3"
+                            onPointerDown={(e) => e.stopPropagation()}
+                          >
+                            <Tabs value={catIconTab} onValueChange={(v) => setCatIconTab(v === "icon" ? "icon" : "emoji")}>
+                              <TabsList>
+                                <TabsTrigger value="emoji">이모지</TabsTrigger>
+                                <TabsTrigger value="icon">아이콘</TabsTrigger>
+                              </TabsList>
+                              <TabsContent value="emoji">
+                                <div className="max-h-[360px] overflow-auto pr-1">
+                                  <EmojiPicker
+                                    data={emojiData as unknown}
+                                    theme={isDark ? "dark" : "light"}
+                                    previewPosition="none"
+                                    onEmojiSelect={(emoji: unknown) => {
+                                      const em = emoji && typeof emoji === "object" ? (emoji as Record<string, unknown>) : null
+                                      const native = em && typeof em.native === "string" ? String(em.native) : ""
+                                      if (!native) return
+                                      void saveCategoryIcon({ type: "personal", id: String(c.id), choice: { kind: "emoji", value: native } })
+                                      setCatIconOpen(null)
+                                    }}
+                                  />
+                                </div>
+                                <div className="mt-2 flex justify-end">
+                                  <button
+                                    type="button"
+                                    className="text-xs px-2 py-1 rounded hover:bg-accent"
+                                    onClick={() => {
+                                      void saveCategoryIcon({ type: "personal", id: String(c.id), choice: null })
+                                      setCatIconOpen(null)
+                                    }}
+                                  >
+                                    Reset
+                                  </button>
+                                </div>
+                              </TabsContent>
+                              <TabsContent value="icon">
+                                <div className="mb-2">
+                                  <Input
+                                    value={catLucideQuery}
+                                    onChange={(e) => setCatLucideQuery(e.target.value)}
+                                    placeholder="Search icons (e.g. calendar, bot, file...)"
+                                    className="h-8 text-sm"
+                                  />
+                                </div>
+                                {catLucideQuery.trim() ? (
+                                  <>
+                                    {catLucideLoading && !catLucideAll ? (
+                                      <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
+                                    ) : null}
+                                    <div className="max-h-[300px] overflow-auto pr-1">
+                                      <div className="grid grid-cols-7 gap-1">
+                                        {(() => {
+                                          const q = catLucideQuery.trim().toLowerCase()
+                                          const map = catLucideAll || {}
+                                          const keys = Object.keys(map)
+                                            .filter((k) => k.toLowerCase().includes(q))
+                                            .slice(0, 98)
+                                          if (!catLucideLoading && catLucideAll && keys.length === 0) {
+                                            return (
+                                              <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
+                                                No matches. Try a different keyword.
+                                              </div>
+                                            )
+                                          }
+                                          return keys.map((k) => {
+                                            const Cmp = map[k]
+                                            return (
+                                              <button
+                                                key={k}
+                                                type="button"
+                                                className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                                onClick={() => {
+                                                  void saveCategoryIcon({
+                                                    type: "personal",
+                                                    id: String(c.id),
+                                                    choice: { kind: "lucide", value: k },
+                                                  })
+                                                  setCatIconOpen(null)
+                                                }}
+                                                title={k}
+                                                aria-label={k}
+                                              >
+                                                <Cmp className="size-4" />
+                                              </button>
+                                            )
+                                          })
+                                        })()}
+                                      </div>
+                                    </div>
+                                    <div className="mt-2 text-[11px] text-muted-foreground">
+                                      Showing up to 98 matches. Refine your search to narrow results.
+                                    </div>
+                                  </>
+                                ) : (
+                                  <div className="grid grid-cols-7 gap-1">
+                                    {LUCIDE_PRESETS.map((it) => (
+                                      <button
+                                        key={it.key}
+                                        type="button"
+                                        className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                        onClick={() => {
+                                          void saveCategoryIcon({
+                                            type: "personal",
+                                            id: String(c.id),
+                                            choice: { kind: "lucide", value: it.key },
+                                          })
+                                          setCatIconOpen(null)
+                                        }}
+                                        title={it.label}
+                                        aria-label={it.label}
+                                      >
+                                        <it.Icon className="size-4" />
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                                <div className="mt-2 flex justify-end">
+                                  <button
+                                    type="button"
+                                    className="text-xs px-2 py-1 rounded hover:bg-accent"
+                                    onClick={() => {
+                                      void saveCategoryIcon({ type: "personal", id: String(c.id), choice: null })
+                                      setCatIconOpen(null)
+                                    }}
+                                  >
+                                    Reset
+                                  </button>
+                                </div>
+                              </TabsContent>
+                            </Tabs>
+                          </PopoverContent>
+                        </Popover>
+                      )
+                    })()}
 
                      {editingCat && editingCat.type === "personal" && editingCat.id === c.id ? (
                        <input
@@ -803,19 +1343,26 @@ export function Sidebar({ className }: SidebarProps) {
                          }}
                        />
                      ) : (
-                       <span className="text-sm text-sidebar-foreground truncate flex-1 min-w-0">{c.name || "New category"}</span>
+                      <span
+                        className="text-sm text-sidebar-foreground truncate flex-1 min-w-0"
+                        draggable
+                        onDragStart={(e) => startCategoryDrag("personal", c.id, e)}
+                        onDragEnd={endCategoryDrag}
+                      >
+                        {c.name || "New category"}
+                      </span>
                      )}
 
                      <DropdownMenu>
                        <DropdownMenuTrigger asChild>
                          <button
                            type="button"
-                           className="size-6 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-accent"
+                           className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-200"
                            onClick={(e) => e.stopPropagation()}
                            onPointerDown={(e) => e.stopPropagation()}
                            title="메뉴"
                          >
-                           <MoreHorizontal className="size-4" />
+                           <Ellipsis className="size-3" />
                          </button>
                        </DropdownMenuTrigger>
                       <DropdownMenuContent
@@ -860,8 +1407,9 @@ export function Sidebar({ className }: SidebarProps) {
                         </DropdownMenuItem>
                        </DropdownMenuContent>
                      </DropdownMenu>
-                   </div>
-                 ))}
+                    </div>
+                   )
+                 })}
                  <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50">
                    <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
                      <Save className="size-full" />
@@ -901,55 +1449,251 @@ export function Sidebar({ className }: SidebarProps) {
                      Loading…
                    </div>
 
-                  {teamCategories.map((c) => (
-                    <div
-                      key={c.id}
-                      className="group flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50"
-                      onClick={() => {
-                        if (editingCat && editingCat.type === "team" && editingCat.id === c.id) return
-                        navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
-                      }}
-                      onDragOver={(e) => {
-                        if (!draggingCat || draggingCat.type !== "team") return
-                        e.preventDefault()
-                      }}
-                      onDrop={(e) => {
-                        if (!draggingCat || draggingCat.type !== "team") return
-                        e.preventDefault()
-                        const fromId = draggingCat.id
-                        const toId = c.id
-                        if (!fromId || fromId === toId) return
-                        setTeamCategories((prev) => {
-                          const next = prev.slice()
-                          const fromIdx = next.findIndex((x) => x.id === fromId)
-                          const toIdx = next.findIndex((x) => x.id === toId)
-                          if (fromIdx < 0 || toIdx < 0) return prev
-                          const [moved] = next.splice(fromIdx, 1)
-                          next.splice(toIdx, 0, moved)
-                          void reorder({ type: "team", orderedIds: next.map((x) => x.id) })
-                          return next
-                        })
-                        setDraggingCat(null)
-                      }}
-                    >
+                  {teamCategories.map((c) => {
+                    const isActive = isPostsActive && activeCategoryId === String(c.id)
+                    const isDropTarget =
+                      !!categoryDropIndicator &&
+                      categoryDropIndicator.type === "team" &&
+                      categoryDropIndicator.id === String(c.id)
+                    const dropPosition = isDropTarget ? categoryDropIndicator!.position : null
+                    return (
                       <div
-                        className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-60 group-hover:opacity-100 cursor-grab"
+                        key={c.id}
+                        className={cn(
+                          "group relative flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer cursor-grab active:cursor-grabbing",
+                          isActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                        )}
                         draggable
-                        onDragStart={(e) => {
-                          e.stopPropagation()
-                          setDraggingCat({ type: "team", id: c.id })
-                          try {
-                            e.dataTransfer.setData("text/plain", c.id)
-                            e.dataTransfer.effectAllowed = "move"
-                          } catch {
-                            // ignore
-                          }
+                        onDragStart={(e) => startCategoryDrag("team", c.id, e)}
+                        onDragEnd={endCategoryDrag}
+                        onClick={() => {
+                          if (Date.now() < dragBlockClickUntilRef.current) return
+                          if (editingCat && editingCat.type === "team" && editingCat.id === c.id) return
+                          navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
                         }}
-                        onDragEnd={() => setDraggingCat(null)}
-                        title="순서 변경"
+                        onDragOver={(e) => {
+                          if (!draggingCat || draggingCat.type !== "team") return
+                          e.preventDefault()
+                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                          const before = e.clientY < rect.top + rect.height / 2
+                          setCategoryDropIndicator({
+                            type: "team",
+                            id: String(c.id),
+                            position: before ? "before" : "after",
+                          })
+                        }}
+                        onDragLeave={(e) => {
+                          const related = (e.relatedTarget as Node | null) || null
+                          if (related && (e.currentTarget as HTMLElement).contains(related)) return
+                          setCategoryDropIndicator((prev) => {
+                            if (!prev) return null
+                            if (prev.type !== "team") return prev
+                            if (prev.id !== String(c.id)) return prev
+                            return null
+                          })
+                        }}
+                        onDrop={(e) => {
+                          if (!draggingCat || draggingCat.type !== "team") return
+                          e.preventDefault()
+                          const fromId = draggingCat.id
+                          const toId = c.id
+                          if (!fromId || fromId === toId) return
+                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                          const before = e.clientY < rect.top + rect.height / 2
+                          setTeamCategories((prev) => {
+                            const next = prev.slice()
+                            const fromIdx = next.findIndex((x) => x.id === fromId)
+                            if (fromIdx < 0) return prev
+                            const [moved] = next.splice(fromIdx, 1)
+                            const toIdx = next.findIndex((x) => x.id === toId)
+                            if (toIdx < 0) return prev
+                            const insertIdx = toIdx + (before ? 0 : 1)
+                            next.splice(insertIdx, 0, moved)
+                            void reorder({ type: "team", orderedIds: next.map((x) => x.id) })
+                            return next
+                          })
+                          setDraggingCat(null)
+                          setCategoryDropIndicator(null)
+                        }}
                       >
-                        <GripVertical className="size-full" />
-                      </div>
+                      {isDropTarget ? (
+                        <div
+                          className={cn(
+                            "pointer-events-none absolute left-6 right-2 h-0.5 rounded bg-primary/80",
+                            dropPosition === "before" ? "top-0" : "bottom-0"
+                          )}
+                        />
+                      ) : null}
+                      {(() => {
+                        const isDark = typeof document !== "undefined" && document.documentElement.classList.contains("dark")
+                        const open = !!catIconOpen && catIconOpen.type === "team" && catIconOpen.id === String(c.id)
+                        const choice = decodeIcon(c.icon)
+                        const DefaultIcon = Share2
+                        const IconEl = (() => {
+                          if (!choice) return <DefaultIcon className="size-4" />
+                          if (choice.kind === "emoji") return <span className="text-[16px] leading-none">{choice.value}</span>
+                          const Preset = LUCIDE_PRESET_MAP[choice.value]
+                          const Dyn = Preset || catLucideAll?.[choice.value]
+                          if (!Dyn) return <DefaultIcon className="size-4" />
+                          return <Dyn className="size-4" />
+                        })()
+
+                        return (
+                          <Popover open={open} onOpenChange={(o) => setCatIconOpen(o ? { type: "team", id: String(c.id) } : null)}>
+                            <PopoverTrigger asChild>
+                              <button
+                                type="button"
+                                className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-200 rounded-sm"
+                                title="아이콘 변경"
+                                draggable={false}
+                                onDragStart={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                }}
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {IconEl}
+                              </button>
+                            </PopoverTrigger>
+                            <PopoverContent
+                              align="start"
+                              sideOffset={6}
+                              className="w-[370px] p-3"
+                              onPointerDown={(e) => e.stopPropagation()}
+                            >
+                              <Tabs value={catIconTab} onValueChange={(v) => setCatIconTab(v === "icon" ? "icon" : "emoji")}>
+                                <TabsList>
+                                  <TabsTrigger value="emoji">이모지</TabsTrigger>
+                                  <TabsTrigger value="icon">아이콘</TabsTrigger>
+                                </TabsList>
+                                <TabsContent value="emoji">
+                                  <div className="max-h-[360px] overflow-auto pr-1">
+                                    <EmojiPicker
+                                      data={emojiData as unknown}
+                                      theme={isDark ? "dark" : "light"}
+                                      previewPosition="none"
+                                      onEmojiSelect={(emoji: unknown) => {
+                                        const em = emoji && typeof emoji === "object" ? (emoji as Record<string, unknown>) : null
+                                        const native = em && typeof em.native === "string" ? String(em.native) : ""
+                                        if (!native) return
+                                        void saveCategoryIcon({ type: "team", id: String(c.id), choice: { kind: "emoji", value: native } })
+                                        setCatIconOpen(null)
+                                      }}
+                                    />
+                                  </div>
+                                  <div className="mt-2 flex justify-end">
+                                    <button
+                                      type="button"
+                                      className="text-xs px-2 py-1 rounded hover:bg-accent"
+                                      onClick={() => {
+                                        void saveCategoryIcon({ type: "team", id: String(c.id), choice: null })
+                                        setCatIconOpen(null)
+                                      }}
+                                    >
+                                      Reset
+                                    </button>
+                                  </div>
+                                </TabsContent>
+                                <TabsContent value="icon">
+                                  <div className="mb-2">
+                                    <Input
+                                      value={catLucideQuery}
+                                      onChange={(e) => setCatLucideQuery(e.target.value)}
+                                      placeholder="Search icons (e.g. calendar, bot, file...)"
+                                      className="h-8 text-sm"
+                                    />
+                                  </div>
+                                  {catLucideQuery.trim() ? (
+                                    <>
+                                      {catLucideLoading && !catLucideAll ? (
+                                        <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
+                                      ) : null}
+                                      <div className="max-h-[300px] overflow-auto pr-1">
+                                        <div className="grid grid-cols-7 gap-1">
+                                          {(() => {
+                                            const q = catLucideQuery.trim().toLowerCase()
+                                            const map = catLucideAll || {}
+                                            const keys = Object.keys(map)
+                                              .filter((k) => k.toLowerCase().includes(q))
+                                              .slice(0, 98)
+                                            if (!catLucideLoading && catLucideAll && keys.length === 0) {
+                                              return (
+                                                <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
+                                                  No matches. Try a different keyword.
+                                                </div>
+                                              )
+                                            }
+                                            return keys.map((k) => {
+                                              const Cmp = map[k]
+                                              return (
+                                                <button
+                                                  key={k}
+                                                  type="button"
+                                                  className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                                  onClick={() => {
+                                                    void saveCategoryIcon({
+                                                      type: "team",
+                                                      id: String(c.id),
+                                                      choice: { kind: "lucide", value: k },
+                                                    })
+                                                    setCatIconOpen(null)
+                                                  }}
+                                                  title={k}
+                                                  aria-label={k}
+                                                >
+                                                  <Cmp className="size-4" />
+                                                </button>
+                                              )
+                                            })
+                                          })()}
+                                        </div>
+                                      </div>
+                                      <div className="mt-2 text-[11px] text-muted-foreground">
+                                        Showing up to 98 matches. Refine your search to narrow results.
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <div className="grid grid-cols-7 gap-1">
+                                      {LUCIDE_PRESETS.map((it) => (
+                                        <button
+                                          key={it.key}
+                                          type="button"
+                                          className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                          onClick={() => {
+                                            void saveCategoryIcon({
+                                              type: "team",
+                                              id: String(c.id),
+                                              choice: { kind: "lucide", value: it.key },
+                                            })
+                                            setCatIconOpen(null)
+                                          }}
+                                          title={it.label}
+                                          aria-label={it.label}
+                                        >
+                                          <it.Icon className="size-4" />
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                  <div className="mt-2 flex justify-end">
+                                    <button
+                                      type="button"
+                                      className="text-xs px-2 py-1 rounded hover:bg-accent"
+                                      onClick={() => {
+                                        void saveCategoryIcon({ type: "team", id: String(c.id), choice: null })
+                                        setCatIconOpen(null)
+                                      }}
+                                    >
+                                      Reset
+                                    </button>
+                                  </div>
+                                </TabsContent>
+                              </Tabs>
+                            </PopoverContent>
+                          </Popover>
+                        )
+                      })()}
 
                       {editingCat && editingCat.type === "team" && editingCat.id === c.id ? (
                         <input
@@ -976,19 +1720,26 @@ export function Sidebar({ className }: SidebarProps) {
                           }}
                         />
                       ) : (
-                        <span className="text-sm text-sidebar-foreground truncate flex-1 min-w-0">{c.name || "New category"}</span>
+                        <span
+                          className="text-sm text-sidebar-foreground truncate flex-1 min-w-0"
+                          draggable
+                          onDragStart={(e) => startCategoryDrag("team", c.id, e)}
+                          onDragEnd={endCategoryDrag}
+                        >
+                          {c.name || "New category"}
+                        </span>
                       )}
 
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <button
                             type="button"
-                            className="size-6 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-accent"
+                            className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-200"
                             onClick={(e) => e.stopPropagation()}
                             onPointerDown={(e) => e.stopPropagation()}
                             title="메뉴"
                           >
-                            <MoreHorizontal className="size-4" />
+                            <Ellipsis className="size-3" />
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent
@@ -1033,8 +1784,9 @@ export function Sidebar({ className }: SidebarProps) {
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
-                    </div>
-                  ))}
+                      </div>
+                    )
+                  })}
 
                   <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50">
                     <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
@@ -1050,12 +1802,38 @@ export function Sidebar({ className }: SidebarProps) {
       ) : (
         // Collapsed Menu Icons for Pages
         <div className="flex flex-col p-2 gap-1">
-           <div className="flex items-center justify-center h-8 rounded-md cursor-pointer hover:bg-accent/50">
+           <div
+             className={cn(
+               "flex items-center justify-center h-8 rounded-md cursor-pointer",
+               // active when current category belongs to personal categories
+               isPostsActive && activeCategoryId && personalCategories.some((c) => String(c.id) === String(activeCategoryId))
+                 ? "bg-neutral-200"
+                 : "hover:bg-neutral-200"
+             )}
+             title="개인 페이지"
+             onClick={() => {
+               void goToTopCategory("personal")
+             }}
+           >
              <BookOpen className="size-4 text-sidebar-foreground" />
            </div>
-           <div className="flex items-center justify-center h-8 rounded-md cursor-pointer hover:bg-accent/50">
-             <Share2 className="size-4 text-sidebar-foreground" />
-           </div>
+           {tenantType && tenantType !== "personal" ? (
+             <div
+               className={cn(
+                 "flex items-center justify-center h-8 rounded-md cursor-pointer",
+                 // active when current category belongs to team categories
+                 isPostsActive && activeCategoryId && teamCategories.some((c) => String(c.id) === String(activeCategoryId))
+                   ? "bg-neutral-200"
+                   : "hover:bg-neutral-200"
+               )}
+               title="팀 페이지"
+               onClick={() => {
+                 void goToTopCategory("team")
+               }}
+             >
+               <Share2 className="size-4 text-sidebar-foreground" />
+             </div>
+           ) : null}
         </div>
       )}
 
