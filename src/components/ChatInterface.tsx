@@ -222,7 +222,11 @@ function parseBlockJson(text: string): { parsed?: Record<string, unknown>; displ
     if (!isRecord(parsedUnknown)) return { displayText: text }
     const obj = parsedUnknown
     const blocksUnknown = obj.blocks
+    const topMarkdown = typeof obj.markdown === "string" ? obj.markdown : ""
     if (!Array.isArray(blocksUnknown)) {
+      if (topMarkdown) {
+        return { parsed: obj, displayText: topMarkdown || text }
+      }
       const coerced = coerceBlockJsonFromAny(obj)
       if (coerced) {
         const displayText = extractTextFromJsonContent(coerced)
@@ -283,26 +287,46 @@ function parseBlockJson(text: string): { parsed?: Record<string, unknown>; displ
 function normalizeAiContent(rawText: string, content: unknown): { parsed?: Record<string, unknown>; displayText: string } {
   if (content && typeof content === "object") {
     const obj = content as Record<string, unknown>
+    const outputText = typeof obj.output_text === "string" ? obj.output_text : ""
+    if (outputText) {
+      const parsedFromOutput = parseBlockJson(outputText)
+      if (parsedFromOutput.parsed && isRecord(parsedFromOutput.parsed)) {
+        const normalizedParsed = normalizeBlockJson(parsedFromOutput.parsed)
+        const displayText = extractTextFromJsonContent(normalizedParsed)
+        return { parsed: normalizedParsed, displayText: displayText || parsedFromOutput.displayText || rawText }
+      }
+    }
     const coerced = coerceBlockJsonFromAny(obj)
-    const displayText = extractTextFromJsonContent(coerced ?? obj)
-    return { parsed: coerced ?? obj, displayText: displayText || rawText }
+    const normalizedParsed = normalizeBlockJson((coerced ?? obj) as Record<string, unknown>)
+    const displayText = extractTextFromJsonContent(normalizedParsed)
+    return { parsed: normalizedParsed, displayText: displayText || rawText }
   }
   return parseBlockJson(rawText)
 }
 
 function normalizeBlockJson(content: Record<string, unknown>): Record<string, unknown> {
   const blocks = Array.isArray(content.blocks) ? (content.blocks as Array<Record<string, unknown>>) : null
-  if (!blocks) return content
+  if (!blocks) {
+    const topMarkdown = typeof content.markdown === "string" ? content.markdown : null
+    if (topMarkdown) {
+      return { ...content, blocks: [{ type: "markdown", markdown: topMarkdown }] }
+    }
+    return content
+  }
   const normalized = blocks.map((b) => {
     const t = typeof b.type === "string" ? b.type.toLowerCase() : ""
     if (t === "markdown") {
       const md = typeof b.markdown === "string" ? b.markdown : typeof b.content === "string" ? b.content : ""
-      const { content: _content, markdown: _markdown, ...rest } = b
+      const rest = { ...b }
+      delete (rest as { content?: unknown }).content
+      delete (rest as { markdown?: unknown }).markdown
       return md ? { ...rest, type: "markdown", markdown: md } : { ...rest, type: "markdown" }
     }
     if (t === "code") {
       const code = typeof b.code === "string" ? b.code : typeof b.content === "string" ? b.content : ""
-      const { content: _content, code: _code, ...rest } = b
+      const rest = { ...b }
+      delete (rest as { content?: unknown }).content
+      delete (rest as { code?: unknown }).code
       return code
         ? { ...rest, type: "code", language: typeof b.language === "string" ? b.language : "plain", code }
         : { ...rest, type: "code", language: typeof b.language === "string" ? b.language : "plain" }
@@ -437,6 +461,23 @@ export function ChatInterface({
     const picked = selectableModels.find((m) => m.model_api_id === selectedSubModel) || null
     return picked
   }, [selectableModels, selectedSubModel])
+
+  const effectiveModelApiId = React.useMemo(() => {
+    if (selectedSubModel && selectableModels.some((m) => m.model_api_id === selectedSubModel)) {
+      return selectedSubModel
+    }
+    return selectableModels[0]?.model_api_id || ""
+  }, [selectableModels, selectedSubModel])
+
+  const resolveProviderGroupByModelApiId = React.useCallback(
+    (modelApiId?: string | null) => {
+      const apiId = String(modelApiId || "").trim()
+      if (!apiId) return null
+      const groups = (uiConfig?.providers_by_type?.[selectedType] || []) as UiProviderGroup[]
+      return groups.find((g) => (g.models || []).some((m) => m.is_available && m.model_api_id === apiId)) || null
+    },
+    [selectedType, uiConfig?.providers_by_type]
+  )
 
   const selectedModelLabel = React.useMemo(() => {
     if (!selectedModel) return "모델이 선택되지 않았습니다."
@@ -623,13 +664,18 @@ export function ChatInterface({
   )
 
   const handleSend = React.useCallback(
-    async (overrideInput?: string) => {
+    async (overrideInput?: string, overrideModelApiId?: string) => {
       const input = (overrideInput ?? prompt).trim()
       if (!input) return
 
-      const providerSlug = currentProviderGroup?.provider.slug
-      const providerId = currentProviderGroup?.provider.id
-      const modelApiId = selectedSubModel
+      const requestedModelApiId = String(overrideModelApiId || effectiveModelApiId || "").trim()
+      const providerGroup = resolveProviderGroupByModelApiId(requestedModelApiId) || currentProviderGroup
+      const providerSlug = providerGroup?.provider.slug
+      const providerId = providerGroup?.provider.id
+      const modelApiId =
+        (providerGroup?.models || []).find((m) => m.model_api_id === requestedModelApiId)?.model_api_id ||
+        providerGroup?.models?.[0]?.model_api_id ||
+        requestedModelApiId
       if (!providerSlug || !providerId || !modelApiId) {
         alert("사용 가능한 모델이 없습니다. Admin에서 모델/제공업체 설정을 확인해주세요.")
         return
@@ -716,14 +762,14 @@ export function ChatInterface({
       assistantSummary,
       authHeaders,
       conversationId,
-      currentProviderGroup?.provider.id,
-      currentProviderGroup?.provider.slug,
+      currentProviderGroup,
+      effectiveModelApiId,
+      resolveProviderGroupByModelApiId,
       onConversationId,
       onMessage,
       onSubmit,
       prompt,
       runtimeOptions,
-      selectedSubModel,
       selectedType,
       sessionLanguage,
       submitMode,
@@ -738,19 +784,21 @@ export function ChatInterface({
     const p = String(autoSendPrompt || "").trim()
     if (!p) return
     if (!uiConfig) return
-    if (!currentProviderGroup?.provider?.id) return
-    if (!selectedSubModel) return
+    if (!currentProviderGroup?.provider?.id && !effectiveModelApiId) return
 
     // If an initial provider/model is specified (FrontAI -> Timeline), wait until
     // the UI selection has actually applied before auto-sending.
     const desiredProviderSlug = String(initialProviderSlug || "").trim()
     const desiredModelApiId = String(initialSelectedModel || "").trim()
-    if (desiredProviderSlug && currentProviderGroup.provider.slug !== desiredProviderSlug) return
-    if (desiredModelApiId && selectedSubModel !== desiredModelApiId) return
+    if (desiredProviderSlug && currentProviderGroup?.provider?.slug && currentProviderGroup.provider.slug !== desiredProviderSlug) return
+    if (desiredModelApiId) {
+      const desiredGroup = resolveProviderGroupByModelApiId(desiredModelApiId)
+      if (!desiredGroup) return
+    }
 
     if (autoSentRef.current === p) return
     autoSentRef.current = p
-    void handleSend(p)
+    void handleSend(p, desiredModelApiId || undefined)
   }, [
     autoSendPrompt,
     currentProviderGroup?.provider?.id,
@@ -758,7 +806,8 @@ export function ChatInterface({
     handleSend,
     initialProviderSlug,
     initialSelectedModel,
-    selectedSubModel,
+    effectiveModelApiId,
+    resolveProviderGroupByModelApiId,
     submitMode,
     uiConfig,
   ])
@@ -975,7 +1024,7 @@ export function ChatInterface({
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant={isCompact ? "outline" : "ghost"} className={cn(isCompact ? "h-[36px] rounded-lg gap-2 px-3" : "h-[36px] rounded-[8px] gap-2 px-4")}>
-                          {selectedSubModel || "-"}
+                          {effectiveModelApiId || "-"}
                           <ChevronDown className="size-4" />
                         </Button>
                       </DropdownMenuTrigger>

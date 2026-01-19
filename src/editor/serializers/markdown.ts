@@ -189,7 +189,7 @@ export function exportMarkdown(_schema: Schema, doc: PMNode): string {
 }
 
 export function buildMarkdownParser(schema: Schema) {
-  const md = new MarkdownIt("commonmark", {
+  const md = new MarkdownIt("default", {
     html: false,
     linkify: true,
     breaks: true,

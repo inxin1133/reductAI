@@ -6,6 +6,8 @@ import { cn } from "@/lib/utils"
 import { ChatInterface } from "@/components/ChatInterface"
 import { ProseMirrorViewer } from "@/components/post/ProseMirrorViewer"
 import { aiJsonToPmDoc } from "@/components/post/aiBlocksToPmDoc"
+import { parseMarkdownToPmDoc } from "@/editor/serializers/markdown"
+import { editorSchema } from "@/editor/schema"
 import { ProviderLogo } from "@/components/icons/providerLogoRegistry"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import { useLocation, useNavigate } from "react-router-dom"
@@ -132,6 +134,21 @@ function normalizeContentJson(content: unknown): Record<string, unknown> | null 
     return parsed ?? obj
   }
   return null
+}
+
+function looksLikeMarkdown(input: string): boolean {
+  const s = String(input || "")
+  if (!s.trim()) return false
+  return /(^|\n)(#{1,6}\s)|(^|\n)\s*[-*+]\s|(\|.+\|)|(^|\n)---\s*$/.test(s)
+}
+
+function markdownToPmDoc(markdown: string) {
+  try {
+    const doc = parseMarkdownToPmDoc(editorSchema, markdown)
+    return doc?.toJSON() as { type: "doc"; content: Array<Record<string, unknown>> } | null
+  } catch {
+    return null
+  }
 }
 
 function extractTextFromJsonContent(content: unknown): string {
@@ -621,17 +638,6 @@ export default function Timeline() {
                               )
                             }
 
-                            // 타입라이터 효과: 마지막 응답 텍스트를 "써지는 것처럼" 보여줌
-                            // - 블록 렌더링은 완료 후 자연스럽게 표시(성능/복잡도 균형)
-                            if (typing && !m.isPending && m.role === "assistant" && typeof m.content === "string" && m.content === typing.full && typing.shown.length < typing.full.length) {
-                              return (
-                                <div>
-                                  {typing.shown}
-                                  <span className="inline-block w-[6px] animate-pulse">▍</span>
-                                </div>
-                              )
-                            }
-
                             const normalized = normalizeContentJson(m.contentJson)
                             if (normalized) {
                               const pmDoc = aiJsonToPmDoc(normalized)
@@ -642,6 +648,38 @@ export default function Timeline() {
                                   </div>
                                 )
                               }
+                            }
+                            if (typeof m.content === "string") {
+                              const parsedFromContent = parseJsonLikeString(m.content)
+                              if (parsedFromContent) {
+                                const pmDoc = aiJsonToPmDoc(parsedFromContent)
+                                if (pmDoc) {
+                                  return (
+                                    <div className="space-y-3">
+                                      <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" />
+                                    </div>
+                                  )
+                                }
+                              }
+                            }
+                            if (typeof m.content === "string" && looksLikeMarkdown(m.content)) {
+                              const pmDoc = markdownToPmDoc(m.content)
+                              if (pmDoc) {
+                                return (
+                                  <div className="space-y-3">
+                                    <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" />
+                                  </div>
+                                )
+                              }
+                            }
+                            // 타입라이터 효과: 일반 텍스트에만 적용
+                            if (typing && !m.isPending && m.role === "assistant" && typeof m.content === "string" && m.content === typing.full && typing.shown.length < typing.full.length) {
+                              return (
+                                <div>
+                                  {typing.shown}
+                                  <span className="inline-block w-[6px] animate-pulse">▍</span>
+                                </div>
+                              )
                             }
                             return <>{m.content}</>
                           })()}

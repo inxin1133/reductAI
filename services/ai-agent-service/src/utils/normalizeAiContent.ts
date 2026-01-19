@@ -179,6 +179,10 @@ export function normalizeAiContent(content: unknown): JsonRecord {
   if (!isRecord(content)) return { value: content }
   const fromOutputText = coerceFromOutputText(content)
   if (fromOutputText) return fromOutputText
+  const topMarkdown = typeof content.markdown === "string" ? content.markdown.trim() : ""
+  if (topMarkdown) {
+    return { ...content, blocks: [{ type: "markdown", markdown: topMarkdown }] }
+  }
   const blocks = Array.isArray(content.blocks) ? content.blocks : null
   if (!blocks) {
     const summaryText = typeof content.summary === "string" ? content.summary.trim() : ""

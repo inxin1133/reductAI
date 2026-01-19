@@ -65,7 +65,7 @@ function clampInt(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, Math.floor(n)))
 }
 
-function deepInjectVars(input: unknown, vars: Record<string, string>): unknown {
+function deepInjectVars(input: unknown, vars: Record<string, unknown>): unknown {
   if (typeof input === "string") {
     // If the entire string is exactly one placeholder, allow scalar coercion
     // so JSON templates can safely carry numbers/booleans (e.g., temperature/maxTokens).
@@ -73,13 +73,14 @@ function deepInjectVars(input: unknown, vars: Record<string, string>): unknown {
     if (exact) {
       const k = exact[1]
       const raw = k in vars ? vars[k] : ""
+      if (raw && typeof raw === "object") return raw
       const s = String(raw)
       if (s === "true") return true
       if (s === "false") return false
       if (/^-?\d+(?:\.\d+)?$/.test(s)) return Number(s)
       return s
     }
-    return input.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, k) => (k in vars ? vars[k] : ""))
+    return input.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, k) => String(k in vars ? vars[k] : ""))
   }
   if (Array.isArray(input)) return input.map((v) => deepInjectVars(v, vars))
   if (input && typeof input === "object") {
@@ -216,7 +217,7 @@ async function executeHttpJsonProfile(args: {
   options: Record<string, unknown>
   injectedTemplate: Record<string, unknown> | null
   profile: ModelApiProfileRow
-  configVars: Record<string, string>
+  configVars: Record<string, unknown>
 }): Promise<{ output_text: string; raw: unknown; content: Record<string, unknown> }> {
   const transport = safeObj(args.profile.transport)
   const responseMapping = safeObj(args.profile.response_mapping)
@@ -231,7 +232,7 @@ async function executeHttpJsonProfile(args: {
   const path = pickString(transport, "path") || "/"
   const timeoutMs = Number(transport.timeout_ms || 60000) || 60000
 
-  const vars: Record<string, string> = {
+  const vars: Record<string, unknown> = {
     apiKey: args.apiKey,
     accessToken: args.accessToken || "",
     model: args.modelApiId,
@@ -280,7 +281,7 @@ async function executeHttpJsonProfile(args: {
   async function httpCall(args2: {
     transportSpec: Record<string, unknown>
     templateBody: Record<string, unknown> | null
-    vars: Record<string, string>
+    vars: Record<string, unknown>
     overrideMethod?: string
     overridePath?: string
     overrideQuery?: Record<string, unknown>
@@ -1125,9 +1126,15 @@ export async function chatRun(req: Request, res: Response) {
     const injectedTemplate = templateBody
       ? (deepInjectVars(templateBody, {
           userPrompt: prompt,
+          input: prompt,
+          prompt,
+          user_input: prompt,
           language: finalLang,
           shortHistory: history.shortText,
           longSummary: history.conversationSummary || history.longText,
+          response_schema_name: responseSchema?.name || "",
+          response_schema_json: responseSchema?.schema || {},
+          response_schema_strict: responseSchema?.strict !== false,
         }) as Record<string, unknown>)
       : null
 

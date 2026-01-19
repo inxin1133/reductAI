@@ -44,9 +44,36 @@ function withAuthToken(url: string) {
   return `${raw}${raw.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`
 }
 
+function normalizeMarkdownTables(input: string) {
+  const raw = String(input || "")
+  if (!raw.includes("```")) return raw
+  const fenceRegex = /```[^\n]*\n([\s\S]*?)```/g
+  return raw.replace(fenceRegex, (match, inner) => {
+    const lines = String(inner || "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+    if (lines.length < 2) return match
+    const hasPipes = lines.every((line) => line.includes("|"))
+    if (!hasPipes) return match
+    const header = lines[0]
+    const body = lines.slice(1)
+    const colCount = header.split("|").map((s) => s.trim()).filter(Boolean).length
+    if (colCount < 2) return match
+    const sep = Array(colCount).fill("---").join(" | ")
+    const normalized = [
+      `| ${header.split("|").map((s) => s.trim()).filter(Boolean).join(" | ")} |`,
+      `| ${sep} |`,
+      ...body.map((row) => `| ${row.split("|").map((s) => s.trim()).filter(Boolean).join(" | ")} |`),
+    ]
+    return normalized.join("\n")
+  })
+}
+
 function appendMarkdownBlocks(content: Array<Record<string, unknown>>, markdown: string) {
+  const normalizedMarkdown = normalizeMarkdownTables(markdown)
   try {
-    const doc = parseMarkdownToPmDoc(editorSchema, markdown)
+    const doc = parseMarkdownToPmDoc(editorSchema, normalizedMarkdown)
     const json = doc?.toJSON() as { content?: Array<Record<string, unknown>> } | undefined
     if (json?.content?.length) {
       content.push(...json.content)
@@ -55,7 +82,7 @@ function appendMarkdownBlocks(content: Array<Record<string, unknown>>, markdown:
   } catch {
     // fall through to plain text
   }
-  content.push(...paragraphsFromText(markdown))
+  content.push(...paragraphsFromText(normalizedMarkdown))
 }
 
 function tableFromBlocks(headers: string[], rows: string[][]) {
@@ -124,6 +151,14 @@ export function aiJsonToPmDoc(contentJson: unknown): PmDocJson | null {
   if (obj.type === "doc") return contentJson as PmDocJson
 
   const content: Array<Record<string, unknown>> = []
+  const outputText = typeof obj.output_text === "string" ? obj.output_text.trim() : ""
+  if (outputText) {
+    appendMarkdownBlocks(content, outputText)
+  }
+  const topMarkdown = typeof obj.markdown === "string" ? obj.markdown.trim() : ""
+  if (topMarkdown) {
+    appendMarkdownBlocks(content, topMarkdown)
+  }
   const title = typeof obj.title === "string" ? obj.title.trim() : ""
   const summary = typeof obj.summary === "string" ? obj.summary.trim() : ""
   if (title) {
