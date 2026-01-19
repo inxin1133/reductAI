@@ -11,6 +11,8 @@ import { bulletListNodeSpec } from "../nodes/bullet_list"
 import { orderedListNodeSpec } from "../nodes/ordered_list"
 import { listItemNodeSpec } from "../nodes/list_item"
 import { imageNodeSpec } from "../nodes/image"
+import { audioNodeSpec } from "../nodes/audio"
+import { videoNodeSpec } from "../nodes/video"
 import { mentionNodeSpec } from "../nodes/mention"
 import { pageLinkNodeSpec } from "../nodes/page_link"
 import { tableCellNodeSpec, tableHeaderNodeSpec, tableNodeSpec, tableRowNodeSpec } from "../nodes/table"
@@ -60,6 +62,8 @@ export const editorSchema = new Schema({
     .update("table_header", tableHeaderNodeSpec)
     // custom block/inline nodes
     .addToEnd("image", imageNodeSpec)
+    .addToEnd("audio", audioNodeSpec)
+    .addToEnd("video", videoNodeSpec)
     .addToEnd("page_link", pageLinkNodeSpec)
     .addToEnd("mention", mentionNodeSpec),
   marks: baseMarks

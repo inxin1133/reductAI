@@ -61,8 +61,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
-import EmojiPicker from "@emoji-mart/react"
-import emojiData from "@emoji-mart/data"
+import EmojiPicker, { Theme } from "emoji-picker-react"
+import type { EmojiClickData } from "emoji-picker-react"
 
 type CategoryUpdatedDetail = {
   id: string
@@ -1996,12 +1996,10 @@ export default function PostEditorPage() {
                   <TabsContent value="emoji">
                     <div className="max-h-[360px] overflow-auto pr-1">
                       <EmojiPicker
-                        data={emojiData as unknown}
-                        theme={isDark ? "dark" : "light"}
-                        previewPosition="none"
-                        onEmojiSelect={(emoji: unknown) => {
-                          const em = emoji && typeof emoji === "object" ? (emoji as Record<string, unknown>) : null
-                          const native = em && typeof em.native === "string" ? String(em.native) : ""
+                        theme={isDark ? Theme.DARK : Theme.LIGHT}
+                        previewConfig={{ showPreview: false }}
+                        onEmojiClick={(emoji: EmojiClickData) => {
+                          const native = emoji?.emoji ? String(emoji.emoji) : ""
                           if (!native) return
                           void savePageIcon(id, { kind: "emoji", value: native })
                           setIconPickerOpenId(null)
@@ -2243,12 +2241,10 @@ export default function PostEditorPage() {
                 <TabsContent value="emoji">
                   <div className="max-h-[360px] overflow-auto pr-1">
                     <EmojiPicker
-                      data={emojiData as unknown}
-                      theme={isDark ? "dark" : "light"}
-                      previewPosition="none"
-                      onEmojiSelect={(emoji: unknown) => {
-                        const em = emoji && typeof emoji === "object" ? (emoji as Record<string, unknown>) : null
-                        const native = em && typeof em.native === "string" ? String(em.native) : ""
+                      theme={isDark ? Theme.DARK : Theme.LIGHT}
+                      previewConfig={{ showPreview: false }}
+                      onEmojiClick={(emoji: EmojiClickData) => {
+                        const native = emoji?.emoji ? String(emoji.emoji) : ""
                         if (!native) return
                         void saveCategoryIcon({ kind: "emoji", value: native })
                         setCategoryIconOpen(false)
@@ -2756,12 +2752,10 @@ export default function PostEditorPage() {
                           <TabsContent value="emoji">
                             <div className="max-h-[360px] overflow-auto pr-1">
                               <EmojiPicker
-                                data={emojiData as unknown}
-                                theme={document.documentElement.classList.contains("dark") ? "dark" : "light"}
-                                previewPosition="none"
-                                onEmojiSelect={(emoji: unknown) => {
-                                  const em = emoji && typeof emoji === "object" ? (emoji as Record<string, unknown>) : null
-                                  const native = em && typeof em.native === "string" ? String(em.native) : ""
+                                theme={document.documentElement.classList.contains("dark") ? Theme.DARK : Theme.LIGHT}
+                                previewConfig={{ showPreview: false }}
+                                onEmojiClick={(emoji: EmojiClickData) => {
+                                  const native = emoji?.emoji ? String(emoji.emoji) : ""
                                   if (!native || !postId) return
                                   void savePageIcon(postId, { kind: "emoji", value: native })
                                   setTitleIconOpen(false)

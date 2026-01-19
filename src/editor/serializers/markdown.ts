@@ -1,5 +1,8 @@
-import type { Node as PMNode, Schema } from "prosemirror-model"
-import { MarkdownSerializer } from "prosemirror-markdown"
+import type { Mark, Node as PMNode, Schema } from "prosemirror-model"
+import type { MarkdownSerializerState, ParseSpec } from "prosemirror-markdown"
+import { MarkdownParser, MarkdownSerializer } from "prosemirror-markdown"
+import type Token from "markdown-it/lib/token.mjs"
+import MarkdownIt from "markdown-it"
 
 function esc(str: string) {
   return (str || "").replace(/(\*|_|`|\[|\]|\||\\)/g, "\\$1")
@@ -43,21 +46,37 @@ function tableToGfm(node: PMNode): string {
   return out.join("\n")
 }
 
-export function buildMarkdownSerializer(_schema: Schema) {
-  const nodes: any = {
-    doc: (state: any, node: PMNode) => state.renderContent(node),
-    paragraph: (state: any, node: PMNode) => state.renderInline(node) && state.closeBlock(node),
-    text: (state: any, node: PMNode) => state.text(node.text || ""),
+function getAttr(tok: Token, name: string) {
+  const value = tok.attrGet(name)
+  return value == null ? null : value
+}
 
-    heading: (state: any, node: PMNode) => {
+type MarkSerializerSpec = {
+  open: string | ((state: MarkdownSerializerState, mark: Mark, parent: PMNode, index: number) => string)
+  close: string | ((state: MarkdownSerializerState, mark: Mark, parent: PMNode, index: number) => string)
+  mixable?: boolean
+  expelEnclosingWhitespace?: boolean
+  escape?: boolean
+}
+
+export function buildMarkdownSerializer() {
+  const nodes: Record<string, (state: MarkdownSerializerState, node: PMNode, parent: PMNode, index: number) => void> = {
+    doc: (state, node) => state.renderContent(node),
+    paragraph: (state, node) => {
+      state.renderInline(node)
+      state.closeBlock(node)
+    },
+    text: (state, node) => state.text(node.text || ""),
+
+    heading: (state, node) => {
       state.write(state.repeat("#", node.attrs.level) + " ")
       state.renderInline(node)
       state.closeBlock(node)
     },
-    blockquote: (state: any, node: PMNode) => {
+    blockquote: (state, node) => {
       state.wrapBlock("> ", null, node, () => state.renderContent(node))
     },
-    code_block: (state: any, node: PMNode) => {
+    code_block: (state, node) => {
       state.write("```")
       state.ensureNewLine()
       state.text(node.textContent, false)
@@ -65,39 +84,39 @@ export function buildMarkdownSerializer(_schema: Schema) {
       state.write("```")
       state.closeBlock(node)
     },
-    hard_break: (state: any) => state.write("\\\n"),
-    horizontal_rule: (state: any, node: PMNode) => {
+    hard_break: (state) => state.write("\\\n"),
+    horizontal_rule: (state, node) => {
       state.write("---")
       state.closeBlock(node)
     },
 
-    bullet_list: (state: any, node: PMNode) => state.renderList(node, "  ", () => "- "),
-    ordered_list: (state: any, node: PMNode) => {
+    bullet_list: (state, node) => state.renderList(node, "  ", () => "- "),
+    ordered_list: (state, node) => {
       const start = node.attrs.order || 1
       let i = 0
       state.renderList(node, "  ", () => `${start + i++}. `)
     },
-    list_item: (state: any, node: PMNode) => state.renderContent(node),
+    list_item: (state, node) => state.renderContent(node),
 
     // Tables: export as GitHub-flavored Markdown table (best-effort).
-    table: (state: any, node: PMNode) => {
+    table: (state, node) => {
       const t = tableToGfm(node)
       state.write(t || "[Table]")
       state.closeBlock(node)
     },
 
     // Custom nodes
-    image: (state: any, node: PMNode) => {
+    image: (state, node) => {
       const alt = esc(node.attrs.alt || "image")
       const src = String(node.attrs.src || "")
       const title = node.attrs.title ? ` "${esc(String(node.attrs.title))}"` : ""
       state.write(`![${alt}](${src}${title})`)
       state.closeBlock(node)
     },
-    mention: (state: any, node: PMNode) => {
+    mention: (state, node) => {
       state.text(`@${node.attrs.label || "mention"}`, false)
     },
-    page_link: (state: any, node: PMNode) => {
+    page_link: (state, node) => {
       const title = String(node.attrs.title || "page")
       const pageId = String(node.attrs.pageId || "")
       const display = String(node.attrs.display || "link")
@@ -106,7 +125,7 @@ export function buildMarkdownSerializer(_schema: Schema) {
     },
   }
 
-  const marks: any = {
+  const marks: Record<string, MarkSerializerSpec> = {
     em: { open: "*", close: "*", mixable: true, expelEnclosingWhitespace: true },
     strong: { open: "**", close: "**", mixable: true, expelEnclosingWhitespace: true },
     code: { open: "`", close: "`" },
@@ -116,7 +135,7 @@ export function buildMarkdownSerializer(_schema: Schema) {
     strike: { open: "~~", close: "~~", mixable: true, expelEnclosingWhitespace: true },
     // Markdown doesn't standardize text color; export as inline HTML with best-effort hex mapping.
     text_color: {
-      open: (_state: any, mark: any) => {
+      open: (_state: MarkdownSerializerState, mark: Mark) => {
         const key = String(mark.attrs?.color || "")
         const hexByKey: Record<string, string> = {
           "slate-500": "#64748b",
@@ -154,7 +173,7 @@ export function buildMarkdownSerializer(_schema: Schema) {
     },
     link: {
       open: "[",
-      close: (_state: any, mark: any) => {
+      close: (_state: MarkdownSerializerState, mark: Mark) => {
         const href = String(mark.attrs.href || "")
         const title = mark.attrs.title ? ` "${esc(String(mark.attrs.title))}"` : ""
         return `](${href}${title})`
@@ -165,8 +184,77 @@ export function buildMarkdownSerializer(_schema: Schema) {
   return new MarkdownSerializer(nodes, marks)
 }
 
-export function exportMarkdown(schema: Schema, doc: PMNode): string {
-  return buildMarkdownSerializer(schema).serialize(doc, { tightLists: true })
+export function exportMarkdown(_schema: Schema, doc: PMNode): string {
+  return buildMarkdownSerializer().serialize(doc, { tightLists: true })
+}
+
+export function buildMarkdownParser(schema: Schema) {
+  const md = new MarkdownIt("commonmark", {
+    html: false,
+    linkify: true,
+    breaks: true,
+  })
+  md.enable(["strikethrough", "table"])
+
+  const tokens: Record<string, ParseSpec> = {
+    blockquote: { block: "blockquote" },
+    paragraph: { block: "paragraph" },
+    list_item: { block: "list_item" },
+    bullet_list: { block: "bullet_list" },
+    ordered_list: {
+      block: "ordered_list",
+      getAttrs: (tok: Token) => ({ order: Number(getAttr(tok, "start")) || 1 }),
+    },
+    heading: {
+      block: "heading",
+      getAttrs: (tok: Token) => ({ level: Number(String(tok.tag || "h1").replace("h", "")) || 1 }),
+    },
+    code_block: { block: "code_block", noCloseToken: true },
+    fence: {
+      block: "code_block",
+      getAttrs: (tok: Token) => ({ language: String(tok.info || "plain").trim() || "plain" }),
+      noCloseToken: true,
+    },
+    hr: { node: "horizontal_rule" },
+    hardbreak: { node: "hard_break" },
+
+    // Tables
+    table: { block: "table" },
+    thead: { ignore: true },
+    tbody: { ignore: true },
+    tr: { block: "table_row" },
+    th: { block: "table_header" },
+    td: { block: "table_cell" },
+
+    // Inline nodes/marks
+    image: {
+      node: "image",
+      getAttrs: (tok: Token) => ({
+        src: getAttr(tok, "src"),
+        title: getAttr(tok, "title"),
+        alt: getAttr(tok, "alt"),
+      }),
+    },
+    em: { mark: "em" },
+    strong: { mark: "strong" },
+    s: { mark: "strike" },
+    del: { mark: "strike" },
+    code_inline: { mark: "code" },
+    link: {
+      mark: "link",
+      getAttrs: (tok: Token) => ({
+        href: getAttr(tok, "href") || "",
+        title: getAttr(tok, "title"),
+      }),
+    },
+  }
+
+  return new MarkdownParser(schema, md, tokens)
+}
+
+export function parseMarkdownToPmDoc(schema: Schema, markdown: string): PMNode {
+  const parser = buildMarkdownParser(schema)
+  return parser.parse(String(markdown || ""))
 }
 
 

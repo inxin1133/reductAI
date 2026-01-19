@@ -13,6 +13,7 @@ import {
 } from "../services/providerClients"
 import { resolveAuthForModelApiProfile } from "../services/authProfilesService"
 import { newAssetId, storeImageDataUrlAsAsset } from "../services/mediaAssetsService"
+import { normalizeAiContent } from "../utils/normalizeAiContent"
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 
@@ -1301,11 +1302,12 @@ export async function chatRun(req: Request, res: Response) {
     }
 
     // persist messages (user + assistant)
+    const normalizedUserContent = normalizeAiContent({ text: prompt, options: options || {} })
     await appendMessage({
       conversationId: convId,
       role: "user",
-      content: { text: prompt, options: options || {} },
-      contentText: prompt,
+      content: normalizedUserContent,
+      contentText: extractTextFromJsonContent(normalizedUserContent) || prompt,
       summary: null,
       modelApiId,
       providerSlug: String(row.provider_slug || ""),
@@ -1316,13 +1318,14 @@ export async function chatRun(req: Request, res: Response) {
     // Assetize media fields (image/audio/video data URLs) before persisting assistant message.
     const assistantMessageId = crypto.randomUUID()
     const rewritten = rewriteContentWithAssetUrls(out.content)
+    const normalizedAssistantContent = normalizeAiContent(rewritten.content)
 
     // Use a safe, compact content_text for history/context (avoid huge JSON / base64).
-    const title = typeof rewritten.content.title === "string" ? rewritten.content.title : ""
-    const summary = typeof rewritten.content.summary === "string" ? rewritten.content.summary : ""
-    const imgCount = Array.isArray(rewritten.content.images) ? (rewritten.content.images as unknown[]).length : 0
-    const hasAudio = isRecord(rewritten.content.audio)
-    const hasVideo = isRecord(rewritten.content.video)
+    const title = typeof normalizedAssistantContent.title === "string" ? normalizedAssistantContent.title : ""
+    const summary = typeof normalizedAssistantContent.summary === "string" ? normalizedAssistantContent.summary : ""
+    const imgCount = Array.isArray(normalizedAssistantContent.images) ? (normalizedAssistantContent.images as unknown[]).length : 0
+    const hasAudio = isRecord(normalizedAssistantContent.audio)
+    const hasVideo = isRecord(normalizedAssistantContent.video)
     const contentTextForHistory =
       title || summary
         ? `${title || ""}${title && summary ? " - " : ""}${summary || ""}`.slice(0, 4000)
@@ -1338,7 +1341,7 @@ export async function chatRun(req: Request, res: Response) {
       id: assistantMessageId,
       conversationId: convId,
       role: "assistant",
-      content: rewritten.content,
+      content: normalizedAssistantContent,
       contentText: contentTextForHistory,
       summary: null,
       modelApiId,

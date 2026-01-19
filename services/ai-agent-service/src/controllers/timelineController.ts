@@ -3,6 +3,7 @@ import { query } from "../config/db"
 import { AuthedRequest } from "../middleware/requireAuth"
 import { getProviderAuth, getProviderBase, openaiSimulateChat } from "../services/providerClients"
 import { ensureSystemTenantId } from "../services/systemTenantService"
+import { normalizeAiContent } from "../utils/normalizeAiContent"
 
 // Timeline(대화 히스토리) API
 // - 프론트(Timeline 좌측 목록/메시지 영역)에서 사용합니다.
@@ -38,12 +39,6 @@ function extractTextFromJsonContent(content: unknown): string {
   // ai-agent-service /api/ai/chat 응답 형태
   if (typeof c.output_text === "string") return c.output_text
   return ""
-}
-
-function normalizeJsonContent(content: unknown) {
-  if (content && typeof content === "object") return content as Record<string, unknown>
-  if (typeof content === "string") return { text: content }
-  return { value: content }
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -392,7 +387,7 @@ export async function addMessage(req: Request, res: Response) {
     // model_messages는 별도 model 컬럼이 없으므로 metadata에 저장합니다.
     const metadata = { ...(model ? { model } : {}), ...(toolName ? { tool_name: toolName } : {}) }
 
-    const normalizedContent = normalizeJsonContent(content)
+    const normalizedContent = normalizeAiContent(content)
     const summary =
       typeof summaryIn === "string" && summaryIn.trim()
         ? (role === "assistant" ? assistantSummaryOneSentence(summaryIn) : clampText(summaryIn, role === "user" ? 50 : 100))

@@ -4,9 +4,8 @@ import { Button } from "@/components/ui/button"
 import { Copy, Volume2, Repeat, ChevronsLeft, PencilLine, GalleryVerticalEnd } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ChatInterface } from "@/components/ChatInterface"
-import { Markdown } from "@/components/Markdown"
-import { CodeBlock } from "@/components/CodeBlock"
-import { BlockTable } from "@/components/BlockTable"
+import { ProseMirrorViewer } from "@/components/post/ProseMirrorViewer"
+import { aiJsonToPmDoc } from "@/components/post/aiBlocksToPmDoc"
 import { ProviderLogo } from "@/components/icons/providerLogoRegistry"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import { useLocation, useNavigate } from "react-router-dom"
@@ -102,8 +101,45 @@ type TimelineNavState = {
 
 const TIMELINE_API_BASE = "/api/ai/timeline"
 
+function parseJsonLikeString(input: string): Record<string, unknown> | null {
+  let raw = String(input || "").trim()
+  if (!raw) return null
+  if (raw.startsWith("```")) {
+    const firstNl = raw.indexOf("\n")
+    const lastFence = raw.lastIndexOf("```")
+    if (firstNl > -1 && lastFence > firstNl) raw = raw.slice(firstNl + 1, lastFence).trim()
+  }
+  const firstBrace = raw.indexOf("{")
+  const lastBrace = raw.lastIndexOf("}")
+  if (firstBrace > -1 && lastBrace > firstBrace) raw = raw.slice(firstBrace, lastBrace + 1)
+  if (!raw.startsWith("{")) return null
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>
+  } catch {
+    // ignore parse errors
+  }
+  return null
+}
+
+function normalizeContentJson(content: unknown): Record<string, unknown> | null {
+  if (!content) return null
+  if (typeof content === "string") return parseJsonLikeString(content)
+  if (typeof content === "object" && !Array.isArray(content)) {
+    const obj = content as Record<string, unknown>
+    const outText = typeof obj.output_text === "string" ? obj.output_text : ""
+    const parsed = outText ? parseJsonLikeString(outText) : null
+    return parsed ?? obj
+  }
+  return null
+}
+
 function extractTextFromJsonContent(content: unknown): string {
-  if (typeof content === "string") return content
+  if (typeof content === "string") {
+    const parsed = parseJsonLikeString(content)
+    if (parsed) return extractTextFromJsonContent(parsed)
+    return content
+  }
   if (!content || typeof content !== "object") return ""
   const c = content as Record<string, unknown>
   if (typeof c.text === "string") return c.text
@@ -119,15 +155,16 @@ function extractTextFromJsonContent(content: unknown): string {
     if (summary) out.push(summary)
     for (const b of blocks) {
       const t = typeof b.type === "string" ? b.type : ""
-      if (t === "markdown" && typeof b.markdown === "string") {
-        out.push(String(b.markdown))
+      if (t === "markdown") {
+        const md = typeof b.markdown === "string" ? b.markdown : typeof b.content === "string" ? b.content : ""
+        if (md) out.push(String(md))
       } else if (t === "code") {
         const lang = typeof b.language === "string" ? b.language : "plain"
-        const code = typeof b.code === "string" ? b.code : ""
-        out.push(`[code:${lang}]\n${code}`)
+        const code = typeof b.code === "string" ? b.code : typeof b.content === "string" ? b.content : ""
+        if (code) out.push(`[code:${lang}]\n${code}`)
       } else if (t === "table") {
         const headers = Array.isArray(b.headers) ? (b.headers as unknown[]).map(String) : []
-        const rows = Array.isArray(b.rows) ? (b.rows as unknown[]) : []
+        const rows = Array.isArray(b.rows) ? (b.rows as unknown[]) : Array.isArray((b as { data?: unknown }).data) ? ((b as { data?: unknown }).data as unknown[]) : []
         out.push(
           `[table]\n${headers.join(" | ")}\n${rows
             .map((r) => (Array.isArray(r) ? (r as unknown[]).map(String).join(" | ") : ""))
@@ -297,11 +334,13 @@ export default function Timeline() {
       created_at: string
       message_order?: number
     }>
-    const mapped = rows.map((m) => ({
+    const mapped = rows.map((m) => {
+      const normalized = normalizeContentJson(m.content)
+      return {
       id: m.id,
       role: m.role,
-      content: extractTextFromJsonContent(m.content) || "",
-      contentJson: m.content,
+      content: extractTextFromJsonContent(normalized ?? m.content) || "",
+      contentJson: normalized ?? m.content,
       model: typeof m.metadata?.model === "string" ? (m.metadata.model as string) : undefined,
       providerSlug:
         typeof m.provider_slug_resolved === "string" && m.provider_slug_resolved.trim()
@@ -314,7 +353,8 @@ export default function Timeline() {
       providerLogoKey:
         typeof m.provider_logo_key === "string" && m.provider_logo_key.trim() ? m.provider_logo_key : null,
       createdAt: m.created_at,
-    })) as TimelineMessage[]
+      }
+    }) as TimelineMessage[]
     return dedupeById(mapped)
   }, [authHeaders])
 
@@ -592,103 +632,13 @@ export default function Timeline() {
                               )
                             }
 
-                            const c = m.contentJson
-                            if (c && typeof c === "object") {
-                              const obj = c as Record<string, unknown>
-                              const blocks = Array.isArray(obj.blocks) ? (obj.blocks as Array<Record<string, unknown>>) : null
-                              if (blocks && blocks.length > 0) {
+                            const normalized = normalizeContentJson(m.contentJson)
+                            if (normalized) {
+                              const pmDoc = aiJsonToPmDoc(normalized)
+                              if (pmDoc) {
                                 return (
                                   <div className="space-y-3">
-                                    {blocks.map((b, bIdx) => {
-                                      const type = typeof b.type === "string" ? b.type : ""
-                                      if (type === "markdown" && typeof b.markdown === "string") {
-                                        // If this message already has `images[]`, skip markdown-rendered images to avoid duplicates.
-                                        const hasImages = Array.isArray(obj.images) && (obj.images as unknown[]).length > 0
-                                        if (hasImages && String(b.markdown).startsWith("![image](")) return null
-                                        return (
-                                          <Markdown
-                                            key={bIdx}
-                                            markdown={String(b.markdown)}
-                                            className="prose prose-sm max-w-none"
-                                          />
-                                        )
-                                      }
-                                      if (type === "code" && typeof b.code === "string") {
-                                        return (
-                                          <CodeBlock
-                                            key={bIdx}
-                                            language={typeof b.language === "string" ? b.language : undefined}
-                                            code={String(b.code)}
-                                          />
-                                        )
-                                      }
-                                      if (type === "table") {
-                                        const headers = Array.isArray(b.headers) ? (b.headers as unknown[]).map(String) : []
-                                        const rows = Array.isArray(b.rows)
-                                          ? (b.rows as unknown[]).map((r) =>
-                                              Array.isArray(r) ? (r as unknown[]).map(String) : []
-                                            )
-                                          : []
-                                        return <BlockTable key={bIdx} headers={headers} rows={rows as string[][]} />
-                                      }
-                                      return null
-                                    })}
-                                    {(() => {
-                                      // Render generated images explicitly (more reliable than markdown-only rendering, 
-                                      // especially when sanitize policies strip data: URLs).
-                                      const imgsRaw = Array.isArray(obj.images) ? (obj.images as unknown[]) : []
-                                      const imgs = imgsRaw
-                                        .map((it) => (it && typeof it === "object" ? (it as Record<string, unknown>) : null))
-                                        .filter(Boolean)
-                                        .map((it) => (typeof it!.url === "string" ? String(it!.url) : ""))
-                                        .filter(Boolean)
-                                      if (!imgs.length) return null
-                                      const token = typeof window !== "undefined" ? localStorage.getItem("token") : null
-                                      return (
-                                        <div className="pt-2 grid grid-cols-1 gap-3">
-                                          {imgs.map((src, i) => (
-                                            <img
-                                              key={`${i}_${src.slice(0, 32)}`}
-                                              src={
-                                                token && src.startsWith("/api/ai/media/assets/")
-                                                  ? `${src}${src.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`
-                                                  : src
-                                              }
-                                              alt="image"
-                                              loading="lazy"
-                                              decoding="async"
-                                              className="w-full max-w-[720px] rounded-md border"
-                                            />
-                                          ))}
-                                        </div>
-                                      )
-                                    })()}
-                                    {(() => {
-                                      const audio = obj.audio && typeof obj.audio === "object" ? (obj.audio as Record<string, unknown>) : null
-                                      const video = obj.video && typeof obj.video === "object" ? (obj.video as Record<string, unknown>) : null
-                                      const audioUrl = audio && typeof audio.data_url === "string" ? String(audio.data_url) : ""
-                                      const videoUrl = video && typeof video.data_url === "string" ? String(video.data_url) : ""
-                                      const token = typeof window !== "undefined" ? localStorage.getItem("token") : null
-                                      const withToken = (u: string) =>
-                                        token && u.startsWith("/api/ai/media/assets/")
-                                          ? `${u}${u.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`
-                                          : u
-                                      if (videoUrl) {
-                                        return (
-                                          <div className="pt-2">
-                                            <video controls className="w-full max-w-[720px] rounded-md border" src={withToken(videoUrl)} />
-                                          </div>
-                                        )
-                                      }
-                                      if (audioUrl) {
-                                        return (
-                                          <div className="pt-2">
-                                            <audio controls className="w-full" src={withToken(audioUrl)} />
-                                          </div>
-                                        )
-                                      }
-                                      return null
-                                    })()}
+                                    <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" />
                                   </div>
                                 )
                               }

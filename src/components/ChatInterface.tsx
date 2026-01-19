@@ -140,6 +140,71 @@ function safeString(v: unknown): string | null {
   return typeof v === "string" ? v : null
 }
 
+function buildMarkdownFromLooseObject(obj: Record<string, unknown>): string {
+  const parts: string[] = []
+  const title = safeString(obj.title)
+  const topic = safeString(obj.topic)
+  const quote = safeString(obj.quote)
+  const source = safeString(obj.source)
+  const message = safeString(obj.message)
+  const outputText = safeString(obj.output_text) ?? safeString(obj.text)
+
+  if (title) parts.push(`## ${title}`)
+  if (topic) parts.push(`### ${topic}`)
+  if (quote) {
+    const quoteLines = source ? `${quote}\n\n— ${source}` : quote
+    parts.push(quoteLines.split("\n").map((line) => `> ${line}`).join("\n"))
+  } else if (source) {
+    parts.push(`_${source}_`)
+  }
+  if (message) parts.push(message)
+  if (outputText) parts.push(outputText)
+
+  return parts.join("\n\n").trim()
+}
+
+function coerceBlockJsonFromAny(obj: Record<string, unknown>): Record<string, unknown> | null {
+  if (obj.type === "doc") return obj
+  if (Array.isArray(obj.blocks)) return obj
+  const markdown = buildMarkdownFromLooseObject(obj)
+  if (!markdown) return null
+  return { blocks: [{ type: "markdown", markdown }] }
+}
+
+function extractTextFromJsonContent(content: Record<string, unknown>): string {
+  if (typeof content.text === "string") return content.text
+  if (typeof content.output_text === "string") return content.output_text
+  if (typeof content.input === "string") return content.input
+  const title = typeof content.title === "string" ? content.title : ""
+  const summary = typeof content.summary === "string" ? content.summary : ""
+  const blocks = Array.isArray(content.blocks) ? (content.blocks as Array<Record<string, unknown>>) : []
+  if (title || summary || blocks.length) {
+    const out: string[] = []
+    if (title) out.push(title)
+    if (summary) out.push(summary)
+    for (const b of blocks) {
+      const t = typeof b.type === "string" ? b.type : ""
+      if (t === "markdown" && typeof b.markdown === "string") {
+        out.push(String(b.markdown))
+      } else if (t === "code") {
+        const lang = typeof b.language === "string" ? b.language : "plain"
+        const code = typeof b.code === "string" ? b.code : ""
+        out.push(`[code:${lang}]\n${code}`)
+      } else if (t === "table") {
+        const headers = Array.isArray(b.headers) ? (b.headers as unknown[]).map(String) : []
+        const rows = Array.isArray(b.rows) ? (b.rows as unknown[]) : []
+        out.push(
+          `[table]\n${headers.join(" | ")}\n${rows
+            .map((r) => (Array.isArray(r) ? (r as unknown[]).map(String).join(" | ") : ""))
+            .join("\n")}`
+        )
+      }
+    }
+    return out.filter(Boolean).join("\n\n")
+  }
+  return ""
+}
+
 function parseBlockJson(text: string): { parsed?: Record<string, unknown>; displayText: string } {
   let raw = (text || "").trim()
   if (raw.startsWith("```")) {
@@ -157,7 +222,14 @@ function parseBlockJson(text: string): { parsed?: Record<string, unknown>; displ
     if (!isRecord(parsedUnknown)) return { displayText: text }
     const obj = parsedUnknown
     const blocksUnknown = obj.blocks
-    if (!Array.isArray(blocksUnknown)) return { displayText: text }
+    if (!Array.isArray(blocksUnknown)) {
+      const coerced = coerceBlockJsonFromAny(obj)
+      if (coerced) {
+        const displayText = extractTextFromJsonContent(coerced)
+        return { parsed: coerced, displayText: displayText || text }
+      }
+      return { displayText: text }
+    }
 
     const title = typeof obj.title === "string" ? obj.title : ""
     const summary = typeof obj.summary === "string" ? obj.summary : ""
@@ -206,6 +278,55 @@ function parseBlockJson(text: string): { parsed?: Record<string, unknown>; displ
   } catch {
     return { displayText: text }
   }
+}
+
+function normalizeAiContent(rawText: string, content: unknown): { parsed?: Record<string, unknown>; displayText: string } {
+  if (content && typeof content === "object") {
+    const obj = content as Record<string, unknown>
+    const coerced = coerceBlockJsonFromAny(obj)
+    const displayText = extractTextFromJsonContent(coerced ?? obj)
+    return { parsed: coerced ?? obj, displayText: displayText || rawText }
+  }
+  return parseBlockJson(rawText)
+}
+
+function normalizeBlockJson(content: Record<string, unknown>): Record<string, unknown> {
+  const blocks = Array.isArray(content.blocks) ? (content.blocks as Array<Record<string, unknown>>) : null
+  if (!blocks) return content
+  const normalized = blocks.map((b) => {
+    const t = typeof b.type === "string" ? b.type.toLowerCase() : ""
+    if (t === "markdown") {
+      const md = typeof b.markdown === "string" ? b.markdown : typeof b.content === "string" ? b.content : ""
+      const { content: _content, markdown: _markdown, ...rest } = b
+      return md ? { ...rest, type: "markdown", markdown: md } : { ...rest, type: "markdown" }
+    }
+    if (t === "code") {
+      const code = typeof b.code === "string" ? b.code : typeof b.content === "string" ? b.content : ""
+      const { content: _content, code: _code, ...rest } = b
+      return code
+        ? { ...rest, type: "code", language: typeof b.language === "string" ? b.language : "plain", code }
+        : { ...rest, type: "code", language: typeof b.language === "string" ? b.language : "plain" }
+    }
+    if (t === "table") {
+      const headers = Array.isArray(b.headers) ? b.headers.map(String) : []
+      const rows = Array.isArray(b.rows) ? b.rows : []
+      const data = Array.isArray((b as { data?: unknown }).data) ? ((b as { data?: unknown }).data as unknown[]) : []
+      if (!headers.length && rows.length === 0 && data.length > 0) {
+        const firstRow = Array.isArray(data[0]) ? (data[0] as unknown[]).map(String) : []
+        const bodyRows = data.slice(1).map((r) => (Array.isArray(r) ? r.map(String) : []))
+        return { type: "table", headers: firstRow, rows: bodyRows }
+      }
+      if (!headers.length && data.length > 0 && rows.length === 0) {
+        return { type: "table", headers: [], rows: data.map((r) => (Array.isArray(r) ? r.map(String) : [])) }
+      }
+      if (headers.length && rows.length === 0 && data.length > 0) {
+        return { type: "table", headers, rows: data.map((r) => (Array.isArray(r) ? r.map(String) : [])) }
+      }
+      return { type: "table", headers, rows: rows.map((r) => (Array.isArray(r) ? r.map(String) : [])) }
+    }
+    return b
+  })
+  return { ...content, blocks: normalized }
 }
 
 export function ChatInterface({
@@ -569,11 +690,12 @@ export function ChatInterface({
         const chosenModel = chosenObj.model_api_id ? String(chosenObj.model_api_id) : modelApiId
 
         // Always attempt to parse block-json so non-text modes can render rich results too.
-        const parsed = parseBlockJson(outText)
+        const parsed = normalizeAiContent(outText, isRecord(json.content) ? json.content : null)
+        const normalizedContent = parsed.parsed && isRecord(parsed.parsed) ? normalizeBlockJson(parsed.parsed) : { text: outText }
         onMessage?.({
           role: "assistant",
           content: parsed.displayText,
-          contentJson: parsed.parsed ?? { text: outText },
+          contentJson: normalizedContent,
           summary: assistantSummary(typeof parsed.parsed?.summary === "string" ? parsed.parsed.summary : outText),
           providerSlug,
           model: chosenModel,

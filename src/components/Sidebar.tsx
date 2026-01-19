@@ -40,8 +40,8 @@ import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
 import { useTheme } from "@/hooks/useTheme"
 import { IconReduct } from "@/components/icons/IconReduct"
-import EmojiPicker from "@emoji-mart/react"
-import emojiData from "@emoji-mart/data"
+import EmojiPicker, { Theme } from "emoji-picker-react"
+import type { EmojiClickData } from "emoji-picker-react"
 
 type CategoryUpdatedDetail = {
   id: string
@@ -1283,12 +1283,10 @@ export function Sidebar({ className }: SidebarProps) {
                               <TabsContent value="emoji">
                                 <div className="max-h-[360px] overflow-auto pr-1">
                                   <EmojiPicker
-                                    data={emojiData as unknown}
-                                    theme={isDark ? "dark" : "light"}
-                                    previewPosition="none"
-                                    onEmojiSelect={(emoji: unknown) => {
-                                      const em = emoji && typeof emoji === "object" ? (emoji as Record<string, unknown>) : null
-                                      const native = em && typeof em.native === "string" ? String(em.native) : ""
+                                    theme={isDark ? Theme.DARK : Theme.LIGHT}
+                                    previewConfig={{ showPreview: false }}
+                                    onEmojiClick={(emoji: EmojiClickData) => {
+                                      const native = emoji?.emoji ? String(emoji.emoji) : ""
                                       if (!native) return
                                       void saveCategoryIcon({ type: "personal", id: String(c.id), choice: { kind: "emoji", value: native } })
                                       setCatIconOpen(null)
@@ -1660,12 +1658,10 @@ export function Sidebar({ className }: SidebarProps) {
                                 <TabsContent value="emoji">
                                   <div className="max-h-[360px] overflow-auto pr-1">
                                     <EmojiPicker
-                                      data={emojiData as unknown}
-                                      theme={isDark ? "dark" : "light"}
-                                      previewPosition="none"
-                                      onEmojiSelect={(emoji: unknown) => {
-                                        const em = emoji && typeof emoji === "object" ? (emoji as Record<string, unknown>) : null
-                                        const native = em && typeof em.native === "string" ? String(em.native) : ""
+                                      theme={isDark ? Theme.DARK : Theme.LIGHT}
+                                      previewConfig={{ showPreview: false }}
+                                      onEmojiClick={(emoji: EmojiClickData) => {
+                                        const native = emoji?.emoji ? String(emoji.emoji) : ""
                                         if (!native) return
                                         void saveCategoryIcon({ type: "team", id: String(c.id), choice: { kind: "emoji", value: native } })
                                         setCatIconOpen(null)

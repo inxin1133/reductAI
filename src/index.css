@@ -75,6 +75,10 @@ body {
   outline: none;
   min-height: 320px;
 }
+.pm-viewer--timeline .ProseMirror {
+  min-height: auto;
+  padding: 0;
+}
 .ProseMirror p {
   margin: 0.25rem 0;
 }
@@ -115,6 +119,12 @@ body {
 }
 .ProseMirror li {
   margin: 0.1rem 0;
+}
+.ProseMirror audio,
+.ProseMirror video {
+  display: block;
+  width: 100%;
+  max-width: 100%;
 }
 /* UNUSED (migrated to Tailwind classes in node/mark toDOM for dark-mode correctness)
 .pm-mention { ... }
