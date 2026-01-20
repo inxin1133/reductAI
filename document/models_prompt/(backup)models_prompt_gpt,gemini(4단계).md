@@ -44,7 +44,7 @@
     },
     "blocks": {
       "type": "array",
-      "minItems": 3,
+      "minItems": 6,
       "description": "An ordered list of content blocks composing the document.",
       "items": {
         "oneOf": [
@@ -55,7 +55,7 @@
               "type": { "const": "markdown" },
               "markdown": {
                 "type": "string",
-                "minLength": 20,
+                "minLength": 40,
                 "description": "Markdown-formatted content block."
               }
             },
@@ -72,7 +72,7 @@
               },
               "code": {
                 "type": "string",
-                "minLength": 20,
+                "minLength": 40,
                 "description": "Source code content."
               }
             },
@@ -86,7 +86,6 @@
               "headers": {
                 "type": "array",
                 "minItems": 2,
-                "maxItems": 6,
                 "items": { "type": "string" }
               },
               "rows": {
@@ -95,7 +94,6 @@
                 "items": {
                   "type": "array",
                   "minItems": 2,
-                  "maxItems": 6,
                   "items": { "type": "string" }
                 },
                 "description": "Table row data."
@@ -109,7 +107,6 @@
   },
   "additionalProperties": false
 }
-
 
 
 
@@ -250,7 +247,7 @@
     "summary": { "type": "string", "minLength": 40 },
     "blocks": {
       "type": "array",
-      "minItems": 3,
+      "minItems": 6,
       "items": {
         "oneOf": [
           {
@@ -258,7 +255,7 @@
             "required": ["type", "markdown"],
             "properties": {
               "type": { "const": "markdown" },
-              "markdown": { "type": "string", "minLength": 40 }
+              "markdown": { "type": "string", "minLength": 80 }
             },
             "additionalProperties": false
           },
@@ -268,7 +265,7 @@
             "properties": {
               "type": { "const": "code" },
               "language": { "type": "string" },
-              "code": { "type": "string", "minLength": 20 }
+              "code": { "type": "string", "minLength": 40 }
             },
             "additionalProperties": false
           },
@@ -280,16 +277,14 @@
               "headers": {
                 "type": "array",
                 "minItems": 2,
-                "maxItems": 6,
                 "items": { "type": "string" }
               },
               "rows": {
                 "type": "array",
-                "minItems": 4,                
+                "minItems": 4,
                 "items": {
                   "type": "array",
                   "minItems": 2,
-                  "maxItems": 6,
                   "items": { "type": "string" }
                 }
               }

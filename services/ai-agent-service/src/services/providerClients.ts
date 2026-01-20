@@ -10,15 +10,15 @@ type OpenAiJsonSchema = {
   strict?: boolean
 }
 
-function deepMerge(a: any, b: any): any {
+function deepMerge(a: unknown, b: unknown): unknown {
   // b wins. arrays are replaced.
   if (Array.isArray(a) || Array.isArray(b)) return b ?? a
   if (!a || typeof a !== "object") return b
   if (!b || typeof b !== "object") return b
   const out: Record<string, unknown> = { ...(a as Record<string, unknown>) }
   for (const [k, v] of Object.entries(b as Record<string, unknown>)) {
-    const av = (out as any)[k]
-    ;(out as any)[k] = deepMerge(av, v)
+    const av = out[k]
+    out[k] = deepMerge(av, v)
   }
   return out
 }
@@ -177,8 +177,10 @@ export async function openaiGenerateImage(args: {
   let r = await post(bodyWithResponseFormat)
   let bodyToRetry: Record<string, unknown> | null = null
   for (let attempt = 0; attempt < 4 && !r.res.ok; attempt++) {
-    const msg = (r.json as any)?.error?.message
-    const param = (r.json as any)?.error?.param
+    const root = r.json && typeof r.json === "object" ? (r.json as Record<string, unknown>) : null
+    const err = root?.error && typeof root.error === "object" ? (root.error as Record<string, unknown>) : null
+    const msg = typeof err?.message === "string" ? err.message : ""
+    const param = typeof err?.param === "string" ? err.param : ""
     const isUnknown =
       r.res.status === 400 &&
       typeof msg === "string" &&
@@ -193,9 +195,9 @@ export async function openaiGenerateImage(args: {
       bodyToRetry = { ...bodyNoResponseFormat }
     } else {
       bodyToRetry = { ...(bodyToRetry || bodyWithResponseFormat) }
-      delete (bodyToRetry as any)[param]
+      delete bodyToRetry[param]
       // also drop response_format if we haven't already, since some environments reject it too
-      delete (bodyToRetry as any).response_format
+      delete bodyToRetry.response_format
     }
     r = await post(bodyToRetry)
   }
@@ -204,9 +206,16 @@ export async function openaiGenerateImage(args: {
   }
   const json = r.json
 
-  const data = Array.isArray((json as any)?.data) ? ((json as any).data as any[]) : []
-  const urls = data.map((d) => (typeof d?.url === "string" ? d.url : "")).filter(Boolean)
-  const b64 = data.map((d) => (typeof d?.b64_json === "string" ? d.b64_json : "")).filter(Boolean)
+  const root = json && typeof json === "object" ? (json as Record<string, unknown>) : null
+  const data = Array.isArray(root?.data) ? (root?.data as unknown[]) : []
+  const urls = data
+    .map((d) => (d && typeof d === "object" && typeof (d as Record<string, unknown>).url === "string" ? String((d as Record<string, unknown>).url) : ""))
+    .filter(Boolean)
+  const b64 = data
+    .map((d) =>
+      d && typeof d === "object" && typeof (d as Record<string, unknown>).b64_json === "string" ? String((d as Record<string, unknown>).b64_json) : ""
+    )
+    .filter(Boolean)
   // If the API returns base64 only, convert it to data URLs so the frontend can render without saving files.
   // OpenAI image generations commonly return PNG bytes; default to image/png if unknown.
   const data_urls = b64.map((s) => `data:image/png;base64,${s}`)
@@ -386,7 +395,9 @@ export async function googleSimulateChat(args: {
   const text =
     Array.isArray(parts) && parts.length
       ? parts
-          .map((p: any) => (typeof p?.text === "string" ? p.text : ""))
+          .map((p: unknown) =>
+            p && typeof p === "object" && typeof (p as Record<string, unknown>).text === "string" ? String((p as Record<string, unknown>).text) : ""
+          )
           .filter(Boolean)
           .join("")
       : ""
@@ -413,58 +424,179 @@ export async function openaiSimulateChat(args: {
   // - 일부 모델은 chat 모델이 아니어서 /v1/chat/completions 자체를 거부할 수 있습니다 → /v1/responses로 fallback.
 
   async function postJson(url: string, body: unknown) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${args.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    })
-    const json = await res.json().catch(() => ({}))
-    return { res, json }
+    async function doPost(payload: unknown) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${args.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      })
+      const json = await res.json().catch(() => ({}))
+      return { res, json }
+    }
+
+    const first = await doPost(body)
+    if (first.res.ok) return first
+
+    // Defensive retry: some environments reject optional params like `reasoning`.
+    // If we see "Unknown parameter: 'reasoning'", drop it once and retry.
+    if (first.res.status === 400 && body && typeof body === "object") {
+      const root = first.json && typeof first.json === "object" ? (first.json as Record<string, unknown>) : null
+      const err = root?.error && typeof root.error === "object" ? (root.error as Record<string, unknown>) : null
+      const msg = typeof err?.message === "string" ? err.message : ""
+      const param = typeof err?.param === "string" ? err.param : ""
+      const isUnknownReasoning = /unknown parameter/i.test(msg) && (param === "reasoning" || /'reasoning'/.test(msg))
+      if (isUnknownReasoning) {
+        const copy: Record<string, unknown> = { ...(body as Record<string, unknown>) }
+        delete copy.reasoning
+        return await doPost(copy)
+      }
+    }
+
+    return first
   }
 
-  function extractTextFromChatCompletions(json: any) {
-    return json?.choices?.[0]?.message?.content ?? ""
+  function isMiniModel(model: string) {
+    return /mini/i.test(String(model || "").trim())
   }
 
-  function extractTextFromResponses(json: any) {
+  function reasoningEffortForModel(model: string): "minimal" | "low" {
+    // gpt-5-mini tends to burn completion tokens on reasoning; keep it as low as possible.
+    return isMiniModel(model) ? "minimal" : "low"
+  }
+
+  function fallbackBlockJsonForEmptyOutput() {
+    return {
+      title: "응답 생성 실패",
+      summary: "모델이 빈 응답을 반환했습니다. 다시 시도해 주세요.",
+      blocks: [
+        {
+          type: "markdown",
+          markdown:
+            "## 생성 실패\n모델 응답이 비어 있어 내용을 생성하지 못했습니다.\n\n- 질문을 조금 더 구체화하거나\n- 다시 시도(재생성)하거나\n- 다른 모델로 전환해 보세요.",
+        },
+      ],
+    }
+  }
+
+  function extractTextFromChatCompletions(json: unknown) {
+    const root = json && typeof json === "object" ? (json as Record<string, unknown>) : null
+    const choices = Array.isArray(root?.choices) ? (root?.choices as unknown[]) : []
+    const first = choices[0] && typeof choices[0] === "object" ? (choices[0] as Record<string, unknown>) : null
+    const msg = first?.message && typeof first.message === "object" ? (first.message as Record<string, unknown>) : null
+    const content = msg?.content
+    if (typeof content === "string" && content) return content
+    // Some SDKs/models return content as array parts: [{type:"text", text:"..."}]
+    if (Array.isArray(content)) {
+      const joined = content
+        .map((p: unknown) => {
+          if (!p || typeof p !== "object") return ""
+          const po = p as Record<string, unknown>
+          if (typeof po.text === "string") return po.text
+          if (po.text && typeof po.text === "object") {
+            const t = po.text as Record<string, unknown>
+            if (typeof t.value === "string") return t.value
+          }
+          return ""
+        })
+        .filter(Boolean)
+        .join("")
+      if (joined.trim()) return joined
+    }
+    // Some structured-output style responses may put the JSON into tool_calls arguments.
+    const toolCalls = Array.isArray(msg?.tool_calls) ? (msg?.tool_calls as unknown[]) : []
+    for (const tc of toolCalls) {
+      const tco = tc && typeof tc === "object" ? (tc as Record<string, unknown>) : null
+      const fn = tco?.function && typeof tco.function === "object" ? (tco.function as Record<string, unknown>) : null
+      const args = fn?.arguments
+      if (typeof args === "string" && args.trim()) return args
+    }
+    return typeof content === "string" ? content : ""
+  }
+
+  function extractTextFromResponses(json: unknown) {
     // responses API는 포맷이 환경/버전에 따라 달라질 수 있어 여러 케이스를 흡수합니다.
-    if (typeof json?.output_text === "string") return json.output_text
-    const output = Array.isArray(json?.output) ? json.output : []
+    const root = json && typeof json === "object" ? (json as Record<string, unknown>) : null
+    if (typeof root?.output_text === "string" && root.output_text.trim()) return root.output_text
+    const output = Array.isArray(root?.output) ? (root.output as unknown[]) : []
     for (const item of output) {
-      const content = Array.isArray(item?.content) ? item.content : []
+      const itemObj = item && typeof item === "object" ? (item as Record<string, unknown>) : null
+      const content = Array.isArray(itemObj?.content) ? (itemObj.content as unknown[]) : []
       for (const c of content) {
-        if (typeof c?.text === "string") return c.text
-        if (typeof c?.output_text === "string") return c.output_text
+        const cObj = c && typeof c === "object" ? (c as Record<string, unknown>) : null
+        // Plain text
+        if (typeof cObj?.text === "string" && cObj.text.trim()) return cObj.text
+        if (typeof cObj?.output_text === "string" && cObj.output_text.trim()) return cObj.output_text
+        if (typeof cObj?.value === "string" && cObj.value.trim()) return cObj.value
+        // Sometimes `text` is an object (e.g. { value: "..." })
+        if (cObj?.text && typeof cObj.text === "object") {
+          const t = cObj.text as Record<string, unknown>
+          if (typeof t.value === "string" && t.value.trim()) return t.value
+        }
+        // JSON-schema / structured output can come back as a JSON object on the content item
+        if (cObj?.json && typeof cObj.json === "object") return JSON.stringify(cObj.json)
+        if (cObj?.parsed && typeof cObj.parsed === "object") return JSON.stringify(cObj.parsed)
+        // Some variants may nest payload under `content`
+        if (cObj?.content && typeof cObj.content === "object") {
+          const inner = cObj.content as Record<string, unknown>
+          if (typeof inner.text === "string" && inner.text.trim()) return inner.text
+          if (inner.json && typeof inner.json === "object") return JSON.stringify(inner.json)
+          if (inner.parsed && typeof inner.parsed === "object") return JSON.stringify(inner.parsed)
+        }
+        // Tool-call style items
+        if (typeof cObj?.arguments === "string" && cObj.arguments.trim()) return cObj.arguments
       }
     }
     return ""
   }
 
-  function deepMerge(a: any, b: any): any {
-    // b wins. arrays are replaced.
-    if (Array.isArray(a) || Array.isArray(b)) return b ?? a
-    if (!a || typeof a !== "object") return b
-    if (!b || typeof b !== "object") return b
-    const out: Record<string, unknown> = { ...(a as Record<string, unknown>) }
-    for (const [k, v] of Object.entries(b as Record<string, unknown>)) {
-      const av = (out as any)[k]
-      ;(out as any)[k] = deepMerge(av, v)
+  function extractTemplateMessages(templateBody: Record<string, unknown> | null | undefined): Array<{ role: string; content: string }> {
+    if (!templateBody || typeof templateBody !== "object") return []
+    const msgs = (templateBody as Record<string, unknown>).messages
+    if (!Array.isArray(msgs)) return []
+    const out: Array<{ role: string; content: string }> = []
+    for (const m of msgs) {
+      const mo = m && typeof m === "object" ? (m as Record<string, unknown>) : null
+      const role = typeof mo?.role === "string" ? String(mo.role) : ""
+      const content = typeof mo?.content === "string" ? String(mo.content) : ""
+      if (!role || !content) continue
+      out.push({ role, content })
     }
     return out
   }
 
+  function sanitizeTemplateForResponses(templateBody: Record<string, unknown> | null | undefined) {
+    if (!templateBody || typeof templateBody !== "object") return null
+    const out: Record<string, unknown> = { ...(templateBody as Record<string, unknown>) }
+    // `responses` API does not accept chat-style `messages`. We still use it to derive `instructions`.
+    delete out.messages
+    return out
+  }
+
+  function buildInstructionsFromTemplate(templateBody: Record<string, unknown> | null | undefined): string {
+    const msgs = extractTemplateMessages(templateBody)
+    if (!msgs.length) return ""
+    const sys = msgs.filter((m) => m.role === "system").map((m) => m.content).join("\n\n").trim()
+    const dev = msgs.filter((m) => m.role === "developer").map((m) => m.content).join("\n\n").trim()
+    // Responses API best practice: put policy/format guidance into `instructions`
+    const parts = [sys, dev].filter(Boolean)
+    return parts.join("\n\n").trim()
+  }
+
   function responsesBody() {
     const schema = args.responseSchema || (args.outputFormat === "block_json" ? openAiBlockJsonSchema() : null)
+    const templateInstructions = buildInstructionsFromTemplate(args.templateBody || null)
+    const sanitizedTemplate = sanitizeTemplateForResponses(args.templateBody || null)
     const baseBody = {
       model: args.model,
       input: args.input,
       // responses API에서는 max_output_tokens 사용
       max_output_tokens: args.maxTokens,
       // GPT-5 계열은 reasoning 토큰을 과도하게 소모할 수 있어 기본 effort를 낮춥니다.
-      reasoning: { effort: "low" },
+      reasoning: { effort: reasoningEffortForModel(args.model) },
+      ...(templateInstructions ? { instructions: templateInstructions } : {}),
       // 서버 레벨 JSON 강제 (가능한 경우)
       ...(schema
         ? {
@@ -477,14 +609,6 @@ export async function openaiSimulateChat(args: {
                 strict: schema.strict !== false,
               },
             },
-            text: {
-              format: {
-                type: "json_schema",
-                name: schema.name,
-                schema: schema.schema,
-                strict: schema.strict !== false,
-              },
-            },
           }
         : {
             // 텍스트 출력 우선
@@ -492,16 +616,20 @@ export async function openaiSimulateChat(args: {
           }),
     }
     // templateBody(JSONB)를 base body에 merge (runtime/base wins)
-    return args.templateBody && typeof args.templateBody === "object" ? deepMerge(args.templateBody, baseBody) : baseBody
+    return sanitizedTemplate && typeof sanitizedTemplate === "object" ? deepMerge(sanitizedTemplate, baseBody) : baseBody
   }
 
   function responsesBodyJsonObject() {
     // json_schema가 미지원일 때의 차선책: JSON object만 강제 (형식/필드 규칙은 프롬프트로)
+    const templateInstructions = buildInstructionsFromTemplate(args.templateBody || null)
+    const sanitizedTemplate = sanitizeTemplateForResponses(args.templateBody || null)
     return {
+      ...(sanitizedTemplate || {}),
       model: args.model,
       input: args.input,
       max_output_tokens: args.maxTokens,
-      reasoning: { effort: "low" },
+      reasoning: { effort: reasoningEffortForModel(args.model) },
+      ...(templateInstructions ? { instructions: templateInstructions } : {}),
       response_format: { type: "json_object" },
       text: { verbosity: "low" },
     }
@@ -509,11 +637,15 @@ export async function openaiSimulateChat(args: {
 
   function responsesBodyPlain() {
     // 최후의 차선책: 포맷 파라미터 없이 responses를 호출 (프롬프트로 JSON-only 유도)
+    const templateInstructions = buildInstructionsFromTemplate(args.templateBody || null)
+    const sanitizedTemplate = sanitizeTemplateForResponses(args.templateBody || null)
     return {
+      ...(sanitizedTemplate || {}),
       model: args.model,
       input: args.input,
       max_output_tokens: args.maxTokens,
-      reasoning: { effort: "low" },
+      reasoning: { effort: reasoningEffortForModel(args.model) },
+      ...(templateInstructions ? { instructions: templateInstructions } : {}),
       text: { verbosity: "low" },
     }
   }
@@ -528,7 +660,8 @@ export async function openaiSimulateChat(args: {
       // 토큰 제한으로 잘린 경우: 1회 더 큰 토큰으로 재시도해서 "완성본"을 우선 반환
       if (truncated) {
         const bigger = Math.min(Math.max(args.maxTokens, 2048), 4096)
-        const retry = await postJson(`${apiRoot}/responses`, { ...(body as any), max_output_tokens: bigger })
+        const bodyObj = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+        const retry = await postJson(`${apiRoot}/responses`, { ...bodyObj, max_output_tokens: bigger })
         if (retry.res.ok) {
           const t2 = extractTextFromResponses(retry.json)
           if (t2 && t2.length >= (text || "").length) {
@@ -562,12 +695,26 @@ export async function openaiSimulateChat(args: {
   // 1) 우선 chat/completions 시도 (max_completion_tokens 우선)
   {
     const schema = args.outputFormat === "block_json" ? openAiBlockJsonSchema() : null
+    const templateMsgs = extractTemplateMessages(args.templateBody || null)
+    const hasTemplateSystemOrDev = templateMsgs.some((m) => m.role === "system" || m.role === "developer")
+    const chatMessages =
+      hasTemplateSystemOrDev
+        ? [
+            ...templateMsgs.filter((m) => m.role === "system" || m.role === "developer"),
+            { role: "user", content: args.input },
+          ]
+        : [{ role: "user", content: args.input }]
+
+    const maxCompletionTokens =
+      // If the caller requests structured output and we're forced into chat/completions,
+      // give the model enough room to both reason and emit visible output.
+      args.outputFormat === "block_json" ? Math.min(Math.max(args.maxTokens, 2048), 4096) : args.maxTokens
 
     const { res, json } = await postJson(`${apiRoot}/chat/completions`, {
       model: args.model,
-      messages: [{ role: "user", content: args.input }],
+      messages: chatMessages,
       // 최신 모델은 max_tokens 대신 max_completion_tokens를 요구할 수 있음
-      max_completion_tokens: args.maxTokens,
+      max_completion_tokens: maxCompletionTokens,
       ...(schema
         ? {
             response_format: {
@@ -586,7 +733,12 @@ export async function openaiSimulateChat(args: {
         const tried = await tryResponsesWithNonEmptyText([responsesBody(), responsesBodyJsonObject(), responsesBodyPlain()])
         if (tried.ok) return { raw: tried.raw, output_text: tried.output_text }
       }
-      return { raw: json, output_text: text }
+      if (text && text.trim()) return { raw: json, output_text: text }
+      // Last resort: don't store empty output_text if we got a payload.
+      // Prefer a renderable block-json so the UI doesn't show blank.
+      console.warn("[openaiSimulateChat] empty extracted text; returning fallback block_json", { model: args.model, endpoint: "chat/completions" })
+      const fallback = fallbackBlockJsonForEmptyOutput()
+      return { raw: json, output_text: JSON.stringify(fallback) }
     }
 
     const errMsg = JSON.stringify(json || {})
@@ -607,7 +759,8 @@ export async function openaiSimulateChat(args: {
         ...(schema ? { response_format: { type: "json_object" } } : {}),
       })
       if (retry.res.ok) {
-        return { raw: retry.json, output_text: extractTextFromChatCompletions(retry.json) }
+        const t = extractTextFromChatCompletions(retry.json)
+        return { raw: retry.json, output_text: t && t.trim() ? t : JSON.stringify(retry.json ?? {}) }
       }
       throw new Error(`OPENAI_SIMULATE_FAILED_${retry.res.status}@${apiRoot}:${JSON.stringify(retry.json)}`)
     }
@@ -616,7 +769,8 @@ export async function openaiSimulateChat(args: {
     if (isNotChatModel) {
       const r2 = await postJson(`${apiRoot}/responses`, responsesBody())
       if (!r2.res.ok) throw new Error(`OPENAI_SIMULATE_FAILED_${r2.res.status}@${apiRoot}:${JSON.stringify(r2.json)}`)
-      return { raw: r2.json, output_text: extractTextFromResponses(r2.json) }
+      const t = extractTextFromResponses(r2.json)
+      return { raw: r2.json, output_text: t && t.trim() ? t : JSON.stringify(r2.json ?? {}) }
     }
 
     // response_format 자체가 모델/계정에서 미지원이면: response_format 제거하고 재시도(프롬프트 기반 fallback)
@@ -626,7 +780,10 @@ export async function openaiSimulateChat(args: {
         messages: [{ role: "user", content: args.input }],
         max_completion_tokens: args.maxTokens,
       })
-      if (retry.res.ok) return { raw: retry.json, output_text: extractTextFromChatCompletions(retry.json) }
+      if (retry.res.ok) {
+        const t = extractTextFromChatCompletions(retry.json)
+        return { raw: retry.json, output_text: t && t.trim() ? t : JSON.stringify(retry.json ?? {}) }
+      }
       throw new Error(`OPENAI_SIMULATE_FAILED_${retry.res.status}@${apiRoot}:${JSON.stringify(retry.json)}`)
     }
 
@@ -642,13 +799,15 @@ export async function openaiSimulateChat(args: {
         max_completion_tokens: args.maxTokens,
       })
       if (retry.res.ok) {
-        return { raw: retry.json, output_text: extractTextFromChatCompletions(retry.json) }
+        const t = extractTextFromChatCompletions(retry.json)
+        return { raw: retry.json, output_text: t && t.trim() ? t : JSON.stringify(retry.json ?? {}) }
       }
 
       // 그래도 실패하면 responses로 fallback
       const r2 = await postJson(`${apiRoot}/responses`, responsesBody())
       if (!r2.res.ok) throw new Error(`OPENAI_SIMULATE_FAILED_${r2.res.status}@${apiRoot}:${JSON.stringify(r2.json)}`)
-      return { raw: r2.json, output_text: extractTextFromResponses(r2.json) }
+      const t = extractTextFromResponses(r2.json)
+      return { raw: r2.json, output_text: t && t.trim() ? t : JSON.stringify(r2.json ?? {}) }
     }
 
     throw new Error(`OPENAI_SIMULATE_FAILED_${res.status}@${apiRoot}:${JSON.stringify(json)}`)

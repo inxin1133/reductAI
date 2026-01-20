@@ -35,8 +35,35 @@ function extractTextFromJsonContent(content: unknown): string {
   if (!content || typeof content !== "object") return ""
   const c = content as Record<string, unknown>
   if (typeof c.text === "string") return c.text
-  if (typeof c.output_text === "string") return c.output_text
+  if (typeof c.answer === "string") return c.answer
+  if (typeof c.message === "string") return c.message
+  if (typeof c.reply === "string") return c.reply
+  if (typeof c.response === "string") return c.response
   if (typeof c.input === "string") return c.input
+  const blocks = Array.isArray(c.blocks) ? (c.blocks as Array<Record<string, unknown>>) : []
+  if (blocks.length) {
+    const out: string[] = []
+    for (const b of blocks) {
+      const t = typeof b.type === "string" ? b.type : ""
+      if (t === "markdown") {
+        const md = typeof b.markdown === "string" ? b.markdown : ""
+        if (md) out.push(md)
+      } else if (t === "code") {
+        const code = typeof b.code === "string" ? b.code : ""
+        const lang = typeof b.language === "string" ? b.language : "plain"
+        if (code) out.push(`[code:${lang}]\n${code}`)
+      } else if (t === "table") {
+        const headers = Array.isArray(b.headers) ? (b.headers as unknown[]).map(String) : []
+        const rows = Array.isArray(b.rows) ? (b.rows as unknown[]) : []
+        out.push(
+          `[table]\n${headers.join(" | ")}\n${rows
+            .map((r) => (Array.isArray(r) ? (r as unknown[]).map(String).join(" | ") : ""))
+            .join("\n")}`
+        )
+      }
+    }
+    if (out.length) return out.join("\n\n")
+  }
   return ""
 }
 
@@ -516,10 +543,39 @@ async function executeHttpJsonProfile(args: {
 
   const json = initial.json
 
+  function extractBestTextFromJsonPayload(payload: unknown): string {
+    if (!payload || typeof payload !== "object") return ""
+    const root = payload as Record<string, unknown>
+    // common direct fields
+    if (typeof root.output_text === "string" && root.output_text.trim()) return root.output_text
+    if (typeof root.text === "string" && root.text.trim()) return root.text
+    // OpenAI responses API shape: { output: [{ content: [{ text | output_text | json | parsed | text: {value} }] }] }
+    const output = Array.isArray(root.output) ? (root.output as unknown[]) : []
+    for (const item of output) {
+      const itemObj = item && typeof item === "object" ? (item as Record<string, unknown>) : null
+      const content = Array.isArray(itemObj?.content) ? (itemObj?.content as unknown[]) : []
+      for (const c of content) {
+        const cObj = c && typeof c === "object" ? (c as Record<string, unknown>) : null
+        if (typeof cObj?.output_text === "string" && cObj.output_text.trim()) return cObj.output_text
+        if (typeof cObj?.text === "string" && cObj.text.trim()) return cObj.text
+        if (cObj?.text && typeof cObj.text === "object") {
+          const t = cObj.text as Record<string, unknown>
+          if (typeof t.value === "string" && t.value.trim()) return t.value
+        }
+        if (cObj?.json && typeof cObj.json === "object") return JSON.stringify(cObj.json)
+        if (cObj?.parsed && typeof cObj.parsed === "object") return JSON.stringify(cObj.parsed)
+      }
+    }
+    return ""
+  }
+
   if (resultType === "text") {
     const textPath = pickString(extract, "text_path")
     const textVal = textPath ? getByPath(json, textPath) : undefined
-    const output_text = typeof textVal === "string" ? textVal : JSON.stringify(textVal ?? json)
+    const output_text =
+      typeof textVal === "string" && textVal.trim()
+        ? textVal
+        : extractBestTextFromJsonPayload(json) || JSON.stringify(textVal ?? json)
     return { output_text, raw: json, content: { output_text, raw: json } }
   }
 
@@ -1065,6 +1121,10 @@ export async function chatRun(req: Request, res: Response) {
     if (chosen.rows.length === 0) return res.status(404).json({ message: "Chosen model not found" })
     const row = chosen.rows[0]
 
+    const cap = isRecord(row.capabilities) ? (row.capabilities as Record<string, unknown>) : {}
+    const capDefaults = cap && isRecord(cap.defaults) ? (cap.defaults as Record<string, unknown>) : {}
+    const mergedOptions = { ...capDefaults, ...(options || {}) }
+
     // conversation ownership / creation
     let convId = conversation_id ? String(conversation_id) : ""
     if (convId) {
@@ -1140,7 +1200,14 @@ export async function chatRun(req: Request, res: Response) {
 
     // 5) 안전 조정 (min/max)
     const modelMaxOut = row.max_output_tokens ? Number(row.max_output_tokens) : null
-    const safeMaxTokens = modelMaxOut ? clampInt(maxTokensRequested, 16, Math.max(16, modelMaxOut)) : maxTokensRequested
+    let safeMaxTokens = modelMaxOut ? clampInt(maxTokensRequested, 16, Math.max(16, modelMaxOut)) : maxTokensRequested
+    // OpenAI GPT-5 mini can spend an entire completion budget on reasoning and emit empty visible text.
+    // Ensure enough budget so it can produce actual output (especially for structured JSON).
+    const providerKeyLowerForBudget = String(row.provider_family || row.provider_slug || "").trim().toLowerCase()
+    const modelApiIdForBudget = String(row.model_api_id || "").trim()
+    if (providerKeyLowerForBudget === "openai" && /gpt-5.*mini/i.test(modelApiIdForBudget)) {
+      safeMaxTokens = Math.max(safeMaxTokens, 4096)
+    }
 
     // 7) 최종 request body 생성 + provider call
     const providerId = String(row.provider_id)
@@ -1190,11 +1257,19 @@ export async function chatRun(req: Request, res: Response) {
           language: finalLang,
           maxTokens: safeMaxTokens,
           history,
-          options: options || {},
+          options: mergedOptions,
           injectedTemplate,
           profile,
           configVars: auth.configVars,
         })
+        // Defensive fallback:
+        // Some model_api_profiles mappings (especially for OpenAI structured outputs) can yield empty text
+        // even though the provider returned a valid JSON payload. In that case, fall back to the built-in
+        // provider client (which has richer extraction + schema handling).
+        if (!out.output_text || !String(out.output_text).trim()) {
+          console.warn("[model_api_profiles] empty output_text -> fallback to provider client:", usedProfileKey)
+          out = null
+        }
       }
     } catch (e) {
       console.warn("[model_api_profiles] execution failed -> fallback:", usedProfileKey, e)
@@ -1212,6 +1287,7 @@ export async function chatRun(req: Request, res: Response) {
           model: modelApiId,
           input,
           maxTokens: safeMaxTokens,
+          outputFormat: "block_json",
           templateBody: injectedTemplate || undefined,
           responseSchema,
         })
@@ -1243,11 +1319,11 @@ export async function chatRun(req: Request, res: Response) {
       if (providerKey !== "openai") {
         return res.status(400).json({ message: `Image is not supported for provider=${providerKey} yet.` })
       }
-      const n = typeof options?.n === "number" ? clampInt(options.n, 1, 10) : 1
-      const size = typeof options?.size === "string" ? options.size : undefined
-      const quality = typeof options?.quality === "string" ? options.quality : undefined
-      const style = typeof options?.style === "string" ? options.style : undefined
-      const background = typeof options?.background === "string" ? options.background : undefined
+      const n = typeof mergedOptions?.n === "number" ? clampInt(mergedOptions.n, 1, 10) : 1
+      const size = typeof mergedOptions?.size === "string" ? mergedOptions.size : undefined
+      const quality = typeof mergedOptions?.quality === "string" ? mergedOptions.quality : undefined
+      const style = typeof mergedOptions?.style === "string" ? mergedOptions.style : undefined
+      const background = typeof mergedOptions?.background === "string" ? mergedOptions.background : undefined
       const r = await openaiGenerateImage({
         apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
         apiKey: auth.apiKey,
@@ -1274,10 +1350,10 @@ export async function chatRun(req: Request, res: Response) {
       if (providerKey !== "openai") {
         return res.status(400).json({ message: `${mt} is not supported for provider=${providerKey} yet.` })
       }
-      const voice = typeof options?.voice === "string" ? options.voice : undefined
-      const formatRaw = typeof options?.format === "string" ? options.format.trim().toLowerCase() : ""
+      const voice = typeof mergedOptions?.voice === "string" ? mergedOptions.voice : undefined
+      const formatRaw = typeof mergedOptions?.format === "string" ? mergedOptions.format.trim().toLowerCase() : ""
       const format: AudioFormat = isAudioFormat(formatRaw) ? formatRaw : "mp3"
-      const speed = typeof options?.speed === "number" ? options.speed : undefined
+      const speed = typeof mergedOptions?.speed === "number" ? mergedOptions.speed : undefined
       const r = await openaiTextToSpeech({
         apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
         apiKey: auth.apiKey,
@@ -1309,7 +1385,7 @@ export async function chatRun(req: Request, res: Response) {
     }
 
     // persist messages (user + assistant)
-    const normalizedUserContent = normalizeAiContent({ text: prompt, options: options || {} })
+    const normalizedUserContent = normalizeAiContent({ text: prompt, options: mergedOptions })
     await appendMessage({
       conversationId: convId,
       role: "user",
@@ -1325,7 +1401,16 @@ export async function chatRun(req: Request, res: Response) {
     // Assetize media fields (image/audio/video data URLs) before persisting assistant message.
     const assistantMessageId = crypto.randomUUID()
     const rewritten = rewriteContentWithAssetUrls(out.content)
-    const normalizedAssistantContent = normalizeAiContent(rewritten.content)
+    const assistantContentInput: Record<string, unknown> = isRecord(rewritten.content) ? { ...rewritten.content } : {}
+    const blocks = Array.isArray(assistantContentInput.blocks) ? (assistantContentInput.blocks as unknown[]) : []
+    if (blocks.length === 0 && typeof out.output_text === "string" && out.output_text.trim()) {
+      assistantContentInput.output_text = out.output_text
+    }
+    let normalizedAssistantContent = normalizeAiContent(assistantContentInput)
+    const normalizedBlocks = Array.isArray(normalizedAssistantContent.blocks) ? (normalizedAssistantContent.blocks as unknown[]) : []
+    if (normalizedBlocks.length === 0 && typeof out.output_text === "string" && out.output_text.trim()) {
+      normalizedAssistantContent = normalizeAiContent({ output_text: out.output_text })
+    }
 
     // Use a safe, compact content_text for history/context (avoid huge JSON / base64).
     const title = typeof normalizedAssistantContent.title === "string" ? normalizedAssistantContent.title : ""
@@ -1333,6 +1418,7 @@ export async function chatRun(req: Request, res: Response) {
     const imgCount = Array.isArray(normalizedAssistantContent.images) ? (normalizedAssistantContent.images as unknown[]).length : 0
     const hasAudio = isRecord(normalizedAssistantContent.audio)
     const hasVideo = isRecord(normalizedAssistantContent.video)
+    const contentTextFromBlocks = extractTextFromJsonContent(normalizedAssistantContent)
     const contentTextForHistory =
       title || summary
         ? `${title || ""}${title && summary ? " - " : ""}${summary || ""}`.slice(0, 4000)
@@ -1342,7 +1428,7 @@ export async function chatRun(req: Request, res: Response) {
             ? "오디오 생성"
             : hasVideo
               ? "비디오 생성"
-              : String(out.output_text || "").slice(0, 4000)
+              : String(contentTextFromBlocks || "").slice(0, 4000)
 
     await appendMessage({
       id: assistantMessageId,

@@ -106,6 +106,18 @@ const TIMELINE_API_BASE = "/api/ai/timeline"
 function parseJsonLikeString(input: string): Record<string, unknown> | null {
   let raw = String(input || "").trim()
   if (!raw) return null
+
+  // If the whole thing is a JSON-stringified string, decode once.
+  // e.g. "\"{\\\"title\\\":...}\""
+  if (raw.startsWith('"') && raw.endsWith('"')) {
+    try {
+      const decoded = JSON.parse(raw)
+      if (typeof decoded === "string") raw = decoded.trim()
+    } catch {
+      // ignore
+    }
+  }
+
   if (raw.startsWith("```")) {
     const firstNl = raw.indexOf("\n")
     const lastFence = raw.lastIndexOf("```")
@@ -119,7 +131,59 @@ function parseJsonLikeString(input: string): Record<string, unknown> | null {
     const parsed: unknown = JSON.parse(raw)
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>
   } catch {
-    // ignore parse errors
+    // Some DB copy/export formats produce doubled quotes, like {""title"":""...""}
+    if (raw.includes('""')) {
+      try {
+        const fixed = raw.replace(/""/g, '"')
+        const parsed2: unknown = JSON.parse(fixed)
+        if (parsed2 && typeof parsed2 === "object" && !Array.isArray(parsed2)) return parsed2 as Record<string, unknown>
+      } catch {
+        // ignore
+      }
+    }
+    // Retry by escaping raw newlines/tabs inside quoted strings (common "JSON-ish" model outputs)
+    try {
+      let out = ""
+      let inString = false
+      let escaped = false
+      for (let i = 0; i < raw.length; i += 1) {
+        const ch = raw[i]
+        if (escaped) {
+          out += ch
+          escaped = false
+          continue
+        }
+        if (ch === "\\") {
+          out += ch
+          escaped = true
+          continue
+        }
+        if (ch === '"') {
+          out += ch
+          inString = !inString
+          continue
+        }
+        if (inString) {
+          if (ch === "\n") {
+            out += "\\n"
+            continue
+          }
+          if (ch === "\r") {
+            out += "\\r"
+            continue
+          }
+          if (ch === "\t") {
+            out += "\\t"
+            continue
+          }
+        }
+        out += ch
+      }
+      const parsed3: unknown = JSON.parse(out)
+      if (parsed3 && typeof parsed3 === "object" && !Array.isArray(parsed3)) return parsed3 as Record<string, unknown>
+    } catch {
+      // ignore
+    }
   }
   return null
 }
@@ -142,6 +206,21 @@ function looksLikeMarkdown(input: string): boolean {
   return /(^|\n)(#{1,6}\s)|(^|\n)\s*[-*+]\s|(\|.+\|)|(^|\n)---\s*$/.test(s)
 }
 
+function extractMessageFromJsonishString(input: string): string | null {
+  const s = String(input || "")
+  // very lightweight fallback: try to pull {"message":"..."} or {"reply":"..."} from JSON-ish output even if JSON.parse fails
+  const m = s.match(/\\"?(message|reply)\\"?\s*:\s*\\"?([\s\S]*?)\\"?\s*(?:[},]|$)/)
+  if (!m) return null
+  const raw = m[2] || ""
+  // unescape minimal sequences
+  return raw
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\r")
+    .replace(/\\t/g, "\t")
+    .replace(/\\"/g, '"')
+    .trim()
+}
+
 function markdownToPmDoc(markdown: string) {
   try {
     const doc = parseMarkdownToPmDoc(editorSchema, markdown)
@@ -162,6 +241,8 @@ function extractTextFromJsonContent(content: unknown): string {
   if (typeof c.text === "string") return c.text
   if (typeof c.output_text === "string") return c.output_text
   if (typeof c.input === "string") return c.input
+  if (typeof c.message === "string") return c.message
+  if (typeof c.reply === "string") return c.reply
   // block-json 형태(title/summary/blocks) 렌더링
   const title = typeof c.title === "string" ? c.title : ""
   const summary = typeof c.summary === "string" ? c.summary : ""
@@ -662,6 +743,21 @@ export default function Timeline() {
                                 }
                               }
                             }
+                            // Fallback: if the model returned JSON-ish {"message":"..."} (and parsing failed),
+                            // render just the message as markdown so the UI never shows raw JSON.
+                            if (typeof m.content === "string" && m.content.trim().startsWith("{") && (m.content.includes('"message"') || m.content.includes('"reply"'))) {
+                              const msgText = extractMessageFromJsonishString(m.content)
+                              if (msgText) {
+                                const pmDoc = markdownToPmDoc(msgText)
+                                if (pmDoc) {
+                                  return (
+                                    <div className="space-y-3">
+                                      <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" />
+                                    </div>
+                                  )
+                                }
+                              }
+                            }
                             if (typeof m.content === "string" && looksLikeMarkdown(m.content)) {
                               const pmDoc = markdownToPmDoc(m.content)
                               if (pmDoc) {
@@ -763,15 +859,27 @@ export default function Timeline() {
 
                 if (msg.role === "assistant") {
                   setIsGenerating(false)
-                  setTyping({ id: `typing_${Date.now()}`, full: msg.content, shown: "" })
+                  const normalized = normalizeContentJson(msg.contentJson ?? msg.content)
+                  let derivedText = extractTextFromJsonContent(normalized ?? msg.content) || String(msg.content || "")
+                  if (typeof derivedText === "string" && derivedText.trim().startsWith("{")) {
+                    const extracted = extractMessageFromJsonishString(derivedText)
+                    if (extracted) derivedText = extracted
+                  }
+                  setTyping({ id: `typing_${Date.now()}`, full: derivedText, shown: "" })
                   setMessages((prev) => {
                     const next = [...prev]
+                    // If we receive the same assistant message twice (can happen in some edge flows),
+                    // drop the duplicate to avoid double-render in the Timeline UI.
+                    const lastAssistant = [...next].reverse().find((m) => m.role === "assistant" && !m.isPending)
+                    if (lastAssistant && String(lastAssistant.content || "") === String(derivedText || "")) {
+                      return next
+                    }
                     const idx = [...next].reverse().findIndex((m) => m.role === "assistant" && m.isPending)
                     const realIdx = idx >= 0 ? next.length - 1 - idx : -1
                     const row = {
                       role: "assistant" as const,
-                      content: msg.content,
-                      contentJson: msg.contentJson,
+                      content: derivedText,
+                      contentJson: normalized ?? msg.contentJson,
                       model: msg.model,
                       providerSlug: msg.providerSlug,
                       providerLogoKey: null,
@@ -782,7 +890,7 @@ export default function Timeline() {
                   })
                   if (msg.model) setStickySelectedModel(msg.model)
 
-                  // keep sidebar strictly in sync with model_conversations.updated_at ordering
+                  // keep sidebar strictly in sync with model_conversations.updated_at ordering - 대화 목록 동기화
                   void (async () => {
                     try {
                       const refreshed = await fetchThreads()

@@ -56,33 +56,145 @@ function normalizeMarkdownTables(input: string) {
     if (lines.length < 2) return match
     const hasPipes = lines.every((line) => line.includes("|"))
     if (!hasPipes) return match
-    const header = lines[0]
-    const body = lines.slice(1)
-    const colCount = header.split("|").map((s) => s.trim()).filter(Boolean).length
+    const toCells = (line: string) => {
+      const parts = line.split("|").map((s) => s.trim())
+      if (line.startsWith("|")) parts.shift()
+      if (line.endsWith("|")) parts.pop()
+      return parts
+    }
+    const headerCells = toCells(lines[0])
+    const bodyCells = lines.slice(1).map(toCells)
+    const colCount = headerCells.length
     if (colCount < 2) return match
     const sep = Array(colCount).fill("---").join(" | ")
     const normalized = [
-      `| ${header.split("|").map((s) => s.trim()).filter(Boolean).join(" | ")} |`,
+      `| ${headerCells.join(" | ")} |`,
       `| ${sep} |`,
-      ...body.map((row) => `| ${row.split("|").map((s) => s.trim()).filter(Boolean).join(" | ")} |`),
+      ...bodyCells.map((row) => {
+        const padded = row.slice()
+        while (padded.length < colCount) padded.push("")
+        return `| ${padded.join(" | ")} |`
+      }),
     ]
-    return normalized.join("\n")
+    return `\n${normalized.join("\n")}\n`
   })
 }
 
-function appendMarkdownBlocks(content: Array<Record<string, unknown>>, markdown: string) {
-  const normalizedMarkdown = normalizeMarkdownTables(markdown)
-  try {
-    const doc = parseMarkdownToPmDoc(editorSchema, normalizedMarkdown)
-    const json = doc?.toJSON() as { content?: Array<Record<string, unknown>> } | undefined
-    if (json?.content?.length) {
-      content.push(...json.content)
-      return
+function normalizeMarkdownText(input: string) {
+  let raw = String(input || "")
+  if (!raw) return raw
+  if (raw.startsWith('"') && raw.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (typeof parsed === "string") raw = parsed
+    } catch {
+      // ignore
     }
-  } catch {
-    // fall through to plain text
   }
-  content.push(...paragraphsFromText(normalizedMarkdown))
+  const hasActualNewline = raw.includes("\n")
+  const hasEscapedNewline = raw.includes("\\n")
+  if (hasEscapedNewline && !hasActualNewline) {
+    raw = raw
+      .replace(/\\r\\n/g, "\n")
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, "\t")
+      .replace(/\\"/g, '"')
+  }
+  return raw
+}
+
+type MarkdownSegment =
+  | { type: "markdown"; content: string }
+  | { type: "table"; headers: string[]; rows: string[][] }
+
+function splitMarkdownIntoSegments(markdown: string): MarkdownSegment[] {
+  const lines = String(markdown || "").split("\n")
+  const segments: MarkdownSegment[] = []
+  const buffer: string[] = []
+
+  const flushBuffer = () => {
+    const text = buffer.join("\n").trim()
+    if (text) segments.push({ type: "markdown", content: text })
+    buffer.length = 0
+  }
+
+  const isSeparator = (line: string) => {
+    if (!line.includes("|")) return false
+    if (!line.includes("-")) return false
+    return /^(\s*\|?\s*:?-+:?\s*)+\|?\s*$/.test(line)
+  }
+
+  const toCells = (line: string) => {
+    const parts = line.split("|").map((s) => s.trim())
+    if (line.startsWith("|")) parts.shift()
+    if (line.endsWith("|")) parts.pop()
+    return parts
+  }
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]
+    const next = i + 1 < lines.length ? lines[i + 1] : ""
+    const isTableStart = line.includes("|") && isSeparator(next)
+    if (!isTableStart) {
+      buffer.push(line)
+      continue
+    }
+
+    flushBuffer()
+
+    const headerCells = toCells(line)
+    const rows: string[][] = []
+    i += 2
+    for (; i < lines.length; i += 1) {
+      const rowLine = lines[i]
+      if (!rowLine.trim()) break
+      if (!rowLine.includes("|")) break
+      if (isSeparator(rowLine)) continue
+      rows.push(toCells(rowLine))
+    }
+    i -= 1
+
+    if (headerCells.length >= 2) {
+      const paddedRows = rows.map((row) => {
+        const out = row.slice()
+        while (out.length < headerCells.length) out.push("")
+        return out
+      })
+      segments.push({ type: "table", headers: headerCells, rows: paddedRows })
+    } else {
+      buffer.push(line)
+    }
+  }
+
+  flushBuffer()
+  return segments
+}
+
+function appendMarkdownBlocks(content: Array<Record<string, unknown>>, markdown: string) {
+  const normalizedMarkdown = normalizeMarkdownTables(normalizeMarkdownText(markdown))
+  const segments = splitMarkdownIntoSegments(normalizedMarkdown)
+  if (!segments.length) {
+    content.push(...paragraphsFromText(normalizedMarkdown))
+    return
+  }
+  for (const segment of segments) {
+    if (segment.type === "table") {
+      const table = tableFromBlocks(segment.headers, segment.rows)
+      if (table) content.push(table)
+      continue
+    }
+    try {
+      const doc = parseMarkdownToPmDoc(editorSchema, segment.content)
+      const json = doc?.toJSON() as { content?: Array<Record<string, unknown>> } | undefined
+      if (json?.content?.length) {
+        content.push(...json.content)
+        continue
+      }
+    } catch {
+      // fall through to plain text
+    }
+    content.push(...paragraphsFromText(segment.content))
+  }
 }
 
 function tableFromBlocks(headers: string[], rows: string[][]) {
@@ -151,13 +263,21 @@ export function aiJsonToPmDoc(contentJson: unknown): PmDocJson | null {
   if (obj.type === "doc") return contentJson as PmDocJson
 
   const content: Array<Record<string, unknown>> = []
-  const outputText = typeof obj.output_text === "string" ? obj.output_text.trim() : ""
+  const outputText = typeof obj.output_text === "string" ? normalizeMarkdownText(obj.output_text).trim() : ""
   if (outputText) {
     appendMarkdownBlocks(content, outputText)
   }
-  const topMarkdown = typeof obj.markdown === "string" ? obj.markdown.trim() : ""
+  const topMarkdown = typeof obj.markdown === "string" ? normalizeMarkdownText(obj.markdown).trim() : ""
   if (topMarkdown) {
     appendMarkdownBlocks(content, topMarkdown)
+  }
+  const messageText = typeof obj.message === "string" ? normalizeMarkdownText(obj.message).trim() : ""
+  if (messageText) {
+    appendMarkdownBlocks(content, messageText)
+  }
+  const replyText = typeof obj.reply === "string" ? normalizeMarkdownText(obj.reply).trim() : ""
+  if (replyText) {
+    appendMarkdownBlocks(content, replyText)
   }
   const title = typeof obj.title === "string" ? obj.title.trim() : ""
   const summary = typeof obj.summary === "string" ? obj.summary.trim() : ""
@@ -227,8 +347,24 @@ export function aiJsonToPmDoc(contentJson: unknown): PmDocJson | null {
       continue
     }
     if (t === "table") {
-      const headers = Array.isArray(b.headers) ? b.headers.map(String) : Array.isArray(dataObj?.headers) ? (dataObj?.headers as unknown[]).map(String) : []
-      const rawRows = Array.isArray(b.rows) ? b.rows : Array.isArray(dataObj?.rows) ? (dataObj?.rows as unknown[]) : Array.isArray(dataObj) ? (dataObj as unknown[]) : []
+      const contentObj = (b as unknown as { content?: unknown }).content
+      const contentRec = contentObj && typeof contentObj === "object" ? (contentObj as Record<string, unknown>) : null
+      const headers = Array.isArray(b.headers)
+        ? b.headers.map(String)
+        : Array.isArray(contentRec?.headers)
+          ? (contentRec?.headers as unknown[]).map(String)
+          : Array.isArray(dataObj?.headers)
+            ? (dataObj?.headers as unknown[]).map(String)
+            : []
+      const rawRows = Array.isArray(b.rows)
+        ? b.rows
+        : Array.isArray(contentRec?.rows)
+          ? (contentRec?.rows as unknown[])
+          : Array.isArray(dataObj?.rows)
+            ? (dataObj?.rows as unknown[])
+            : Array.isArray(dataObj)
+              ? (dataObj as unknown[])
+              : []
       const rows = rawRows.map((r) => (Array.isArray(r) ? r.map(String) : []))
       const table = tableFromBlocks(headers, rows)
       if (table) content.push(table)

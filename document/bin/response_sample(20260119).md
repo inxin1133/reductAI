@@ -1,3 +1,146 @@
-# GPT 답변 저장 내용
-model_messages(jsonb)
-"{""output_text"": ""아래 표는 **특정 “단일” 순위의 공식 1~10위**가 아니라, **QS/Times(THE)/ARWU 및 국내 주요 평가에서 상위권으로 자주 언급되는 국내 대학**을 **대표적으로 10곳** 정리한 것입니다(연도·지표에 따라 순위는 달라질 수 있음).\n\n| 구분(10개) | 학교명 | 위치 | 특징(요약) |\n|---:|---|---|---|\n| 1 | 서울대학교(SNU) | 서울 관악구 | 국내 대표 종합 국립대, 기초학문~공학/의학 전반 연구역량, 국가 연구과제·대형 인프라 |\n| 2 | KAIST | 대전 유성구 | 이공계 특화 연구중심대, 공학·AI·로봇·반도체 등 강세, 산학협력·창업 생태계 |\n| 3 | 연세대학교 | 서울 서대문구(신촌) / 인천 연수구(송도) | 대형 사립 종합대, 의대·상경·국제계열 강세, 송도 국제캠퍼스 운영 |\n| 4 | 고려대학교 | 서울 성북구(안암) | 대형 사립 종합대, 법·경영·인문사회 강세, 연구중심 체제 및 동문 네트워크 |\n| 5 | POSTECH(포항공대) | 경북 포항시 | 소수정예 이공계 연구중심, 재료·화학·물리·생명공학 등 기초/응용 연구 강점 |\n| 6 | 성균관대학교 | 서울 종로구 / 경기 수원시 | 종합 사립대, 공학·자연과학·의학 및 산학협력 강세, 캠퍼스 이원화(인문/자연) |\n| 7 | 한양대학교 | 서울 성동구 / 경기 안산시 | 공학·실용학문 강세, 산학협력 및 취업연계 평가에서 강점으로 자주 언급 |\n| 8 | 울산과학기술원(UNIST) | 울산 울주군 | 이공계 연구중심(과기원), 에너지·화학·신소재·AI 등 강세, 연구집약형 |\n| 9 | 경희대학교 | 서울 동대문구 / 경기 용인시 | 종합 사립대, 국제화·인문사회 및 일부 자연/의학 분야 균형, 캠퍼스 이원화 |\n|10 | 중앙대학교 | 서울 동작구 / 경기 안성시 | 종합 사립대, 예술·미디어/콘텐츠 및 일부 학문분야 강세, 실무연계 교육으로 인지도 |\n\n원하시면 **기준을 특정**해서(예: *2025 QS 국내 순위 기준*, *THE 기준*, *국내 취업률/연구비 기준* 등) 그 기준에 맞춘 **정확한 1~10위 표**로 다시 만들어 드릴게요.""}"
+`prompt_templates.body`
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful assistant. Output MUST be a single JSON value that exactly matches the provided JSON Schema. Output JSON only—no markdown fences, no commentary, no trailing text. Do not include keys not allowed by the schema. If information is missing, make a best-effort assumption and clearly mark it in the content (not outside JSON)."
+    },
+    {
+      "role": "developer",
+      "content": "You write answers like a high-quality ChatGPT study handout: practical, structured, and easy to scan.\n\nCONTENT RULES:\n- Be specific and actionable. Prefer steps, checklists, and examples over abstract descriptions.\n- Avoid filler. Avoid repeating the same point.\n- Use short sentences.\n- If you mention a concept, add a quick definition and one concrete example.\n\nBLOCKING RULES (follow schema types):\n- Always include: title, summary.\n- Produce 6–10 blocks.\n- Recommended block order: (1) markdown: key summary, (2) markdown: step-by-step approach, (3) table: comparison or checklist summary, (4) code: at least one example, (5) markdown: common mistakes or pitfalls, (6) markdown: next actions.\n- Markdown blocks must use headings (e.g., '## ...').\n- Table must be compact (3–7 rows).\n- Code block must be directly runnable or copyable.\n\nTONE & STYLE:\n- Friendly, confident, and concise.\n- Use emojis appropriately, like ChatGPT does, to improve readability and scannability.\n- Emojis should be used sparingly (recommended 1–3 total).\n- Place emojis mainly in titles, section headings, or key bullet points.\n- Do NOT use emojis in code blocks or tables.\n\nMINI EXAMPLE (shape only; do not copy words):\n{\n  \"title\": \"... 🚀\",\n  \"summary\": \"...\",\n  \"blocks\": [\n    {\"type\":\"markdown\",\"content\":\"## Key Points ✅\\n- ...\"},\n    {\"type\":\"table\",\"headers\":[\"Item\",\"Description\"],\"rows\":[[\"...\",\"...\"]]},\n    {\"type\":\"code\",\"language\":\"javascript\",\"content\":\"// ...\"}\n  ]\n}"
+    },
+    {
+      "role": "user",
+      "content": "{{input}}"
+    }
+  ],
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "{{response_schema_name}}",
+      "strict": "{{response_schema_strict}}",
+      "schema": "{{response_schema_json}}"
+    }
+  }
+}
+
+`response_schemas.schemas`
+{
+  "type": "object",
+  "required": ["title", "summary", "blocks"],
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 4,
+      "description": "A concise and descriptive title for the document."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 40,
+      "description": "A high-level summary of the document content."
+    },
+    "blocks": {
+      "type": "array",
+      "minItems": 6,
+      "description": "An ordered list of content blocks composing the document.",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["type", "markdown"],
+            "properties": {
+              "type": { "const": "markdown" },
+              "markdown": {
+                "type": "string",
+                "minLength": 80,
+                "description": "Markdown-formatted content block."
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["type", "language", "code"],
+            "properties": {
+              "type": { "const": "code" },
+              "language": {
+                "type": "string",
+                "description": "Programming language of the code block."
+              },
+              "code": {
+                "type": "string",
+                "minLength": 40,
+                "description": "Source code content."
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["type", "headers", "rows"],
+            "properties": {
+              "type": { "const": "table" },
+              "headers": {
+                "type": "array",
+                "minItems": 2,
+                "items": { "type": "string" }
+              },
+              "rows": {
+                "type": "array",
+                "minItems": 4,
+                "items": {
+                  "type": "array",
+                  "minItems": 2,
+                  "items": { "type": "string" }
+                },
+                "description": "Table row data."
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  },
+  "additionalProperties": false
+}
+
+`ai_models.capabilities`
+{
+  "model": "gpt-5.2",
+  "limits": {
+    "max_input_tokens": 200000,
+    "max_output_tokens": 16384
+  },
+  "options": {
+    "top_p": {
+      "max": 1,
+      "min": 0,
+      "step": 0.05,
+      "type": "number",
+      "label": "top_p",
+      "description": "샘플링 누적 확률"
+    },
+    "temperature": {
+      "max": 2,
+      "min": 0,
+      "step": 0.1,
+      "type": "number",
+      "label": "temperature",
+      "description": "창의성/랜덤성"
+    }
+  },
+  "defaults": {
+    "top_p": 1,
+    "temperature": 0.2
+  },
+  "supports": {
+    "top_p": true,
+    "json_schema": true,
+    "system_role": true,
+    "temperature": true,
+    "developer_role": true,
+    "structured_outputs": true
+  },
+  "prompt_caching": true
+}

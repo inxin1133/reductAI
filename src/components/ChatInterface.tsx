@@ -147,6 +147,7 @@ function buildMarkdownFromLooseObject(obj: Record<string, unknown>): string {
   const quote = safeString(obj.quote)
   const source = safeString(obj.source)
   const message = safeString(obj.message)
+  const reply = safeString(obj.reply)
   const outputText = safeString(obj.output_text) ?? safeString(obj.text)
 
   if (title) parts.push(`## ${title}`)
@@ -158,6 +159,7 @@ function buildMarkdownFromLooseObject(obj: Record<string, unknown>): string {
     parts.push(`_${source}_`)
   }
   if (message) parts.push(message)
+  if (reply) parts.push(reply)
   if (outputText) parts.push(outputText)
 
   return parts.join("\n\n").trim()
@@ -217,6 +219,48 @@ function parseBlockJson(text: string): { parsed?: Record<string, unknown>; displ
   if (firstBrace > -1 && lastBrace > firstBrace) raw = raw.slice(firstBrace, lastBrace + 1)
   if (!raw.startsWith("{")) return { displayText: text }
 
+  function repairJsonForNewlines(input: string) {
+    // Fix common "JSON-ish" outputs where models include raw newlines/tabs inside quoted strings.
+    // This makes JSON.parse possible without adding a dependency like json5.
+    let out = ""
+    let inString = false
+    let escaped = false
+    for (let i = 0; i < input.length; i += 1) {
+      const ch = input[i]
+      if (escaped) {
+        out += ch
+        escaped = false
+        continue
+      }
+      if (ch === "\\") {
+        out += ch
+        escaped = true
+        continue
+      }
+      if (ch === '"') {
+        out += ch
+        inString = !inString
+        continue
+      }
+      if (inString) {
+        if (ch === "\n") {
+          out += "\\n"
+          continue
+        }
+        if (ch === "\r") {
+          out += "\\r"
+          continue
+        }
+        if (ch === "\t") {
+          out += "\\t"
+          continue
+        }
+      }
+      out += ch
+    }
+    return out
+  }
+
   try {
     const parsedUnknown: unknown = JSON.parse(raw)
     if (!isRecord(parsedUnknown)) return { displayText: text }
@@ -245,19 +289,20 @@ function parseBlockJson(text: string): { parsed?: Record<string, unknown>; displ
       if (!type) continue
 
       if (type === "markdown") {
-        const markdown = safeString(bUnknown.markdown)
+        const markdown = safeString(bUnknown.markdown) ?? safeString(bUnknown.content)
         if (markdown !== null) blocks.push({ type: "markdown", markdown })
         continue
       }
       if (type === "code") {
         const language = safeString(bUnknown.language) ?? "plain"
-        const code = safeString(bUnknown.code) ?? ""
+        const code = safeString(bUnknown.code) ?? safeString(bUnknown.content) ?? ""
         blocks.push({ type: "code", language, code })
         continue
       }
       if (type === "table") {
-        const headersRaw = bUnknown.headers
-        const rowsRaw = bUnknown.rows
+        const contentObj = isRecord(bUnknown.content) ? (bUnknown.content as Record<string, unknown>) : null
+        const headersRaw = bUnknown.headers ?? contentObj?.headers
+        const rowsRaw = bUnknown.rows ?? contentObj?.rows
         const headers = Array.isArray(headersRaw) ? headersRaw.map((h) => String(h)) : []
         const rows = Array.isArray(rowsRaw)
           ? rowsRaw.map((r) => (Array.isArray(r) ? r.map((c) => String(c)) : [])).filter((r) => r.length > 0)
@@ -277,10 +322,41 @@ function parseBlockJson(text: string): { parsed?: Record<string, unknown>; displ
         out.push(`[table]\n${b.headers.join(" | ")}\n${b.rows.map((r) => r.join(" | ")).join("\n")}`)
       }
     }
-    // Keep the original JSON object so media fields (audio/video/images/...) are not lost.
+    // Keep the original JSON object so media fields (audio/video/images/...) are not lost. 
+    // 미디어 필드(audio/video/images/...)가 손실되지 않도록 원본 JSON 객체를 그대로 유지합니다.
     return { parsed: obj as Record<string, unknown>, displayText: out.filter(Boolean).join("\n\n") || text }
   } catch {
-    return { displayText: text }
+    const msgMatch = raw.match(/"(message|reply)"\s*:\s*"([\s\S]*?)"\s*(?:[},]|$)/)
+    if (msgMatch) {
+      const msg = msgMatch[2]
+        .replace(/\\n/g, "\n")
+        .replace(/\\r/g, "\r")
+        .replace(/\\t/g, "\t")
+        .replace(/\\"/g, '"')
+        .trim()
+      if (msg) return { displayText: msg }
+    }
+    // Retry with a repaired version for common invalid JSON outputs.
+    try {
+      const repaired = repairJsonForNewlines(raw)
+      const parsedUnknown2: unknown = JSON.parse(repaired)
+      if (!isRecord(parsedUnknown2)) return { displayText: text }
+      const obj = parsedUnknown2
+      const blocksUnknown = obj.blocks
+      const topMarkdown = typeof obj.markdown === "string" ? obj.markdown : ""
+      if (!Array.isArray(blocksUnknown)) {
+        if (topMarkdown) return { parsed: obj, displayText: topMarkdown || text }
+        const coerced = coerceBlockJsonFromAny(obj)
+        if (coerced) {
+          const displayText = extractTextFromJsonContent(coerced)
+          return { parsed: coerced, displayText: displayText || text }
+        }
+        return { displayText: text }
+      }
+      return { parsed: obj, displayText: extractTextFromJsonContent(obj) || text }
+    } catch {
+      return { displayText: text }
+    }
   }
 }
 
@@ -332,8 +408,9 @@ function normalizeBlockJson(content: Record<string, unknown>): Record<string, un
         : { ...rest, type: "code", language: typeof b.language === "string" ? b.language : "plain" }
     }
     if (t === "table") {
-      const headers = Array.isArray(b.headers) ? b.headers.map(String) : []
-      const rows = Array.isArray(b.rows) ? b.rows : []
+      const contentObj = isRecord((b as { content?: unknown }).content) ? ((b as { content?: unknown }).content as Record<string, unknown>) : null
+      const headers = Array.isArray(b.headers) ? b.headers.map(String) : Array.isArray(contentObj?.headers) ? (contentObj.headers as unknown[]).map(String) : []
+      const rows = Array.isArray(b.rows) ? b.rows : Array.isArray(contentObj?.rows) ? (contentObj.rows as unknown[]) : []
       const data = Array.isArray((b as { data?: unknown }).data) ? ((b as { data?: unknown }).data as unknown[]) : []
       if (!headers.length && rows.length === 0 && data.length > 0) {
         const firstRow = Array.isArray(data[0]) ? (data[0] as unknown[]).map(String) : []
@@ -402,6 +479,7 @@ export function ChatInterface({
 
   const [prompt, setPrompt] = React.useState("")
   const isComposingRef = React.useRef(false)
+  const handleSendInFlightRef = React.useRef<Set<string>>(new Set())
   const [isCompactPanelOpen, setIsCompactPanelOpen] = React.useState(false)
 
   const [promptSuggestions, setPromptSuggestions] = React.useState<
@@ -668,6 +746,14 @@ export function ChatInterface({
       const input = (overrideInput ?? prompt).trim()
       if (!input) return
 
+      // Prevent accidental double-send (e.g. Enter + click, or repeated key events).
+      const sendKey = `${conversationId || ""}::${selectedType}::${String(overrideModelApiId || effectiveModelApiId || "").trim()}::${input}`
+      if (handleSendInFlightRef.current.has(sendKey)) return
+      handleSendInFlightRef.current.add(sendKey)
+
+      const capDefaults = selectedCapabilities && isRecord(selectedCapabilities.defaults) ? (selectedCapabilities.defaults as Record<string, unknown>) : {}
+      const finalOptions = { ...capDefaults, ...(runtimeOptions || {}) }
+
       const requestedModelApiId = String(overrideModelApiId || effectiveModelApiId || "").trim()
       const providerGroup = resolveProviderGroupByModelApiId(requestedModelApiId) || currentProviderGroup
       const providerSlug = providerGroup?.provider.slug
@@ -684,7 +770,7 @@ export function ChatInterface({
       onMessage?.({
         role: "user",
         content: input,
-        contentJson: { text: input, options: runtimeOptions || {} },
+        contentJson: { text: input, options: finalOptions },
         summary: userSummary(input),
         providerSlug,
         model: modelApiId,
@@ -692,7 +778,7 @@ export function ChatInterface({
       setPrompt("")
 
       if (submitMode === "emit") {
-        onSubmit?.({ input, providerSlug, model: modelApiId, modelType: selectedType, options: runtimeOptions || {} })
+        onSubmit?.({ input, providerSlug, model: modelApiId, modelType: selectedType, options: finalOptions })
         return
       }
 
@@ -710,7 +796,7 @@ export function ChatInterface({
             provider_id: providerId,
             provider_slug: providerSlug,
             model_api_id: modelApiId,
-            options: runtimeOptions || {},
+            options: finalOptions,
           }),
         })
 
@@ -737,7 +823,10 @@ export function ChatInterface({
 
         // Always attempt to parse block-json so non-text modes can render rich results too.
         const parsed = normalizeAiContent(outText, isRecord(json.content) ? json.content : null)
-        const normalizedContent = parsed.parsed && isRecord(parsed.parsed) ? normalizeBlockJson(parsed.parsed) : { text: outText }
+        // If parsing failed (often because the model returned JSON-ish text that isn't strict JSON),
+        // keep it under `output_text` so Timeline can still normalize/parse it for ProseMirrorViewer.
+        const normalizedContent =
+          parsed.parsed && isRecord(parsed.parsed) ? normalizeBlockJson(parsed.parsed) : ({ output_text: outText } as Record<string, unknown>)
         onMessage?.({
           role: "assistant",
           content: parsed.displayText,
@@ -756,6 +845,8 @@ export function ChatInterface({
           providerSlug,
           model: modelApiId,
         })
+      } finally {
+        handleSendInFlightRef.current.delete(sendKey)
       }
     },
     [
@@ -770,6 +861,7 @@ export function ChatInterface({
       onSubmit,
       prompt,
       runtimeOptions,
+      selectedCapabilities,
       selectedType,
       sessionLanguage,
       submitMode,
