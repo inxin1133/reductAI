@@ -1,5 +1,16 @@
 import express from "express"
-import { addMessage, createThread, getMessageMedia, listMessages, listThreads, updateThreadTitle } from "../controllers/timelineController"
+import {
+  addMessage,
+  createThread,
+  deleteThread,
+  getMessageMedia,
+  listDeletedThreads,
+  listMessages,
+  listThreads,
+  purgeThread,
+  restoreThread,
+  updateThreadTitle,
+} from "../controllers/timelineController"
 import { requireAuth } from "../middleware/requireAuth"
 
 const router = express.Router()
@@ -9,8 +20,12 @@ router.use(requireAuth)
 
 // threads
 router.get("/threads", listThreads)
+router.get("/threads/deleted", listDeletedThreads)
 router.post("/threads", createThread)
 router.patch("/threads/:id", updateThreadTitle)
+router.delete("/threads/:id", deleteThread)
+router.post("/threads/:id/restore", restoreThread)
+router.delete("/threads/:id/purge", purgeThread)
 
 // messages
 router.get("/threads/:id/messages", listMessages)

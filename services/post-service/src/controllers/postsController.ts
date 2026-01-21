@@ -788,4 +788,289 @@ export async function updatePost(req: Request, res: Response) {
   }
 }
 
+function isDeletedRow(row: { deleted_at?: unknown; status?: unknown }) {
+  const deletedAt = row && (row as any).deleted_at
+  const status = row && (row as any).status
+  return Boolean(deletedAt) || String(status || "").trim() === "deleted"
+}
+
+// --- Trash (deleted posts) ---
+// List deleted pages (roots only). Children appear inside the deleted parent's detail view.
+export async function listDeletedPages(req: Request, res: Response) {
+  try {
+    const userId = (req as AuthedRequest).userId
+    const tenantId = await resolveTenantId(req as AuthedRequest)
+
+    const r = await query(
+      `
+      SELECT p.id, p.parent_id, p.title, p.icon, p.deleted_at, p.updated_at
+      FROM posts p
+      WHERE p.tenant_id = $1
+        AND p.author_id = $2
+        AND (p.deleted_at IS NOT NULL OR COALESCE(p.status,'') = 'deleted')
+        AND (
+          p.parent_id IS NULL
+          OR NOT EXISTS (
+            SELECT 1
+            FROM posts parent
+            WHERE parent.id = p.parent_id
+              AND parent.tenant_id = $1
+              AND parent.author_id = $2
+              AND (parent.deleted_at IS NOT NULL OR COALESCE(parent.status,'') = 'deleted')
+          )
+        )
+      ORDER BY p.updated_at DESC
+      `,
+      [tenantId, userId]
+    )
+
+    return res.json(r.rows)
+  } catch (e) {
+    console.error("post-service listDeletedPages error:", e)
+    return res.status(500).json({ message: "Failed to list deleted pages" })
+  }
+}
+
+// Deleted page detail: content + breadcrumb (ancestors) + deleted children
+export async function getDeletedPageDetail(req: Request, res: Response) {
+  try {
+    const userId = (req as AuthedRequest).userId
+    const tenantId = await resolveTenantId(req as AuthedRequest)
+    const { id } = req.params
+    const pageId = String(id || "").trim()
+    if (!pageId) return res.status(400).json({ message: "id is required" })
+
+    const p = await query(
+      `SELECT id, parent_id, title, icon, status, deleted_at, updated_at
+       FROM posts
+       WHERE id = $1 AND tenant_id = $2 AND author_id = $3
+       LIMIT 1`,
+      [pageId, tenantId, userId]
+    )
+    if (p.rows.length === 0) return res.status(404).json({ message: "Post not found" })
+    const row = p.rows[0] as any
+    if (!isDeletedRow(row)) return res.status(400).json({ message: "Post is not deleted" })
+
+    // content (reuse the same mapping as getPostContent)
+    const version = await getPostMetaVersion(pageId)
+    const blocks = await query(
+      `SELECT id, post_id, parent_block_id, block_type, sort_key, content, content_text, ref_post_id, external_embed_id
+       FROM post_blocks
+       WHERE post_id = $1 AND parent_block_id IS NULL AND is_deleted = FALSE
+       ORDER BY sort_key ASC`,
+      [pageId]
+    )
+    const docJson = blocksToDocJson(blocks.rows as any)
+
+    // ancestors chain (for breadcrumb)
+    const ancestors = await query(
+      `
+      WITH RECURSIVE chain AS (
+        SELECT id, parent_id, title, icon, status, deleted_at, updated_at, 0 AS depth
+        FROM posts
+        WHERE id = $1 AND tenant_id = $2 AND author_id = $3
+        UNION ALL
+        SELECT p.id, p.parent_id, p.title, p.icon, p.status, p.deleted_at, p.updated_at, chain.depth + 1
+        FROM posts p
+        JOIN chain ON chain.parent_id = p.id
+        WHERE p.tenant_id = $2 AND p.author_id = $3
+      )
+      SELECT id, parent_id, title, icon, status, deleted_at, updated_at, depth
+      FROM chain
+      WHERE depth > 0
+      ORDER BY depth DESC
+      `,
+      [pageId, tenantId, userId]
+    )
+
+    // deleted children only (direct)
+    const children = await query(
+      `
+      SELECT id, parent_id, title, icon, status, deleted_at, updated_at
+      FROM posts
+      WHERE tenant_id = $1
+        AND author_id = $2
+        AND parent_id = $3
+        AND (deleted_at IS NOT NULL OR COALESCE(status,'') = 'deleted')
+      ORDER BY page_order ASC, created_at ASC, id ASC
+      `,
+      [tenantId, userId, pageId]
+    )
+
+    return res.json({
+      post: row,
+      docJson,
+      version,
+      ancestors: ancestors.rows,
+      children: children.rows,
+    })
+  } catch (e) {
+    console.error("post-service getDeletedPageDetail error:", e)
+    return res.status(500).json({ message: "Failed to load deleted page detail" })
+  }
+}
+
+// Restore deleted page:
+// - restore the page + all deleted descendants
+// - restore deleted ancestors so the page returns under its original parent
+export async function restoreDeletedPage(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const userId = (req as AuthedRequest).userId
+    const tenantId = await resolveTenantId(req as AuthedRequest)
+    const { id } = req.params
+    const pageId = String(id || "").trim()
+    if (!pageId) return res.status(400).json({ message: "id is required" })
+
+    await client.query("BEGIN")
+
+    // Ensure the page exists + is deleted (ownership enforced)
+    const cur = await client.query(
+      `SELECT id, parent_id, status, deleted_at
+       FROM posts
+       WHERE id = $1 AND tenant_id = $2 AND author_id = $3
+       FOR UPDATE`,
+      [pageId, tenantId, userId]
+    )
+    if (cur.rows.length === 0) {
+      await client.query("ROLLBACK")
+      return res.status(404).json({ message: "Post not found" })
+    }
+    const row = cur.rows[0] as any
+    if (!isDeletedRow(row)) {
+      await client.query("ROLLBACK")
+      return res.status(400).json({ message: "Post is not deleted" })
+    }
+
+    // collect ids: ancestors + subtree
+    const ids = await client.query(
+      `
+      WITH RECURSIVE
+      ancestors AS (
+        SELECT id, parent_id
+        FROM posts
+        WHERE id = $1 AND tenant_id = $2 AND author_id = $3
+        UNION ALL
+        SELECT p.id, p.parent_id
+        FROM posts p
+        JOIN ancestors a ON a.parent_id = p.id
+        WHERE p.tenant_id = $2 AND p.author_id = $3
+      ),
+      subtree AS (
+        SELECT id, parent_id
+        FROM posts
+        WHERE id = $1 AND tenant_id = $2 AND author_id = $3
+        UNION ALL
+        SELECT p.id, p.parent_id
+        FROM posts p
+        JOIN subtree s ON p.parent_id = s.id
+        WHERE p.tenant_id = $2 AND p.author_id = $3
+      ),
+      all_ids AS (
+        SELECT id FROM ancestors
+        UNION
+        SELECT id FROM subtree
+      )
+      SELECT id::text AS id
+      FROM all_ids
+      `,
+      [pageId, tenantId, userId]
+    )
+    const restoreIds = (ids.rows || []).map((r: any) => String(r.id)).filter(Boolean)
+
+    if (restoreIds.length) {
+      await client.query(
+        `UPDATE posts
+         SET status = 'draft', deleted_at = NULL, updated_at = NOW()
+         WHERE id = ANY($1::uuid[])
+           AND tenant_id = $2
+           AND author_id = $3`,
+        [restoreIds, tenantId, userId]
+      )
+    }
+
+    await client.query("COMMIT")
+    return res.json({ ok: true, restored_ids: restoreIds })
+  } catch (e) {
+    await client.query("ROLLBACK")
+    console.error("post-service restoreDeletedPage error:", e)
+    return res.status(500).json({ message: "Failed to restore deleted page" })
+  } finally {
+    client.release()
+  }
+}
+
+// Permanently delete deleted page subtree (hard delete). This cascades to post_blocks via FK.
+export async function purgeDeletedPage(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const userId = (req as AuthedRequest).userId
+    const tenantId = await resolveTenantId(req as AuthedRequest)
+    const { id } = req.params
+    const pageId = String(id || "").trim()
+    if (!pageId) return res.status(400).json({ message: "id is required" })
+
+    await client.query("BEGIN")
+
+    const cur = await client.query(
+      `SELECT id, status, deleted_at
+       FROM posts
+       WHERE id = $1 AND tenant_id = $2 AND author_id = $3
+       FOR UPDATE`,
+      [pageId, tenantId, userId]
+    )
+    if (cur.rows.length === 0) {
+      await client.query("ROLLBACK")
+      return res.status(404).json({ message: "Post not found" })
+    }
+    const row = cur.rows[0] as any
+    if (!isDeletedRow(row)) {
+      await client.query("ROLLBACK")
+      return res.status(400).json({ message: "Post is not deleted" })
+    }
+
+    const ids = await client.query(
+      `
+      WITH RECURSIVE subtree AS (
+        SELECT id, parent_id
+        FROM posts
+        WHERE id = $1 AND tenant_id = $2 AND author_id = $3
+        UNION ALL
+        SELECT p.id, p.parent_id
+        FROM posts p
+        JOIN subtree s ON p.parent_id = s.id
+        WHERE p.tenant_id = $2 AND p.author_id = $3
+      )
+      SELECT id::text AS id
+      FROM subtree
+      `,
+      [pageId, tenantId, userId]
+    )
+    const purgeIds = (ids.rows || []).map((r: any) => String(r.id)).filter(Boolean)
+    if (!purgeIds.length) {
+      await client.query("ROLLBACK")
+      return res.json({ ok: true, deleted_ids: [] })
+    }
+
+    // Only delete rows that are actually deleted (safety)
+    await client.query(
+      `DELETE FROM posts
+       WHERE id = ANY($1::uuid[])
+         AND tenant_id = $2
+         AND author_id = $3
+         AND (deleted_at IS NOT NULL OR COALESCE(status,'') = 'deleted')`,
+      [purgeIds, tenantId, userId]
+    )
+
+    await client.query("COMMIT")
+    return res.json({ ok: true, deleted_ids: purgeIds })
+  } catch (e) {
+    await client.query("ROLLBACK")
+    console.error("post-service purgeDeletedPage error:", e)
+    return res.status(500).json({ message: "Failed to purge deleted page" })
+  } finally {
+    client.release()
+  }
+}
+
 

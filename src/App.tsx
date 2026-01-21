@@ -12,6 +12,7 @@ import TranslationManager from "./pages/admin/i18n/TranslationManager";
 import TranslationHistoryPage from "./pages/admin/i18n/TranslationHistory";
 import PostEditorPage from "./pages/posts/PostEditorPage";
 import PostEntryPage from "./pages/posts/PostEntryPage";
+import TrashPage from "./pages/trash/Trash";
 
 import UserManager from "./pages/admin/users/UserManager";
 import RoleManager from "./pages/admin/users/RoleManager";
@@ -57,6 +58,10 @@ const router = createBrowserRouter([
       {
         path: "/timeline",
         element: <Timeline />,
+      },
+      {
+        path: "/trash",
+        element: <TrashPage />,
       },
       {
         path: "/posts",

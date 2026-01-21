@@ -1,7 +1,24 @@
 import * as React from "react"
 import { AppShell } from "@/components/layout/AppShell"
 import { Button } from "@/components/ui/button"
-import { Copy, Volume2, Repeat, ChevronsLeft, PencilLine, GalleryVerticalEnd } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import { toast } from "sonner"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+// (delete confirm removed; keep toast-only UX)
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Copy, Volume2, Repeat, ChevronsLeft, PencilLine, GalleryVerticalEnd, MoreHorizontal } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ChatInterface } from "@/components/ChatInterface"
 import { ProseMirrorViewer } from "@/components/post/ProseMirrorViewer"
@@ -21,13 +38,17 @@ function TimelineSidebarList({
   conversations,
   activeConversationId,
   onSelect,
+  onRename,
+  onDelete,
 }: {
   conversations: TimelineConversation[]
   activeConversationId: string | null
   onSelect: (id: string) => void
+  onRename: (c: TimelineConversation) => void
+  onDelete: (c: TimelineConversation) => void
 }) {
   return (
-    <div className="flex flex-col gap-1 w-full">
+    <div className="flex flex-col gap-1 w-full flex-1 overflow-y-auto pr-1">
       {conversations.length === 0 ? (
         <div className="px-2 py-2 text-xs text-muted-foreground">저장된 대화가 없습니다.</div>
       ) : (
@@ -35,12 +56,48 @@ function TimelineSidebarList({
           <div
             key={c.id}
             className={cn(
-              "flex items-center px-2 py-2 rounded-md cursor-pointer hover:bg-accent/50 transition-colors w-full h-8",
+              "group flex items-center px-2 py-2 rounded-md cursor-pointer hover:bg-accent/50 transition-colors w-full h-8",
               c.id === activeConversationId ? "bg-accent" : ""
             )}
             onClick={() => onSelect(c.id)}
           >
             <p className="text-sm text-foreground truncate w-full">{c.title}</p>
+            <div className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-7"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                    }}
+                  >
+                    <MoreHorizontal className="size-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                  <DropdownMenuItem
+                    onSelect={(e) => {
+                      e.preventDefault()
+                      onRename(c)
+                    }}
+                  >
+                    이름 바꾸기
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="text-destructive focus:text-destructive"
+                    onSelect={(e) => {
+                      e.preventDefault()
+                      onDelete(c)
+                    }}
+                  >
+                    휴지통으로 이동
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
         ))
       )}
@@ -332,6 +389,37 @@ export default function Timeline() {
   const location = useLocation()
   const navigate = useNavigate()
   const TIMELINE_SIDEBAR_OPEN_KEY = "reductai:timeline:isSidebarOpen"
+  const SIDEBAR_WIDTH_MIN = 220
+  const SIDEBAR_WIDTH_MAX = 380
+  const SIDEBAR_WIDTH_DEFAULT = 260
+
+  const clampSidebarWidth = React.useCallback(
+    (w: number) => Math.max(SIDEBAR_WIDTH_MIN, Math.min(SIDEBAR_WIDTH_MAX, Math.round(w))),
+    [SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX]
+  )
+
+  const getSidebarWidthStorageKey = React.useCallback(() => {
+    try {
+      const uid = String(window?.localStorage?.getItem("user_id") || "anon").trim() || "anon"
+      return `reductai.timeline.sidebarWidth.v1:${uid}`
+    } catch {
+      return "reductai.timeline.sidebarWidth.v1:anon"
+    }
+  }, [])
+
+  const readSidebarWidthFromStorage = React.useCallback(() => {
+    try {
+      if (typeof window === "undefined") return SIDEBAR_WIDTH_DEFAULT
+      const key = getSidebarWidthStorageKey()
+      const raw = window.localStorage.getItem(key)
+      const n = raw ? Number(raw) : NaN
+      if (!Number.isFinite(n)) return SIDEBAR_WIDTH_DEFAULT
+      return clampSidebarWidth(n)
+    } catch {
+      return SIDEBAR_WIDTH_DEFAULT
+    }
+  }, [SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth, getSidebarWidthStorageKey])
+
   const getInitialDesktopSidebarOpen = () => {
     try {
       if (typeof window === "undefined") return true
@@ -353,9 +441,20 @@ export default function Timeline() {
     return mobile ? false : getInitialDesktopSidebarOpen()
   })
   const [isMobile, setIsMobile] = React.useState(false)
+  const [sidebarWidth, setSidebarWidth] = React.useState<number>(() => readSidebarWidthFromStorage())
+  const resizeStateRef = React.useRef<{ startX: number; startW: number; lastW: number; dragging: boolean }>({
+    startX: 0,
+    startW: SIDEBAR_WIDTH_DEFAULT,
+    lastW: SIDEBAR_WIDTH_DEFAULT,
+    dragging: false,
+  })
   const [conversations, setConversations] = React.useState<TimelineConversation[]>([])
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null)
   const [messages, setMessages] = React.useState<TimelineUiMessage[]>([])
+
+  const [renameTarget, setRenameTarget] = React.useState<TimelineConversation | null>(null)
+  const [renameValue, setRenameValue] = React.useState("")
+  // delete confirm UI removed (toast+undo only)
 
   // 현재 대화에서 마지막으로 사용한 모델을 유지하여 ChatInterface 드롭다운 초기값으로 사용합니다.
   const [stickySelectedModel, setStickySelectedModel] = React.useState<string | undefined>(undefined)
@@ -409,6 +508,65 @@ export default function Timeline() {
       // ignore (storage might be blocked)
     }
   }, [isMobile, isSidebarOpen])
+
+  // Keep the sidebar width stable per-user (desktop only).
+  React.useEffect(() => {
+    if (typeof window === "undefined") return
+    if (isMobile) return
+    // In case user_id becomes available after initial render, re-sync once on desktop.
+    const w = readSidebarWidthFromStorage()
+    setSidebarWidth(w)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobile])
+
+  const persistSidebarWidth = React.useCallback(
+    (w: number) => {
+      if (typeof window === "undefined") return
+      if (isMobile) return
+      try {
+        const key = getSidebarWidthStorageKey()
+        window.localStorage.setItem(key, String(clampSidebarWidth(w)))
+      } catch {
+        // ignore
+      }
+    },
+    [clampSidebarWidth, getSidebarWidthStorageKey, isMobile]
+  )
+
+  const onSidebarResizePointerDown = React.useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (isMobile) return
+      e.preventDefault()
+      e.stopPropagation()
+
+      resizeStateRef.current = { startX: e.clientX, startW: sidebarWidth, lastW: sidebarWidth, dragging: true }
+
+      const prevUserSelect = document.body.style.userSelect
+      const prevCursor = document.body.style.cursor
+      document.body.style.userSelect = "none"
+      document.body.style.cursor = "col-resize"
+
+      const onMove = (ev: PointerEvent) => {
+        if (!resizeStateRef.current.dragging) return
+        const dx = ev.clientX - resizeStateRef.current.startX
+        const next = clampSidebarWidth(resizeStateRef.current.startW + dx)
+        resizeStateRef.current.lastW = next
+        setSidebarWidth(next)
+      }
+
+      const onUp = () => {
+        resizeStateRef.current.dragging = false
+        window.removeEventListener("pointermove", onMove)
+        document.body.style.userSelect = prevUserSelect
+        document.body.style.cursor = prevCursor
+        persistSidebarWidth(resizeStateRef.current.lastW)
+      }
+
+      window.addEventListener("pointermove", onMove)
+      window.addEventListener("pointerup", onUp, { once: true })
+    },
+    [clampSidebarWidth, isMobile, persistSidebarWidth, sidebarWidth]
+  )
 
   // 보안: Timeline은 사용자별 히스토리를 다루므로 로그인(토큰)이 없으면 접근 불가
   React.useEffect(() => {
@@ -486,6 +644,123 @@ export default function Timeline() {
     }) as TimelineMessage[]
     return dedupeById(mapped)
   }, [authHeaders])
+
+  const renameThread = React.useCallback(
+    async (id: string, title: string) => {
+      const res = await fetch(`${TIMELINE_API_BASE}/threads/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ title }),
+      })
+      if (!res.ok) throw new Error("THREAD_RENAME_FAILED")
+      const row = (await res.json().catch(() => null)) as { id?: string; title?: string } | null
+      const nextTitle = typeof row?.title === "string" ? row.title : title
+      setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, title: nextTitle } : c)))
+    },
+    [authHeaders]
+  )
+
+  const deleteThread = React.useCallback(
+    async (id: string) => {
+      const res = await fetch(`${TIMELINE_API_BASE}/threads/${id}`, {
+        method: "DELETE",
+        headers: { ...authHeaders() },
+      })
+      if (!res.ok) throw new Error("THREAD_DELETE_FAILED")
+
+      // If active thread was deleted, switch to next most recent (after removal) or clear.
+      let nextActive: string | null = null
+      setConversations((prev) => {
+        const next = prev.filter((c) => c.id !== id)
+        if (activeConversationId === id) {
+          nextActive = next[0]?.id || null
+        }
+        return next
+      })
+      if (activeConversationId === id) {
+        setMessages([])
+        setStickySelectedModel(undefined)
+        setStickySelectedProviderSlug(undefined)
+        setActiveConversationId(nextActive)
+        if (nextActive) {
+          try {
+            const msgs = await fetchMessages(nextActive)
+            setMessages(
+              msgs.map((m) => ({
+                id: m.id,
+                role: m.role,
+                content: m.content,
+                contentJson: m.contentJson,
+                model: m.model,
+                providerSlug: m.providerSlug,
+                providerLogoKey: m.providerLogoKey,
+              }))
+            )
+            const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant")
+            const lastAssistantModel = lastAssistant?.model
+            const lastAnyModel = [...msgs].reverse().find((m) => m.model)?.model
+            setStickySelectedModel(lastAssistantModel || lastAnyModel)
+            const lastAssistantProvider = lastAssistant?.providerSlug
+            const lastAnyProvider = [...msgs].reverse().find((m) => m.providerSlug)?.providerSlug
+            setStickySelectedProviderSlug(lastAssistantProvider || lastAnyProvider || undefined)
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      try {
+        const saved = sessionStorage.getItem(ACTIVE_CONV_KEY)
+        if (saved === id) sessionStorage.removeItem(ACTIVE_CONV_KEY)
+      } catch {
+        // ignore
+      }
+    },
+    [ACTIVE_CONV_KEY, activeConversationId, authHeaders, fetchMessages]
+  )
+
+  const restoreThread = React.useCallback(
+    async (id: string) => {
+      const res = await fetch(`${TIMELINE_API_BASE}/threads/${id}/restore`, {
+        method: "POST",
+        headers: { ...authHeaders() },
+      })
+      if (!res.ok) throw new Error("THREAD_RESTORE_FAILED")
+      // refresh sidebar list (restored thread becomes active again in DB)
+      try {
+        const refreshed = sortByRecent(await fetchThreads())
+        setConversations(refreshed)
+      } catch {
+        // ignore
+      }
+    },
+    [authHeaders, fetchThreads]
+  )
+
+  const trashThreadWithToast = React.useCallback(
+    async (c: TimelineConversation) => {
+      try {
+        await deleteThread(c.id)
+        toast("대화가 삭제되어 휴지통으로 이동되었습니다.", {
+          action: {
+            label: "undo",
+            onClick: () => {
+              void (async () => {
+                try {
+                  await restoreThread(c.id)
+                } catch (e) {
+                  console.warn("[Timeline] restore failed:", e)
+                }
+              })()
+            },
+          },
+        })
+      } catch (e) {
+        console.warn("[Timeline] delete failed:", e)
+      }
+    },
+    [deleteThread, restoreThread]
+  )
 
   // 0) 최초 진입 시 "서버(DB)"에서 대화 목록을 로드하고, "가장 최근 대화"를 자동으로 선택합니다.
   React.useEffect(() => {
@@ -661,6 +936,13 @@ export default function Timeline() {
                     setActiveConversationId(id)
                     setIsSidebarOpen(true)
                   }}
+                  onRename={(c) => {
+                    setRenameTarget(c)
+                    setRenameValue(c.title || "")
+                  }}
+                  onDelete={(c) => {
+                    void trashThreadWithToast(c)
+                  }}
                 />
               </HoverCardContent>
             </HoverCard>
@@ -687,9 +969,10 @@ export default function Timeline() {
 
               <div
                 className={cn(
-                  "border-r border-border h-full flex flex-col px-2 py-4 bg-background shrink-0",
-                  isMobile ? "fixed top-[56px] left-0 bottom-0 z-40 w-[240px] shadow-lg" : "w-[200px]"
+                  "border-r border-border h-full flex flex-col px-2 py-4 bg-background shrink-0 relative",
+                  isMobile ? "fixed top-[56px] left-0 bottom-0 z-40 w-[240px] shadow-lg" : "min-w-[220px] max-w-[380px]"
                 )}
+                style={isMobile ? undefined : { width: sidebarWidth }}
               >
                 <TimelineSidebarList
                   conversations={conversations}
@@ -698,13 +981,85 @@ export default function Timeline() {
                     setActiveConversationId(id)
                     if (isMobile) setIsSidebarOpen(false)
                   }}
+                  onRename={(c) => {
+                    setRenameTarget(c)
+                    setRenameValue(c.title || "")
+                  }}
+                  onDelete={(c) => {
+                    void trashThreadWithToast(c)
+                  }}
                 />
+
+                {/* Resize handle (desktop only) */}
+                {!isMobile ? (
+                  <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize sidebar"
+                    onPointerDown={onSidebarResizePointerDown}
+                    className={cn(
+                      "absolute top-0 right-0 h-full w-1 cursor-col-resize",
+                      "hover:bg-accent/60 active:bg-accent/80"
+                    )}
+                  />
+                ) : null}
               </div>
             </>
           )}
         </>
       }
     >
+      {/* Rename Dialog */}
+      <Dialog
+        open={Boolean(renameTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRenameTarget(null)
+            setRenameValue("")
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>이름 바꾸기</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            placeholder="대화 제목"
+            autoFocus
+          />
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setRenameTarget(null)
+                setRenameValue("")
+              }}
+            >
+              취소
+            </Button>
+            <Button
+              onClick={async () => {
+                const t = renameTarget
+                const next = renameValue.trim()
+                if (!t || !next) return
+                try {
+                  await renameThread(t.id, next)
+                  setRenameTarget(null)
+                  setRenameValue("")
+                } catch (e) {
+                  console.warn("[Timeline] rename failed:", e)
+                }
+              }}
+              disabled={!renameValue.trim()}
+            >
+              저장
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <div className="flex-1 flex flex-col h-full relative w-full">
         {/* Chat Messages Scroll Area */}
         <div className="overflow-y-auto p-6 flex flex-col w-full gap-4 items-center h-full">

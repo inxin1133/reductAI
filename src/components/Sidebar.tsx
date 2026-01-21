@@ -406,6 +406,7 @@ export function Sidebar({ className }: SidebarProps) {
   const isFrontAIActive = location.pathname.startsWith("/front-ai")
   const isTimelineActive = location.pathname.startsWith("/timeline")
   const isPostsActive = location.pathname.startsWith("/posts")
+  const isTrashActive = location.pathname.startsWith("/trash")
   const activeCategoryId = (() => {
     try {
       const qs = new URLSearchParams(location.search || "")
@@ -1009,7 +1010,16 @@ export function Sidebar({ className }: SidebarProps) {
            {/* 관리 섹션 */}
            <div className="flex flex-col gap-1 mt-4">
               <div className="px-2 h-8 opacity-70 flex items-center"><span className="text-sm text-foreground">관리</span></div>
-              <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
+             <div
+               className={cn(
+                 "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                 isTrashActive ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10" : "hover:bg-neutral-200"
+               )}
+               onClick={() => {
+                 setIsMobileMenuOpen(false)
+                 navigate("/trash")
+               }}
+             >
                  <Trash2 className="size-5" />
                  <span className="text-base text-foreground">휴지통</span>
               </div>
@@ -2079,7 +2089,14 @@ export function Sidebar({ className }: SidebarProps) {
               <span className="text-xs text-sidebar-foreground">관리</span>
            </div>
          )}
-         <div className={cn("flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200", !isOpen && "justify-center")}>
+         <div
+           className={cn(
+             "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+             !isOpen && "justify-center",
+             isTrashActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+           )}
+           onClick={() => navigate("/trash")}
+         >
            <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
              <Trash2 className="size-full" />
            </div>

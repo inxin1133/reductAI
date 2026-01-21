@@ -4,12 +4,16 @@ import {
   createMyPageCategory,
   createPost,
   deleteCategory,
+  getDeletedPageDetail,
   getPostContent,
   getPostPreview,
   getCurrentTenant,
+  listDeletedPages,
   listMyPageCategories,
   listMyPages,
+  purgeDeletedPage,
   reorderCategories,
+  restoreDeletedPage,
   savePostContent,
   updateCategory,
   updatePost,
@@ -27,6 +31,12 @@ router.post("/categories/reorder", requireAuth, reorderCategories)
 
 // Tenant (current)
 router.get("/tenant/current", requireAuth, getCurrentTenant)
+
+// Trash (deleted posts)
+router.get("/trash", requireAuth, listDeletedPages)
+router.get("/trash/:id", requireAuth, getDeletedPageDetail)
+router.post("/trash/:id/restore", requireAuth, restoreDeletedPage)
+router.delete("/trash/:id", requireAuth, purgeDeletedPage)
 
 router.post("/", requireAuth, createPost)
 router.get("/mine", requireAuth, listMyPages)

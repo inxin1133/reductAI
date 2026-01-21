@@ -192,6 +192,47 @@ export async function listThreads(req: Request, res: Response) {
   }
 }
 
+// 삭제된 스레드 목록 (휴지통)
+export async function listDeletedThreads(req: Request, res: Response) {
+  try {
+    const userId = (req as AuthedRequest).userId
+    const tenantId = await ensureSystemTenantId()
+    const result = await query(
+      `SELECT id, user_id, title, created_at, updated_at
+       FROM model_conversations
+       WHERE tenant_id = $1 AND user_id = $2 AND status = 'deleted'
+       ORDER BY updated_at DESC`,
+      [tenantId, userId]
+    )
+    res.json(result.rows)
+  } catch (e) {
+    console.error("listDeletedThreads error:", e)
+    res.status(500).json({ message: "Failed to fetch deleted threads" })
+  }
+}
+
+// 삭제된 스레드 복구: status를 'active'로 되돌림
+export async function restoreThread(req: Request, res: Response) {
+  try {
+    const { id } = req.params
+    const userId = (req as AuthedRequest).userId
+    const tenantId = await ensureSystemTenantId()
+
+    const result = await query(
+      `UPDATE model_conversations
+       SET status = 'active', updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'deleted'
+       RETURNING id, user_id, title, created_at, updated_at`,
+      [id, tenantId, userId]
+    )
+    if (result.rows.length === 0) return res.status(404).json({ message: "Thread not found" })
+    return res.json(result.rows[0])
+  } catch (e) {
+    console.error("restoreThread error:", e)
+    return res.status(500).json({ message: "Failed to restore thread" })
+  }
+}
+
 // 스레드 생성
 export async function createThread(req: Request, res: Response) {
   try {
@@ -432,6 +473,59 @@ export async function updateThreadTitle(req: Request, res: Response) {
   } catch (e) {
     console.error("updateThreadTitle error:", e)
     res.status(500).json({ message: "Failed to update thread title" })
+  }
+}
+
+// 스레드 삭제(soft delete): status를 'deleted'로 전환하고 목록에서 숨김
+export async function deleteThread(req: Request, res: Response) {
+  try {
+    const { id } = req.params
+    const userId = (req as AuthedRequest).userId
+    const tenantId = await ensureSystemTenantId()
+
+    const result = await query(
+      `UPDATE model_conversations
+       SET status = 'deleted', updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'active'
+       RETURNING id`,
+      [id, tenantId, userId]
+    )
+    if (result.rows.length === 0) return res.status(404).json({ message: "Thread not found" })
+    return res.json({ ok: true, id: String(result.rows[0].id) })
+  } catch (e) {
+    console.error("deleteThread error:", e)
+    return res.status(500).json({ message: "Failed to delete thread" })
+  }
+}
+
+// 스레드 완전삭제(hard delete): status='deleted'인 대화를 DB에서 영구 삭제합니다.
+// - model_messages FK가 CASCADE가 아닐 수 있으므로, 메시지를 먼저 삭제 후 대화를 삭제합니다.
+export async function purgeThread(req: Request, res: Response) {
+  try {
+    const { id } = req.params
+    const userId = (req as AuthedRequest).userId
+    const tenantId = await ensureSystemTenantId()
+    const threadId = String(id || "").trim()
+    if (!threadId) return res.status(400).json({ message: "Invalid id" })
+
+    // ownership + must be deleted
+    const owns = await query(
+      `SELECT 1 FROM model_conversations WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'deleted'`,
+      [threadId, tenantId, userId]
+    )
+    if (owns.rows.length === 0) return res.status(404).json({ message: "Thread not found" })
+
+    // delete messages first (safe even if cascade exists)
+    await query(`DELETE FROM model_messages WHERE conversation_id = $1`, [threadId])
+    const del = await query(
+      `DELETE FROM model_conversations WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'deleted' RETURNING id`,
+      [threadId, tenantId, userId]
+    )
+    if (del.rows.length === 0) return res.status(404).json({ message: "Thread not found" })
+    return res.json({ ok: true, id: String(del.rows[0].id) })
+  } catch (e) {
+    console.error("purgeThread error:", e)
+    return res.status(500).json({ message: "Failed to purge thread" })
   }
 }
 
