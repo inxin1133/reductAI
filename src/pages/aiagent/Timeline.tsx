@@ -2,6 +2,7 @@ import * as React from "react"
 import { AppShell } from "@/components/layout/AppShell"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "sonner"
 import {
   DropdownMenu,
@@ -37,18 +38,28 @@ import { useLocation, useNavigate } from "react-router-dom"
 function TimelineSidebarList({
   conversations,
   activeConversationId,
+  ellipsis,
+  showCreatingThread,
   onSelect,
   onRename,
   onDelete,
 }: {
   conversations: TimelineConversation[]
   activeConversationId: string | null
+  ellipsis: string
+  showCreatingThread: boolean
   onSelect: (id: string) => void
   onRename: (c: TimelineConversation) => void
   onDelete: (c: TimelineConversation) => void
 }) {
   return (
-    <div className="flex flex-col gap-1 w-full flex-1 overflow-y-auto pr-1">
+    <div className="flex flex-col gap-1 w-full flex-1 overflow-y-auto">
+      {showCreatingThread ? (
+        <div className="flex items-center px-2 py-2 rounded-md w-full h-8 bg-accent/60">
+          <span className="inline-block size-2 rounded-full bg-primary animate-pulse mr-2" />
+          <p className="text-sm text-foreground truncate w-full animate-pulse">대화 생성 중{ellipsis}</p>
+        </div>
+      ) : null}
       {conversations.length === 0 ? (
         <div className="px-2 py-2 text-xs text-muted-foreground">저장된 대화가 없습니다.</div>
       ) : (
@@ -61,7 +72,13 @@ function TimelineSidebarList({
             )}
             onClick={() => onSelect(c.id)}
           >
-            <p className="text-sm text-foreground truncate w-full">{c.title}</p>
+            <div className="flex items-center gap-2 min-w-0 w-full">
+              {c.hasUnread ? <span className="inline-block size-2 rounded-full bg-red-500 shrink-0" /> : null}
+              <p className="text-sm text-foreground truncate w-full">
+                {c.title}
+                {c.isGenerating ? `  답변 작성중${ellipsis}` : ""}
+              </p>
+            </div>
             <div className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -121,6 +138,7 @@ type TimelineMessage = {
   content: string
   contentJson?: unknown
   model?: string
+  modelDisplayName?: string
   providerSlug?: string
   providerLogoKey?: string | null
   isPending?: boolean
@@ -132,6 +150,13 @@ type TimelineConversation = {
   title: string
   createdAt: string // ISO
   updatedAt: string // ISO (최근 대화 정렬 기준)
+  lastMessageRole?: string | null
+  lastMessageOrder?: number | null
+  lastMessageCreatedAt?: string | null
+  lastAssistantOrder?: number | null
+  lastAssistantCreatedAt?: string | null
+  isGenerating?: boolean
+  hasUnread?: boolean
   messages: TimelineMessage[]
 }
 
@@ -141,6 +166,7 @@ type TimelineUiMessage = {
   content: string
   contentJson?: unknown
   model?: string
+  modelDisplayName?: string
   providerSlug?: string
   providerLogoKey?: string | null
   isPending?: boolean
@@ -159,6 +185,7 @@ type TimelineNavState = {
 }
 
 const TIMELINE_API_BASE = "/api/ai/timeline"
+const CHAT_UI_CONFIG_API = "/api/ai/chat-ui/config"
 
 function parseJsonLikeString(input: string): Record<string, unknown> | null {
   let raw = String(input || "").trim()
@@ -449,8 +476,26 @@ export default function Timeline() {
     dragging: false,
   })
   const [conversations, setConversations] = React.useState<TimelineConversation[]>([])
+  const conversationsRef = React.useRef<TimelineConversation[]>([])
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null)
   const [messages, setMessages] = React.useState<TimelineUiMessage[]>([])
+
+  // Chat scroll anchoring (keep the viewport on the generating reply)
+  const messagesScrollRef = React.useRef<HTMLDivElement | null>(null)
+  const bottomAnchorRef = React.useRef<HTMLDivElement | null>(null)
+  const isNearBottomRef = React.useRef(true)
+  const forceScrollToBottomRef = React.useRef(false)
+  const forceScrollToLatestAssistantTopRef = React.useRef(false)
+  const assistantElByIdRef = React.useRef(new Map<string, HTMLDivElement>())
+
+  const scrollToBottom = React.useCallback((behavior: ScrollBehavior = "auto") => {
+    bottomAnchorRef.current?.scrollIntoView({ block: "end", behavior })
+  }, [])
+
+  // Keep a ref to latest conversations to avoid over-broad effect dependencies.
+  React.useEffect(() => {
+    conversationsRef.current = conversations
+  }, [conversations])
 
   const [renameTarget, setRenameTarget] = React.useState<TimelineConversation | null>(null)
   const [renameValue, setRenameValue] = React.useState("")
@@ -460,6 +505,7 @@ export default function Timeline() {
   const [stickySelectedModel, setStickySelectedModel] = React.useState<string | undefined>(undefined)
   const [stickySelectedProviderSlug, setStickySelectedProviderSlug] = React.useState<string | undefined>(undefined)
   const ACTIVE_CONV_KEY = "reductai.timeline.activeConversationId.v1"
+  const [isCreatingThread, setIsCreatingThread] = React.useState(false)
   const [initialToSend, setInitialToSend] = React.useState<{
     input: string
     providerSlug: string
@@ -588,6 +634,63 @@ export default function Timeline() {
     return token ? { Authorization: `Bearer ${token}` } : {}
   }, [])
 
+  // Model display_name lookup (for showing ai_models.display_name instead of raw model_id)
+  const modelDisplayNameByIdRef = React.useRef<Record<string, string>>({})
+  React.useEffect(() => {
+    const run = async () => {
+      try {
+        const res = await fetch(CHAT_UI_CONFIG_API, { headers: { ...authHeaders() } })
+        if (!res.ok) return
+        const json: unknown = await res.json().catch(() => null)
+        const out: Record<string, string> = {}
+        const obj = json && typeof json === "object" ? (json as Record<string, unknown>) : null
+        const providersByType = obj && typeof obj.providers_by_type === "object" ? (obj.providers_by_type as Record<string, unknown>) : null
+        if (providersByType) {
+          for (const key of Object.keys(providersByType)) {
+            const groups = Array.isArray(providersByType[key]) ? (providersByType[key] as unknown[]) : []
+            for (const g of groups) {
+              const rec = g && typeof g === "object" ? (g as Record<string, unknown>) : null
+              const models = rec && Array.isArray(rec.models) ? (rec.models as unknown[]) : []
+              for (const m of models) {
+                const mr = m && typeof m === "object" ? (m as Record<string, unknown>) : null
+                const id = mr && typeof mr.model_api_id === "string" ? String(mr.model_api_id).trim() : ""
+                const dn = mr && typeof mr.display_name === "string" ? String(mr.display_name).trim() : ""
+                if (id && dn) out[id] = dn
+              }
+            }
+          }
+        }
+        modelDisplayNameByIdRef.current = out
+      } catch {
+        // ignore
+      }
+    }
+    void run()
+  }, [authHeaders])
+
+  // Sidebar "답변 작성중..." ellipsis animation
+  const [ellipsisPhase, setEllipsisPhase] = React.useState(0)
+  const ellipsis = ellipsisPhase % 3 === 0 ? "." : ellipsisPhase % 3 === 1 ? ".." : "..."
+  React.useEffect(() => {
+    const anyGenerating = conversations.some((c) => Boolean(c.isGenerating))
+    if (!anyGenerating) return
+    const t = window.setInterval(() => setEllipsisPhase((p) => (p + 1) % 3), 700)
+    return () => window.clearInterval(t)
+  }, [conversations])
+
+  const markThreadSeen = React.useCallback(
+    async (threadId: string) => {
+      const id = String(threadId || "").trim()
+      if (!id) return
+      try {
+        await fetch(`${TIMELINE_API_BASE}/threads/${id}/seen`, { method: "POST", headers: { ...authHeaders() } })
+      } catch {
+        // ignore
+      }
+    },
+    [authHeaders]
+  )
+
   const fetchThreads = React.useCallback(async () => {
     const res = await fetch(`${TIMELINE_API_BASE}/threads`, { headers: { ...authHeaders() } })
     if (!res.ok) throw new Error("THREADS_FETCH_FAILED")
@@ -596,12 +699,26 @@ export default function Timeline() {
       title: string
       created_at: string
       updated_at: string
+      last_message_role?: string | null
+      last_message_order?: number | null
+      last_message_created_at?: string | null
+      last_assistant_order?: number | null
+      last_assistant_created_at?: string | null
+      has_unread?: boolean | null
+      is_generating?: boolean | null
     }>
     const mapped = rows.map((r) => ({
       id: r.id,
       title: r.title,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
+      lastMessageRole: r.last_message_role ?? null,
+      lastMessageOrder: typeof r.last_message_order === "number" ? r.last_message_order : r.last_message_order ? Number(r.last_message_order) : null,
+      lastMessageCreatedAt: r.last_message_created_at ?? null,
+      lastAssistantOrder: typeof r.last_assistant_order === "number" ? r.last_assistant_order : r.last_assistant_order ? Number(r.last_assistant_order) : null,
+      lastAssistantCreatedAt: r.last_assistant_created_at ?? null,
+      isGenerating: Boolean(r.is_generating),
+      hasUnread: Boolean(r.has_unread),
       messages: [],
     })) as TimelineConversation[]
     return sortByRecent(dedupeById(mapped))
@@ -618,17 +735,26 @@ export default function Timeline() {
       metadata?: Record<string, unknown> | null
       provider_logo_key?: string | null
       provider_slug_resolved?: string | null
+      model_display_name?: string | null
       created_at: string
       message_order?: number
     }>
     const mapped = rows.map((m) => {
       const normalized = normalizeContentJson(m.content)
+      const modelApiId = typeof m.metadata?.model === "string" ? String(m.metadata.model) : ""
+      const modelDisplayName =
+        typeof m.model_display_name === "string" && m.model_display_name.trim()
+          ? String(m.model_display_name)
+          : modelApiId && modelDisplayNameByIdRef.current[modelApiId]
+            ? modelDisplayNameByIdRef.current[modelApiId]
+            : undefined
       return {
       id: m.id,
       role: m.role,
       content: extractTextFromJsonContent(normalized ?? m.content) || "",
       contentJson: normalized ?? m.content,
-      model: typeof m.metadata?.model === "string" ? (m.metadata.model as string) : undefined,
+      model: modelApiId || undefined,
+      modelDisplayName,
       providerSlug:
         typeof m.provider_slug_resolved === "string" && m.provider_slug_resolved.trim()
           ? m.provider_slug_resolved
@@ -762,6 +888,23 @@ export default function Timeline() {
     [deleteThread, restoreThread]
   )
 
+  // If any conversation is in "generating" state (last message is user), keep the sidebar fresh.
+  React.useEffect(() => {
+    const anyGenerating = conversations.some((c) => Boolean(c.isGenerating))
+    if (!anyGenerating) return
+    const t = window.setInterval(() => {
+      void (async () => {
+        try {
+          const refreshed = await fetchThreads()
+          setConversations(refreshed)
+        } catch {
+          // ignore
+        }
+      })()
+    }, 1500)
+    return () => window.clearInterval(t)
+  }, [conversations, fetchThreads])
+
   // 0) 최초 진입 시 "서버(DB)"에서 대화 목록을 로드하고, "가장 최근 대화"를 자동으로 선택합니다.
   React.useEffect(() => {
     const run = async () => {
@@ -828,6 +971,7 @@ export default function Timeline() {
     }
 
     setInitialToSend(initial)
+    setIsCreatingThread(true)
     // state consume
     navigate(location.pathname, { replace: true, state: {} })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -837,14 +981,48 @@ export default function Timeline() {
   const [isGenerating, setIsGenerating] = React.useState(false)
   const [genPhase, setGenPhase] = React.useState(0)
   const GENERATING_STEPS = React.useMemo(
-    () => ["요청 분석 중", "컨텍스트 불러오는 중", "모델 선택 중", "프롬프트 구성 중", "안전 조정 중", "추론/생성 중"],
+    () => ["요청 분석 중", "안전 조정 중", "추론/생성 중", "답변 작성 중.", "답변 작성 중..", "답변 작성 중...", "추가 검토중", "답변 작성 중"],
+    // () => ["요청 분석 중", "컨텍스트 불러오는 중", "모델 선택 중", "프롬프트 구성 중", "안전 조정 중", "추론/생성 중"],
     []
   )
   React.useEffect(() => {
     if (!isGenerating) return
-    const t = window.setInterval(() => setGenPhase((p) => (p + 1) % GENERATING_STEPS.length), 900)
+    const t = window.setInterval(() => setGenPhase((p) => (p + 1) % GENERATING_STEPS.length), 3000)
     return () => window.clearInterval(t)
   }, [GENERATING_STEPS.length, isGenerating])
+
+  // Auto-scroll:
+  // - When the user sends a message: force jump to the generating reply.
+  // - While generating: follow only if the user is already near the bottom.
+  React.useEffect(() => {
+    if (!messages.length) return
+    if (!isGenerating && !forceScrollToBottomRef.current) return
+
+    const shouldForce = forceScrollToBottomRef.current
+    const shouldFollow = isGenerating && isNearBottomRef.current
+    if (!shouldForce && !shouldFollow) return
+
+    const raf = window.requestAnimationFrame(() => {
+      scrollToBottom(shouldForce ? "auto" : "smooth")
+      forceScrollToBottomRef.current = false
+    })
+    return () => window.cancelAnimationFrame(raf)
+  }, [isGenerating, messages.length, scrollToBottom])
+
+  // When user clicks an "unread" conversation: scroll to the TOP of the latest assistant reply (so they can read from start).
+  React.useEffect(() => {
+    if (!forceScrollToLatestAssistantTopRef.current) return
+    if (!messages.length) return
+    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant" && !m.isPending)
+    if (!lastAssistant?.id) return
+    const el = assistantElByIdRef.current.get(String(lastAssistant.id))
+    if (!el) return
+    const raf = window.requestAnimationFrame(() => {
+      el.scrollIntoView({ block: "start", behavior: "auto" })
+      forceScrollToLatestAssistantTopRef.current = false
+    })
+    return () => window.cancelAnimationFrame(raf)
+  }, [messages])
 
   // 대화 선택 시 메시지/모델 동기화
   React.useEffect(() => {
@@ -859,10 +1037,17 @@ export default function Timeline() {
             content: m.content,
             contentJson: m.contentJson,
             model: m.model,
+            modelDisplayName: m.modelDisplayName,
             providerSlug: m.providerSlug,
             providerLogoKey: m.providerLogoKey,
           }))
         )
+        // Mark as seen in DB (unread indicator across devices).
+        const target = conversationsRef.current.find((c) => c.id === activeConversationId)
+        if (target?.hasUnread) {
+          setConversations((prev) => prev.map((c) => (c.id === activeConversationId ? { ...c, hasUnread: false } : c)))
+          void markThreadSeen(activeConversationId)
+        }
         const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant")
         const lastAssistantModel = lastAssistant?.model
         const lastAnyModel = [...msgs].reverse().find((m) => m.model)?.model
@@ -875,7 +1060,7 @@ export default function Timeline() {
       }
     }
     void run()
-  }, [activeConversationId, fetchMessages])
+  }, [activeConversationId, fetchMessages, markThreadSeen])
 
   React.useEffect(() => {
     if (!activeConversationId) return
@@ -928,11 +1113,20 @@ export default function Timeline() {
                   <GalleryVerticalEnd className="size-4" />
                 </Button>
               </HoverCardTrigger>
-              <HoverCardContent side="right" align="start" className="w-[200px] p-2">
+              <HoverCardContent side="right" align="start" className="w-[220px] h-[600px] pl-2 pr-1 flex flex-col">
                 <TimelineSidebarList
                   conversations={conversations}
                   activeConversationId={activeConversationId}
+                  ellipsis={ellipsis}
+                  showCreatingThread={isCreatingThread}
                   onSelect={(id) => {
+                    // unread인 대화를 클릭하면: 블릿 제거 + 답변 위치로 앵커 이동
+                    const target = conversations.find((c) => c.id === id)
+                    if (target?.hasUnread) {
+                      forceScrollToLatestAssistantTopRef.current = true
+                      setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, hasUnread: false } : c)))
+                      void markThreadSeen(id)
+                    }
                     setActiveConversationId(id)
                     setIsSidebarOpen(true)
                   }}
@@ -957,7 +1151,7 @@ export default function Timeline() {
       }
       leftPane={
         <>
-          {/* Timeline Sidebar (Local) */}
+          {/* Timeline Sidebar (Local) - 왼쪽 사이드바 대화목록 */}
           {isSidebarOpen && (
             <>
               {isMobile && (
@@ -969,7 +1163,7 @@ export default function Timeline() {
 
               <div
                 className={cn(
-                  "border-r border-border h-full flex flex-col px-2 py-4 bg-background shrink-0 relative",
+                  "border-r border-border h-full flex flex-col pl-2 pr-1 py-4 bg-background shrink-0 relative",
                   isMobile ? "fixed top-[56px] left-0 bottom-0 z-40 w-[240px] shadow-lg" : "min-w-[220px] max-w-[380px]"
                 )}
                 style={isMobile ? undefined : { width: sidebarWidth }}
@@ -977,7 +1171,15 @@ export default function Timeline() {
                 <TimelineSidebarList
                   conversations={conversations}
                   activeConversationId={activeConversationId}
+                  ellipsis={ellipsis}
+                  showCreatingThread={isCreatingThread}
                   onSelect={(id) => {
+                    const target = conversations.find((c) => c.id === id)
+                    if (target?.hasUnread) {
+                      forceScrollToLatestAssistantTopRef.current = true
+                      setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, hasUnread: false } : c)))
+                      void markThreadSeen(id)
+                    }
                     setActiveConversationId(id)
                     if (isMobile) setIsSidebarOpen(false)
                   }}
@@ -1062,7 +1264,16 @@ export default function Timeline() {
 
       <div className="flex-1 flex flex-col h-full relative w-full">
         {/* Chat Messages Scroll Area */}
-        <div className="overflow-y-auto p-6 flex flex-col w-full gap-4 items-center h-full">
+        <div
+          ref={messagesScrollRef}
+          className="overflow-y-auto p-6 flex flex-col w-full gap-4 items-center h-full"
+          onScroll={() => {
+            const el = messagesScrollRef.current
+            if (!el) return
+            const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+            isNearBottomRef.current = distanceFromBottom < 140
+          }}
+        >
              {/* Messages - 메시지 */}
              <div className="w-full max-w-[800px] flex flex-col gap-6 ">
                {messages.length === 0 ? (
@@ -1084,8 +1295,19 @@ export default function Timeline() {
                          </div>
                        </div>
                      </div>
-                   ) : (
-                     <div key={m.id || `a_${idx}`} className="w-full flex lg:flex-row flex-col justify-start gap-4">
+                  ) : (
+                    <div
+                      key={m.id || `a_${idx}`}
+                      ref={(el) => {
+                        const id = m.id ? String(m.id) : ""
+                        if (!id) return
+                        if (m.isPending) return
+                        if (m.role !== "assistant") return
+                        if (el) assistantElByIdRef.current.set(id, el)
+                        else assistantElByIdRef.current.delete(id)
+                      }}
+                      className="w-full flex lg:flex-row flex-col justify-start gap-4"
+                    >
                        <div className="size-6 bg-primary rounded-[4px] flex items-center justify-center shrink-0">
                         {(() => {
                           const logoKey = m.providerLogoKey || providerSlugToLogoKeyFallback(m.providerSlug)
@@ -1096,7 +1318,7 @@ export default function Timeline() {
                           )
                         })()}
                        </div>
-                       <div className="flex flex-col gap-4 max-w-[720px]">
+                       <div className="flex flex-col gap-4 max-w-[720px] ">
                         <div className="text-base text-primary whitespace-pre-wrap space-y-3">
                           {(() => {
                             // "답변중" 상태 표시 + 타입라이터 표시
@@ -1108,8 +1330,11 @@ export default function Timeline() {
                                     <span className="inline-block size-2 rounded-full bg-primary animate-pulse" />
                                     <span>{step}...</span>
                                   </div>
-                                  <div className="text-base text-primary">
-                                    <span className="opacity-70">답변을 작성하고 있습니다.</span>
+                                  <div className="p-3 space-y-2">
+                                    <Skeleton className="h-4 w-[38%]" />
+                                    <Skeleton className="h-4 w-[92%]" />
+                                    <Skeleton className="h-4 w-[84%]" />
+                                    <Skeleton className="h-4 w-[64%]" />
                                   </div>
                                 </div>
                               )
@@ -1182,7 +1407,7 @@ export default function Timeline() {
                            <Copy className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
                            <Volume2 className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
                            <Repeat className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
-                           <span className="text-sm text-card-foreground">모델: {m.model || "-"}</span>
+                          <span className="text-sm text-card-foreground">모델: {m.modelDisplayName || (m.model ? modelDisplayNameByIdRef.current[m.model] : "") || m.model || "-"}</span>
                          </div>
                        </div>
                      </div>
@@ -1191,6 +1416,8 @@ export default function Timeline() {
                )}
              </div>
 
+             {/* Anchor for scroll-to-bottom */}
+             <div ref={bottomAnchorRef} />
         </div>
 
         {/* Bottom Panel */}
@@ -1207,6 +1434,7 @@ export default function Timeline() {
               conversationId={activeConversationId}
               onConversationId={(id) => {
                 setActiveConversationId(id)
+                setIsCreatingThread(false)
                 // 첫 질문에서 신규 대화가 생성된 경우: 목록/메시지 즉시 동기화
                 void (async () => {
                   try {
@@ -1241,18 +1469,30 @@ export default function Timeline() {
                onMessage={(msg) => {
                 // 1) 화면에 표시 + "답변중"/타입라이터 UX
                 if (msg.role === "user") {
+                  forceScrollToBottomRef.current = true
                   setIsGenerating(true)
                   setGenPhase(0)
                     const pendingId = `pending_${Date.now()}`
+                  const userModelApiId = msg.model ? String(msg.model) : ""
+                  const userModelDisplayName = userModelApiId ? modelDisplayNameByIdRef.current[userModelApiId] : ""
                   setMessages((prev) => [
                     ...prev,
-                    { id: `u_${Date.now()}`, role: "user", content: msg.content, contentJson: msg.contentJson, model: msg.model, providerSlug: msg.providerSlug },
+                    {
+                      id: `u_${Date.now()}`,
+                      role: "user",
+                      content: msg.content,
+                      contentJson: msg.contentJson,
+                      model: msg.model,
+                      modelDisplayName: userModelDisplayName || undefined,
+                      providerSlug: msg.providerSlug,
+                    },
                     {
                       id: pendingId,
                       role: "assistant",
                       content: "",
                       providerSlug: msg.providerSlug,
                       model: msg.model,
+                      modelDisplayName: userModelDisplayName || undefined,
                       providerLogoKey: null,
                       isPending: true,
                     },
@@ -1268,6 +1508,8 @@ export default function Timeline() {
                     const extracted = extractMessageFromJsonishString(derivedText)
                     if (extracted) derivedText = extracted
                   }
+                  const aModelApiId = msg.model ? String(msg.model) : ""
+                  const aModelDisplayName = aModelApiId ? modelDisplayNameByIdRef.current[aModelApiId] : ""
                   setMessages((prev) => {
                     const next = [...prev]
                     // If we receive the same assistant message twice (can happen in some edge flows),
@@ -1283,6 +1525,7 @@ export default function Timeline() {
                       content: derivedText,
                       contentJson: normalized ?? msg.contentJson,
                       model: msg.model,
+                      modelDisplayName: aModelDisplayName || undefined,
                       providerSlug: msg.providerSlug,
                       providerLogoKey: null,
                     }

@@ -183,6 +183,98 @@
   }
 }
 
+`response_schemas.schemas`
+{
+  "type": "object",
+  "required": ["title", "summary", "blocks"],
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 80,
+      "description": "A concise and descriptive title for the response."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 400,
+      "description": "A brief summary. Keep it short for simple questions."
+    },
+    "blocks": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 8,
+      "description": "An ordered list of content blocks composing the response.",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["type", "markdown"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "const": "markdown" },
+              "markdown": {
+                "type": "string",
+                "minLength": 10,
+                "maxLength": 2000,
+                "description": "Markdown-formatted content block."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["type", "language", "code"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "const": "code" },
+              "language": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 30,
+                "description": "Programming language of the code block."
+              },
+              "code": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000,
+                "description": "Source code content. Use only when a code example is clearly helpful."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["type", "headers", "rows"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "const": "table" },
+              "headers": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 6,
+                "items": { "type": "string", "minLength": 1, "maxLength": 60 }
+              },
+              "rows": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 10,
+                "items": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 6,
+                  "items": { "type": "string", "maxLength": 200 }
+                },
+                "description": "Table row data. Use only when a compact checklist/comparison improves clarity."
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+
+
 
 `ai_models.capabilities`
 {

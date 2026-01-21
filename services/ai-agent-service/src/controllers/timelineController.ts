@@ -11,6 +11,34 @@ import { normalizeAiContent } from "../utils/normalizeAiContent"
 
 type Role = "user" | "assistant" | "tool" | "system"
 
+let ensuredConversationReads = false
+async function ensureConversationReadsTable() {
+  if (ensuredConversationReads) return
+  // Best-effort: environments without migrations should still work.
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS model_conversation_reads (
+        tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        conversation_id UUID NOT NULL REFERENCES model_conversations(id) ON DELETE CASCADE,
+        last_seen_assistant_order INTEGER NOT NULL DEFAULT 0,
+        last_seen_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (tenant_id, user_id, conversation_id)
+      );
+    `)
+    await query(`
+      CREATE INDEX IF NOT EXISTS idx_model_conversation_reads_conversation
+      ON model_conversation_reads(conversation_id);
+    `)
+  } catch {
+    // ignore: if table cannot be created, endpoints will work without DB-read state
+  } finally {
+    ensuredConversationReads = true
+  }
+}
+
 function clampText(input: string, max: number) {
   const s = String(input || "").replace(/\s+/g, " ").trim()
   if (s.length <= max) return s
@@ -176,19 +204,108 @@ async function resolveAiModelIdByApiModel(modelApiId?: string | null) {
 // 대화 스레드 목록 (최근 업데이트 순)
 export async function listThreads(req: Request, res: Response) {
   try {
+    await ensureConversationReadsTable()
     const userId = (req as AuthedRequest).userId
     const tenantId = await ensureSystemTenantId()
     const result = await query(
-      `SELECT id, user_id, title, created_at, updated_at
-       FROM model_conversations
-       WHERE tenant_id = $1 AND user_id = $2 AND status = 'active'
-       ORDER BY updated_at DESC`,
+      `
+      SELECT
+        c.id,
+        c.user_id,
+        c.title,
+        c.created_at,
+        c.updated_at,
+        lm.role AS last_message_role,
+        lm.message_order AS last_message_order,
+        lm.created_at AS last_message_created_at,
+        la.message_order AS last_assistant_order,
+        la.created_at AS last_assistant_created_at,
+        COALESCE(r.last_seen_assistant_order, 0) AS last_seen_assistant_order,
+        CASE
+          WHEN la.message_order IS NULL THEN false
+          WHEN la.message_order > COALESCE(r.last_seen_assistant_order, 0) THEN true
+          ELSE false
+        END AS has_unread,
+        CASE
+          WHEN lower(COALESCE(lm.role, '')) = 'user'
+            AND lm.created_at IS NOT NULL
+            AND (CURRENT_TIMESTAMP - lm.created_at) < interval '10 minutes'
+          THEN true
+          ELSE false
+        END AS is_generating
+      FROM model_conversations c
+      LEFT JOIN LATERAL (
+        SELECT mm.role, mm.message_order, mm.created_at
+        FROM model_messages mm
+        WHERE mm.conversation_id = c.id
+        ORDER BY mm.message_order DESC
+        LIMIT 1
+      ) lm ON true
+      LEFT JOIN LATERAL (
+        SELECT mm.message_order, mm.created_at
+        FROM model_messages mm
+        WHERE mm.conversation_id = c.id AND mm.role = 'assistant'
+        ORDER BY mm.message_order DESC
+        LIMIT 1
+      ) la ON true
+      LEFT JOIN model_conversation_reads r
+        ON r.tenant_id = c.tenant_id
+        AND r.user_id = c.user_id
+        AND r.conversation_id = c.id
+      WHERE c.tenant_id = $1 AND c.user_id = $2 AND c.status = 'active'
+      ORDER BY c.updated_at DESC
+      `,
       [tenantId, userId]
     )
     res.json(result.rows)
   } catch (e) {
     console.error("listThreads error:", e)
     res.status(500).json({ message: "Failed to fetch threads" })
+  }
+}
+
+// Mark a thread as "seen" (updates unread state across devices)
+export async function markThreadSeen(req: Request, res: Response) {
+  try {
+    await ensureConversationReadsTable()
+    const { id } = req.params
+    const threadId = String(id || "").trim()
+    if (!threadId) return res.status(400).json({ message: "Invalid id" })
+
+    const userId = (req as AuthedRequest).userId
+    const tenantId = await ensureSystemTenantId()
+
+    const owns = await query(
+      `SELECT 1 FROM model_conversations WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'active'`,
+      [threadId, tenantId, userId]
+    )
+    if (owns.rows.length === 0) return res.status(404).json({ message: "Thread not found" })
+
+    // Compute the latest assistant message_order for this thread.
+    const last = await query(
+      `SELECT COALESCE(MAX(message_order), 0)::int AS last
+       FROM model_messages
+       WHERE conversation_id = $1 AND role = 'assistant'`,
+      [threadId]
+    )
+    const lastAssistantOrder = Number(last.rows[0]?.last || 0)
+
+    await query(
+      `
+      INSERT INTO model_conversation_reads (tenant_id, user_id, conversation_id, last_seen_assistant_order, last_seen_at, updated_at)
+      VALUES ($1, $2::uuid, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT (tenant_id, user_id, conversation_id)
+      DO UPDATE SET last_seen_assistant_order = EXCLUDED.last_seen_assistant_order,
+                    last_seen_at = EXCLUDED.last_seen_at,
+                    updated_at = EXCLUDED.updated_at
+      `,
+      [tenantId, userId, threadId, lastAssistantOrder]
+    )
+
+    return res.json({ ok: true, id: threadId, last_seen_assistant_order: lastAssistantOrder })
+  } catch (e) {
+    console.error("markThreadSeen error:", e)
+    return res.status(500).json({ message: "Failed to mark thread as seen" })
   }
 }
 
@@ -293,12 +410,15 @@ export async function listMessages(req: Request, res: Response) {
         mm.message_order,
         mm.created_at,
         COALESCE(NULLIF(mm.metadata->>'provider_logo_key',''), p_slug.logo_key, p_family.logo_key) AS provider_logo_key,
-        COALESCE(p_slug.slug, p_family.slug) AS provider_slug_resolved
+        COALESCE(p_slug.slug, p_family.slug) AS provider_slug_resolved,
+        am.display_name AS model_display_name
       FROM model_messages mm
       LEFT JOIN ai_providers p_slug
         ON p_slug.slug = NULLIF(mm.metadata->>'provider_slug', '')
       LEFT JOIN ai_providers p_family
         ON lower(p_family.provider_family) = lower(NULLIF(mm.metadata->>'provider_key', ''))
+      LEFT JOIN ai_models am
+        ON am.model_id = NULLIF(mm.metadata->>'model', '')
       WHERE mm.conversation_id = $1
       ORDER BY mm.message_order ASC
       `,

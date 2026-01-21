@@ -612,3 +612,33 @@ button:focus-visible {
     @apply bg-background text-foreground;
   }
 }
+
+/* =========================
+   Global thin scrollbar
+   - Applies to all scrollable elements using native scrollbars (e.g. overflow-y-auto)
+   - Firefox uses scrollbar-width/scrollbar-color
+   - WebKit (Chrome/Safari/Edge) uses ::-webkit-scrollbar*
+   ========================= */
+@layer base {
+  /* Firefox */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  /* WebKit */
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklab, var(--border) 85%, transparent);
+    border-radius: 999px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, var(--muted-foreground) 55%, transparent);
+  }
+}

@@ -7,6 +7,7 @@ import {
   listDeletedThreads,
   listMessages,
   listThreads,
+  markThreadSeen,
   purgeThread,
   restoreThread,
   updateThreadTitle,
@@ -24,6 +25,7 @@ router.get("/threads/deleted", listDeletedThreads)
 router.post("/threads", createThread)
 router.patch("/threads/:id", updateThreadTitle)
 router.delete("/threads/:id", deleteThread)
+router.post("/threads/:id/seen", markThreadSeen)
 router.post("/threads/:id/restore", restoreThread)
 router.delete("/threads/:id/purge", purgeThread)
 

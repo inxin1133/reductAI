@@ -1511,12 +1511,12 @@ export function ChatInterface({
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant={isCompact ? "outline" : "ghost"} className={cn(isCompact ? "h-[36px] rounded-lg gap-2 px-3" : "h-[36px] rounded-[8px] gap-2 px-4")}>
-                          {uiSelectedModelApiId || "-"}
+                          {String(uiSelectedModel?.display_name || "").trim() || "-"}
                           <ChevronDown className="size-4" />
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent className="w-72" align="start">
-                        <DropdownMenuLabel>모델 선택(활성+사용가능)</DropdownMenuLabel>
+                      <DropdownMenuContent className="w-[160px]" align="start">
+                        <DropdownMenuLabel>모델 선택</DropdownMenuLabel>
                         <DropdownMenuGroup>
                           {uiSelectableModels.map((m) => (
                             <DropdownMenuItem
@@ -1529,7 +1529,7 @@ export function ChatInterface({
                                 }
                               }}
                             >
-                              {m.display_name} <span className="ml-2 text-xs text-muted-foreground">{m.model_api_id}</span>
+                              {m.display_name}
                             </DropdownMenuItem>
                           ))}
                         </DropdownMenuGroup>

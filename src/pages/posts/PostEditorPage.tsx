@@ -2429,7 +2429,7 @@ export default function PostEditorPage() {
                     </div>
                   </div>
                   <Separator />
-                  <ScrollArea className="h-[360px]">
+                  <ScrollArea className="h-[600px]">
                     <div className="pt-2">
                       {roots.length === 0 ? (
                         <div className="text-sm text-muted-foreground px-2 py-2">아직 페이지가 없습니다.</div>

@@ -670,6 +670,39 @@ COMMENT ON COLUMN model_conversations.updated_at IS '대화 최종 수정 시각
 COMMENT ON COLUMN model_conversations.archived_at IS '대화 보관 시각';
 
 -- ============================================
+-- 8.1 MODEL CONVERSATION READS (대화 읽음 상태)
+-- ============================================
+-- 목적:
+-- - 사용자/기기(브라우저)가 달라도 동일한 "미확인(읽지 않음)" 상태를 유지하기 위해
+--   대화별 마지막 확인한 assistant message_order를 저장합니다.
+--
+-- NOTE:
+-- - unread 계산은 last_assistant_order > last_seen_assistant_order 로 판단합니다.
+
+CREATE TABLE IF NOT EXISTS model_conversation_reads (
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    conversation_id UUID NOT NULL REFERENCES model_conversations(id) ON DELETE CASCADE,
+    last_seen_assistant_order INTEGER NOT NULL DEFAULT 0,
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (tenant_id, user_id, conversation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_conversation_reads_conversation
+  ON model_conversation_reads(conversation_id);
+
+COMMENT ON TABLE model_conversation_reads IS '대화(Conversation)의 사용자별 읽음 상태(마지막 확인한 assistant message_order)를 저장합니다.';
+COMMENT ON COLUMN model_conversation_reads.tenant_id IS '테넌트 ID (tenants 테이블 참조)';
+COMMENT ON COLUMN model_conversation_reads.user_id IS '사용자 ID (users 테이블 참조)';
+COMMENT ON COLUMN model_conversation_reads.conversation_id IS '대화 ID (model_conversations 테이블 참조)';
+COMMENT ON COLUMN model_conversation_reads.last_seen_assistant_order IS '사용자가 마지막으로 확인한 assistant 메시지의 message_order';
+COMMENT ON COLUMN model_conversation_reads.last_seen_at IS '마지막 확인 시각';
+COMMENT ON COLUMN model_conversation_reads.created_at IS '레코드 생성 시각';
+COMMENT ON COLUMN model_conversation_reads.updated_at IS '레코드 수정 시각';
+
+-- ============================================
 -- 9. MODEL MESSAGES (모델 메시지)
 -- ============================================
 
