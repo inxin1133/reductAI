@@ -1468,6 +1468,8 @@ export async function chatRun(req: Request, res: Response) {
       ok: true,
       conversation_id: convId,
       language: finalLang,
+      content: normalizedAssistantContent,
+      content_text: contentTextForHistory,
       chosen: {
         provider_id: providerId,
         provider_key: providerKey,

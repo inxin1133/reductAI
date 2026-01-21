@@ -25,6 +25,25 @@ export default function FrontAI() {
   const alertShownRef = useRef(false)
   const [languages, setLanguages] = React.useState<Language[]>([]);
   const [currentLang, setCurrentLang] = React.useState("");
+  const LAST_SELECTION_KEY = "reductai.frontai.lastSelection.v1"
+  
+  const readSelectionFromStorage = () => {
+    try {
+      const raw = localStorage.getItem(LAST_SELECTION_KEY) || sessionStorage.getItem(LAST_SELECTION_KEY)
+      if (!raw) return { modelApiId: "", providerSlug: "", modelType: "" }
+      const parsed = JSON.parse(raw) as { modelApiId?: string; providerSlug?: string; modelType?: string }
+      return {
+        modelApiId: typeof parsed?.modelApiId === "string" ? parsed.modelApiId : "",
+        providerSlug: typeof parsed?.providerSlug === "string" ? parsed.providerSlug : "",
+        modelType: typeof parsed?.modelType === "string" ? parsed.modelType : "",
+      }
+    } catch {
+      return { modelApiId: "", providerSlug: "", modelType: "" }
+    }
+  }
+  
+  const [selection, setSelection] = React.useState<{ modelApiId: string; providerSlug: string; modelType: string }>(() => readSelectionFromStorage())
+  const [selectionVersion, setSelectionVersion] = React.useState(0)
 
   // 토큰이 없거나 만료된 경우 접근 차단 및 경고 표시
   React.useEffect(() => {
@@ -48,6 +67,36 @@ export default function FrontAI() {
     // 토큰이 정상인 경우 경고 상태 초기화
     alertShownRef.current = false
   }, [navigate])
+
+  React.useEffect(() => {
+    const onFocus = () => {
+      const next = readSelectionFromStorage()
+      setSelection((prev) => {
+        if (prev.modelApiId === next.modelApiId && prev.providerSlug === next.providerSlug && prev.modelType === next.modelType) {
+          return prev
+        }
+        setSelectionVersion((v) => v + 1)
+        return next
+      })
+    }
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return
+      const next = readSelectionFromStorage()
+      setSelection((prev) => {
+        if (prev.modelApiId === next.modelApiId && prev.providerSlug === next.providerSlug && prev.modelType === next.modelType) {
+          return prev
+        }
+        setSelectionVersion((v) => v + 1)
+        return next
+      })
+    }
+    window.addEventListener("focus", onFocus)
+    document.addEventListener("visibilitychange", onVisibility)
+    return () => {
+      window.removeEventListener("focus", onFocus)
+      document.removeEventListener("visibilitychange", onVisibility)
+    }
+  }, [])
 
   React.useEffect(() => {
     const fetchLanguages = async () => {
@@ -90,9 +139,55 @@ export default function FrontAI() {
       {/* Main Body - 메인 바디 */}
       <div className="flex flex-1 flex-col gap-[40px] items-center justify-center p-[24px] relative w-full">
         <ChatInterface
+          key={`${selection.modelType || "text"}:${selection.providerSlug || "none"}:${selection.modelApiId || "none"}:${selectionVersion}`}
           // FrontAI에서는 "첫 질문 시작"만 하고, 실제 대화는 Timeline에서 이어가도록 합니다.
           submitMode="emit"
+          forceSelectionSync
+          selectionOverride={{
+            modelType: (selection.modelType as "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code") || undefined,
+            providerSlug: selection.providerSlug || undefined,
+            modelApiId: selection.modelApiId || undefined,
+          }}
+          initialSelectedModel={selection.modelApiId || undefined}
+          initialProviderSlug={selection.providerSlug || undefined}
+          initialModelType={(selection.modelType as "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code") || undefined}
+          onSelectionChange={(selection) => {
+            if (!selection.modelApiId || !selection.providerSlug) return
+            try {
+              localStorage.setItem(LAST_SELECTION_KEY, JSON.stringify({
+                modelApiId: selection.modelApiId || "",
+                providerSlug: selection.providerSlug || "",
+                modelType: selection.modelType || "",
+              }))
+              sessionStorage.setItem(LAST_SELECTION_KEY, JSON.stringify({
+                modelApiId: selection.modelApiId || "",
+                providerSlug: selection.providerSlug || "",
+                modelType: selection.modelType || "",
+              }))
+            } catch {
+              // ignore storage issues
+            }
+            setSelection({
+              modelApiId: selection.modelApiId || "",
+              providerSlug: selection.providerSlug || "",
+              modelType: selection.modelType || "",
+            })
+          }}
           onSubmit={({ input, providerSlug, model, modelType, options }) => {
+            try {
+              localStorage.setItem(LAST_SELECTION_KEY, JSON.stringify({
+                modelApiId: model || "",
+                providerSlug: providerSlug || "",
+                modelType: modelType || "",
+              }))
+              sessionStorage.setItem(LAST_SELECTION_KEY, JSON.stringify({
+                modelApiId: model || "",
+                providerSlug: providerSlug || "",
+                modelType: modelType || "",
+              }))
+            } catch {
+              // ignore storage issues
+            }
             const requestId =
               typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
                 ? crypto.randomUUID()

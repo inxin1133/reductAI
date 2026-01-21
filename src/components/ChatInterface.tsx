@@ -68,6 +68,9 @@ export interface ChatInterfaceProps {
   conversationId?: string | null
   onConversationId?: (id: string) => void
   sessionLanguage?: string
+  onSelectionChange?: (selection: { modelType: ModelType; providerSlug: string | null; modelApiId: string | null }) => void
+  forceSelectionSync?: boolean
+  selectionOverride?: { modelType?: ModelType; providerSlug?: string; modelApiId?: string }
 }
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
@@ -106,6 +109,7 @@ type ChatUiConfig = {
 const CHAT_UI_CONFIG_API = "/api/ai/chat-ui/config"
 const CHAT_PROMPT_SUGGESTIONS_API = "/api/ai/chat-ui/prompt-suggestions"
 const CHAT_RUN_API = "/api/ai/chat/run"
+const FRONT_AI_LAST_SELECTION_KEY = "reductai.frontai.lastSelection.v1"
 
 function tabLabel(t: ModelType) {
   const map: Record<ModelType, string> = {
@@ -444,6 +448,9 @@ export function ChatInterface({
   conversationId,
   onConversationId,
   sessionLanguage,
+  onSelectionChange,
+  forceSelectionSync = false,
+  selectionOverride,
 }: ChatInterfaceProps) {
   const isCompact = variant === "compact"
 
@@ -456,11 +463,23 @@ export function ChatInterface({
   const [uiConfig, setUiConfig] = React.useState<ChatUiConfig | null>(null)
 
   // (2) 모드 탭: ai_models.model_type 기준
-  const [selectedType, setSelectedType] = React.useState<ModelType>("text")
+  const [selectedType, setSelectedType] = React.useState<ModelType>(() => {
+    // forceSelectionSync가 true이고 selectionOverride가 있으면 그걸 초기값으로 사용
+    if (forceSelectionSync && selectionOverride?.modelType) {
+      return selectionOverride.modelType as ModelType
+    }
+    return (initialModelType as ModelType) || "text"
+  })
   // provider group 선택
   const [selectedProviderId, setSelectedProviderId] = React.useState("")
   // (4) dropdown 대상: status=active는 서버에서, is_available=true만 클라에서 필터
-  const [selectedSubModel, setSelectedSubModel] = React.useState("")
+  const [selectedSubModel, setSelectedSubModel] = React.useState(() => {
+    // forceSelectionSync가 true이고 selectionOverride가 있으면 그걸 초기값으로 사용
+    if (forceSelectionSync && selectionOverride?.modelApiId) {
+      return selectionOverride.modelApiId
+    }
+    return initialSelectedModel || ""
+  })
 
   // (8) capabilities.options/defaults 기반 옵션 상태
   const [runtimeOptions, setRuntimeOptions] = React.useState<Record<string, unknown>>({})
@@ -480,6 +499,7 @@ export function ChatInterface({
   const [prompt, setPrompt] = React.useState("")
   const isComposingRef = React.useRef(false)
   const handleSendInFlightRef = React.useRef<Set<string>>(new Set())
+  const selectionDirtyRef = React.useRef(false)
   const [isCompactPanelOpen, setIsCompactPanelOpen] = React.useState(false)
 
   const [promptSuggestions, setPromptSuggestions] = React.useState<
@@ -523,6 +543,76 @@ export function ChatInterface({
     return (map[selectedType] || []) as UiProviderGroup[]
   }, [uiConfig, selectedType])
 
+  const normalizeProviderSlug = React.useCallback((slug: string) => {
+    const raw = slug.trim().toLowerCase()
+    if (!raw) return raw
+    // NOTE: DB에 저장된 provider slug(예: google-gemini/openai-chatgpt)를 우선합니다.
+    // saved 값이 family 형태로 들어와도 복원되도록 canonical 형태로 맞춥니다.
+    if (raw.includes("gemini")) return "google-gemini"
+    if (raw.includes("openai") || raw.includes("chatgpt")) return "openai-chatgpt"
+    if (raw.includes("claude") || raw.includes("anthropic")) return "anthropic-claude"
+    return raw
+  }, [])
+
+  const findSelectionByModel = React.useCallback(
+    (modelApiId: string) => {
+      if (!uiConfig) return null
+      const apiId = modelApiId.trim()
+      if (!apiId) return null
+      const entries = Object.entries(uiConfig.providers_by_type || {})
+      for (const [typeKey, groups] of entries) {
+        const typeGroups = groups as UiProviderGroup[]
+        // NOTE: 복원/탐색 용도이므로 is_available을 강제하지 않습니다.
+        const group = typeGroups.find((g) => (g.models || []).some((m) => m.model_api_id === apiId))
+        if (group) {
+          return {
+            modelType: typeKey as ModelType,
+            providerId: group.provider.id,
+            providerSlug: group.provider.slug,
+          }
+        }
+      }
+      return null
+    },
+    [uiConfig]
+  )
+
+  const findSelectionByProviderSlug = React.useCallback(
+    (slug: string) => {
+      if (!uiConfig) return null
+      const wanted = slug.trim()
+      if (!wanted) return null
+      const entries = Object.entries(uiConfig.providers_by_type || {})
+      for (const [typeKey, groups] of entries) {
+        const typeGroups = groups as UiProviderGroup[]
+        const group = typeGroups.find((g) => g.provider.slug === wanted)
+        if (group) {
+          return {
+            modelType: typeKey as ModelType,
+            providerId: group.provider.id,
+            providerSlug: group.provider.slug,
+          }
+        }
+      }
+      const normalized = normalizeProviderSlug(wanted)
+      if (normalized && normalized !== wanted) {
+        for (const [typeKey, groups] of entries) {
+          const typeGroups = groups as UiProviderGroup[]
+          const group = typeGroups.find((g) => g.provider.slug === normalized)
+          if (group) {
+            return {
+              modelType: typeKey as ModelType,
+              providerId: group.provider.id,
+              providerSlug: group.provider.slug,
+            }
+          }
+        }
+      }
+      return null
+    },
+    [normalizeProviderSlug, uiConfig]
+  )
+
   const currentProviderGroup = React.useMemo(() => {
     if (!currentProviderGroups.length) return null
     const byId = selectedProviderId ? currentProviderGroups.find((g) => g.provider.id === selectedProviderId) : null
@@ -540,23 +630,6 @@ export function ChatInterface({
     return picked
   }, [selectableModels, selectedSubModel])
 
-  const effectiveModelApiId = React.useMemo(() => {
-    if (selectedSubModel && selectableModels.some((m) => m.model_api_id === selectedSubModel)) {
-      return selectedSubModel
-    }
-    return selectableModels[0]?.model_api_id || ""
-  }, [selectableModels, selectedSubModel])
-
-  const resolveProviderGroupByModelApiId = React.useCallback(
-    (modelApiId?: string | null) => {
-      const apiId = String(modelApiId || "").trim()
-      if (!apiId) return null
-      const groups = (uiConfig?.providers_by_type?.[selectedType] || []) as UiProviderGroup[]
-      return groups.find((g) => (g.models || []).some((m) => m.is_available && m.model_api_id === apiId)) || null
-    },
-    [selectedType, uiConfig?.providers_by_type]
-  )
-
   const selectedModelLabel = React.useMemo(() => {
     if (!selectedModel) return "모델이 선택되지 않았습니다."
     const name = String(selectedModel.display_name || "").trim()
@@ -569,6 +642,162 @@ export function ChatInterface({
     const picked = selectableModels.find((m) => m.model_api_id === selectedSubModel) || selectableModels[0]
     return picked?.id ? String(picked.id) : ""
   }, [selectableModels, selectedSubModel])
+
+  const effectiveModelApiId = React.useMemo(() => {
+    if (selectedSubModel && selectableModels.some((m) => m.model_api_id === selectedSubModel)) {
+      return selectedSubModel
+    }
+    return selectableModels[0]?.model_api_id || ""
+  }, [selectableModels, selectedSubModel])
+
+  const useSelectionOverride =
+    !!forceSelectionSync &&
+    !!selectionOverride &&
+    (Boolean(selectionOverride.modelApiId) || Boolean(selectionOverride.providerSlug) || Boolean(selectionOverride.modelType))
+
+  const uiSelectedType = (useSelectionOverride
+    ? (selectionOverride?.modelType as ModelType | undefined)
+    : undefined) || selectedType
+
+  const uiProviderGroups = React.useMemo(() => {
+    return useSelectionOverride ? ((uiConfig?.providers_by_type?.[uiSelectedType] || []) as UiProviderGroup[]) : currentProviderGroups
+  }, [currentProviderGroups, uiConfig?.providers_by_type, uiSelectedType, useSelectionOverride])
+
+  const uiProviderGroup = React.useMemo(() => {
+    if (!uiProviderGroups.length) return null
+    if (!useSelectionOverride) return currentProviderGroup
+    const wantedModel = String(selectionOverride?.modelApiId || "").trim()
+    if (wantedModel) {
+      // NOTE: 새로고침/복원 시에는 is_available 변동이 있을 수 있으므로, provider 매칭은 availability를 강제하지 않습니다.
+      const byModel = uiProviderGroups.find((g) => (g.models || []).some((m) => m.model_api_id === wantedModel))
+      if (byModel) return byModel
+    }
+    const wantedSlug = String(selectionOverride?.providerSlug || "").trim()
+    if (wantedSlug) {
+      const bySlug = uiProviderGroups.find((g) => g.provider.slug === wantedSlug)
+      if (bySlug) return bySlug
+      // fuzzy match (예: google-gemini ↔ gemini / openai-chatgpt ↔ openai)
+      const wantLower = wantedSlug.toLowerCase()
+      const byContains =
+        uiProviderGroups.find((g) => {
+          const slug = String(g.provider.slug || "").toLowerCase()
+          if (!slug) return false
+          return slug.includes(wantLower) || wantLower.includes(slug)
+        }) || null
+      if (byContains) return byContains
+
+      const normalized = normalizeProviderSlug(wantedSlug)
+      if (normalized && normalized !== wantedSlug) {
+        const byNorm = uiProviderGroups.find((g) => String(g.provider.slug || "").toLowerCase() === normalized.toLowerCase()) || null
+        if (byNorm) return byNorm
+      }
+
+      // family-based fallback
+      if (wantLower.includes("gemini")) {
+        const g = uiProviderGroups.find((gg) => String(gg.provider.slug || "").toLowerCase().includes("gemini")) || null
+        if (g) return g
+      }
+      if (wantLower.includes("openai") || wantLower.includes("chatgpt")) {
+        const g = uiProviderGroups.find((gg) => {
+          const s = String(gg.provider.slug || "").toLowerCase()
+          return s.includes("openai") || s.includes("chatgpt")
+        }) || null
+        if (g) return g
+      }
+      if (wantLower.includes("claude") || wantLower.includes("anthropic")) {
+        const g = uiProviderGroups.find((gg) => {
+          const s = String(gg.provider.slug || "").toLowerCase()
+          return s.includes("claude") || s.includes("anthropic")
+        }) || null
+        if (g) return g
+      }
+    }
+    return uiProviderGroups[0]
+  }, [currentProviderGroup, normalizeProviderSlug, selectionOverride?.modelApiId, selectionOverride?.providerSlug, uiProviderGroups, useSelectionOverride])
+
+  const uiSelectableModels = useSelectionOverride
+    ? (uiProviderGroup?.models || []).filter((m) => m.is_available && String(m.model_api_id || "").trim())
+    : selectableModels
+
+  const uiSelectedModelApiId = useSelectionOverride
+    ? (() => {
+        const wanted = String(selectionOverride?.modelApiId || "").trim()
+        if (wanted && uiSelectableModels.some((m) => m.model_api_id === wanted)) return wanted
+        return uiSelectableModels[0]?.model_api_id || ""
+      })()
+    : effectiveModelApiId
+
+  const uiSelectedModel = useSelectionOverride
+    ? uiSelectableModels.find((m) => m.model_api_id === uiSelectedModelApiId) || null
+    : selectedModel
+
+  const uiSelectedModelDbId = useSelectionOverride
+    ? (uiSelectableModels.find((m) => m.model_api_id === uiSelectedModelApiId) || uiSelectableModels[0])?.id || ""
+    : selectedModelDbId
+
+  const uiSelectedModelLabel = useSelectionOverride
+    ? (() => {
+        if (!uiSelectedModel) return "모델이 선택되지 않았습니다."
+        const name = String(uiSelectedModel.display_name || "").trim()
+        const desc = String(uiSelectedModel.description || "").trim()
+        if (!name) return "모델이 선택되지 않았습니다."
+        return desc ? `${name} - ${desc}` : name
+      })()
+    : selectedModelLabel
+
+  React.useEffect(() => {
+    if (!onSelectionChange) return
+    const providerSlug = currentProviderGroup?.provider?.slug ? String(currentProviderGroup.provider.slug) : null
+    const modelApiId = effectiveModelApiId ? String(effectiveModelApiId) : null
+    if (!providerSlug || !modelApiId) return
+    if (selectionOverride && !selectionDirtyRef.current) return
+    onSelectionChange({ modelType: selectedType, providerSlug, modelApiId })
+  }, [currentProviderGroup?.provider?.slug, effectiveModelApiId, onSelectionChange, selectedType, selectionOverride])
+
+  const persistFrontAiSelection = React.useCallback(
+    (providerSlug: string, modelApiId: string, modelType: ModelType) => {
+      if (submitMode !== "emit") return
+      try {
+        const payload = JSON.stringify({ providerSlug, modelApiId, modelType })
+        localStorage.setItem(FRONT_AI_LAST_SELECTION_KEY, payload)
+        sessionStorage.setItem(FRONT_AI_LAST_SELECTION_KEY, payload)
+      } catch {
+        // ignore storage issues
+      }
+    },
+    [submitMode]
+  )
+
+  React.useEffect(() => {
+    if (forceSelectionSync) return
+    if (submitMode !== "emit") return
+    if (!selectionDirtyRef.current) return
+    const providerSlug = (useSelectionOverride ? uiProviderGroup?.provider?.slug : currentProviderGroup?.provider?.slug) || ""
+    const modelApiId = (useSelectionOverride ? uiSelectedModelApiId : effectiveModelApiId) || ""
+    if (!providerSlug || !modelApiId) return
+    persistFrontAiSelection(String(providerSlug), String(modelApiId), useSelectionOverride ? uiSelectedType : selectedType)
+  }, [
+    currentProviderGroup?.provider?.slug,
+    effectiveModelApiId,
+    forceSelectionSync,
+    persistFrontAiSelection,
+    selectedType,
+    submitMode,
+    uiProviderGroup?.provider?.slug,
+    uiSelectedModelApiId,
+    uiSelectedType,
+    useSelectionOverride,
+  ])
+
+  const resolveProviderGroupByModelApiId = React.useCallback(
+    (modelApiId?: string | null) => {
+      const apiId = String(modelApiId || "").trim()
+      if (!apiId) return null
+      const groups = (uiConfig?.providers_by_type?.[uiSelectedType] || []) as UiProviderGroup[]
+      return groups.find((g) => (g.models || []).some((m) => m.is_available && m.model_api_id === apiId)) || null
+    },
+    [uiSelectedType, uiConfig?.providers_by_type]
+  )
 
   const selectedCapabilities = React.useMemo(() => {
     return selectedModel?.capabilities ?? {}
@@ -609,22 +838,165 @@ export function ChatInterface({
   React.useEffect(() => {
     if (!currentProviderGroups.length) return
 
-    // Fix: If current selected provider is valid in this group, keep it.
-    // This prevents reverting to default/initial when user manually selects a different provider.
-    if (selectedProviderId && currentProviderGroups.some((g) => g.provider.id === selectedProviderId)) {
-      return
-    }
-
-    const wantedModel = (initialSelectedModel || "").trim()
-    const wantedProviderSlug = (initialProviderSlug || "").trim()
+    const wantedModel = (selectionOverride?.modelApiId || initialSelectedModel || "").trim()
+    const wantedProviderSlug = (selectionOverride?.providerSlug || initialProviderSlug || "").trim()
 
     const findGroupByModel = wantedModel
       ? currentProviderGroups.find((g) => (g.models || []).some((m) => m.is_available && m.model_api_id === wantedModel))
       : null
     const findGroupBySlug = wantedProviderSlug ? currentProviderGroups.find((g) => g.provider.slug === wantedProviderSlug) : null
-    const nextProviderId = (findGroupByModel || findGroupBySlug || currentProviderGroups[0])?.provider.id
+    const desiredProviderId = (findGroupByModel || findGroupBySlug)?.provider.id
+    if (desiredProviderId && desiredProviderId !== selectedProviderId) {
+      setSelectedProviderId(desiredProviderId)
+      return
+    }
+
+    // If current selected provider is valid, keep it; otherwise fallback to first.
+    if (selectedProviderId && currentProviderGroups.some((g) => g.provider.id === selectedProviderId)) {
+      return
+    }
+    const nextProviderId = currentProviderGroups[0]?.provider.id
     if (nextProviderId && nextProviderId !== selectedProviderId) setSelectedProviderId(nextProviderId)
-  }, [currentProviderGroups, initialProviderSlug, initialSelectedModel, selectedProviderId])
+  }, [currentProviderGroups, initialProviderSlug, initialSelectedModel, selectedProviderId, selectionOverride])
+
+  React.useEffect(() => {
+    if (!uiConfig) return
+    const wantedModel = (selectionOverride?.modelApiId || initialSelectedModel || "").trim()
+    const wantedProviderSlug = (selectionOverride?.providerSlug || initialProviderSlug || "").trim()
+    const wantedType = ((selectionOverride?.modelType as ModelType) || (initialModelType as ModelType) || "").trim() as ModelType
+
+    const byModel = wantedModel ? findSelectionByModel(wantedModel) : null
+    const bySlug = !byModel && wantedProviderSlug ? findSelectionByProviderSlug(wantedProviderSlug) : null
+    const allowed = new Set<ModelType>((uiConfig.model_types || []) as ModelType[])
+    const nextType = byModel?.modelType || bySlug?.modelType || (allowed.has(wantedType) ? wantedType : null)
+
+    if (nextType && nextType !== selectedType) {
+      setSelectedType(nextType)
+    }
+
+    if (nextType) {
+      const groups = (uiConfig.providers_by_type?.[nextType] || []) as UiProviderGroup[]
+      const nextProviderId =
+        (wantedModel && groups.find((g) => (g.models || []).some((m) => m.model_api_id === wantedModel))?.provider.id) ||
+        (wantedProviderSlug && groups.find((g) => g.provider.slug === wantedProviderSlug)?.provider.id) ||
+        groups[0]?.provider.id ||
+        ""
+      if (nextProviderId && nextProviderId !== selectedProviderId) {
+        setSelectedProviderId(nextProviderId)
+      }
+      if (wantedModel && groups.some((g) => (g.models || []).some((m) => m.model_api_id === wantedModel))) {
+        setSelectedSubModel(wantedModel)
+      }
+    }
+  }, [
+    findSelectionByModel,
+    findSelectionByProviderSlug,
+    initialModelType,
+    initialProviderSlug,
+    initialSelectedModel,
+    selectedProviderId,
+    selectedType,
+    selectionOverride?.modelApiId,
+    selectionOverride?.modelType,
+    selectionOverride?.providerSlug,
+    uiConfig,
+  ])
+
+  React.useEffect(() => {
+    if (!forceSelectionSync) return
+    if (!uiConfig) return
+    const wantedModel = (selectionOverride?.modelApiId || initialSelectedModel || "").trim()
+    const wantedProviderSlug = (selectionOverride?.providerSlug || initialProviderSlug || "").trim()
+    const wantedType = ((selectionOverride?.modelType as ModelType) || (initialModelType as ModelType) || "").trim() as ModelType
+    const allowed = new Set<ModelType>((uiConfig.model_types || []) as ModelType[])
+
+    const byModel = wantedModel ? findSelectionByModel(wantedModel) : null
+    const bySlug = !byModel && wantedProviderSlug ? findSelectionByProviderSlug(wantedProviderSlug) : null
+    const nextType = byModel?.modelType || bySlug?.modelType || (allowed.has(wantedType) ? wantedType : null)
+
+    const typeToUse = nextType || selectedType
+    if (nextType && nextType !== selectedType) {
+      setSelectedType(nextType)
+    }
+
+    const groups = (uiConfig.providers_by_type?.[typeToUse] || []) as UiProviderGroup[]
+    if (!groups.length) return
+
+    const desiredGroup =
+      (wantedModel && groups.find((g) => (g.models || []).some((m) => m.is_available && m.model_api_id === wantedModel))) ||
+      (wantedProviderSlug && groups.find((g) => g.provider.slug === wantedProviderSlug)) ||
+      null
+    if (desiredGroup && desiredGroup.provider.id !== selectedProviderId) {
+      setSelectedProviderId(desiredGroup.provider.id)
+    }
+    if (wantedModel) {
+      setSelectedSubModel(wantedModel)
+    }
+  }, [
+    findSelectionByModel,
+    findSelectionByProviderSlug,
+    forceSelectionSync,
+    initialModelType,
+    initialProviderSlug,
+    initialSelectedModel,
+    selectedProviderId,
+    selectedType,
+    selectionOverride,
+    uiConfig,
+  ])
+
+  React.useLayoutEffect(() => {
+    if (!forceSelectionSync) return
+    if (!uiConfig) return
+    const wantedModel = (selectionOverride?.modelApiId || initialSelectedModel || "").trim()
+    const wantedProviderSlug = (selectionOverride?.providerSlug || initialProviderSlug || "").trim()
+    const wantedType = ((selectionOverride?.modelType as ModelType) || (initialModelType as ModelType) || "").trim() as ModelType
+    const allowed = new Set<ModelType>((uiConfig.model_types || []) as ModelType[])
+
+    const byModel = wantedModel ? findSelectionByModel(wantedModel) : null
+    const bySlug = !byModel && wantedProviderSlug ? findSelectionByProviderSlug(wantedProviderSlug) : null
+    const targetType = byModel?.modelType || bySlug?.modelType || (allowed.has(wantedType) ? wantedType : null)
+
+    if (targetType && targetType !== selectedType) {
+      setSelectedType(targetType)
+      return
+    }
+
+    const typeToUse = targetType || selectedType
+    const groups = (uiConfig.providers_by_type?.[typeToUse] || []) as UiProviderGroup[]
+    if (!groups.length) return
+
+    const desiredGroup =
+      (wantedModel && groups.find((g) => (g.models || []).some((m) => m.is_available && m.model_api_id === wantedModel))) ||
+      (wantedProviderSlug && groups.find((g) => g.provider.slug === wantedProviderSlug)) ||
+      null
+    const desiredProviderId = desiredGroup?.provider.id || groups[0]?.provider.id || ""
+    if (desiredProviderId && desiredProviderId !== selectedProviderId) {
+      setSelectedProviderId(desiredProviderId)
+    }
+
+    let desiredModelId = ""
+    if (wantedModel && groups.some((g) => (g.models || []).some((m) => m.is_available && m.model_api_id === wantedModel))) {
+      desiredModelId = wantedModel
+    } else if (desiredGroup) {
+      desiredModelId = desiredGroup.models.find((m) => m.is_default)?.model_api_id || desiredGroup.models[0]?.model_api_id || ""
+    }
+    if (desiredModelId && desiredModelId !== selectedSubModel) {
+      setSelectedSubModel(desiredModelId)
+    }
+  }, [
+    findSelectionByModel,
+    findSelectionByProviderSlug,
+    forceSelectionSync,
+    initialModelType,
+    initialProviderSlug,
+    initialSelectedModel,
+    selectedProviderId,
+    selectedSubModel,
+    selectedType,
+    selectionOverride,
+    uiConfig,
+  ])
 
   React.useEffect(() => {
     if (!selectableModels.length) return
@@ -677,7 +1049,7 @@ export function ChatInterface({
       try {
         const qs = new URLSearchParams()
         qs.set("limit", "24")
-        qs.set("model_type", selectedType)
+        qs.set("model_type", useSelectionOverride ? uiSelectedType : selectedType)
         const res = await fetch(`${CHAT_PROMPT_SUGGESTIONS_API}?${qs.toString()}`, {
           signal: controller.signal,
           headers: { ...authHeaders() },
@@ -707,7 +1079,7 @@ export function ChatInterface({
     }
     void loadSuggestions()
     return () => controller.abort()
-  }, [authHeaders, selectedType])
+  }, [authHeaders, selectedType, uiSelectedType, useSelectionOverride])
 
   const updateScrollButtons = React.useCallback(() => {
     if (!scrollContainerRef.current) return
@@ -731,7 +1103,7 @@ export function ChatInterface({
   const scrollLeft = () => scrollContainerRef.current?.scrollBy({ left: -200, behavior: "smooth" })
   const scrollRight = () => scrollContainerRef.current?.scrollBy({ left: 200, behavior: "smooth" })
 
-  const hasOptions = ["image", "video", "audio", "music"].includes(selectedType)
+  const hasOptions = ["image", "video", "audio", "music"].includes(uiSelectedType)
   const OptionPanelContent = () => (
     <ModelOptionsPanel
       key={selectedModelDbId || "no-model"}
@@ -747,15 +1119,17 @@ export function ChatInterface({
       if (!input) return
 
       // Prevent accidental double-send (e.g. Enter + click, or repeated key events).
-      const sendKey = `${conversationId || ""}::${selectedType}::${String(overrideModelApiId || effectiveModelApiId || "").trim()}::${input}`
+      const sendModelType = useSelectionOverride ? uiSelectedType : selectedType
+      const sendModelApiId = String(overrideModelApiId || (useSelectionOverride ? uiSelectedModelApiId : effectiveModelApiId) || "").trim()
+      const sendKey = `${conversationId || ""}::${sendModelType}::${sendModelApiId}::${input}`
       if (handleSendInFlightRef.current.has(sendKey)) return
       handleSendInFlightRef.current.add(sendKey)
 
       const capDefaults = selectedCapabilities && isRecord(selectedCapabilities.defaults) ? (selectedCapabilities.defaults as Record<string, unknown>) : {}
       const finalOptions = { ...capDefaults, ...(runtimeOptions || {}) }
 
-      const requestedModelApiId = String(overrideModelApiId || effectiveModelApiId || "").trim()
-      const providerGroup = resolveProviderGroupByModelApiId(requestedModelApiId) || currentProviderGroup
+      const requestedModelApiId = String(overrideModelApiId || (useSelectionOverride ? uiSelectedModelApiId : effectiveModelApiId) || "").trim()
+      const providerGroup = resolveProviderGroupByModelApiId(requestedModelApiId) || (useSelectionOverride ? uiProviderGroup : currentProviderGroup)
       const providerSlug = providerGroup?.provider.slug
       const providerId = providerGroup?.provider.id
       const modelApiId =
@@ -766,6 +1140,8 @@ export function ChatInterface({
         alert("사용 가능한 모델이 없습니다. Admin에서 모델/제공업체 설정을 확인해주세요.")
         return
       }
+
+      persistFrontAiSelection(providerSlug, modelApiId, sendModelType)
 
       onMessage?.({
         role: "user",
@@ -778,17 +1154,17 @@ export function ChatInterface({
       setPrompt("")
 
       if (submitMode === "emit") {
-        onSubmit?.({ input, providerSlug, model: modelApiId, modelType: selectedType, options: finalOptions })
+        onSubmit?.({ input, providerSlug, model: modelApiId, modelType: sendModelType, options: finalOptions })
         return
       }
 
       try {
-        const maxTokens = selectedType === "text" ? 2048 : 512
+        const maxTokens = sendModelType === "text" ? 2048 : 512
         const res = await fetch(CHAT_RUN_API, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeaders() },
           body: JSON.stringify({
-            model_type: selectedType,
+            model_type: sendModelType,
             conversation_id: conversationId || null,
             userPrompt: input,
             max_tokens: maxTokens,
@@ -855,6 +1231,11 @@ export function ChatInterface({
       conversationId,
       currentProviderGroup,
       effectiveModelApiId,
+      persistFrontAiSelection,
+      uiProviderGroup,
+      uiSelectedModelApiId,
+      uiSelectedType,
+      useSelectionOverride,
       resolveProviderGroupByModelApiId,
       onConversationId,
       onMessage,
@@ -912,18 +1293,25 @@ export function ChatInterface({
             key={t}
             className={cn(
               "box-border flex flex-[1_0_0] flex-col gap-[10px] h-[29px] items-center justify-center px-[8px] py-[4px] relative rounded-[6px] shrink-0 cursor-pointer transition-colors",
-              selectedType === t ? "bg-background border border-border shadow-sm" : "hover:bg-background/50"
+              uiSelectedType === t ? "bg-background border border-border shadow-sm" : "hover:bg-background/50"
             )}
             onClick={() => {
               // 같은 타입을 다시 누르면 상태를 초기화하지 않습니다 (드롭다운 선택 유지)
-              if (selectedType === t) return
+              if (uiSelectedType === t) return
+              selectionDirtyRef.current = true
               setSelectedType(t)
               setSelectedProviderId("")
               setSelectedSubModel("")
               setRuntimeOptions({})
+              const groups = (uiConfig?.providers_by_type?.[t] || []) as UiProviderGroup[]
+              const firstGroup = groups[0]
+              const firstModel = firstGroup?.models?.find((m) => m.is_available)?.model_api_id || ""
+              if (firstGroup?.provider?.slug && firstModel) {
+                persistFrontAiSelection(String(firstGroup.provider.slug), String(firstModel), t)
+              }
             }}
           >
-            <p className={cn("font-medium leading-[20px] text-[14px]", selectedType === t ? "text-foreground" : "text-muted-foreground")}>{tabLabel(t)}</p>
+            <p className={cn("font-medium leading-[20px] text-[14px]", uiSelectedType === t ? "text-foreground" : "text-muted-foreground")}>{tabLabel(t)}</p>
           </div>
         ))}
       </div>
@@ -941,29 +1329,36 @@ export function ChatInterface({
       )}
 
       <div ref={scrollContainerRef} onScroll={updateScrollButtons} className="flex flex-row gap-3 items-start justify-start relative w-full overflow-x-auto scrollbar-hide px-2 py-2">
-        {currentProviderGroups.map((g) => (
+        {uiProviderGroups.map((g) => (
           <div
             key={g.provider.id}
             className={cn(
               "bg-card border border-border flex flex-col items-start p-4 rounded-[20px] shrink-0 w-[160px] sm:w-[180px] cursor-pointer transition-all hover:shadow-md",
-              currentProviderGroup?.provider.id === g.provider.id ? "ring-2 ring-primary border-primary/50" : ""
+              uiProviderGroup?.provider.id === g.provider.id ? "ring-2 ring-primary border-primary/50" : ""
             )}
-            onClick={() => setSelectedProviderId(g.provider.id)}
+            onClick={() => {
+              selectionDirtyRef.current = true
+              setSelectedProviderId(g.provider.id)
+              const firstModel = g.models?.find((m) => m.is_available)?.model_api_id || ""
+              if (g.provider.slug && firstModel) {
+                persistFrontAiSelection(g.provider.slug, String(firstModel), uiSelectedType)
+              }
+            }}
           >
             <div className="flex w-full justify-between items-center">
               <div
                 className={cn(
                   "size-[40px] flex items-center justify-center rounded-full",
-                  currentProviderGroup?.provider.id === g.provider.id ? "bg-primary" : "bg-muted border border-border"
+                  uiProviderGroup?.provider.id === g.provider.id ? "bg-primary" : "bg-muted border border-border"
                 )}
               >
                 <ProviderLogo
                   logoKey={g.provider.logo_key || undefined}
-                  className={cn("size-[24px]", currentProviderGroup?.provider.id === g.provider.id ? "text-primary-foreground" : "text-foreground")}
+                  className={cn("size-[24px]", uiProviderGroup?.provider.id === g.provider.id ? "text-primary-foreground" : "text-foreground")}
                 />
               </div>
               <div className="flex flex-col items-center justify-center relative shrink-0">
-                {currentProviderGroup?.provider.id === g.provider.id ? (
+                {uiProviderGroup?.provider.id === g.provider.id ? (
                   <div className="border border-ring rounded-full shadow-sm shrink-0 size-[16px] relative flex items-center justify-center">
                     <div className="size-[8px] rounded-full bg-primary" />
                   </div>
@@ -991,15 +1386,15 @@ export function ChatInterface({
     </div>
   )
 
-  const providerTitle = currentProviderGroup?.provider.product_name || ""
-  const providerDesc = currentProviderGroup?.provider.description || ""
+  const providerTitle = uiProviderGroup?.provider.product_name || ""
+  const providerDesc = uiProviderGroup?.provider.description || ""
 
   const visiblePromptSuggestions = React.useMemo(() => {
     // model_id 지정된 suggestion은 현재 선택 모델에만 노출
     const list = promptSuggestions || []
-    const filtered = list.filter((s) => !s.model_id || !selectedModelDbId || s.model_id === selectedModelDbId)
+    const filtered = list.filter((s) => !s.model_id || !uiSelectedModelDbId || s.model_id === uiSelectedModelDbId)
     return filtered.slice(0, 8)
-  }, [promptSuggestions, selectedModelDbId])
+  }, [promptSuggestions, uiSelectedModelDbId])
 
   if (uiLoading && !uiConfig) {
     return <div className={cn("w-full max-w-[800px] p-6 text-sm text-muted-foreground", className)}>모델 설정을 불러오는 중...</div>
@@ -1028,14 +1423,14 @@ export function ChatInterface({
                   <div className="flex items-center gap-3 flex-wrap">
                     <div className="flex items-center gap-1">
                       <MessageSquare className="size-4" />
-                      <span className="text-sm">{tabLabel(selectedType)}</span>
+                      <span className="text-sm">{tabLabel(uiSelectedType)}</span>
                     </div>
-                    {currentProviderGroup && (
+                    {uiProviderGroup && (
                       <div className="flex items-center gap-1">
                         <div className={cn("size-4 rounded-full bg-primary flex items-center justify-center")}>
-                          <ProviderLogo logoKey={currentProviderGroup.provider.logo_key || undefined} className="size-3 text-primary-foreground" />
+                          <ProviderLogo logoKey={uiProviderGroup.provider.logo_key || undefined} className="size-3 text-primary-foreground" />
                         </div>
-                        <span className="text-sm">{currentProviderGroup.provider.product_name}</span>
+                        <span className="text-sm">{uiProviderGroup.provider.product_name}</span>
                       </div>
                     )}
                   </div>
@@ -1064,19 +1459,19 @@ export function ChatInterface({
           <div className="flex gap-[16px] items-start relative shrink-0 w-full">
             <div className="flex flex-[1_0_0] flex-col gap-[16px] items-start h-full relative shrink-0">
               {/* (5) provider product_name / description 표시 - compact에서는 생략 */}
-              {!isCompact && currentProviderGroup && (
+              {!isCompact && uiProviderGroup && (
                 <div className="flex gap-[10px] items-center justify-start w-full">
                   <p className="font-medium leading-[20px] text-card-foreground text-[14px] whitespace-nowrap">{providerTitle}</p>
                   <p className="font-normal leading-[20px] text-muted-foreground text-[14px] line-clamp-1 text-ellipsis overflow-hidden">{providerDesc}</p>
                 </div>
               )}
 
-              {currentProviderGroup && (
+              {uiProviderGroup && (
                 <div className="bg-background border border-border box-border flex flex-col gap-[10px] items-start justify-between pb-[12px] pt-[16px] px-[16px] relative rounded-[24px] shadow-sm shrink-0 w-full h-full">
                   <div className="flex flex-col gap-[10px] items-start justify-center relative shrink-0 w-full">
                     <textarea
                       ref={promptInputRef}
-                      placeholder={selectedModelLabel}
+                      placeholder={uiSelectedModelLabel}
                       className="w-full border-none outline-none text-[16px] placeholder:text-muted-foreground bg-transparent resize-none overflow-y-auto leading-6"
                       value={prompt}
                       rows={1}
@@ -1116,15 +1511,24 @@ export function ChatInterface({
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant={isCompact ? "outline" : "ghost"} className={cn(isCompact ? "h-[36px] rounded-lg gap-2 px-3" : "h-[36px] rounded-[8px] gap-2 px-4")}>
-                          {effectiveModelApiId || "-"}
+                          {uiSelectedModelApiId || "-"}
                           <ChevronDown className="size-4" />
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent className="w-72" align="start">
                         <DropdownMenuLabel>모델 선택(활성+사용가능)</DropdownMenuLabel>
                         <DropdownMenuGroup>
-                          {selectableModels.map((m) => (
-                            <DropdownMenuItem key={m.model_api_id} onClick={() => setSelectedSubModel(m.model_api_id)}>
+                          {uiSelectableModels.map((m) => (
+                            <DropdownMenuItem
+                              key={m.model_api_id}
+                              onClick={() => {
+                                selectionDirtyRef.current = true
+                                setSelectedSubModel(m.model_api_id)
+                                if (uiProviderGroup?.provider?.slug && m.model_api_id) {
+                                  persistFrontAiSelection(String(uiProviderGroup.provider.slug), String(m.model_api_id), uiSelectedType)
+                                }
+                              }}
+                            >
                               {m.display_name} <span className="ml-2 text-xs text-muted-foreground">{m.model_api_id}</span>
                             </DropdownMenuItem>
                           ))}

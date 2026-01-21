@@ -190,12 +190,41 @@ function parseJsonLikeString(input: string): Record<string, unknown> | null {
 
 function normalizeContentJson(content: unknown): Record<string, unknown> | null {
   if (!content) return null
-  if (typeof content === "string") return parseJsonLikeString(content)
+  if (typeof content === "string") {
+    const parsed = parseJsonLikeString(content)
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const text = typeof (parsed as { text?: unknown }).text === "string" ? String((parsed as { text?: unknown }).text) : ""
+      const reply = typeof (parsed as { reply?: unknown }).reply === "string" ? String((parsed as { reply?: unknown }).reply) : ""
+      const message = typeof (parsed as { message?: unknown }).message === "string" ? String((parsed as { message?: unknown }).message) : ""
+      const blocks = Array.isArray((parsed as { blocks?: unknown }).blocks) ? ((parsed as { blocks?: unknown }).blocks as unknown[]) : null
+      if (!blocks) {
+        const seed = text || reply || message
+        if (seed) return { ...parsed, blocks: [{ type: "markdown", markdown: seed }] }
+      }
+    }
+    if (parsed) return parsed
+    const extracted = extractMessageFromJsonishString(content)
+    if (extracted) return { blocks: [{ type: "markdown", markdown: extracted }] }
+    return null
+  }
   if (typeof content === "object" && !Array.isArray(content)) {
     const obj = content as Record<string, unknown>
     const outText = typeof obj.output_text === "string" ? obj.output_text : ""
     const parsed = outText ? parseJsonLikeString(outText) : null
-    return parsed ?? obj
+    const base = parsed ?? obj
+    if (base && typeof base === "object" && !Array.isArray(base)) {
+      const text = typeof (base as { text?: unknown }).text === "string" ? String((base as { text?: unknown }).text) : ""
+      const reply = typeof (base as { reply?: unknown }).reply === "string" ? String((base as { reply?: unknown }).reply) : ""
+      const message = typeof (base as { message?: unknown }).message === "string" ? String((base as { message?: unknown }).message) : ""
+      const blocks = Array.isArray((base as { blocks?: unknown }).blocks) ? ((base as { blocks?: unknown }).blocks as unknown[]) : null
+      if (!blocks) {
+        const seed = text || reply || message
+        if (seed) {
+          return { ...base, blocks: [{ type: "markdown", markdown: seed }] }
+        }
+      }
+    }
+    return base
   }
   return null
 }
@@ -330,6 +359,8 @@ export default function Timeline() {
 
   // 현재 대화에서 마지막으로 사용한 모델을 유지하여 ChatInterface 드롭다운 초기값으로 사용합니다.
   const [stickySelectedModel, setStickySelectedModel] = React.useState<string | undefined>(undefined)
+  const [stickySelectedProviderSlug, setStickySelectedProviderSlug] = React.useState<string | undefined>(undefined)
+  const ACTIVE_CONV_KEY = "reductai.timeline.activeConversationId.v1"
   const [initialToSend, setInitialToSend] = React.useState<{
     input: string
     providerSlug: string
@@ -465,8 +496,15 @@ export default function Timeline() {
 
         // FrontAI에서 넘어온 initial이 없으면, 최근 대화를 자동으로 열어줍니다.
         if (!initial && loaded.length > 0) {
-          setActiveConversationId(loaded[0].id)
-          const msgs = await fetchMessages(loaded[0].id)
+          let nextId = loaded[0].id
+          try {
+            const saved = sessionStorage.getItem(ACTIVE_CONV_KEY)
+            if (saved && loaded.some((c) => c.id === saved)) nextId = saved
+          } catch {
+            // ignore
+          }
+          setActiveConversationId(nextId)
+          const msgs = await fetchMessages(nextId)
           setMessages(
             msgs.map((m) => ({
               id: m.id,
@@ -478,8 +516,13 @@ export default function Timeline() {
               providerLogoKey: m.providerLogoKey,
             }))
           )
-          const lastModel = [...msgs].reverse().find(m => m.model)?.model
-          setStickySelectedModel(lastModel)
+          const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant")
+          const lastAssistantModel = lastAssistant?.model
+          const lastAnyModel = [...msgs].reverse().find((m) => m.model)?.model
+          setStickySelectedModel(lastAssistantModel || lastAnyModel)
+          const lastAssistantProvider = lastAssistant?.providerSlug
+          const lastAnyProvider = [...msgs].reverse().find((m) => m.providerSlug)?.providerSlug
+          setStickySelectedProviderSlug(lastAssistantProvider || lastAnyProvider || undefined)
         }
       } catch (e) {
         setConversations([])
@@ -528,22 +571,6 @@ export default function Timeline() {
     return () => window.clearInterval(t)
   }, [GENERATING_STEPS.length, isGenerating])
 
-  // 타입라이터(스트리밍 흉내) - 마지막 assistant 응답만 가볍게 적용
-  const [typing, setTyping] = React.useState<{ id: string; full: string; shown: string } | null>(null)
-  React.useEffect(() => {
-    if (!typing) return
-    const full = typing.full
-    if (typing.shown.length >= full.length) return
-    const t = window.setInterval(() => {
-      setTyping((prev) => {
-        if (!prev) return null
-        const nextLen = Math.min(prev.full.length, prev.shown.length + Math.max(1, Math.ceil(prev.full.length / 120)))
-        return { ...prev, shown: prev.full.slice(0, nextLen) }
-      })
-    }, 25)
-    return () => window.clearInterval(t)
-  }, [typing])
-
   // 대화 선택 시 메시지/모델 동기화
   React.useEffect(() => {
     if (!activeConversationId) return
@@ -561,8 +588,13 @@ export default function Timeline() {
             providerLogoKey: m.providerLogoKey,
           }))
         )
-        const lastModel = [...msgs].reverse().find(m => m.model)?.model
-        setStickySelectedModel(lastModel)
+        const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant")
+        const lastAssistantModel = lastAssistant?.model
+        const lastAnyModel = [...msgs].reverse().find((m) => m.model)?.model
+        setStickySelectedModel(lastAssistantModel || lastAnyModel)
+        const lastAssistantProvider = lastAssistant?.providerSlug
+        const lastAnyProvider = [...msgs].reverse().find((m) => m.providerSlug)?.providerSlug
+        setStickySelectedProviderSlug(lastAssistantProvider || lastAnyProvider || undefined)
       } catch {
         setMessages([])
       }
@@ -570,10 +602,19 @@ export default function Timeline() {
     void run()
   }, [activeConversationId, fetchMessages])
 
+  React.useEffect(() => {
+    if (!activeConversationId) return
+    try {
+      sessionStorage.setItem(ACTIVE_CONV_KEY, activeConversationId)
+    } catch {
+      // ignore
+    }
+  }, [activeConversationId])
+
   // initial 질문/응답 생성은 ChatInterface(autoSend)가 /api/ai/chat/run(=DB-driven)을 통해 처리합니다.
 
   const initialSelectedModelForChat = initialToSend?.model || stickySelectedModel
-  const initialProviderSlugForChat = initialToSend?.providerSlug
+  const initialProviderSlugForChat = initialToSend?.providerSlug || stickySelectedProviderSlug
   const initialModelTypeForChat = initialToSend?.modelType
   const initialOptionsForChat = initialToSend?.options || undefined
   const sessionLanguageForChat = initialToSend?.sessionLanguage || undefined
@@ -741,11 +782,22 @@ export default function Timeline() {
                                     </div>
                                   )
                                 }
+                                const extracted = extractTextFromJsonContent(parsedFromContent)
+                                if (extracted) {
+                                  const pmDocFromExtracted = markdownToPmDoc(extracted)
+                                  if (pmDocFromExtracted) {
+                                    return (
+                                      <div className="space-y-3">
+                                        <ProseMirrorViewer docJson={pmDocFromExtracted} className="pm-viewer--timeline" />
+                                      </div>
+                                    )
+                                  }
+                                }
                               }
                             }
                             // Fallback: if the model returned JSON-ish {"message":"..."} (and parsing failed),
                             // render just the message as markdown so the UI never shows raw JSON.
-                            if (typeof m.content === "string" && m.content.trim().startsWith("{") && (m.content.includes('"message"') || m.content.includes('"reply"'))) {
+                            if (typeof m.content === "string" && m.content.trim().startsWith("{")) {
                               const msgText = extractMessageFromJsonishString(m.content)
                               if (msgText) {
                                 const pmDoc = markdownToPmDoc(msgText)
@@ -767,15 +819,6 @@ export default function Timeline() {
                                   </div>
                                 )
                               }
-                            }
-                            // 타입라이터 효과: 일반 텍스트에만 적용
-                            if (typing && !m.isPending && m.role === "assistant" && typeof m.content === "string" && m.content === typing.full && typing.shown.length < typing.full.length) {
-                              return (
-                                <div>
-                                  {typing.shown}
-                                  <span className="inline-block w-[6px] animate-pulse">▍</span>
-                                </div>
-                              )
                             }
                             return <>{m.content}</>
                           })()}
@@ -826,8 +869,13 @@ export default function Timeline() {
                         providerLogoKey: m.providerLogoKey,
                       }))
                     )
-                    const lastModel = [...msgs].reverse().find((m) => m.model)?.model
-                    setStickySelectedModel(lastModel)
+                    const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant")
+                    const lastAssistantModel = lastAssistant?.model
+                    const lastAnyModel = [...msgs].reverse().find((m) => m.model)?.model
+                    setStickySelectedModel(lastAssistantModel || lastAnyModel)
+                    const lastAssistantProvider = lastAssistant?.providerSlug
+                    const lastAnyProvider = [...msgs].reverse().find((m) => m.providerSlug)?.providerSlug
+                    setStickySelectedProviderSlug(lastAssistantProvider || lastAnyProvider || undefined)
                   } catch {
                     // ignore
                   } finally {
@@ -865,7 +913,6 @@ export default function Timeline() {
                     const extracted = extractMessageFromJsonishString(derivedText)
                     if (extracted) derivedText = extracted
                   }
-                  setTyping({ id: `typing_${Date.now()}`, full: derivedText, shown: "" })
                   setMessages((prev) => {
                     const next = [...prev]
                     // If we receive the same assistant message twice (can happen in some edge flows),
@@ -889,6 +936,7 @@ export default function Timeline() {
                     return next
                   })
                   if (msg.model) setStickySelectedModel(msg.model)
+                  if (msg.providerSlug) setStickySelectedProviderSlug(msg.providerSlug)
 
                   // keep sidebar strictly in sync with model_conversations.updated_at ordering - 대화 목록 동기화
                   void (async () => {
