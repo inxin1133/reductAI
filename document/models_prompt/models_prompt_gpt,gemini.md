@@ -166,7 +166,7 @@
     },
     {
       "role": "developer",
-      "content": "Answer briefly and clearly.\n\nGuidelines:\n- Focus only on what the user asked.\n- Keep explanations short.\n- Do not add extra sections or structures unless they clearly help.\n- If a table or code is not explicitly useful, do not include it.\n- Prefer plain explanations over formatting.\n- It is acceptable to answer with only text blocks when appropriate.\n- It's good to add emojis to the right location."
+      "content": "Answer using markdown only.\n\nRules:\n- Output must be valid JSON matching the schema.\n- Write all content inside the `output_text` field.\n- Do not create custom keys such as `message`, `reply`, `recommendations`, or `language`.\n- If listing items, format them as markdown bullet points.\n- Keep the response concise.\n- It is recommended to add emojis to the correct location when needed."
     },
     {
       "role": "user",
@@ -183,96 +183,21 @@
   }
 }
 
+
 `response_schemas.schemas`
 {
   "type": "object",
-  "required": ["title", "summary", "blocks"],
+  "required": ["output_text"],
   "additionalProperties": false,
   "properties": {
-    "title": {
+    "output_text": {
       "type": "string",
-      "minLength": 2,
-      "maxLength": 80,
-      "description": "A concise and descriptive title for the response."
-    },
-    "summary": {
-      "type": "string",
-      "minLength": 20,
-      "maxLength": 400,
-      "description": "A brief summary. Keep it short for simple questions."
-    },
-    "blocks": {
-      "type": "array",
-      "minItems": 2,
-      "maxItems": 8,
-      "description": "An ordered list of content blocks composing the response.",
-      "items": {
-        "oneOf": [
-          {
-            "type": "object",
-            "required": ["type", "markdown"],
-            "additionalProperties": false,
-            "properties": {
-              "type": { "const": "markdown" },
-              "markdown": {
-                "type": "string",
-                "minLength": 10,
-                "maxLength": 2000,
-                "description": "Markdown-formatted content block."
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": ["type", "language", "code"],
-            "additionalProperties": false,
-            "properties": {
-              "type": { "const": "code" },
-              "language": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 30,
-                "description": "Programming language of the code block."
-              },
-              "code": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 4000,
-                "description": "Source code content. Use only when a code example is clearly helpful."
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": ["type", "headers", "rows"],
-            "additionalProperties": false,
-            "properties": {
-              "type": { "const": "table" },
-              "headers": {
-                "type": "array",
-                "minItems": 2,
-                "maxItems": 6,
-                "items": { "type": "string", "minLength": 1, "maxLength": 60 }
-              },
-              "rows": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": 10,
-                "items": {
-                  "type": "array",
-                  "minItems": 2,
-                  "maxItems": 6,
-                  "items": { "type": "string", "maxLength": 200 }
-                },
-                "description": "Table row data. Use only when a compact checklist/comparison improves clarity."
-              }
-            }
-          }
-        ]
-      }
+      "minLength": 1,
+      "description": "Markdown content to render directly in the UI."
     }
   }
 }
+
 
 
 
@@ -283,33 +208,11 @@
     "max_input_tokens": 200000,
     "max_output_tokens": 16384
   },
-  "options": {
-    "top_p": {
-      "max": 1,
-      "min": 0,
-      "step": 0.05,
-      "type": "number",
-      "label": "top_p",
-      "description": "샘플링 누적 확률"
-    },
-    "temperature": {
-      "max": 2,
-      "min": 0,
-      "step": 0.1,
-      "type": "number",
-      "label": "temperature",
-      "description": "창의성/랜덤성"
-    }
-  },
-  "defaults": {
-    "top_p": 1,
-    "temperature": 0.2
-  },
+  "options": {},
+  "defaults": {},
   "supports": {
-    "top_p": true,
     "json_schema": true,
     "system_role": true,
-    "temperature": true,
     "developer_role": true,
     "structured_outputs": true
   },

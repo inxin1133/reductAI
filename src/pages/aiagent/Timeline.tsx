@@ -75,8 +75,7 @@ function TimelineSidebarList({
             <div className="flex items-center gap-2 min-w-0 w-full">
               {c.hasUnread ? <span className="inline-block size-2 rounded-full bg-red-500 shrink-0" /> : null}
               <p className="text-sm text-foreground truncate w-full">
-                {c.title}
-                {c.isGenerating ? `  답변 작성중${ellipsis}` : ""}
+                {c.isGenerating ? `답변 작성중${ellipsis}` : c.title}
               </p>
             </div>
             <div className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -402,6 +401,35 @@ function dedupeById<T extends { id: string }>(items: T[]) {
   return Array.from(map.values())
 }
 
+function mergeThreadsPreserveOrder(prev: TimelineConversation[], refreshed: TimelineConversation[]) {
+  const byId = new Map<string, TimelineConversation>()
+  for (const c of refreshed) byId.set(String(c.id), c)
+
+  const next: TimelineConversation[] = []
+  const seen = new Set<string>()
+
+  // Keep existing order
+  for (const p of prev) {
+    const id = String(p.id)
+    const r = byId.get(id)
+    if (r) {
+      next.push({ ...p, ...r, messages: p.messages || [] })
+      seen.add(id)
+    } else {
+      next.push(p)
+      seen.add(id)
+    }
+  }
+
+  // Prepend newly created threads (not seen before) to the top
+  const newOnes: TimelineConversation[] = []
+  for (const r of refreshed) {
+    const id = String(r.id)
+    if (!seen.has(id)) newOnes.push(r)
+  }
+  return [...newOnes, ...next]
+}
+
 function providerSlugToLogoKeyFallback(slug?: string | null): string | null {
   // Fallback only. Prefer provider_logo_key from the server.
   const s = String(slug || "").trim().toLowerCase()
@@ -477,6 +505,7 @@ export default function Timeline() {
   })
   const [conversations, setConversations] = React.useState<TimelineConversation[]>([])
   const conversationsRef = React.useRef<TimelineConversation[]>([])
+  const localGeneratingIdsRef = React.useRef<Set<string>>(new Set())
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null)
   const [messages, setMessages] = React.useState<TimelineUiMessage[]>([])
 
@@ -496,6 +525,13 @@ export default function Timeline() {
   React.useEffect(() => {
     conversationsRef.current = conversations
   }, [conversations])
+
+  const applyLocalGeneratingOverride = React.useCallback((items: TimelineConversation[]) => {
+    if (!items.length) return items
+    const ids = localGeneratingIdsRef.current
+    if (!ids.size) return items
+    return items.map((c) => (ids.has(String(c.id)) ? { ...c, isGenerating: true } : c))
+  }, [])
 
   const [renameTarget, setRenameTarget] = React.useState<TimelineConversation | null>(null)
   const [renameValue, setRenameValue] = React.useState("")
@@ -855,12 +891,12 @@ export default function Timeline() {
       // refresh sidebar list (restored thread becomes active again in DB)
       try {
         const refreshed = sortByRecent(await fetchThreads())
-        setConversations(refreshed)
+        setConversations((prev) => applyLocalGeneratingOverride(mergeThreadsPreserveOrder(prev, refreshed)))
       } catch {
         // ignore
       }
     },
-    [authHeaders, fetchThreads]
+    [applyLocalGeneratingOverride, authHeaders, fetchThreads]
   )
 
   const trashThreadWithToast = React.useCallback(
@@ -896,21 +932,21 @@ export default function Timeline() {
       void (async () => {
         try {
           const refreshed = await fetchThreads()
-          setConversations(refreshed)
+          setConversations((prev) => applyLocalGeneratingOverride(mergeThreadsPreserveOrder(prev, refreshed)))
         } catch {
           // ignore
         }
       })()
     }, 1500)
     return () => window.clearInterval(t)
-  }, [conversations, fetchThreads])
+  }, [applyLocalGeneratingOverride, conversations, fetchThreads])
 
   // 0) 최초 진입 시 "서버(DB)"에서 대화 목록을 로드하고, "가장 최근 대화"를 자동으로 선택합니다.
   React.useEffect(() => {
     const run = async () => {
       try {
         const loaded = await fetchThreads()
-        setConversations(loaded)
+        setConversations(applyLocalGeneratingOverride(loaded))
 
         // FrontAI에서 넘어온 initial이 없으면, 최근 대화를 자동으로 열어줍니다.
         if (!initial && loaded.length > 0) {
@@ -1439,7 +1475,7 @@ export default function Timeline() {
                 void (async () => {
                   try {
                     const refreshed = sortByRecent(await fetchThreads())
-                    setConversations(refreshed)
+                    setConversations((prev) => applyLocalGeneratingOverride(mergeThreadsPreserveOrder(prev, refreshed)))
                     const msgs = await fetchMessages(id)
                     setMessages(
                       msgs.map((m) => ({
@@ -1475,6 +1511,13 @@ export default function Timeline() {
                     const pendingId = `pending_${Date.now()}`
                   const userModelApiId = msg.model ? String(msg.model) : ""
                   const userModelDisplayName = userModelApiId ? modelDisplayNameByIdRef.current[userModelApiId] : ""
+                  // Optimistic: mark this conversation as "generating" in the sidebar immediately.
+                  if (activeConversationId) {
+                    localGeneratingIdsRef.current.add(String(activeConversationId))
+                    setConversations((prev) =>
+                      prev.map((c) => (c.id === activeConversationId ? { ...c, isGenerating: true } : c))
+                    )
+                  }
                   setMessages((prev) => [
                     ...prev,
                     {
@@ -1502,6 +1545,28 @@ export default function Timeline() {
 
                 if (msg.role === "assistant") {
                   setIsGenerating(false)
+                  // Optimistic: clear "generating" flag now that we received the final assistant message.
+                  if (activeConversationId) {
+                    localGeneratingIdsRef.current.delete(String(activeConversationId))
+                    setConversations((prev) =>
+                      prev.map((c) => (c.id === activeConversationId ? { ...c, isGenerating: false } : c))
+                    )
+                  }
+
+                  // If the user is currently on this conversation and near the bottom,
+                  // consider the answer "seen" immediately (so we don't show the red unread bullet).
+                  if (
+                    activeConversationId &&
+                    typeof document !== "undefined" &&
+                    document.visibilityState === "visible" &&
+                    isNearBottomRef.current
+                  ) {
+                    setConversations((prev) =>
+                      prev.map((c) => (c.id === activeConversationId ? { ...c, hasUnread: false } : c))
+                    )
+                    void markThreadSeen(activeConversationId)
+                  }
+
                   const normalized = normalizeContentJson(msg.contentJson ?? msg.content)
                   let derivedText = extractTextFromJsonContent(normalized ?? msg.content) || String(msg.content || "")
                   if (typeof derivedText === "string" && derivedText.trim().startsWith("{")) {
@@ -1540,7 +1605,7 @@ export default function Timeline() {
                   void (async () => {
                     try {
                       const refreshed = await fetchThreads()
-                      setConversations(refreshed)
+                      setConversations((prev) => applyLocalGeneratingOverride(mergeThreadsPreserveOrder(prev, refreshed)))
                     } catch {
                       // ignore
                     }
