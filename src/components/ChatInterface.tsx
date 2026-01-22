@@ -835,8 +835,18 @@ export function ChatInterface({
     [selectedModelDbId]
   )
 
+  // In Timeline, the parent passes "last used model" as initial props.
+  // Once the user manually changes the selection, we must not keep forcing those initial props,
+  // otherwise the UI will snap back. But when the conversation changes, we do want to re-apply
+  // the new conversation's initial selection.
+  React.useEffect(() => {
+    selectionDirtyRef.current = false
+  }, [conversationId])
+
   React.useEffect(() => {
     if (!currentProviderGroups.length) return
+    if (forceSelectionSync) return
+    if (selectionDirtyRef.current) return
 
     const wantedModel = (selectionOverride?.modelApiId || initialSelectedModel || "").trim()
     const wantedProviderSlug = (selectionOverride?.providerSlug || initialProviderSlug || "").trim()
@@ -857,10 +867,12 @@ export function ChatInterface({
     }
     const nextProviderId = currentProviderGroups[0]?.provider.id
     if (nextProviderId && nextProviderId !== selectedProviderId) setSelectedProviderId(nextProviderId)
-  }, [currentProviderGroups, initialProviderSlug, initialSelectedModel, selectedProviderId, selectionOverride])
+  }, [currentProviderGroups, forceSelectionSync, initialProviderSlug, initialSelectedModel, selectedProviderId, selectionOverride])
 
   React.useEffect(() => {
     if (!uiConfig) return
+    if (forceSelectionSync) return
+    if (selectionDirtyRef.current) return
     const wantedModel = (selectionOverride?.modelApiId || initialSelectedModel || "").trim()
     const wantedProviderSlug = (selectionOverride?.providerSlug || initialProviderSlug || "").trim()
     const wantedType = ((selectionOverride?.modelType as ModelType) || (initialModelType as ModelType) || "").trim() as ModelType
@@ -891,6 +903,7 @@ export function ChatInterface({
   }, [
     findSelectionByModel,
     findSelectionByProviderSlug,
+    forceSelectionSync,
     initialModelType,
     initialProviderSlug,
     initialSelectedModel,
@@ -1000,6 +1013,10 @@ export function ChatInterface({
 
   React.useEffect(() => {
     if (!selectableModels.length) return
+    // If the user has interacted with selection controls (tabs/provider/model),
+    // do not auto-reset their choice just because provider/type changed and `selectableModels` recomputed.
+    if (selectionDirtyRef.current) return
+    if (forceSelectionSync) return
     const initial = (initialSelectedModel || "").trim()
     const picked =
       (initial && selectableModels.find((m) => m.model_api_id === initial)) ||
@@ -1007,7 +1024,7 @@ export function ChatInterface({
       selectableModels[0] ||
       null
     setSelectedSubModel(picked?.model_api_id || "")
-  }, [initialSelectedModel, selectableModels])
+  }, [forceSelectionSync, initialSelectedModel, selectableModels])
 
   // Apply FrontAI->Timeline initial options once (best-effort), before auto-send triggers.
   const initialOptionsAppliedRef = React.useRef(false)

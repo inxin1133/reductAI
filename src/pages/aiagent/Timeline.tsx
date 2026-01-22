@@ -540,6 +540,85 @@ export default function Timeline() {
   // 현재 대화에서 마지막으로 사용한 모델을 유지하여 ChatInterface 드롭다운 초기값으로 사용합니다.
   const [stickySelectedModel, setStickySelectedModel] = React.useState<string | undefined>(undefined)
   const [stickySelectedProviderSlug, setStickySelectedProviderSlug] = React.useState<string | undefined>(undefined)
+
+  const safeCssAttrValue = React.useCallback((v: string) => {
+    // minimal escape for use in querySelector attribute selectors
+    return String(v || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+  }, [])
+
+  const copyToClipboard = React.useCallback(async (text: string) => {
+    const t = String(text || "")
+    if (!t.trim()) {
+      toast("복사할 내용이 없습니다.")
+      return
+    }
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(t)
+      } else {
+        // Fallback for older browsers / restricted clipboard contexts
+        const ta = document.createElement("textarea")
+        ta.value = t
+        ta.style.position = "fixed"
+        ta.style.left = "-9999px"
+        ta.style.top = "0"
+        document.body.appendChild(ta)
+        ta.focus()
+        ta.select()
+        document.execCommand("copy")
+        document.body.removeChild(ta)
+      }
+      toast("복사되었습니다.")
+    } catch {
+      toast("복사에 실패했습니다.")
+    }
+  }, [])
+
+  const copyAssistantMessage = React.useCallback(
+    async (m: TimelineMessage) => {
+      // Prefer copying HTML (like drag-select copy) so pasting into ProseMirrorEditor preserves tables/headings.
+      const fromJson = m.contentJson ? extractTextFromJsonContent(m.contentJson) : ""
+      const fromText = typeof m.content === "string" ? m.content : String(m.content || "")
+      const plain = String(fromJson || fromText || "").trim()
+
+      // Try to grab rendered ProseMirrorViewer HTML for this message.
+      let html = ""
+      try {
+        const root = document.querySelector(`[data-timeline-message-id="${safeCssAttrValue(String(m.id || ""))}"]`) as HTMLElement | null
+        const viewer = root?.querySelector(".pm-viewer--timeline") as HTMLElement | null
+        if (viewer) {
+          // Use innerHTML to avoid copying the outer chrome.
+          html = `<div>${viewer.innerHTML}</div>`
+        }
+      } catch {
+        // ignore
+      }
+
+      try {
+        const canWriteRich =
+          typeof navigator !== "undefined" &&
+          !!navigator.clipboard &&
+          typeof (navigator.clipboard as unknown as { write?: unknown }).write === "function" &&
+          typeof (globalThis as unknown as { ClipboardItem?: unknown }).ClipboardItem !== "undefined"
+
+        if (canWriteRich && html) {
+          const ClipboardItemCtor = (globalThis as unknown as { ClipboardItem: typeof ClipboardItem }).ClipboardItem
+          const item = new ClipboardItemCtor({
+            "text/html": new Blob([html], { type: "text/html" }),
+            "text/plain": new Blob([plain], { type: "text/plain" }),
+          })
+          await (navigator.clipboard as unknown as { write: (items: ClipboardItem[]) => Promise<void> }).write([item])
+          toast("복사되었습니다.")
+          return
+        }
+      } catch {
+        // fallback below
+      }
+
+      await copyToClipboard(plain)
+    },
+    [copyToClipboard, safeCssAttrValue]
+  )
   const ACTIVE_CONV_KEY = "reductai.timeline.activeConversationId.v1"
   const [isCreatingThread, setIsCreatingThread] = React.useState(false)
   const [initialToSend, setInitialToSend] = React.useState<{
@@ -1342,6 +1421,7 @@ export default function Timeline() {
                         if (el) assistantElByIdRef.current.set(id, el)
                         else assistantElByIdRef.current.delete(id)
                       }}
+                      data-timeline-message-id={m.id ? String(m.id) : undefined}
                       className="w-full flex lg:flex-row flex-col justify-start gap-4"
                     >
                        <div className="size-6 bg-primary rounded-[4px] flex items-center justify-center shrink-0">
@@ -1440,7 +1520,12 @@ export default function Timeline() {
                           })()}
                         </div>
                          <div className="flex gap-3 items-center">
-                           <Copy className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
+                           <Copy
+                             className="size-4 cursor-pointer text-muted-foreground hover:text-foreground"
+                             onClick={() => {
+                               void copyAssistantMessage(m)
+                             }}
+                           />
                            <Volume2 className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
                            <Repeat className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
                           <span className="text-sm text-card-foreground">모델: {m.modelDisplayName || (m.model ? modelDisplayNameByIdRef.current[m.model] : "") || m.model || "-"}</span>
