@@ -1,8 +1,10 @@
 import type { Mark, Node as PMNode, Schema } from "prosemirror-model"
+import { Fragment } from "prosemirror-model"
 import type { MarkdownSerializerState, ParseSpec } from "prosemirror-markdown"
 import { MarkdownParser, MarkdownSerializer } from "prosemirror-markdown"
 import type Token from "markdown-it/lib/token.mjs"
 import MarkdownIt from "markdown-it"
+import { EditorState } from "prosemirror-state"
 
 function esc(str: string) {
   return (str || "").replace(/(\*|_|`|\[|\]|\||\\)/g, "\\$1")
@@ -269,7 +271,58 @@ export function buildMarkdownParser(schema: Schema) {
 
 export function parseMarkdownToPmDoc(schema: Schema, markdown: string): PMNode {
   const parser = buildMarkdownParser(schema)
-  return parser.parse(String(markdown || ""))
+  const doc = parser.parse(String(markdown || ""))
+  return postProcessTableCellInlineStrong(schema, doc)
+}
+
+function postProcessTableCellInlineStrong(schema: Schema, doc: PMNode): PMNode {
+  const strong = schema.marks.strong
+  if (!strong) return doc
+
+  // prosemirror-markdown + markdown-it table parsing can leave inline markdown like **text**
+  // unparsed inside table cells. Fix it up only for paragraphs directly under table_cell/table_header.
+  const changes: Array<{ from: number; to: number; content: Fragment }> = []
+  doc.nodesBetween(0, doc.content.size, (node, pos) => {
+    if (node.type.name !== "paragraph") return
+    const parent = doc.resolve(pos).parent
+    if (!parent || (parent.type.name !== "table_cell" && parent.type.name !== "table_header")) return
+
+    const raw = node.textContent || ""
+    if (!raw.includes("**")) return
+
+    const out: PMNode[] = []
+    const re = /\*\*([^*]+)\*\*/g
+    let idx = 0
+    let m: RegExpExecArray | null
+    while ((m = re.exec(raw))) {
+      const start = m.index
+      const end = start + m[0].length
+      if (start > idx) out.push(schema.text(raw.slice(idx, start)))
+      const inner = m[1] || ""
+      if (inner) out.push(schema.text(inner, [strong.create()]))
+      idx = end
+    }
+    if (idx < raw.length) out.push(schema.text(raw.slice(idx)))
+
+    // If nothing changed, skip.
+    const nextText = out.map((n) => n.text || "").join("")
+    if (nextText === raw) return
+
+    const from = pos + 1
+    const to = pos + node.nodeSize - 1
+    changes.push({ from, to, content: Fragment.fromArray(out) })
+  })
+
+  if (!changes.length) return doc
+
+  const state = EditorState.create({ schema, doc })
+  let tr = state.tr
+  // Apply from bottom to top for position stability.
+  for (let i = changes.length - 1; i >= 0; i -= 1) {
+    const ch = changes[i]
+    tr = tr.replaceWith(ch.from, ch.to, ch.content)
+  }
+  return tr.doc
 }
 
 

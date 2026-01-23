@@ -114,6 +114,40 @@ function sinkListItemPreserveChecklist(schema: Schema) {
   }
 }
 
+function liftListItemOnlyWhenEmptyAtStart(schema: Schema) {
+  const li = schema.nodes.list_item
+  if (!li) return () => false
+  const lift = liftListItem(li)
+  return (state: any, dispatch: any) => {
+    const sel = state.selection
+    if (!(sel instanceof TextSelection) || !sel.empty) return false
+    const $from = sel.$from
+    if (!$from) return false
+
+    // Find containing list_item depth.
+    let liDepth = -1
+    for (let d = $from.depth; d > 0; d -= 1) {
+      if ($from.node(d).type === li) {
+        liDepth = d
+        break
+      }
+    }
+    if (liDepth < 0) return false
+
+    // We only allow "unlist" when:
+    // - cursor is inside the FIRST child textblock of the list_item (usually paragraph)
+    // - cursor is at the start of that textblock
+    // - and that textblock is empty (all text deleted)
+    if ($from.depth !== liDepth + 1) return false
+    if ($from.index(liDepth) !== 0) return false
+    if (!$from.parent.isTextblock) return false
+    if ($from.parentOffset !== 0) return false
+    if ($from.parent.content.size !== 0) return false
+
+    return lift(state, dispatch)
+  }
+}
+
 function exitCodeMarkOnArrowRight(schema: Schema) {
   const code = schema.marks.code
   if (!code) return () => false
@@ -277,7 +311,7 @@ export function buildEditorKeymap(schema: Schema) {
     keys["Enter"] = splitListItem(schema.nodes.list_item)
     keys["Backspace"] = chainCommands(
       removeCodeMarkOnBackspace(schema),
-      liftListItem(schema.nodes.list_item),
+      liftListItemOnlyWhenEmptyAtStart(schema),
       baseKeymap.Backspace
     )
   } else {

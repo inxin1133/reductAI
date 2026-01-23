@@ -198,15 +198,31 @@ function appendMarkdownBlocks(content: Array<Record<string, unknown>>, markdown:
 }
 
 function tableFromBlocks(headers: string[], rows: string[][]) {
+  const inlineFromMarkdown = (input: string) => {
+    const raw = String(input ?? "")
+    if (!raw.trim()) return [] as Array<Record<string, unknown>>
+    try {
+      const doc = parseMarkdownToPmDoc(editorSchema, raw)
+      const json = doc?.toJSON() as { content?: Array<any> } | undefined
+      const first = json?.content?.[0]
+      // Prefer the first paragraph's inline content.
+      if (first?.type === "paragraph" && Array.isArray(first.content)) return first.content as Array<Record<string, unknown>>
+      // Fallback: if parsing produced non-paragraph blocks, just keep plain text.
+      return [{ type: "text", text: raw }]
+    } catch {
+      return [{ type: "text", text: raw }]
+    }
+  }
+
   const headerCells = headers.map((h) => ({
     type: "table_header",
-    content: [{ type: "paragraph", content: [{ type: "text", text: h }] }],
+    content: [{ type: "paragraph", content: inlineFromMarkdown(h) }],
   }))
   const bodyRows = rows.map((r) => ({
     type: "table_row",
     content: r.map((cell) => ({
       type: "table_cell",
-      content: [{ type: "paragraph", content: [{ type: "text", text: cell }] }],
+      content: [{ type: "paragraph", content: inlineFromMarkdown(cell) }],
     })),
   }))
   const tableRows = headerCells.length
