@@ -207,20 +207,160 @@ export async function openaiGenerateImage(args: {
   const json = r.json
 
   const root = json && typeof json === "object" ? (json as Record<string, unknown>) : null
-  const data = Array.isArray(root?.data) ? (root?.data as unknown[]) : []
+
+  // Some gateways may return 200 with an embedded error object.
+  // Treat that as an error so callers can surface the actual reason (policy, invalid prompt, etc).
+  try {
+    const err = root?.error && typeof root.error === "object" ? (root.error as Record<string, unknown>) : null
+    const msg = typeof err?.message === "string" ? err.message : ""
+    if (msg && msg.trim()) {
+      throw new Error(`OPENAI_IMAGE_FAILED_200@${apiRoot}:${JSON.stringify(root)}`)
+    }
+  } catch (e) {
+    // If this throws, it will be caught by the outer try/caller; rethrow to preserve behavior.
+    if (e instanceof Error) throw e
+    throw new Error(String(e))
+  }
+
+  // OpenAI(and compatible gateways) can return slightly different shapes/field names:
+  // - { data: [{ url }, { b64_json }] }
+  // - { images: [...] }
+  // - nested url objects, or alternative base64 keys (b64/base64/data)
+  const data =
+    (Array.isArray(root?.data) ? (root?.data as unknown[]) : null) ||
+    (Array.isArray(root?.images) ? (root?.images as unknown[]) : null) ||
+    []
+
   const urls = data
-    .map((d) => (d && typeof d === "object" && typeof (d as Record<string, unknown>).url === "string" ? String((d as Record<string, unknown>).url) : ""))
+    .map((d) => {
+      if (!d || typeof d !== "object") return ""
+      const obj = d as Record<string, unknown>
+      const direct = typeof obj.url === "string" ? obj.url : ""
+      if (direct) return String(direct)
+      const nestedUrl = obj.url && typeof obj.url === "object" ? (obj.url as Record<string, unknown>) : null
+      if (nestedUrl && typeof nestedUrl.url === "string") return String(nestedUrl.url)
+      const imageUrl = typeof obj.image_url === "string" ? obj.image_url : ""
+      if (imageUrl) return String(imageUrl)
+      return ""
+    })
     .filter(Boolean)
+
   const b64 = data
-    .map((d) =>
-      d && typeof d === "object" && typeof (d as Record<string, unknown>).b64_json === "string" ? String((d as Record<string, unknown>).b64_json) : ""
-    )
+    .map((d) => {
+      if (!d || typeof d !== "object") return ""
+      const obj = d as Record<string, unknown>
+      const v =
+        (typeof obj.b64_json === "string" && obj.b64_json) ||
+        (typeof obj.b64 === "string" && obj.b64) ||
+        (typeof obj.base64 === "string" && obj.base64) ||
+        (typeof obj.data === "string" && obj.data) ||
+        ""
+      return v ? String(v) : ""
+    })
     .filter(Boolean)
+
   // If the API returns base64 only, convert it to data URLs so the frontend can render without saving files.
   // OpenAI image generations commonly return PNG bytes; default to image/png if unknown.
   const data_urls = b64.map((s) => `data:image/png;base64,${s}`)
 
-  return { raw: json, urls, b64, data_urls }
+  function looksLikeUrl(s: string) {
+    const t = s.trim()
+    if (!t) return false
+    if (t.startsWith("data:image/")) return true
+    if (!/^https?:\/\//i.test(t)) return false
+    // allow signed urls without extensions; reject clearly non-image urls only if obvious
+    return true
+  }
+
+  function deepCollect(node: unknown, depth: number, out: { urls: string[]; b64: string[] }) {
+    if (!node || depth <= 0) return
+    if (typeof node === "string") {
+      const s = node.trim()
+      if (s.startsWith("data:image/")) out.urls.push(s)
+      else if (looksLikeUrl(s)) out.urls.push(s)
+      return
+    }
+    if (Array.isArray(node)) {
+      for (const it of node) deepCollect(it, depth - 1, out)
+      return
+    }
+    if (typeof node !== "object") return
+    const obj = node as Record<string, unknown>
+    for (const [k, v] of Object.entries(obj)) {
+      const key = k.toLowerCase()
+      if (typeof v === "string") {
+        const s = v.trim()
+        if ((key === "url" || key.endsWith("_url") || key.includes("image_url")) && looksLikeUrl(s)) out.urls.push(s)
+        if ((key.includes("b64") || key.includes("base64")) && s) out.b64.push(s)
+        if (s.startsWith("data:image/")) out.urls.push(s)
+      } else if (v && typeof v === "object") {
+        // common nested shapes: { image_url: { url: "..." } }
+        if ((key === "url" || key.endsWith("_url") || key.includes("image_url")) && typeof (v as Record<string, unknown>).url === "string") {
+          const s = String((v as Record<string, unknown>).url || "").trim()
+          if (looksLikeUrl(s)) out.urls.push(s)
+        }
+        deepCollect(v, depth - 1, out)
+      } else if (Array.isArray(v)) {
+        deepCollect(v, depth - 1, out)
+      }
+    }
+  }
+
+  // If we still have nothing, try a deep scan of the raw response (best-effort).
+  let urls2 = urls
+  let b642 = b64
+  let data_urls2 = data_urls
+  if (!urls2.length && !data_urls2.length) {
+    const collected = { urls: [] as string[], b64: [] as string[] }
+    deepCollect(root, 8, collected)
+    const uniqueUrls = Array.from(new Set(collected.urls)).filter(Boolean)
+    const uniqueB64 = Array.from(new Set(collected.b64)).filter(Boolean)
+    urls2 = uniqueUrls
+    b642 = uniqueB64
+    data_urls2 = uniqueB64.map((s) => (s.startsWith("data:image/") ? s : `data:image/png;base64,${s}`))
+  }
+
+  // Avoid returning huge base64 blobs in raw logs/metadata.
+  const rawSafe: Record<string, unknown> = root ? { ...root } : {}
+  try {
+    if (Array.isArray(rawSafe.data)) {
+      rawSafe.data = (rawSafe.data as unknown[]).map((d) => {
+        if (!d || typeof d !== "object") return d
+        const obj = { ...(d as Record<string, unknown>) }
+        if (typeof obj.b64_json === "string") obj.b64_json = `<omitted:${obj.b64_json.length}>`
+        if (typeof obj.b64 === "string") obj.b64 = `<omitted:${obj.b64.length}>`
+        if (typeof obj.base64 === "string") obj.base64 = `<omitted:${obj.base64.length}>`
+        return obj
+      })
+    }
+    if (Array.isArray(rawSafe.images)) {
+      rawSafe.images = (rawSafe.images as unknown[]).map((d) => {
+        if (!d || typeof d !== "object") return d
+        const obj = { ...(d as Record<string, unknown>) }
+        if (typeof obj.b64_json === "string") obj.b64_json = `<omitted:${obj.b64_json.length}>`
+        if (typeof obj.b64 === "string") obj.b64 = `<omitted:${obj.b64.length}>`
+        if (typeof obj.base64 === "string") obj.base64 = `<omitted:${obj.base64.length}>`
+        return obj
+      })
+    }
+  } catch {
+    // ignore
+  }
+
+  // Provide lightweight debug hints when we couldn't extract anything.
+  if (!urls2.length && !data_urls2.length) {
+    try {
+      rawSafe._debug = {
+        top_keys: root ? Object.keys(root) : [],
+        data_len: Array.isArray((root as Record<string, unknown> | null)?.data) ? ((root as Record<string, unknown>).data as unknown[]).length : 0,
+        images_len: Array.isArray((root as Record<string, unknown> | null)?.images) ? ((root as Record<string, unknown>).images as unknown[]).length : 0,
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return { raw: rawSafe, urls: urls2, b64: b642, data_urls: data_urls2 }
 }
 
 export async function openaiTextToSpeech(args: {

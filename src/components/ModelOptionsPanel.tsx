@@ -179,11 +179,11 @@ export function ModelOptionsPanel({ capabilities, value, onApply, className }: M
 
   return (
     <div className={cn("w-full", className)}>
-      <Card className="py-4">
-        <CardHeader className="px-4">
-          <CardTitle>Generate Options</CardTitle>
+      <Card className="max-h-[360px] overflow-y-auto">
+        {/* <CardHeader className="px-4">
+          <CardTitle>Options</CardTitle>
           <CardDescription>capabilities.options 기반 (변경 즉시 적용)</CardDescription>
-        </CardHeader>
+        </CardHeader> */}
         <CardContent className="px-4">
           <div className="flex flex-col gap-4">
             {visibleKeys.map((k) => {

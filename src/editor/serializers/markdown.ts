@@ -113,6 +113,21 @@ export function buildMarkdownSerializer() {
       state.write(`![${alt}](${src}${title})`)
       state.closeBlock(node)
     },
+    audio: (state, node) => {
+      const src = String(node.attrs.src || "")
+      const title = node.attrs.title ? ` title="${esc(String(node.attrs.title))}"` : ""
+      // Markdown has no standard audio syntax; export as HTML so we don't crash on serialization.
+      state.write(`<audio controls preload="metadata" src="${src}"${title}></audio>`)
+      state.closeBlock(node)
+    },
+    video: (state, node) => {
+      const src = String(node.attrs.src || "")
+      const title = node.attrs.title ? ` title="${esc(String(node.attrs.title))}"` : ""
+      const poster = node.attrs.poster ? ` poster="${String(node.attrs.poster || "")}"` : ""
+      // Markdown has no standard video syntax; export as HTML.
+      state.write(`<video controls preload="metadata" src="${src}"${poster}${title}></video>`)
+      state.closeBlock(node)
+    },
     mention: (state, node) => {
       state.text(`@${node.attrs.label || "mention"}`, false)
     },

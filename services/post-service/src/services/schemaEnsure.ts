@@ -122,5 +122,22 @@ export async function ensurePostEditorSchema(): Promise<void> {
   `)
   await exec(`CREATE INDEX IF NOT EXISTS idx_post_blocks_post_id ON post_blocks(post_id);`)
   await exec(`CREATE INDEX IF NOT EXISTS idx_post_blocks_sort_key ON post_blocks(post_id, sort_key);`)
+
+  // Cleanup: categories are hard-deleted in the product UX.
+  // Remove any previously soft-deleted categories to avoid accumulation.
+  await exec(`DELETE FROM board_categories WHERE deleted_at IS NOT NULL;`)
+
+  // Cleanup: pages that were restored while their category was already deleted end up with:
+  // - category_id IS NULL
+  // - metadata.category_lost = true
+  // They don't appear under any category. User request: track & delete them.
+  // This cascades to post_blocks via FK.
+  await exec(`
+    DELETE FROM posts
+    WHERE deleted_at IS NULL
+      AND COALESCE(status,'') <> 'deleted'
+      AND category_id IS NULL
+      AND (COALESCE(metadata->>'category_lost','false')::boolean) = true
+  `)
 }
 

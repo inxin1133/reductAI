@@ -1541,8 +1541,8 @@ export default function Timeline() {
              <div ref={bottomAnchorRef} />
         </div>
 
-        {/* Bottom Panel */}
-        <div className="p-4 flex flex-col items-center gap-2 w-full">
+        {/* Bottom Panel 채팅창 */}
+        <div className="p-4 pt-2 flex flex-col items-center gap-2 w-full">
           <ChatInterface
                variant="compact"
                // 대화 선택 시 마지막 모델을 초기값으로 반영합니다.

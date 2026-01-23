@@ -1,5 +1,8 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
+import { Switch } from "@/components/ui/switch"
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip"
+import { Input } from "@/components/ui/input"
 import {
   ChevronDown,
   ChevronLeft,
@@ -7,8 +10,15 @@ import {
   ChevronsLeft,
   ChevronsRight,
   ChevronsUp,
+  Image as ImageIcon,
+  Link2,
   MessageSquare,
+  Paperclip,
   Settings2,
+  Plus,
+  ArrowUp,
+  X,
+  Globe,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -19,6 +29,14 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Card } from "@/components/ui/card"
 import {
   Drawer,
   DrawerClose,
@@ -497,10 +515,111 @@ export function ChatInterface({
   const [showRightArrow, setShowRightArrow] = React.useState(false)
 
   const [prompt, setPrompt] = React.useState("")
+  const [compactPromptMode, setCompactPromptMode] = React.useState<"single" | "multi">(isCompact ? "single" : "multi")
+  const compactSingleTextareaRef = React.useRef<HTMLTextAreaElement | null>(null)
+  const promptRef = React.useRef("")
+  const pendingCaretToEndRef = React.useRef(false)
+  const compactUpgradedAtRef = React.useRef(0)
+  const pendingSelectionRef = React.useRef<{ start: number; end: number } | null>(null)
+
+  type ChatAttachment =
+    | { id: string; kind: "file"; name: string; size: number; mime: string; file: File }
+    | { id: string; kind: "image"; name: string; size: number; mime: string; file: File; previewUrl: string }
+    | { id: string; kind: "link"; url: string; title?: string }
+
+  const [attachments, setAttachments] = React.useState<ChatAttachment[]>([])
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null)
+  const imageInputRef = React.useRef<HTMLInputElement | null>(null)
+
+  const [isLinkDialogOpen, setIsLinkDialogOpen] = React.useState(false)
+  const [linkUrl, setLinkUrl] = React.useState("")
+  const [linkTitle, setLinkTitle] = React.useState("")
+
+  const addFiles = React.useCallback((files: FileList | null, mode: "mixed" | "image_only") => {
+    if (!files || files.length === 0) return
+    const next: ChatAttachment[] = []
+    for (const f of Array.from(files)) {
+      const mime = String(f.type || "")
+      const isImg = mime.startsWith("image/")
+      if (mode === "image_only" && !isImg) continue
+      if (isImg) {
+        const previewUrl = URL.createObjectURL(f)
+        next.push({
+          id: `img_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          kind: "image",
+          name: f.name || "image",
+          size: Number(f.size || 0),
+          mime,
+          file: f,
+          previewUrl,
+        })
+      } else {
+        next.push({
+          id: `file_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          kind: "file",
+          name: f.name || "file",
+          size: Number(f.size || 0),
+          mime,
+          file: f,
+        })
+      }
+    }
+    if (!next.length) return
+    setAttachments((prev) => [...prev, ...next])
+  }, [])
+
+  const removeAttachment = React.useCallback((id: string) => {
+    setAttachments((prev) => {
+      const target = prev.find((a) => a.id === id)
+      if (target && target.kind === "image" && target.previewUrl) {
+        try {
+          URL.revokeObjectURL(target.previewUrl)
+        } catch {
+          // ignore
+        }
+      }
+      return prev.filter((a) => a.id !== id)
+    })
+  }, [])
+
+  const clearAttachments = React.useCallback(() => {
+    setAttachments((prev) => {
+      for (const a of prev) {
+        if (a.kind === "image" && a.previewUrl) {
+          try {
+            URL.revokeObjectURL(a.previewUrl)
+          } catch {
+            // ignore
+          }
+        }
+      }
+      return []
+    })
+  }, [])
+
+  const buildAttachmentContext = React.useCallback((items: ChatAttachment[]) => {
+    if (!items.length) return ""
+    const lines: string[] = []
+    lines.push("### 첨부")
+    for (const a of items) {
+      if (a.kind === "link") {
+        const title = (a.title || "").trim()
+        lines.push(`- 링크: ${title ? `${title} - ` : ""}${a.url}`)
+      } else if (a.kind === "image") {
+        lines.push(`- 이미지: ${a.name}`)
+      } else {
+        lines.push(`- 파일: ${a.name}`)
+      }
+    }
+    return lines.join("\n")
+  }, [])
   const isComposingRef = React.useRef(false)
   const handleSendInFlightRef = React.useRef<Set<string>>(new Set())
   const selectionDirtyRef = React.useRef(false)
   const [isCompactPanelOpen, setIsCompactPanelOpen] = React.useState(false)
+  const compactPanelRef = React.useRef<HTMLDivElement | null>(null)
+  const compactPanelTriggerRef = React.useRef<HTMLDivElement | null>(null)
+  const compactPanelFloatingRef = React.useRef<HTMLDivElement | null>(null)
 
   const [promptSuggestions, setPromptSuggestions] = React.useState<
     Array<{ id: string; model_type: ModelType | null; model_id: string | null; title: string | null; text: string; sort_order: number; metadata?: Record<string, unknown> }>
@@ -817,6 +936,54 @@ export function ChatInterface({
     }
   }, [])
 
+  // Prompt focus + stable switching between compact single-line and multi-line modes.
+  React.useEffect(() => {
+    promptRef.current = String(prompt || "")
+  }, [prompt])
+
+  React.useEffect(() => {
+    if (!isCompact) {
+      setCompactPromptMode("multi")
+      return
+    }
+    // compact defaults on entry (do not react to prompt changes; it causes flicker)
+    const initial = promptRef.current.includes("\n") ? "multi" : "single"
+    setCompactPromptMode(initial)
+  }, [isCompact])
+
+  React.useEffect(() => {
+    if (!isCompact) return
+    if (compactPromptMode === "single") {
+      window.setTimeout(() => compactSingleTextareaRef.current?.focus(), 0)
+    } else {
+      window.setTimeout(() => {
+        const el = promptInputRef.current
+        el?.focus()
+        if (el && pendingSelectionRef.current) {
+          const sel = pendingSelectionRef.current
+          pendingSelectionRef.current = null
+          pendingCaretToEndRef.current = false
+          try {
+            el.setSelectionRange(sel.start, sel.end)
+          } catch {
+            // ignore
+          }
+          return
+        }
+        if (el && pendingCaretToEndRef.current) {
+          pendingCaretToEndRef.current = false
+          pendingSelectionRef.current = null
+          try {
+            const end = el.value.length
+            el.setSelectionRange(end, end)
+          } catch {
+            // ignore
+          }
+        }
+      }, 0)
+    }
+  }, [compactPromptMode, isCompact])
+
   React.useEffect(() => {
     // persist lightweight per-session (not cookies)
     try {
@@ -825,6 +992,26 @@ export function ChatInterface({
       // ignore (storage quota / privacy mode)
     }
   }, [runtimeOptionsByModel])
+
+  const resizePromptTextarea = React.useCallback((el: HTMLTextAreaElement | null) => {
+    if (!el) return
+    // auto-grow up to 12 lines; then scroll
+    try {
+      el.style.height = "auto"
+      el.style.height = `${Math.min(el.scrollHeight, 24 * 12)}px`
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  // Ensure textarea auto-resize also works for paste/programmatic prompt changes (not only typing).
+  React.useLayoutEffect(() => {
+    if (isCompact && compactPromptMode !== "multi") return
+    const el = promptInputRef.current
+    if (!el) return
+    // defer to next frame to ensure DOM has applied the latest value/layout
+    window.requestAnimationFrame(() => resizePromptTextarea(el))
+  }, [compactPromptMode, isCompact, prompt, resizePromptTextarea])
 
   const applyRuntimeOptions = React.useCallback(
     (next: Record<string, unknown>) => {
@@ -1117,6 +1304,29 @@ export function ChatInterface({
     return () => window.clearTimeout(t)
   }, [isCompact, isCompactPanelOpen, updateScrollButtons])
 
+  // Timeline compact top panel: close on outside click
+  React.useEffect(() => {
+    if (!isCompact) return
+    if (!isCompactPanelOpen) return
+
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null
+      const trigger = compactPanelTriggerRef.current
+      const floating = compactPanelFloatingRef.current
+      if (!target) return
+
+      // Ignore clicks inside Radix popper portals (dropdowns, etc.)
+      if (target.closest?.('[data-radix-popper-content-wrapper]')) return
+
+      if (trigger?.contains(target)) return
+      if (floating?.contains(target)) return
+      setIsCompactPanelOpen(false)
+    }
+
+    document.addEventListener("pointerdown", onPointerDown, true)
+    return () => document.removeEventListener("pointerdown", onPointerDown, true)
+  }, [isCompact, isCompactPanelOpen])
+
   const scrollLeft = () => scrollContainerRef.current?.scrollBy({ left: -200, behavior: "smooth" })
   const scrollRight = () => scrollContainerRef.current?.scrollBy({ left: 200, behavior: "smooth" })
 
@@ -1132,7 +1342,9 @@ export function ChatInterface({
 
   const handleSend = React.useCallback(
     async (overrideInput?: string, overrideModelApiId?: string) => {
-      const input = (overrideInput ?? prompt).trim()
+      const baseInput = (overrideInput ?? prompt).trim()
+      const attachmentCtx = buildAttachmentContext(attachments)
+      const input = `${baseInput}${attachmentCtx ? `\n\n${attachmentCtx}` : ""}`.trim()
       if (!input) return
 
       // Prevent accidental double-send (e.g. Enter + click, or repeated key events).
@@ -1163,12 +1375,13 @@ export function ChatInterface({
       onMessage?.({
         role: "user",
         content: input,
-        contentJson: { text: input, options: finalOptions },
-        summary: userSummary(input),
+        contentJson: { text: input, options: finalOptions, attachments: attachments.map((a) => (a.kind === "link" ? { kind: "link", url: a.url, title: a.title || "" } : { kind: a.kind, name: a.name, mime: a.mime, size: a.size })) },
+        summary: userSummary(baseInput),
         providerSlug,
         model: modelApiId,
       })
       setPrompt("")
+      clearAttachments()
 
       if (submitMode === "emit") {
         onSubmit?.({ input, providerSlug, model: modelApiId, modelType: sendModelType, options: finalOptions })
@@ -1245,6 +1458,9 @@ export function ChatInterface({
     [
       assistantSummary,
       authHeaders,
+      attachments,
+      buildAttachmentContext,
+      clearAttachments,
       conversationId,
       currentProviderGroup,
       effectiveModelApiId,
@@ -1344,14 +1560,14 @@ export function ChatInterface({
           </Button>
         </div>
       )}
-
+      {/* 모델 그리드 선택 영역 */}
       <div ref={scrollContainerRef} onScroll={updateScrollButtons} className="flex flex-row gap-3 items-start justify-start relative w-full overflow-x-auto scrollbar-hide px-2 py-2">
         {uiProviderGroups.map((g) => (
           <div
             key={g.provider.id}
             className={cn(
-              "bg-card border border-border flex flex-col items-start p-4 rounded-[20px] shrink-0 w-[160px] sm:w-[180px] cursor-pointer transition-all hover:shadow-md",
-              uiProviderGroup?.provider.id === g.provider.id ? "ring-2 ring-primary border-primary/50" : ""
+              "bg-card border border-border flex flex-col items-start p-2 lg:p-4 rounded-md shrink-0 min-w-[100px] w-[120px] lg:w-[160px] cursor-pointer transition-all hover:shadow-md",
+              uiProviderGroup?.provider.id === g.provider.id ? "border-1 border-primary bg-accent" : ""
             )}
             onClick={() => {
               selectionDirtyRef.current = true
@@ -1433,43 +1649,33 @@ export function ChatInterface({
               <ModelGrid />
             </>
           ) : (
-            <div className="w-full">
+            <div className="w-full" ref={compactPanelRef}>
+              {/* 타임라인 컴팩트 모드 상단 설정 부분 (패널 트리거만) */}
               {!isCompactPanelOpen && (
-                <button type="button" className="flex items-center gap-2 px-4 cursor-pointer select-none w-full text-left" onClick={() => setIsCompactPanelOpen(true)}>
-                  <ChevronRight className={cn("size-5 transition-transform", isCompactPanelOpen ? "rotate-90" : "")} />
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <div className="flex items-center gap-1">
-                      <MessageSquare className="size-4" />
-                      <span className="text-sm">{tabLabel(uiSelectedType)}</span>
-                    </div>
-                    {uiProviderGroup && (
+                <div ref={compactPanelTriggerRef} className="w-full">
+                  <button
+                    type="button"
+                    className="flex items-center gap-2 px-4 cursor-pointer select-none w-full text-left"
+                    onClick={() => setIsCompactPanelOpen(true)}
+                  >
+                    <ChevronRight className={cn("size-5 transition-transform", isCompactPanelOpen ? "rotate-90" : "")} />
+                    <div className="flex items-center gap-3 flex-wrap">
                       <div className="flex items-center gap-1">
-                        <div className={cn("size-4 rounded-full bg-primary flex items-center justify-center")}>
-                          <ProviderLogo logoKey={uiProviderGroup.provider.logo_key || undefined} className="size-3 text-primary-foreground" />
-                        </div>
-                        <span className="text-sm">{uiProviderGroup.provider.product_name}</span>
+                        <MessageSquare className="size-4" />
+                        <span className="text-sm">{tabLabel(uiSelectedType)}</span>
                       </div>
-                    )}
-                  </div>
-                </button>
-              )}
-
-              <div className={cn("overflow-hidden transition-[max-height,opacity] duration-200 ease-out", isCompactPanelOpen ? "max-h-[520px]" : "max-h-0 opacity-0 mt-0 pointer-events-none")}>
-                <div className="w-full">
-                  <div className="flex flex-col gap-4">
-                    <div className="flex items-center gap-2">
-                      <button type="button" className="inline-flex items-center justify-center rounded-md hover:bg-accent/60 transition-colors p-1" aria-label="접기" onClick={() => setIsCompactPanelOpen(false)}>
-                        <ChevronDown className="size-5" />
-                      </button>
-                      <PaidToken />
+                      {uiProviderGroup && (
+                        <div className="flex items-center gap-1">
+                          <div className={cn("size-4 rounded-full bg-primary flex items-center justify-center")}>
+                            <ProviderLogo logoKey={uiProviderGroup.provider.logo_key || undefined} className="size-3 text-primary-foreground" />
+                          </div>
+                          <span className="text-sm">{uiProviderGroup.provider.product_name}</span>
+                        </div>
+                      )}
                     </div>
-                    <ModeTabs />
-                    <div className="max-h-[320px] overflow-y-auto">
-                      <ModelGrid />
-                    </div>
-                  </div>
+                  </button>
                 </div>
-              </div>
+              )}
             </div>
           )}
 
@@ -1477,6 +1683,7 @@ export function ChatInterface({
             <div className="flex flex-[1_0_0] flex-col gap-[16px] items-start h-full relative shrink-0">
               {/* (5) provider product_name / description 표시 - compact에서는 생략 */}
               {!isCompact && uiProviderGroup && (
+                // 프로바이더 설명 부분
                 <div className="flex gap-[10px] items-center justify-start w-full">
                   <p className="font-medium leading-[20px] text-card-foreground text-[14px] whitespace-nowrap">{providerTitle}</p>
                   <p className="font-normal leading-[20px] text-muted-foreground text-[14px] line-clamp-1 text-ellipsis overflow-hidden">{providerDesc}</p>
@@ -1484,47 +1691,249 @@ export function ChatInterface({
               )}
 
               {uiProviderGroup && (
-                <div className="bg-background border border-border box-border flex flex-col gap-[10px] items-start justify-between pb-[12px] pt-[16px] px-[16px] relative rounded-[24px] shadow-sm shrink-0 w-full h-full">
-                  <div className="flex flex-col gap-[10px] items-start justify-center relative shrink-0 w-full">
-                    <textarea
-                      ref={promptInputRef}
-                      placeholder={uiSelectedModelLabel}
-                      className="w-full border-none outline-none text-[16px] placeholder:text-muted-foreground bg-transparent resize-none overflow-y-auto leading-6"
-                      value={prompt}
-                      rows={1}
-                      style={{ maxHeight: 24 * 12 }}
-                      onChange={(e) => {
-                        setPrompt(e.target.value)
-                        // auto-grow up to 12 lines; then scroll
-                        const el = e.currentTarget
-                        el.style.height = "auto"
-                        el.style.height = `${Math.min(el.scrollHeight, 24 * 12)}px`
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key !== "Enter") return
-                        if ((e.nativeEvent as { isComposing?: boolean })?.isComposing) return
-                        if (isComposingRef.current) return
+                // 채팅창 영역 부분
+                <div className="bg-background border border-border box-border flex flex-col gap-0 items-center justify-between py-3 px-4 relative rounded-2xl shadow-sm shrink-0 w-full h-full">
+                  {/* Compact mode floating panel: overlays above the chat card, does NOT affect layout height */}
+                  {isCompact && isCompactPanelOpen ? (
+                    <div ref={compactPanelFloatingRef} className="absolute left-0 right-0 bottom-full mb-2 z-50">
+                      <div className="bg-background/75 rounded-md p-4 pt-2 backdrop-blur supports-[backdrop-filter]:bg-backgronund/75 ">
+                        <div className="flex items-center gap-2 mb-3">
+                          <button
+                            type="button"
+                            className="inline-flex items-center justify-center rounded-md hover:bg-accent/60 transition-colors p-1"
+                            aria-label="접기"
+                            onClick={() => setIsCompactPanelOpen(false)}
+                          >
+                            <ChevronDown className="size-5" />
+                          </button>
+                          <PaidToken />
+                        </div>
+                        <ModeTabs />
+                        <div className="max-h-[320px] overflow-y-auto mt-3">
+                          <ModelGrid />
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
 
-                        // Shift+Enter: newline
-                        if (e.shiftKey) return
+                  <div className={cn("flex flex-1 gap-2 items-start justify-start w-full flex-wrap", attachments.length ? "" : "hidden")}>
+                    {/* 첨부파일 및 미디어 삽입영역 */}
+                    {attachments.map((a) => (
+                      <Card key={a.id} className="group relative flex items-center gap-2 px-2 py-1 rounded-md border bg-muted/40">
+                        {a.kind === "image" ? (
+                          <img src={a.previewUrl} alt={a.name} className="size-7 rounded object-cover border" />
+                        ) : a.kind === "link" ? (
+                          <div className="size-7 rounded border bg-background flex items-center justify-center">
+                            <Link2 className="size-4 text-muted-foreground" />
+                          </div>
+                        ) : (
+                          <div className="size-7 rounded border bg-background flex items-center justify-center">
+                            <Paperclip className="size-4 text-muted-foreground" />
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-foreground truncate max-w-[220px]">
+                            {a.kind === "link" ? (a.title || a.url) : a.name}
+                          </p>
+                          {a.kind === "link" ? (
+                            <p className="text-[10px] text-muted-foreground truncate max-w-[220px]">{a.url}</p>
+                          ) : (
+                            <p className="text-[10px] text-muted-foreground truncate max-w-[220px]">
+                              {a.kind === "image" ? "이미지" : "파일"}
+                            </p>
+                          )}
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="absolute -top-2 -right-2 size-6 rounded-full opacity-0 group-hover:opacity-100 transition-opacity bg-background border"
+                          onClick={() => removeAttachment(a.id)}
+                        >
+                          <X className="size-3" />
+                        </Button>
+                      </Card>
+                    ))}
+                  </div>
+                  <div className="flex flex-col gap-2 items-center justify-center relative shrink-0 w-full">
+                    {/* FrontAI(default): textarea always. Timeline(compact): textarea only when multi-line mode. */}
+                    {/* FrontAI 프롬프트 입력창 */}
+                    {!isCompact || compactPromptMode === "multi" ? (
+                      <textarea
+                        ref={promptInputRef}
+                        placeholder={uiSelectedModelLabel}
+                        className="w-full border-none outline-none text-[16px] placeholder:text-muted-foreground bg-transparent resize-none overflow-y-auto leading-6"
+                        value={prompt}
+                        rows={1}
+                        style={{ maxHeight: 24 * 12 }}
+                        onChange={(e) => {
+                          setPrompt(e.target.value)
+                          const el = e.currentTarget
+                          resizePromptTextarea(el)
 
-                        // Enter: send
-                        e.preventDefault()
-                        void handleSend(e.currentTarget.value)
-                      }}
-                      onCompositionStart={() => (isComposingRef.current = true)}
-                      onCompositionEnd={() => (isComposingRef.current = false)}
-                    />
-                    {!prompt.trim() && (
-                      <p className="text-xs text-muted-foreground">Shift + Enter로 줄바꿈</p>
+                          if (isCompact) {
+                            // Switch back to compact single input when it becomes single-line again.
+                            const v = String(e.target.value || "")
+                            if (!v.includes("\n")) {
+                                // Prevent flicker: once upgraded to multi, keep it for a short cooldown,
+                                // and only downgrade when the content is clearly short enough.
+                                const cooldownMs = 500
+                                const sinceUpgraded = Date.now() - (compactUpgradedAtRef.current || 0)
+                                if (sinceUpgraded < cooldownMs) return
+                                if (v.trim().length > 40) return
+                                // use scrollHeight as a cheap line-count proxy (best-effort)
+                                const oneLine = el.scrollHeight <= 24 * 1.6
+                                if (oneLine) setCompactPromptMode("single")
+                            }
+                          }
+                        }}
+                        onPaste={() => {
+                          // Sometimes scrollHeight isn't stable until after paste is applied.
+                          window.requestAnimationFrame(() => resizePromptTextarea(promptInputRef.current))
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key !== "Enter") return
+                          if ((e.nativeEvent as { isComposing?: boolean })?.isComposing) return
+                          if (isComposingRef.current) return
+
+                          // Shift+Enter: newline
+                          if (e.shiftKey) return
+
+                          // Enter: send
+                          e.preventDefault()
+                          void handleSend(e.currentTarget.value)
+                        }}
+                        onCompositionStart={() => (isComposingRef.current = true)}
+                        onCompositionEnd={() => (isComposingRef.current = false)}
+                      />
+                    ) : null}
+                    {!isCompact && !prompt.trim() && (
+                      <p className="text-xs text-left w-full text-muted-foreground">Shift + Enter로 줄바꿈</p>
                     )}
                   </div>
 
                  
+                  {/* 채팅창 안 하단 옵션 부분 - +버튼, 웹검색, 모델선택 드롭다운  */}
+                  <div className="flex gap-0 items-center relative shrink-0 w-full flex-between mt-auto">
 
-                  <div className="flex gap-[16px] items-center relative shrink-0 w-full mt-auto">
-                    <div className="flex flex-[1_0_0] gap-[10px] items-center relative shrink-0" />
+                    <div className="flex flex-1 gap-2 items-center relative shrink-0">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button type="button" variant="ghost" size="icon" className="rounded-full">
+                            <Plus className="size-6" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-56">
+                          <DropdownMenuLabel>첨부</DropdownMenuLabel>
+                          <DropdownMenuGroup>
+                            {/* text / video / music / audio / code: 파일 및 이미지 첨부 */}
+                            {(["text", "video", "music", "audio", "code"] as ModelType[]).includes(uiSelectedType as ModelType) ? (
+                              <DropdownMenuItem
+                                onSelect={(e) => {
+                                  e.preventDefault()
+                                  fileInputRef.current?.click()
+                                }}
+                              >
+                                <Paperclip className="mr-2 size-4" />
+                                파일 및 이미지 첨부
+                              </DropdownMenuItem>
+                            ) : null}
 
+                            {/* image: 이미지 첨부 */}
+                            {uiSelectedType === "image" ? (
+                              <DropdownMenuItem
+                                onSelect={(e) => {
+                                  e.preventDefault()
+                                  imageInputRef.current?.click()
+                                }}
+                              >
+                                <ImageIcon className="mr-2 size-4" />
+                                이미지 첨부
+                              </DropdownMenuItem>
+                            ) : null}
+
+                            {/* audio / text / code: 링크추가 */}
+                            {(["text", "audio", "code"] as ModelType[]).includes(uiSelectedType as ModelType) ? (
+                              <DropdownMenuItem
+                                onSelect={(e) => {
+                                  e.preventDefault()
+                                  setIsLinkDialogOpen(true)
+                                }}
+                              >
+                                <Link2 className="mr-2 size-4" />
+                                링크추가
+                              </DropdownMenuItem>
+                            ) : null}
+                          </DropdownMenuGroup>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className="flex items-center gap-1"><span className="text-sm hidden md:block text-muted-foreground">웹검색</span><Globe className="size-4 md:hidden text-muted-foreground" /><Switch /></div>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>웹검색을 통해 최신 정보를 반영합니다.</p>
+                        </TooltipContent>
+                      </Tooltip>
+                      {/* Timeline compact: single-line prompt textarea (looks like input, switches to multi textarea when it wraps) */}
+                      {/* 타임라인 컴팩트: 한 줄 프롬프트 입력창(인풋처럼 보이며, 줄이 바뀔 때 멀티라인 텍스트에어리어로 전환됨) */}
+                      <div className={cn("flex flex-1 items-center", isCompact && compactPromptMode === "single" ? "" : "hidden")}>
+                        <textarea
+                          ref={compactSingleTextareaRef}
+                          value={prompt}
+                          rows={1}
+                          wrap="off"
+                          placeholder="프롬프트를 입력해주세요"
+                          className="w-full border-none outline-none leading-6 px-0 py-2 bg-transparent text-4 placeholder:text-muted-foreground resize-none overflow-hidden"
+                          onChange={(e) => {
+                            const v = e.currentTarget.value
+                            setPrompt(v)
+                            // If it would wrap (or contains newline), upgrade to multi textarea.
+                            const el = e.currentTarget
+                            // Defer measurement to next frame so scrollWidth reflects updated layout.
+                            window.requestAnimationFrame(() => {
+                              const shouldMulti = v.includes("\n") || el.scrollWidth > el.clientWidth + 2
+                              if (shouldMulti) {
+                                // Preserve caret position when switching to multi textarea.
+                                try {
+                                  const start = typeof el.selectionStart === "number" ? el.selectionStart : v.length
+                                  const end = typeof el.selectionEnd === "number" ? el.selectionEnd : v.length
+                                  pendingSelectionRef.current = { start, end }
+                                } catch {
+                                  pendingSelectionRef.current = { start: v.length, end: v.length }
+                                }
+                                compactUpgradedAtRef.current = Date.now()
+                                setCompactPromptMode("multi")
+                              }
+                            })
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key !== "Enter") return
+                            if ((e.nativeEvent as { isComposing?: boolean })?.isComposing) return
+                            if (isComposingRef.current) return
+
+                            // Shift+Enter: upgrade to textarea and insert newline
+                            if (e.shiftKey) {
+                              e.preventDefault()
+                              pendingCaretToEndRef.current = true
+                              pendingSelectionRef.current = null
+                              compactUpgradedAtRef.current = Date.now()
+                              setCompactPromptMode("multi")
+                              setPrompt((p) => `${p}\n`)
+                              return
+                            }
+
+                            // Enter: send
+                            e.preventDefault()
+                            void handleSend(e.currentTarget.value)
+                          }}
+                        />
+                      </div>
+                    </div>
+
+
+                    <div className="flex gap-[10px] items-center relative shrink-0" >
+                      {/* 모델 선택 드롭다운 */}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant={isCompact ? "outline" : "ghost"} className={cn(isCompact ? "h-[36px] rounded-lg gap-2 px-3" : "h-[36px] rounded-[8px] gap-2 px-4")}>
@@ -1554,12 +1963,96 @@ export function ChatInterface({
                     </DropdownMenu>
 
                     <Button className="rounded-full h-[36px] w-[36px] p-0" onClick={() => void handleSend()} disabled={!prompt.trim()}>
-                      ↑
-                    </Button>
+                      <ArrowUp className="size-4" />
+                    </Button>   
+                    </div>
+
                   </div>
+
+                  {/* Hidden pickers */}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    className="hidden"
+                    multiple
+                    onChange={(e) => {
+                      addFiles(e.currentTarget.files, "mixed")
+                      e.currentTarget.value = ""
+                    }}
+                  />
+                  <input
+                    ref={imageInputRef}
+                    type="file"
+                    className="hidden"
+                    accept="image/*"
+                    multiple
+                    onChange={(e) => {
+                      addFiles(e.currentTarget.files, "image_only")
+                      e.currentTarget.value = ""
+                    }}
+                  />
+
+                  {/* Link dialog */}
+                  <Dialog open={isLinkDialogOpen} onOpenChange={setIsLinkDialogOpen}>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>링크 추가</DialogTitle>
+                      </DialogHeader>
+                      <div className="space-y-3">
+                        <div className="space-y-1">
+                          <p className="text-sm text-muted-foreground">URL</p>
+                          <Input
+                            value={linkUrl}
+                            onChange={(e) => setLinkUrl(e.target.value)}
+                            placeholder="https://example.com"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-sm text-muted-foreground">표시 이름(선택)</p>
+                          <Input
+                            value={linkTitle}
+                            onChange={(e) => setLinkTitle(e.target.value)}
+                            placeholder="예: 참고 자료"
+                          />
+                        </div>
+                      </div>
+                      <DialogFooter>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            setIsLinkDialogOpen(false)
+                          }}
+                        >
+                          취소
+                        </Button>
+                        <Button
+                          type="button"
+                          onClick={() => {
+                            const raw = String(linkUrl || "").trim()
+                            if (!raw) return
+                            const url = /^(https?:)?\/\//i.test(raw) ? raw : `https://${raw}`
+                            setAttachments((prev) => [
+                              ...prev,
+                              { id: `link_${Date.now()}_${Math.random().toString(16).slice(2)}`, kind: "link", url, title: String(linkTitle || "").trim() || undefined },
+                            ])
+                            setLinkUrl("")
+                            setLinkTitle("")
+                            setIsLinkDialogOpen(false)
+                          }}
+                        >
+                          추가
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+ 
+                  
+                
 
                  
                 </div>
+
               )}
             </div>
 

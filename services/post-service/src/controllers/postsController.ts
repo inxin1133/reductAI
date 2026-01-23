@@ -560,12 +560,13 @@ export async function updateCategory(req: Request, res: Response) {
 }
 
 export async function deleteCategory(req: Request, res: Response) {
+  const client = await pool.connect()
   try {
     const userId = (req as AuthedRequest).userId
     const tenantId = await resolveTenantId(req as AuthedRequest)
     const { id } = req.params
 
-    const cur = await query(
+    const cur = await client.query(
       `SELECT id, category_type, author_id
        FROM board_categories
        WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
@@ -579,7 +580,7 @@ export async function deleteCategory(req: Request, res: Response) {
     }
 
     // Can delete ONLY when all pages in this category are already deleted.
-    const alive = await query(
+    const alive = await client.query(
       `SELECT COUNT(*)::int AS c
        FROM posts
        WHERE category_id = $1
@@ -592,16 +593,36 @@ export async function deleteCategory(req: Request, res: Response) {
       return res.status(400).json({ message: "Category can be deleted only when all pages are deleted" })
     }
 
-    await query(`UPDATE board_categories SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1 AND tenant_id = $2`, [
-      id,
-      tenantId,
-    ])
-    // Unassign posts in this category (best-effort)
-    await query(`UPDATE posts SET category_id = NULL WHERE category_id = $1`, [id]).catch(() => null)
+    await client.query("BEGIN")
+
+    // Mark deleted posts in this category so Trash UI can warn "restores to uncategorized".
+    await client.query(
+      `
+      UPDATE posts
+      SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{category_lost}', 'true'::jsonb, true),
+          updated_at = NOW()
+      WHERE tenant_id = $1
+        AND author_id = $2
+        AND category_id = $3
+        AND (deleted_at IS NOT NULL OR COALESCE(status,'') = 'deleted')
+      `,
+      [tenantId, userId, id]
+    )
+
+    // Hard delete category. FK on posts.category_id is ON DELETE SET NULL, so posts won't break.
+    await client.query(`DELETE FROM board_categories WHERE id = $1 AND tenant_id = $2`, [id, tenantId])
+
+    // Cleanup any previously soft-deleted categories (best-effort, keeps DB tidy).
+    await client.query(`DELETE FROM board_categories WHERE deleted_at IS NOT NULL AND tenant_id = $1`, [tenantId]).catch(() => null)
+
+    await client.query("COMMIT")
     return res.json({ ok: true })
   } catch (e) {
+    await client.query("ROLLBACK").catch(() => null)
     console.error("post-service deleteCategory error:", e)
     return res.status(500).json({ message: "Failed to delete category" })
+  } finally {
+    client.release()
   }
 }
 
@@ -803,7 +824,15 @@ export async function listDeletedPages(req: Request, res: Response) {
 
     const r = await query(
       `
-      SELECT p.id, p.parent_id, p.title, p.icon, p.deleted_at, p.updated_at
+      SELECT
+        p.id,
+        p.parent_id,
+        p.title,
+        p.icon,
+        p.category_id,
+        (COALESCE(p.metadata->>'category_lost','false')::boolean) AS category_lost,
+        p.deleted_at,
+        p.updated_at
       FROM posts p
       WHERE p.tenant_id = $1
         AND p.author_id = $2
@@ -841,7 +870,7 @@ export async function getDeletedPageDetail(req: Request, res: Response) {
     if (!pageId) return res.status(400).json({ message: "id is required" })
 
     const p = await query(
-      `SELECT id, parent_id, title, icon, status, deleted_at, updated_at
+      `SELECT id, parent_id, title, icon, category_id, metadata, status, deleted_at, updated_at
        FROM posts
        WHERE id = $1 AND tenant_id = $2 AND author_id = $3
        LIMIT 1`,
@@ -921,12 +950,14 @@ export async function restoreDeletedPage(req: Request, res: Response) {
     const { id } = req.params
     const pageId = String(id || "").trim()
     if (!pageId) return res.status(400).json({ message: "id is required" })
+    const body = (req.body || {}) as { category_id?: unknown }
+    const requestedCategoryId = typeof body.category_id === "string" && body.category_id.trim() ? body.category_id.trim() : null
 
     await client.query("BEGIN")
 
     // Ensure the page exists + is deleted (ownership enforced)
     const cur = await client.query(
-      `SELECT id, parent_id, status, deleted_at
+      `SELECT id, parent_id, category_id, metadata, status, deleted_at
        FROM posts
        WHERE id = $1 AND tenant_id = $2 AND author_id = $3
        FOR UPDATE`,
@@ -940,6 +971,20 @@ export async function restoreDeletedPage(req: Request, res: Response) {
     if (!isDeletedRow(row)) {
       await client.query("ROLLBACK")
       return res.status(400).json({ message: "Post is not deleted" })
+    }
+
+    const categoryLost = Boolean(row?.metadata?.category_lost) || row?.metadata?.category_lost === true || String(row?.metadata?.category_lost || "").toLowerCase() === "true"
+    const needsCategory = !row?.category_id || categoryLost
+    if (needsCategory) {
+      if (!requestedCategoryId) {
+        await client.query("ROLLBACK")
+        return res.status(400).json({ message: "CATEGORY_REQUIRED" })
+      }
+      // Validate access to the chosen category.
+      await assertCategoryAccess({ categoryId: requestedCategoryId, tenantId, userId })
+    } else if (requestedCategoryId) {
+      // If user explicitly picks a category even when not required, validate it too.
+      await assertCategoryAccess({ categoryId: requestedCategoryId, tenantId, userId })
     }
 
     // collect ids: ancestors + subtree
@@ -981,12 +1026,43 @@ export async function restoreDeletedPage(req: Request, res: Response) {
     if (restoreIds.length) {
       await client.query(
         `UPDATE posts
-         SET status = 'draft', deleted_at = NULL, updated_at = NOW()
+         SET status = 'draft',
+             deleted_at = NULL,
+             metadata = (COALESCE(metadata, '{}'::jsonb) - 'category_lost'),
+             updated_at = NOW()
          WHERE id = ANY($1::uuid[])
            AND tenant_id = $2
            AND author_id = $3`,
         [restoreIds, tenantId, userId]
       )
+    }
+
+    // Apply chosen category to restored "roots" (top-level items in the restored set).
+    // - If page is/was uncategorized, force user to choose and apply to roots.
+    // - Children under a parent usually don't need category_id.
+    if (requestedCategoryId) {
+      const rel = await client.query(
+        `SELECT id::text AS id, parent_id::text AS parent_id
+         FROM posts
+         WHERE id = ANY($1::uuid[]) AND tenant_id = $2 AND author_id = $3`,
+        [restoreIds, tenantId, userId]
+      )
+      const parentMap = new Map<string, string | null>()
+      for (const r of rel.rows as Array<{ id: string; parent_id: string | null }>) parentMap.set(String(r.id), r.parent_id ? String(r.parent_id) : null)
+      const idSet = new Set<string>(restoreIds)
+      const roots: string[] = []
+      for (const id of restoreIds) {
+        const pid = parentMap.get(String(id)) || null
+        if (!pid || !idSet.has(pid)) roots.push(String(id))
+      }
+      if (roots.length) {
+        await client.query(
+          `UPDATE posts
+           SET category_id = $4, updated_at = NOW()
+           WHERE id = ANY($1::uuid[]) AND tenant_id = $2 AND author_id = $3`,
+          [roots, tenantId, userId, requestedCategoryId]
+        )
+      }
     }
 
     await client.query("COMMIT")

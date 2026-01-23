@@ -515,7 +515,7 @@ async function executeHttpJsonProfile(args: {
 
     const title =
       args.purpose === "audio" || resultType.includes("audio") ? "오디오 생성" : args.purpose === "music" ? "음악 생성" : args.purpose === "video" ? "비디오 생성" : "파일 생성"
-    const blockJson = { title, summary: "생성이 완료되었습니다.", blocks: [{ type: "markdown", markdown: `${title}이(가) 생성되었습니다.` }] }
+    const blockJson = { title, summary: "생성이 완료되었습니다.", blocks: [{ type: "markdown", markdown: `${title}이 되었습니다.` }] }
 
     const key = resultType.includes("video") ? "video" : resultType.includes("audio") || args.purpose === "audio" || args.purpose === "music" ? "audio" : "binary"
     return {
@@ -536,7 +536,7 @@ async function executeHttpJsonProfile(args: {
     if (!b64) throw new Error("JSON_BASE64_MISSING_BASE64")
     const dataUrl = `data:${mime};base64,${b64}`
     const title = args.purpose === "music" ? "음악 생성" : args.purpose === "audio" ? "오디오 생성" : args.purpose === "video" ? "비디오 생성" : "파일 생성"
-    const blockJson = { title, summary: "생성이 완료되었습니다.", blocks: [{ type: "markdown", markdown: `${title}이(가) 생성되었습니다.` }] }
+    const blockJson = { title, summary: "생성이 완료되었습니다.", blocks: [{ type: "markdown", markdown: `${title}이 되었습니다.` }] }
     const key = args.purpose === "video" ? "video" : "audio"
     return { output_text: JSON.stringify(blockJson), raw: initial.json, content: { ...blockJson, [key]: { mime, data_url: dataUrl }, raw: initial.json } }
   }
@@ -582,12 +582,87 @@ async function executeHttpJsonProfile(args: {
   if (resultType === "image_urls") {
     const urlsPath = pickString(extract, "urls_path")
     const val = urlsPath ? getByPath(json, urlsPath) : []
-    const urls = Array.isArray(val) ? val.map((v) => (typeof v === "string" ? v : "")).filter(Boolean) : []
-    const blocks = urls.length
-      ? urls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
+    // Some image endpoints return objects like {url} or {b64_json} instead of a plain string array.
+    const urls: string[] = []
+    const dataUrls: string[] = []
+    function collectFromArray(arr: unknown[]) {
+      for (const v of arr) {
+        if (typeof v === "string" && v.trim()) {
+          urls.push(v.trim())
+          continue
+        }
+        if (v && typeof v === "object" && !Array.isArray(v)) {
+          const obj = v as Record<string, unknown>
+          const u =
+            (typeof obj.url === "string" && obj.url.trim()) ||
+            (typeof obj.image_url === "string" && obj.image_url.trim()) ||
+            ""
+          if (u) {
+            urls.push(String(u).trim())
+            continue
+          }
+          const b =
+            (typeof obj.b64_json === "string" && obj.b64_json) ||
+            (typeof obj.b64 === "string" && obj.b64) ||
+            (typeof obj.base64 === "string" && obj.base64) ||
+            (typeof obj.data === "string" && obj.data) ||
+            ""
+          if (b) {
+            const s = String(b).trim()
+            dataUrls.push(s.startsWith("data:image/") ? s : `data:image/png;base64,${s}`)
+          }
+        }
+      }
+    }
+
+    if (Array.isArray(val)) collectFromArray(val)
+
+    // Fallback: if urls_path produced nothing (common when it points to `data[].url` but API returns `b64_json`),
+    // try to read from root.data / root.images directly.
+    const root = json && typeof json === "object" ? (json as Record<string, unknown>) : null
+    if (!urls.length && !dataUrls.length && root) {
+      const data = Array.isArray(root.data) ? (root.data as unknown[]) : null
+      const images = Array.isArray(root.images) ? (root.images as unknown[]) : null
+      if (data) collectFromArray(data)
+      if (!urls.length && !dataUrls.length && images) collectFromArray(images)
+    }
+
+    // Prefer real URLs; if API returns base64 only, fall back to data URLs.
+    const sourceUrls = urls.length ? urls : dataUrls
+    const blocks = sourceUrls.length
+      ? sourceUrls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
       : [{ type: "markdown", markdown: "이미지 생성 결과를 받지 못했습니다." }]
     const blockJson = { title: "이미지 생성", summary: "요청한 이미지 생성 결과입니다.", blocks }
-    return { output_text: JSON.stringify(blockJson), raw: json, content: { ...blockJson, images: urls.map((u) => ({ url: u })), raw: json } }
+
+    // IMPORTANT: do NOT embed giant base64 blobs in DB content/raw.
+    // Sanitize raw by omitting b64/base64 blobs (store lengths only).
+    let rawSafe: unknown = json
+    try {
+      if (root) {
+        const safe: Record<string, unknown> = { ...root }
+        const sanitizeArray = (arr: unknown[]) =>
+          arr.map((d) => {
+            if (!d || typeof d !== "object" || Array.isArray(d)) return d
+            const obj = { ...(d as Record<string, unknown>) }
+            if (typeof obj.b64_json === "string") obj.b64_json = `<omitted:${obj.b64_json.length}>`
+            if (typeof obj.b64 === "string") obj.b64 = `<omitted:${obj.b64.length}>`
+            if (typeof obj.base64 === "string") obj.base64 = `<omitted:${obj.base64.length}>`
+            if (typeof obj.data === "string") obj.data = `<omitted:${obj.data.length}>`
+            return obj
+          })
+        if (Array.isArray(safe.data)) safe.data = sanitizeArray(safe.data as unknown[])
+        if (Array.isArray(safe.images)) safe.images = sanitizeArray(safe.images as unknown[])
+        rawSafe = safe
+      }
+    } catch {
+      rawSafe = json
+    }
+
+    return {
+      output_text: JSON.stringify(blockJson),
+      raw: rawSafe,
+      content: { ...blockJson, images: sourceUrls.map((u) => ({ url: u })), raw: rawSafe },
+    }
   }
 
   if (resultType === "audio_data_url") {
@@ -1183,20 +1258,31 @@ export async function chatRun(req: Request, res: Response) {
     }
 
     // 4) 변수 주입
-    const injectedTemplate = templateBody
-      ? (deepInjectVars(templateBody, {
-          userPrompt: prompt,
-          input: prompt,
-          prompt,
-          user_input: prompt,
-          language: finalLang,
-          shortHistory: history.shortText,
-          longSummary: history.conversationSummary || history.longText,
-          response_schema_name: responseSchema?.name || "",
-          response_schema_json: responseSchema?.schema || {},
-          response_schema_strict: responseSchema?.strict !== false,
-        }) as Record<string, unknown>)
-      : null
+    // - prompt 템플릿에서 {{input}} / {{userPrompt}} 등을 쓸 수 있게 합니다.
+    // - 또한 options 값들을 {{params_<key>}}로 노출해서 (특히 audio/image) template body에 주입할 수 있게 합니다.
+    const templateVars: Record<string, unknown> = {
+      userPrompt: prompt,
+      input: prompt,
+      prompt,
+      user_input: prompt,
+      language: finalLang,
+      shortHistory: history.shortText,
+      longSummary: history.conversationSummary || history.longText,
+      response_schema_name: responseSchema?.name || "",
+      response_schema_json: responseSchema?.schema || {},
+      response_schema_strict: responseSchema?.strict !== false,
+    }
+    for (const [k, v] of Object.entries(mergedOptions || {})) {
+      if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean") continue
+      const safeKey = String(k).replace(/[^a-zA-Z0-9_]/g, "_")
+      if (!safeKey) continue
+      if (typeof v === "string" && safeKey === "size") {
+        templateVars[`params_${safeKey}`] = v.trim().replace(/[×*]/g, "x")
+        continue
+      }
+      templateVars[`params_${safeKey}`] = String(v)
+    }
+    const injectedTemplate = templateBody ? (deepInjectVars(templateBody, templateVars) as Record<string, unknown>) : null
 
     // 5) 안전 조정 (min/max)
     const modelMaxOut = row.max_output_tokens ? Number(row.max_output_tokens) : null
@@ -1343,22 +1429,39 @@ export async function chatRun(req: Request, res: Response) {
       const blockJson = { title: "이미지 생성", summary: "요청한 이미지 생성 결과입니다.", blocks }
       out = {
         output_text: JSON.stringify(blockJson),
-        raw: { provider: "openai", kind: "image", model: modelApiId, count: sourceUrls.length },
-        content: { ...blockJson, images: sourceUrls.map((u) => ({ url: u })), raw: { provider: "openai", kind: "image", model: modelApiId, count: sourceUrls.length } },
+        // NOTE: keep a safe(raw) payload from provider client for debugging (it omits huge base64 strings).
+        raw: r.raw,
+        content: { ...blockJson, images: sourceUrls.map((u) => ({ url: u })), raw: r.raw },
       }
       } else if (mt === "audio" || mt === "music") {
       if (providerKey !== "openai") {
         return res.status(400).json({ message: `${mt} is not supported for provider=${providerKey} yet.` })
       }
-      const voice = typeof mergedOptions?.voice === "string" ? mergedOptions.voice : undefined
-      const formatRaw = typeof mergedOptions?.format === "string" ? mergedOptions.format.trim().toLowerCase() : ""
+      // Allow prompt_templates.body to override audio request fields.
+      const tmpl = injectedTemplate && typeof injectedTemplate === "object" && !Array.isArray(injectedTemplate) ? (injectedTemplate as Record<string, unknown>) : null
+      const inputFromTemplate = tmpl && typeof tmpl.input === "string" && tmpl.input.trim() ? tmpl.input.trim() : ""
+
+      const voice =
+        (tmpl && typeof tmpl.voice === "string" && tmpl.voice.trim() ? tmpl.voice.trim() : "") ||
+        (typeof mergedOptions?.voice === "string" ? mergedOptions.voice : "") ||
+        undefined
+
+      const formatRaw =
+        ((tmpl && typeof tmpl.format === "string" ? tmpl.format : "") || (typeof mergedOptions?.format === "string" ? mergedOptions.format : "") || "")
+          .trim()
+          .toLowerCase()
       const format: AudioFormat = isAudioFormat(formatRaw) ? formatRaw : "mp3"
-      const speed = typeof mergedOptions?.speed === "number" ? mergedOptions.speed : undefined
+      const speed =
+        typeof (tmpl as Record<string, unknown> | null)?.speed === "number"
+          ? Number((tmpl as Record<string, unknown>).speed)
+          : typeof mergedOptions?.speed === "number"
+            ? mergedOptions.speed
+            : undefined
       const r = await openaiTextToSpeech({
         apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
         apiKey: auth.apiKey,
         model: modelApiId,
-        input: prompt,
+        input: inputFromTemplate || prompt,
         voice,
         format,
         speed,

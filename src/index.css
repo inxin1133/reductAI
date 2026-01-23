@@ -82,6 +82,36 @@ body {
 .ProseMirror p {
   margin: 0.25rem 0;
 }
+
+/* ==========================================
+   ProseMirror: spacing tweaks for image blocks
+   - Our image node is a block node (`src/editor/nodes/image.ts`) so it renders as a top-level <img>
+     (not inside <p>). In the viewer we wrap it with `.pm-img-wrap`.
+   - Therefore :has(p > img) won't apply. Use sibling / direct-child selectors instead.
+   ========================================== */
+
+/* Remove the "top blank space" above the first block (often caused by heading default margins) */
+.pm-viewer .ProseMirror > :first-child {
+  margin-top: 0 !important; /* tweak me */
+}
+
+/* Normalize heading margins inside ProseMirror (so titles don't create big gaps) */
+.pm-viewer .ProseMirror h1,
+.pm-viewer .ProseMirror h2,
+.pm-viewer .ProseMirror h3 {
+  margin: 0.35rem 0; /* tweak me */
+}
+
+/* Control spacing between text block and following image block */
+.pm-viewer .ProseMirror p + .pm-img-wrap,
+.pm-viewer .ProseMirror p + img {
+  margin-top: 0.25rem; /* tweak me (space ABOVE image) */
+}
+
+/* Ensure wrapped images behave like block elements and can take margins predictably */
+.pm-viewer .ProseMirror .pm-img-wrap {
+  display: block;
+}
 .ProseMirror ul {
   padding-left: 1.5rem;
   margin: 0.25rem 0;
@@ -125,6 +155,58 @@ body {
   display: block;
   width: 100%;
   max-width: 100%;
+}
+
+/* Audio player: ensure it can actually expand to container width (some UAs clamp controls width). */
+/* 오디오 플레이어: 일부 브라우저(User Agent)에서 컨트롤 너비를 제한할 수 있으므로 컨테이너 너비까지 확장될 수 있도록 설정 */
+.pm-viewer .ProseMirror audio {
+  width: 700px !important;  
+  min-width: 300px !important;
+}
+
+/* =========================
+   ProseMirror image download overlay
+   ========================= */
+.pm-viewer .pm-img-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;  
+}
+.pm-viewer .pm-img-wrap > img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 12px;
+}
+.pm-viewer .pm-img-download {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid oklch(0.922 0 0);
+  background: color-mix(in oklch, oklch(1 0 0) 75%, transparent);
+  color: oklch(0.205 0 0);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.pm-viewer .pm-img-download svg {
+  width: 18px;
+  height: 18px;
+}
+.pm-viewer .pm-img-wrap:hover .pm-img-download {
+  opacity: 1;
+  pointer-events: auto;
+}
+.dark .pm-viewer .pm-img-download {
+  border-color: oklch(1 0 0 / 10%);
+  background: color-mix(in oklch, oklch(0.16 0 0) 70%, transparent);
+  color: oklch(0.985 0 0);
 }
 /* UNUSED (migrated to Tailwind classes in node/mark toDOM for dark-mode correctness)
 .pm-mention { ... }

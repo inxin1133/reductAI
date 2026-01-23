@@ -35,6 +35,24 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
@@ -498,17 +516,39 @@ export function Sidebar({ className }: SidebarProps) {
     }
   }
 
-  const createPersonalCategory = async () => {
+  const [createCategoryOpen, setCreateCategoryOpen] = useState(false)
+  const [createCategoryType, setCreateCategoryType] = useState<"personal" | "team">("personal")
+  const [createCategoryName, setCreateCategoryName] = useState("")
+  const [createCategoryIconChoice, setCreateCategoryIconChoice] = useState<IconChoice | null>(null)
+  const [createCategoryTab, setCreateCategoryTab] = useState<"emoji" | "icon">("emoji")
+  const [createCategoryBusy, setCreateCategoryBusy] = useState(false)
+
+  const openCreateCategoryDialog = (type: "personal" | "team") => {
+    setCreateCategoryType(type)
+    setCreateCategoryName("")
+    setCreateCategoryIconChoice(null)
+    setCreateCategoryTab("emoji")
+    setCreateCategoryOpen(true)
+  }
+
+  const performCreateCategory = async (args: { type: "personal" | "team"; name: string; icon: IconChoice }) => {
     const h = authHeaders()
     if (!h.Authorization) {
       alert("로그인이 필요합니다.")
       return
     }
     try {
+      const nextName = String(args.name || "").trim()
+      if (!nextName) return
+      const nextIcon = encodeIcon(args.icon)
       const r = await fetch("/api/posts/categories", {
         method: "POST",
         headers: { ...h, "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "New category" }),
+        body: JSON.stringify({
+          name: nextName,
+          icon: nextIcon,
+          ...(args.type === "team" ? { type: "team_page" } : null),
+        }),
       })
       if (!r.ok) {
         const msg = await r.text().catch(() => "")
@@ -518,8 +558,13 @@ export function Sidebar({ className }: SidebarProps) {
       const cat = (await r.json().catch(() => null)) as PersonalCategory | null
       if (!cat?.id) return
       // Insert at top (before the default "나의 페이지" entry)
-      setPersonalCategories((prev) => [cat, ...prev])
-      if (!isPersonalOpen) setIsPersonalOpen(true)
+      if (args.type === "personal") {
+        setPersonalCategories((prev) => [cat, ...prev])
+        if (!isPersonalOpen) setIsPersonalOpen(true)
+      } else {
+        setTeamCategories((prev) => [cat as unknown as TeamCategory, ...prev])
+        if (!isTeamOpen) setIsTeamOpen(true)
+      }
     } catch {
       // ignore
     }
@@ -602,26 +647,143 @@ export function Sidebar({ className }: SidebarProps) {
     }
   }
 
-  const createTeamCategory = async () => {
-    const h = authHeaders()
-    if (!h.Authorization) return
-    // Shared categories are allowed for team + enterprise (exclude personal).
-    if (tenantType === "personal") return
-    try {
-      const r = await fetch("/api/posts/categories", {
-        method: "POST",
-        headers: { ...h, "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "New category", type: "team_page" }),
-      })
-      if (!r.ok) return
-      const cat = (await r.json().catch(() => null)) as TeamCategory | null
-      if (!cat?.id) return
-      setTeamCategories((prev) => [cat, ...prev])
-      if (!isTeamOpen) setIsTeamOpen(true)
-    } catch {
-      // ignore
-    }
-  }
+  const CreateCategoryDialog = (
+    <Dialog
+      open={createCategoryOpen}
+      onOpenChange={(o) => {
+        if (createCategoryBusy) return
+        setCreateCategoryOpen(o)
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>
+            카테고리 추가{createCategoryType === "team" ? " (팀/그룹)" : " (개인)"}
+          </DialogTitle>
+          <DialogDescription>카테고리 이름과 아이콘/이모지를 설정한 뒤 추가할 수 있어요.</DialogDescription>
+        </DialogHeader>
+
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <div className="size-9 rounded-md border border-border flex items-center justify-center bg-muted/40 shrink-0">
+              {createCategoryIconChoice?.kind === "emoji" ? (
+                <span className="text-[18px] leading-none">{createCategoryIconChoice.value}</span>
+              ) : createCategoryIconChoice?.kind === "lucide" ? (
+                (() => {
+                  const IconCmp = LUCIDE_PRESET_MAP[createCategoryIconChoice.value] || Share2
+                  return <IconCmp className="size-4" />
+                })()
+              ) : (
+                <Plus className="size-4 text-muted-foreground" />
+              )}
+            </div>
+            <Input
+              autoFocus
+              placeholder="카테고리 이름"
+              value={createCategoryName}
+              onChange={(e) => setCreateCategoryName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter") return
+                e.preventDefault()
+                const name = createCategoryName.trim()
+                const icon = createCategoryIconChoice
+                if (!name || !icon || createCategoryBusy) return
+                setCreateCategoryBusy(true)
+                void performCreateCategory({ type: createCategoryType, name, icon }).finally(() => {
+                  setCreateCategoryBusy(false)
+                  setCreateCategoryOpen(false)
+                })
+              }}
+            />
+          </div>
+
+          <Tabs value={createCategoryTab} onValueChange={(v) => setCreateCategoryTab(v === "icon" ? "icon" : "emoji")}>
+            <TabsList className="w-full">
+              <TabsTrigger value="emoji" className="flex-1">
+                이모지
+              </TabsTrigger>
+              <TabsTrigger value="icon" className="flex-1">
+                아이콘
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="emoji" className="mt-3">
+              <div className="rounded-md border border-border overflow-hidden">
+                <EmojiPicker
+                  theme={Theme.AUTO}
+                  height={320}
+                  width="100%"
+                  onEmojiClick={(d: EmojiClickData) => {
+                    const native = typeof d?.emoji === "string" ? d.emoji : ""
+                    if (!native) return
+                    setCreateCategoryIconChoice({ kind: "emoji", value: native })
+                  }}
+                />
+              </div>
+            </TabsContent>
+            <TabsContent value="icon" className="mt-3">
+              <div className="grid grid-cols-7 gap-1">
+                {LUCIDE_PRESETS.map((it) => {
+                  const selected = createCategoryIconChoice?.kind === "lucide" && createCategoryIconChoice.value === it.key
+                  return (
+                    <button
+                      key={it.key}
+                      type="button"
+                      className={cn(
+                        "h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center",
+                        selected ? "bg-accent" : ""
+                      )}
+                      onClick={() => setCreateCategoryIconChoice({ kind: "lucide", value: it.key })}
+                      title={it.label}
+                      aria-label={it.label}
+                    >
+                      <it.Icon className="size-4" />
+                    </button>
+                  )
+                })}
+              </div>
+            </TabsContent>
+          </Tabs>
+
+          {!createCategoryName.trim() || !createCategoryIconChoice ? (
+            <div className="text-xs text-destructive">이름과 아이콘/이모지를 모두 선택해야 합니다.</div>
+          ) : null}
+        </div>
+
+        <DialogFooter>
+          <button
+            type="button"
+            className="h-9 px-3 rounded-md border border-border hover:bg-accent text-sm"
+            onClick={() => setCreateCategoryOpen(false)}
+            disabled={createCategoryBusy}
+          >
+            취소
+          </button>
+          <button
+            type="button"
+            className={cn(
+              "h-9 px-3 rounded-md text-sm",
+              !createCategoryName.trim() || !createCategoryIconChoice || createCategoryBusy
+                ? "bg-muted text-muted-foreground cursor-not-allowed"
+                : "bg-primary text-primary-foreground hover:bg-primary/90"
+            )}
+            disabled={!createCategoryName.trim() || !createCategoryIconChoice || createCategoryBusy}
+            onClick={() => {
+              const name = createCategoryName.trim()
+              const icon = createCategoryIconChoice
+              if (!name || !icon) return
+              setCreateCategoryBusy(true)
+              void performCreateCategory({ type: createCategoryType, name, icon }).finally(() => {
+                setCreateCategoryBusy(false)
+                setCreateCategoryOpen(false)
+              })
+            }}
+          >
+            추가
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 
   useEffect(() => {
     if (!isOpen) return
@@ -650,20 +812,81 @@ export function Sidebar({ className }: SidebarProps) {
     emitCategoryUpdated({ id: String(args.id), name: next })
   }
 
-  const deleteCategory = async (args: { type: "personal" | "team"; id: string }) => {
+  const [deleteCategoryTarget, setDeleteCategoryTarget] = useState<{ type: "personal" | "team"; id: string; name: string } | null>(null)
+  const [deleteCategoryBusy, setDeleteCategoryBusy] = useState(false)
+
+  const performDeleteCategory = async (args: { type: "personal" | "team"; id: string }) => {
     const h = authHeaders()
     if (!h.Authorization) return
-    if (!confirm("카테고리를 삭제할까요? (카테고리 내 모든 페이지가 삭제된 상태여야 합니다)")) return
     const r = await fetch(`/api/posts/categories/${encodeURIComponent(args.id)}`, { method: "DELETE", headers: h }).catch(() => null)
-    if (!r) return
+    if (!r) {
+      alert("카테고리 삭제에 실패했습니다.")
+      return
+    }
     if (!r.ok) {
+      // If there are still pages inside this category, the server responds 400.
+      if (r.status === 400) {
+        alert("페이지가 남아 있어 카테고리를 삭제할 수 없습니다. 먼저 페이지를 지워주세요.")
+        return
+      }
       const msg = await r.text().catch(() => "")
       alert(msg || "카테고리 삭제에 실패했습니다.")
       return
     }
-    if (args.type === "personal") setPersonalCategories((prev) => prev.filter((c) => c.id !== args.id))
-    else setTeamCategories((prev) => prev.filter((c) => c.id !== args.id))
+    const deletedId = String(args.id)
+    const wasActive = isPostsActive && activeCategoryId === deletedId
+
+    // Remove locally first
+    let nextId = ""
+    if (args.type === "personal") {
+      const nextList = personalCategories.filter((c) => String(c.id) !== deletedId)
+      setPersonalCategories(nextList)
+      nextId = nextList.length ? String(nextList[0]?.id || "") : ""
+    } else {
+      const nextList = teamCategories.filter((c) => String(c.id) !== deletedId)
+      setTeamCategories(nextList)
+      nextId = nextList.length ? String(nextList[0]?.id || "") : ""
+    }
+
+    // Notify PostEditorPage (and others) so they don't keep rendering a deleted category.
+    emitCategoryUpdated({ id: deletedId, deleted: true })
+
+    // If the user is currently viewing the deleted category, auto-navigate to the top category.
+    if (wasActive) {
+      if (nextId) navigate(`/posts?category=${encodeURIComponent(nextId)}`, { replace: true })
+      else navigate(`/posts/new/edit`, { replace: true })
+    }
   }
+
+  const CategoryDeleteDialog = (
+    <AlertDialog open={Boolean(deleteCategoryTarget)} onOpenChange={(o) => !o && setDeleteCategoryTarget(null)}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>카테고리를 삭제할까요?</AlertDialogTitle>
+          <AlertDialogDescription>
+            카테고리를 삭제하려면 카테고리 안의 페이지가 모두 삭제된 상태여야 합니다.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={deleteCategoryBusy}>취소</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={deleteCategoryBusy}
+            onClick={() => {
+              const t = deleteCategoryTarget
+              if (!t) return
+              setDeleteCategoryBusy(true)
+              void performDeleteCategory({ type: t.type, id: t.id }).finally(() => {
+                setDeleteCategoryBusy(false)
+                setDeleteCategoryTarget(null)
+              })
+            }}
+          >
+            삭제
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
 
   const reorder = async (args: { type: "personal" | "team"; orderedIds: string[] }) => {
     const h = authHeaders()
@@ -810,6 +1033,8 @@ export function Sidebar({ className }: SidebarProps) {
           </PopoverTrigger>
           <ProfilePopoverContent />
         </Popover>
+        {CategoryDeleteDialog}
+        {CreateCategoryDialog}
       </div>
     )
   }
@@ -893,7 +1118,7 @@ export function Sidebar({ className }: SidebarProps) {
                    onClick={(e) => {
                      e.preventDefault()
                      e.stopPropagation()
-                     void createPersonalCategory()
+                    openCreateCategoryDialog("personal")
                    }}
                  >
                    <Plus className="size-4" />
@@ -958,7 +1183,7 @@ export function Sidebar({ className }: SidebarProps) {
                    onClick={(e) => {
                      e.preventDefault()
                      e.stopPropagation()
-                     void createTeamCategory()
+                    openCreateCategoryDialog("team")
                    }}
                  >
                    <Plus className="size-4" />
@@ -1033,6 +1258,8 @@ export function Sidebar({ className }: SidebarProps) {
               </div>
            </div>
         </div>
+        {CategoryDeleteDialog}
+        {CreateCategoryDialog}
       </div>
     )
   }
@@ -1153,7 +1380,7 @@ export function Sidebar({ className }: SidebarProps) {
                   onClick={(e) => {
                     e.preventDefault()
                     e.stopPropagation()
-                    void createPersonalCategory()
+                    openCreateCategoryDialog("personal")
                   }}
                 >
                     <Plus className="size-full" />
@@ -1496,7 +1723,7 @@ export function Sidebar({ className }: SidebarProps) {
                             className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm text-destructive outline-none hover:bg-accent focus:bg-accent"
                             onClick={(e) => {
                               e.stopPropagation()
-                              void deleteCategory({ type: "personal", id: c.id })
+                              setDeleteCategoryTarget({ type: "personal", id: String(c.id), name: String(c.name || "") })
                             }}
                           >
                             <Trash2 className="size-4 mr-2" />
@@ -1532,7 +1759,7 @@ export function Sidebar({ className }: SidebarProps) {
                   onClick={(e) => {
                     e.preventDefault()
                     e.stopPropagation()
-                    void createTeamCategory()
+                    openCreateCategoryDialog("team")
                   }}
                 >
                   <Plus className="size-full" />
@@ -1871,7 +2098,7 @@ export function Sidebar({ className }: SidebarProps) {
                               className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm text-destructive outline-none hover:bg-accent focus:bg-accent"
                               onClick={(e) => {
                                 e.stopPropagation()
-                                void deleteCategory({ type: "team", id: c.id })
+                                setDeleteCategoryTarget({ type: "team", id: String(c.id), name: String(c.name || "") })
                               }}
                             >
                               <Trash2 className="size-4 mr-2" />
@@ -1934,7 +2161,7 @@ export function Sidebar({ className }: SidebarProps) {
                   onClick={(e) => {
                     e.preventDefault()
                     e.stopPropagation()
-                    void createPersonalCategory()
+                    openCreateCategoryDialog("personal")
                   }}
                 >
                   <Plus className="size-4" />
@@ -2025,7 +2252,9 @@ export function Sidebar({ className }: SidebarProps) {
                     onClick={(e) => {
                       e.preventDefault()
                       e.stopPropagation()
-                      void createTeamCategory()
+                    // Shared categories are allowed for team + enterprise (exclude personal).
+                    if (tenantType === "personal") return
+                    openCreateCategoryDialog("team")
                     }}
                   >
                     <Plus className="size-4" />
@@ -2115,6 +2344,8 @@ export function Sidebar({ className }: SidebarProps) {
            {isOpen && <span className="text-sm text-sidebar-foreground">팀/그룹 관리</span>}
          </div>
       </div>
+      {CategoryDeleteDialog}
+      {CreateCategoryDialog}
     </div>
   )
 }

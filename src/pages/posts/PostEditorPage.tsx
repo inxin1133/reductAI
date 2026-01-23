@@ -441,6 +441,22 @@ export default function PostEditorPage() {
       if (!id) return
       if (!categoryId || String(categoryId) !== id) return
 
+      // If the current category was deleted, auto-navigate to the top category.
+      if (Boolean(d?.deleted)) {
+        const h = authHeaders()
+        if (!h.Authorization) return
+        void Promise.all([
+          fetch("/api/posts/categories/mine", { headers: h }).catch(() => null),
+          fetch("/api/posts/categories/mine?type=team_page", { headers: h }).catch(() => null),
+        ]).then(async ([pRes, tRes]) => {
+          const personal: MyPageCategory[] = pRes && pRes.ok ? ((await pRes.json().catch(() => [])) as MyPageCategory[]) : []
+          const team: MyPageCategory[] = tRes && tRes.ok ? ((await tRes.json().catch(() => [])) as MyPageCategory[]) : []
+          const nextId = (Array.isArray(personal) && personal.length ? String(personal[0]?.id || "") : "") || (Array.isArray(team) && team.length ? String(team[0]?.id || "") : "")
+          navigate(nextId ? `/posts?category=${encodeURIComponent(nextId)}` : `/posts/new/edit`, { replace: true })
+        })
+        return
+      }
+
       const nextName = typeof d.name === "string" ? d.name : undefined
       const nextIcon = "icon" in (d || {}) ? (d.icon as string | null | undefined) : undefined
 
@@ -460,7 +476,7 @@ export default function PostEditorPage() {
     }
     window.addEventListener("reductai:categoryUpdated", onUpdated as EventListener)
     return () => window.removeEventListener("reductai:categoryUpdated", onUpdated as EventListener)
-  }, [categoryId, categoryRenameOpen])
+  }, [categoryId, categoryRenameOpen, navigate])
 
   const saveCategory = useCallback(
     async (args: { id: string; patch: { name?: string; icon?: string | null } }) => {
@@ -548,9 +564,18 @@ export default function PostEditorPage() {
         const pMatch = Array.isArray(personal) ? personal.find((c) => String(c.id) === pid) : undefined
         const tMatch = Array.isArray(team) ? team.find((c) => String(c.id) === pid) : undefined
         const found = pMatch || tMatch
-        const type = tMatch ? "team" : pMatch ? "personal" : "unknown"
-        const name = found && typeof found.name === "string" ? found.name : "카테고리"
-        const icon = found && typeof found.icon === "string" ? found.icon : found && found.icon === null ? null : null
+        if (!found) {
+          // Category doesn't exist (probably deleted). Redirect to the top available category.
+          const nextId =
+            (Array.isArray(personal) && personal.length ? String(personal[0]?.id || "") : "") ||
+            (Array.isArray(team) && team.length ? String(team[0]?.id || "") : "")
+          if (!cancelled) setActiveCategory(null)
+          if (!cancelled) navigate(nextId ? `/posts?category=${encodeURIComponent(nextId)}` : `/posts/new/edit`, { replace: true })
+          return
+        }
+        const type = tMatch ? "team" : "personal"
+        const name = typeof found.name === "string" ? found.name : "카테고리"
+        const icon = typeof found.icon === "string" ? found.icon : found.icon === null ? null : null
         if (!cancelled) setActiveCategory({ id: pid, type, name, icon })
       } catch {
         // ignore
@@ -560,7 +585,7 @@ export default function PostEditorPage() {
     return () => {
       cancelled = true
     }
-  }, [categoryId])
+  }, [categoryId, navigate])
 
   // Tree row actions (rename / duplicate / delete / add child)
   const [renameOpen, setRenameOpen] = useState(false)
@@ -2396,6 +2421,8 @@ export default function PostEditorPage() {
     )
   }
 
+  const isEmptyPagePlaceholder = isNew || !postId
+
   return (
     <>
     <AppShell
@@ -2666,7 +2693,21 @@ export default function PostEditorPage() {
               postId: <span className="font-mono">{postId}</span> · version: {serverVersion}
             </div>
 
-            {!isNew ? (
+            {isEmptyPagePlaceholder ? (
+              <div className="mt-3">
+                <div className="relative flex items-center gap-2 select-none">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-muted/30 opacity-70">
+                    <File className="size-5 text-muted-foreground" />
+                  </div>
+                  <div
+                    className="w-full text-3xl font-bold text-muted-foreground truncate"
+                    aria-label="빈 페이지 제목"
+                  >
+                    New page
+                  </div>
+                </div>
+              </div>
+            ) : (
               <div className="mt-3">
                 {isDeletedPage ? (
                   <div className="mb-2 text-sm font-semibold text-red-600">Deleted Page</div>
@@ -2874,7 +2915,7 @@ export default function PostEditorPage() {
                   )
                 })()}
               </div>
-            ) : null}
+            )}
           </div>
 
           {error ? (
@@ -2897,11 +2938,16 @@ export default function PostEditorPage() {
             </div>
           ) : (
             <div className="">
-              {isNew ? (
+              {isEmptyPagePlaceholder ? (
                 <div className="space-y-3">
-                  <Skeleton className="h-8 w-48" />
-                  <Skeleton className="h-10 w-full" />
-                  <Skeleton className="h-[420px] w-full" />
+                  <div className="text-sm text-muted-foreground">
+                    페이지가 없습니다. 왼쪽에서 “+”로 새 페이지를 만들거나, 페이지를 선택하세요.
+                  </div>
+                  <div className="space-y-3 opacity-60 pointer-events-none select-none">
+                    <Skeleton className="h-8 w-48" />
+                    <Skeleton className="h-10 w-full" />
+                    <Skeleton className="h-[420px] w-full" />
+                  </div>
                   <div className="pt-2">
                     <Button onClick={createNewFromNav}>
                       <Plus className="size-4 mr-2" />

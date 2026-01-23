@@ -16,6 +16,15 @@ import {
 import { cn } from "@/lib/utils"
 import { useNavigate } from "react-router-dom"
 import { ProseMirrorViewer } from "@/components/post/ProseMirrorViewer"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 type DeletedThreadRow = {
   id: string
@@ -27,10 +36,19 @@ type DeletedThreadRow = {
 type DeletedPostRow = {
   id: string
   parent_id: string | null
+  category_id?: string | null
+  category_lost?: boolean
   title: string
   icon?: string | null
   deleted_at?: string | null
   updated_at: string
+}
+
+type CategoryRow = {
+  id: string
+  name: string
+  icon?: string | null
+  slug?: string
 }
 
 const TIMELINE_API_BASE = "/api/ai/timeline"
@@ -54,6 +72,10 @@ export default function TrashPage() {
     children?: DeletedPostRow[]
   } | null>(null)
   const [purgeConfirmOpen, setPurgeConfirmOpen] = React.useState(false)
+  const [restoreConfirmTarget, setRestoreConfirmTarget] = React.useState<DeletedPostRow | null>(null)
+  const [restoreCategoryId, setRestoreCategoryId] = React.useState<string>("")
+  const [personalCategories, setPersonalCategories] = React.useState<CategoryRow[]>([])
+  const [teamCategories, setTeamCategories] = React.useState<CategoryRow[]>([])
 
   const authHeaders = React.useCallback((): HeadersInit => {
     const token = localStorage.getItem("token")
@@ -137,6 +159,27 @@ export default function TrashPage() {
     void fetchDeletedPosts()
   }, [fetchDeletedPosts, tab])
 
+  const fetchCategories = React.useCallback(async () => {
+    try {
+      const [pRes, tRes] = await Promise.all([
+        fetch(`${POSTS_API_BASE}/categories/mine`, { headers: { ...authHeaders() } }),
+        fetch(`${POSTS_API_BASE}/categories/mine?type=team_page`, { headers: { ...authHeaders() } }),
+      ])
+      const pRows = pRes.ok ? ((await pRes.json().catch(() => [])) as CategoryRow[]) : []
+      const tRows = tRes.ok ? ((await tRes.json().catch(() => [])) as CategoryRow[]) : []
+      setPersonalCategories(Array.isArray(pRows) ? pRows : [])
+      setTeamCategories(Array.isArray(tRows) ? tRows : [])
+    } catch {
+      setPersonalCategories([])
+      setTeamCategories([])
+    }
+  }, [authHeaders])
+
+  React.useEffect(() => {
+    if (tab !== "pages") return
+    void fetchCategories()
+  }, [fetchCategories, tab])
+
   React.useEffect(() => {
     if (tab !== "pages") return
     if (!selectedPostId) return
@@ -169,9 +212,17 @@ export default function TrashPage() {
   )
 
   const restorePost = React.useCallback(
-    async (id: string) => {
-      const res = await fetch(`${POSTS_API_BASE}/trash/${id}/restore`, { method: "POST", headers: { ...authHeaders() } })
-      if (!res.ok) throw new Error("POST_RESTORE_FAILED")
+    async (id: string, categoryId?: string) => {
+      const body = categoryId ? JSON.stringify({ category_id: categoryId }) : null
+      const res = await fetch(`${POSTS_API_BASE}/trash/${id}/restore`, {
+        method: "POST",
+        headers: { ...authHeaders(), ...(body ? { "Content-Type": "application/json" } : {}) },
+        body: body || undefined,
+      })
+      if (!res.ok) {
+        const t = await res.text().catch(() => "")
+        throw new Error(t || "POST_RESTORE_FAILED")
+      }
       // remove from trash list
       setDeletedPosts((prev) => prev.filter((p) => p.id !== id))
       // clear detail if it was the selected one
@@ -183,6 +234,13 @@ export default function TrashPage() {
     },
     [authHeaders, selectedPostId]
   )
+
+  const shouldRequireCategoryChoice = React.useCallback((p: DeletedPostRow | null | undefined) => {
+    if (!p) return false
+    if (p.category_lost === true) return true
+    // If category_id is null, we must choose a category to restore into.
+    return p.category_id === null
+  }, [])
 
   const purgePost = React.useCallback(
     async (id: string) => {
@@ -291,6 +349,7 @@ export default function TrashPage() {
                       <div className="divide-y divide-border">
                         {deletedPosts.map((p) => {
                           const active = String(p.id) === String(selectedPostId)
+                          const needsCategory = shouldRequireCategoryChoice(p)
                           return (
                             <button
                               key={p.id}
@@ -302,6 +361,9 @@ export default function TrashPage() {
                               onClick={() => setSelectedPostId(String(p.id))}
                             >
                               <div className="text-sm font-medium truncate">{p.title || "제목 없음"}</div>
+                              {needsCategory ? (
+                                <div className="text-xs text-destructive mt-1 truncate">복원 시 카테고리를 선택해야 합니다.</div>
+                              ) : null}
                               <div className="text-xs text-muted-foreground truncate">{p.updated_at}</div>
                             </button>
                           )
@@ -323,6 +385,9 @@ export default function TrashPage() {
                           {postDetail.ancestors.map((a) => a.title || "제목 없음").join(" / ")}
                         </div>
                       ) : null}
+                      {shouldRequireCategoryChoice(postDetail?.post) ? (
+                        <div className="text-xs text-destructive mt-1 truncate">복원 시 카테고리를 선택해야 합니다.</div>
+                      ) : null}
                     </div>
                     <div className="shrink-0 flex items-center gap-2">
                       <Button
@@ -330,6 +395,13 @@ export default function TrashPage() {
                         onClick={() => {
                           const id = selectedPostId
                           if (!id) return
+                          // If category is missing, force choosing a category before restore.
+                          const target = postDetail?.post
+                          if (shouldRequireCategoryChoice(target)) {
+                            setRestoreConfirmTarget(target as DeletedPostRow)
+                            setRestoreCategoryId("")
+                            return
+                          }
                           void restorePost(id)
                         }}
                         disabled={!selectedPostId}
@@ -402,6 +474,62 @@ export default function TrashPage() {
                         }}
                       >
                         삭제
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+
+                {/* Restore confirm when category is lost */}
+                <AlertDialog open={Boolean(restoreConfirmTarget)} onOpenChange={(o) => !o && setRestoreConfirmTarget(null)}>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>카테고리를 선택해 복원할까요?</AlertDialogTitle>
+                      <AlertDialogDescription>이 페이지는 복원 시 카테고리를 반드시 선택해야 합니다.</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <div className="mt-2">
+                      <Select value={restoreCategoryId} onValueChange={setRestoreCategoryId}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="카테고리 선택" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {personalCategories.length ? (
+                            <SelectGroup>
+                              <SelectLabel>개인 페이지</SelectLabel>
+                              {personalCategories.map((c) => (
+                                <SelectItem key={c.id} value={String(c.id)}>
+                                  {c.name || "제목 없음"}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          ) : null}
+                          {teamCategories.length ? (
+                            <SelectGroup>
+                              <SelectLabel>팀/그룹 페이지</SelectLabel>
+                              {teamCategories.map((c) => (
+                                <SelectItem key={c.id} value={String(c.id)}>
+                                  {c.name || "제목 없음"}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          ) : null}
+                          {!personalCategories.length && !teamCategories.length ? (
+                            <div className="px-2 py-2 text-xs text-muted-foreground">복원할 카테고리가 없습니다. 먼저 카테고리를 만들어주세요.</div>
+                          ) : null}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>취소</AlertDialogCancel>
+                      <AlertDialogAction
+                        disabled={!restoreCategoryId}
+                        onClick={() => {
+                          const t = restoreConfirmTarget
+                          if (!t) return
+                          void restorePost(String(t.id), restoreCategoryId)
+                          setRestoreConfirmTarget(null)
+                        }}
+                      >
+                        복원
                       </AlertDialogAction>
                     </AlertDialogFooter>
                   </AlertDialogContent>
