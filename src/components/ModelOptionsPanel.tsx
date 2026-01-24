@@ -1,16 +1,17 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
 
 type EnumSpec = { type: "enum"; values: string[]; label?: string; description?: string }
-type IntSpec = { type: "int"; min?: number; max?: number; label?: string; description?: string }
+type IntSpec = { type: "int"; min?: number; max?: number; step?: number; label?: string; description?: string }
 type NumberSpec = { type: "number"; min?: number; max?: number; step?: number; label?: string; description?: string }
-type OptionSpec = EnumSpec | IntSpec | NumberSpec
+type StringSpec = { type: "string"; label?: string; description?: string; placeholder?: string }
+type OptionSpec = EnumSpec | IntSpec | NumberSpec | StringSpec
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return Boolean(v) && typeof v === "object" && !Array.isArray(v)
@@ -56,7 +57,7 @@ function normalizeOptions(v: unknown): Record<string, OptionSpec> {
   for (const [k, raw] of Object.entries(v)) {
     if (!isRecord(raw)) continue
     const type = asString(raw.type)
-    if (type !== "enum" && type !== "int" && type !== "number") continue
+    if (type !== "enum" && type !== "int" && type !== "number" && type !== "string") continue
 
     const label = asString(raw.label) ?? undefined
     const description = asString(raw.description) ?? undefined
@@ -68,11 +69,16 @@ function normalizeOptions(v: unknown): Record<string, OptionSpec> {
       out[k] = { type: "enum", values, label, description }
       continue
     }
+    if (type === "string") {
+      const placeholder = asString(raw.placeholder) ?? undefined
+      out[k] = { type: "string", label, description, placeholder }
+      continue
+    }
 
     const min = asNumber(raw.min) ?? undefined
     const max = asNumber(raw.max) ?? undefined
     const step = asNumber(raw.step) ?? undefined
-    out[k] = type === "int" ? { type: "int", min, max, label, description } : { type: "number", min, max, step, label, description }
+    out[k] = type === "int" ? { type: "int", min, max, step, label, description } : { type: "number", min, max, step, label, description }
   }
   return out
 }
@@ -104,6 +110,9 @@ function computeInitialValue(key: string, spec: OptionSpec, defaults: Record<str
   if (spec.type === "enum") {
     if (typeof dv === "string" && spec.values.includes(dv)) return dv
     return spec.values[0]
+  }
+  if (spec.type === "string") {
+    return typeof dv === "string" ? dv : ""
   }
   if (spec.type === "int") {
     const n = typeof dv === "number" && Number.isFinite(dv) ? Math.floor(dv) : typeof spec.min === "number" ? Math.floor(spec.min) : 0
@@ -152,16 +161,26 @@ export function ModelOptionsPanel({ capabilities, value, onApply, className }: M
     for (const k of visibleKeys) {
       const spec = options[k]
       const limitMax = inferLimitMaxForKey(limits, k)
-      const max = effectiveMax(spec.type === "enum" ? undefined : spec.max, limitMax)
-      const min = spec.type === "enum" ? undefined : spec.min
+      const max = spec.type === "int" || spec.type === "number" ? effectiveMax(spec.max, limitMax) : undefined
+      const min = spec.type === "int" || spec.type === "number" ? spec.min : undefined
       const v = d[k]
 
       if (spec.type === "enum") {
         const s = typeof v === "string" && spec.values.includes(v) ? v : spec.values[0]
         out[k] = s
+      } else if (spec.type === "string") {
+        out[k] = typeof v === "string" ? v : String(v ?? "")
       } else if (spec.type === "int") {
-        const n = typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : Number.isFinite(Number(v)) ? Math.floor(Number(v)) : 0
-        out[k] = clamp(n, min, max)
+        const n0 = typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : Number.isFinite(Number(v)) ? Math.floor(Number(v)) : 0
+        const clamped = clamp(n0, min, max)
+        const step = typeof spec.step === "number" && spec.step > 0 ? spec.step : null
+        if (!step) {
+          out[k] = clamped
+        } else {
+          const base = typeof min === "number" ? min : 0
+          const snapped = base + Math.floor((clamped - base) / step) * step
+          out[k] = clamp(Math.floor(snapped), min, max)
+        }
       } else {
         const n = typeof v === "number" && Number.isFinite(v) ? v : Number.isFinite(Number(v)) ? Number(v) : 0
         out[k] = clamp(n, min, max)
@@ -179,12 +198,12 @@ export function ModelOptionsPanel({ capabilities, value, onApply, className }: M
 
   return (
     <div className={cn("w-full", className)}>
-      <Card className="max-h-[360px] overflow-y-auto">
+      <Card className="max-h-[360px] py-2 overflow-y-scroll overscroll-contain scrollbar-thin border-0 shadow-none rounded-none">
         {/* <CardHeader className="px-4">
           <CardTitle>Options</CardTitle>
           <CardDescription>capabilities.options 기반 (변경 즉시 적용)</CardDescription>
         </CardHeader> */}
-        <CardContent className="px-4">
+        <CardContent className="px-2">
           <div className="flex flex-col gap-4">
             {visibleKeys.map((k) => {
               const spec = options[k]
@@ -192,10 +211,10 @@ export function ModelOptionsPanel({ capabilities, value, onApply, className }: M
               const desc = spec.description
 
               const limitMax = inferLimitMaxForKey(limits, k)
-              const max = spec.type === "enum" ? undefined : effectiveMax(spec.max, limitMax)
-              const min = spec.type === "enum" ? undefined : spec.min
+              const max = spec.type === "int" || spec.type === "number" ? effectiveMax(spec.max, limitMax) : undefined
+              const min = spec.type === "int" || spec.type === "number" ? spec.min : undefined
               const helper =
-                spec.type === "enum"
+                spec.type === "enum" || spec.type === "string"
                   ? ""
                   : typeof min === "number" || typeof max === "number"
                     ? `범위: ${typeof min === "number" ? min : "-∞"} ~ ${typeof max === "number" ? max : "∞"}${typeof limitMax === "number" && typeof spec.max === "number" && limitMax !== spec.max ? ` (limits: ${limitMax})` : ""}`
@@ -234,8 +253,32 @@ export function ModelOptionsPanel({ capabilities, value, onApply, className }: M
                 )
               }
 
+      if (spec.type === "string") {
+        const current = typeof draft[k] === "string" ? (draft[k] as string) : String(draft[k] ?? "")
+        return (
+          <div key={k} className="flex flex-col gap-2">
+            <div className="flex flex-col gap-1">
+              <Label className="text-sm">{label}</Label>
+              {desc && <p className="text-xs text-muted-foreground">{desc}</p>}
+              {helper && <p className="text-xs text-muted-foreground">{helper}</p>}
+            </div>
+            <Input
+              value={current}
+              placeholder={spec.placeholder || ""}
+              onChange={(e) => {
+                const next = { ...draft, [k]: e.target.value }
+                setAndApply(next)
+              }}
+            />
+          </div>
+        )
+      }
+
               if (spec.type === "int") {
                 const current = typeof draft[k] === "number" && Number.isFinite(draft[k]) ? (draft[k] as number) : Number(draft[k]) || 0
+                const sliderMin = typeof min === "number" ? min : 0
+                const sliderMax = typeof max === "number" ? max : sliderMin + 100
+                const step = typeof spec.step === "number" && spec.step > 0 ? spec.step : 1
                 return (
                   <div key={k} className="flex flex-col gap-2">
                     <div className="flex flex-col gap-1">
@@ -243,17 +286,21 @@ export function ModelOptionsPanel({ capabilities, value, onApply, className }: M
                       {desc && <p className="text-xs text-muted-foreground">{desc}</p>}
                       {helper && <p className="text-xs text-muted-foreground">{helper}</p>}
                     </div>
-                    <Input
-                      type="number"
-                      step={1}
-                      min={typeof min === "number" ? min : undefined}
-                      max={typeof max === "number" ? max : undefined}
-                      value={String(Math.floor(current))}
-                      onChange={(e) => {
-                        const n = Math.floor(Number(e.target.value))
-                        if (!Number.isFinite(n)) return
-                          const next = { ...draft, [k]: clamp(n, min, max) }
-                          setAndApply(next)
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm tabular-nums">{Math.floor(clamp(current, sliderMin, sliderMax))}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {sliderMin} ~ {sliderMax}
+                      </div>
+                    </div>
+                    <Slider
+                      value={[clamp(Math.floor(current), sliderMin, sliderMax)]}
+                      min={sliderMin}
+                      max={sliderMax}
+                      step={step}
+                      onValueChange={(v) => {
+                        const n = typeof v?.[0] === "number" ? v[0] : current
+                        const next = { ...draft, [k]: clamp(Math.floor(n), sliderMin, sliderMax) }
+                        setAndApply(next)
                       }}
                     />
                   </div>
@@ -263,7 +310,8 @@ export function ModelOptionsPanel({ capabilities, value, onApply, className }: M
               // number
               const current = typeof draft[k] === "number" && Number.isFinite(draft[k]) ? (draft[k] as number) : Number(draft[k]) || 0
               const step = typeof spec.step === "number" ? spec.step : 0.1
-              const useSlider = typeof min === "number" && typeof max === "number"
+              const sliderMin = typeof min === "number" ? min : 0
+              const sliderMax = typeof max === "number" ? max : sliderMin + 1
               return (
                 <div key={k} className="flex flex-col gap-2">
                   <div className="flex items-center justify-between gap-3">
@@ -274,48 +322,34 @@ export function ModelOptionsPanel({ capabilities, value, onApply, className }: M
                     </div>
                     <div className="text-sm tabular-nums">{current}</div>
                   </div>
-                  {useSlider ? (
-                    <Slider
-                      value={[clamp(current, min, max)]}
-                      min={min}
-                      max={max}
-                      step={step}
-                      onValueChange={(v) => {
-                        const n = typeof v?.[0] === "number" ? v[0] : current
-                        const next = { ...draft, [k]: clamp(n, min, max) }
-                        setAndApply(next)
-                      }}
-                    />
-                  ) : (
-                    <Input
-                      type="number"
-                      step={step}
-                      value={String(current)}
-                      onChange={(e) => {
-                        const n = Number(e.target.value)
-                        if (!Number.isFinite(n)) return
-                        const next = { ...draft, [k]: clamp(n, min, max) }
-                        setAndApply(next)
-                      }}
-                    />
-                  )}
+                  <Slider
+                    value={[clamp(current, sliderMin, sliderMax)]}
+                    min={sliderMin}
+                    max={sliderMax}
+                    step={step}
+                    onValueChange={(v) => {
+                      const n = typeof v?.[0] === "number" ? v[0] : current
+                      const next = { ...draft, [k]: clamp(n, sliderMin, sliderMax) }
+                      setAndApply(next)
+                    }}
+                  />
                 </div>
               )
             })}
           </div>
-        </CardContent>
-        <CardFooter className="px-4 flex items-center justify-end gap-2">
-          <Button
+        </CardContent>        
+      </Card>
+      <Button
             type="button"
             variant="outline"
+            size="sm"
+            className="w-full mt-3"
             onClick={() => {
               setAndApply(computedDefaults)
             }}
           >
             Reset to Defaults
-          </Button>
-        </CardFooter>
-      </Card>
+      </Button>
     </div>
   )
 }

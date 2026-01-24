@@ -41,7 +41,6 @@ import {
   Drawer,
   DrawerClose,
   DrawerContent,
-  DrawerDescription,
   DrawerFooter,
   DrawerHeader,
   DrawerTitle,
@@ -135,7 +134,7 @@ function tabLabel(t: ModelType) {
     image: "이미지",
     video: "영상",
     music: "음악",
-    audio: "오디오",
+    audio: "음성",
     multimodal: "멀티모달",
     embedding: "임베딩",
     code: "코드",
@@ -912,10 +911,19 @@ export function ChatInterface({
     (modelApiId?: string | null) => {
       const apiId = String(modelApiId || "").trim()
       if (!apiId) return null
-      const groups = (uiConfig?.providers_by_type?.[uiSelectedType] || []) as UiProviderGroup[]
-      return groups.find((g) => (g.models || []).some((m) => m.is_available && m.model_api_id === apiId)) || null
+      const byType = uiConfig?.providers_by_type as Record<string, unknown> | undefined
+      if (!byType) return null
+      // Scan ALL types, not just uiSelectedType.
+      // This prevents accidentally pairing a model_api_id (e.g., "sora-2") with the wrong provider group
+      // when UI state/type is out of sync or selection override is active.
+      for (const groupsUnknown of Object.values(byType)) {
+        const groups = Array.isArray(groupsUnknown) ? (groupsUnknown as UiProviderGroup[]) : []
+        const hit = groups.find((g) => (g.models || []).some((m) => m.is_available && m.model_api_id === apiId)) || null
+        if (hit) return hit
+      }
+      return null
     },
-    [uiSelectedType, uiConfig?.providers_by_type]
+    [uiConfig?.providers_by_type]
   )
 
   const selectedCapabilities = React.useMemo(() => {
@@ -1331,14 +1339,6 @@ export function ChatInterface({
   const scrollRight = () => scrollContainerRef.current?.scrollBy({ left: 200, behavior: "smooth" })
 
   const hasOptions = ["image", "video", "audio", "music"].includes(uiSelectedType)
-  const OptionPanelContent = () => (
-    <ModelOptionsPanel
-      key={selectedModelDbId || "no-model"}
-      capabilities={selectedCapabilities}
-      value={runtimeOptions}
-      onApply={applyRuntimeOptions}
-    />
-  )
 
   const handleSend = React.useCallback(
     async (overrideInput?: string, overrideModelApiId?: string) => {
@@ -1361,10 +1361,12 @@ export function ChatInterface({
       const providerGroup = resolveProviderGroupByModelApiId(requestedModelApiId) || (useSelectionOverride ? uiProviderGroup : currentProviderGroup)
       const providerSlug = providerGroup?.provider.slug
       const providerId = providerGroup?.provider.id
+      // Keep the requested model_api_id if present.
+      // Do NOT silently replace it with providerGroup's first model, otherwise we can end up sending the wrong model/provider pair.
       const modelApiId =
-        (providerGroup?.models || []).find((m) => m.model_api_id === requestedModelApiId)?.model_api_id ||
-        providerGroup?.models?.[0]?.model_api_id ||
-        requestedModelApiId
+        requestedModelApiId ||
+        (providerGroup?.models || []).find((m) => m.is_available && String(m.model_api_id || "").trim())?.model_api_id ||
+        ""
       if (!providerSlug || !providerId || !modelApiId) {
         alert("사용 가능한 모델이 없습니다. Admin에서 모델/제공업체 설정을 확인해주세요.")
         return
@@ -1634,7 +1636,7 @@ export function ChatInterface({
   }
 
   return (
-    <div className="flex flex-row gap-4 items-end justify-center w-full">
+    <div className="flex flex-row gap-4 items-center justify-center w-full">
       <div className={`flex flex-col gap-[16px] items-center relative shrink-0 w-full max-w-[800px] ${className || ""}`}>
         {!isCompact && (
           <div className="w-full flex items-center gap-4">
@@ -2100,7 +2102,7 @@ export function ChatInterface({
                   <div className={cn("w-full lg:w-[420px] block", isCompact ? "" : "xl:hidden")}>
                     <Drawer>
                       <DrawerTrigger asChild>
-                        <div className="bg-card border border-border flex gap-2 items-center p-2 rounded-[8px] w-full cursor-pointer hover:bg-accent/50 transition-colors">
+                        <div className="bg-card border border-border flex gap-2 items-center p-2 rounded-md w-full cursor-pointer hover:bg-accent/50 transition-colors">
                           <Settings2 className="size-4" />
                           <p className="text-sm font-medium text-card-foreground truncate text-ellipsis line-clamp-1 w-full">옵션</p>
                           <div className="size-[16px] flex items-center justify-center relative shrink-0">
@@ -2110,17 +2112,26 @@ export function ChatInterface({
                       </DrawerTrigger>
                       <DrawerContent>
                         <DrawerHeader>
-                          <DrawerTitle>생성 옵션</DrawerTitle>
-                          <DrawerDescription>ai_models.capabilities.options/defaults 기반</DrawerDescription>
-                        </DrawerHeader>
-                        <div className="p-4 pb-0 w-full flex justify-center">
-                          <OptionPanelContent />
+                          <DrawerTitle>옵션</DrawerTitle>
+                          {/* <DrawerDescription>ai_models.capabilities.options/defaults 기반</DrawerDescription> */}
+                        </DrawerHeader>        
+                        <div className="flex flex-1 flex-row">
+                          <div className="flex flex-1"></div>                
+                          <div className="flex p-0 min-w-[360px] max-w-[360px] pb-0 flex justify-center">
+                            <ModelOptionsPanel
+                              key={selectedModelDbId || "no-model"}
+                              capabilities={selectedCapabilities}
+                              value={runtimeOptions}
+                              onApply={applyRuntimeOptions}
+                            />
+                          </div>                      
+                          <div className="flex flex-1"></div>
                         </div>
                         <DrawerFooter>
                           <DrawerClose asChild>
                             <div className="w-full flex items-center justify-center">
-                              <Button variant="outline" className="w-full max-w-[360px]">
-                                확인
+                              <Button variant="outline" className="w-full min-w-[360px] max-w-[360px]">
+                                닫기
                               </Button>
                             </div>
                           </DrawerClose>
@@ -2131,7 +2142,7 @@ export function ChatInterface({
                 )}
 
               {!isCompact && hasOptions && !isOptionExpanded && (
-                <div className="hidden xl:flex bg-card border border-border flex-col gap-2 items-center p-[16px] rounded-[8px] max-w-[200px] w-full min-w-[120px] cursor-pointer hover:bg-accent/50 transition-colors" onClick={() => setIsOptionExpanded(true)}>
+                <div className="hidden xl:flex bg-card border border-border flex-col gap-2 items-center p-2 rounded-md max-w-[200px] w-full min-w-[120px] cursor-pointer hover:bg-accent/50 transition-colors" onClick={() => setIsOptionExpanded(true)}>
                   <div className="flex items-center w-full gap-[10px]">
                     <Settings2 className="size-6" />
                     <p className="text-[14px] font-medium text-card-foreground truncate w-full">옵션</p>
@@ -2152,7 +2163,7 @@ export function ChatInterface({
 
       {/* 옵션창 - 밖에 있는 옵션 - 넓은 화면에서 나타남 */}
       {!isCompact && hasOptions && isOptionExpanded && (
-        <div className="hidden xl:flex bg-card border border-border flex-col gap-[16px] items-start p-[16px] rounded-[8px] relative shrink-0 w-[260px] animate-in fade-in slide-in-from-left-4 duration-300">
+        <div className="hidden xl:flex bg-card border border-border flex-col gap-[16px] items-start p-3 rounded-md relative shrink-0 w-[260px] animate-in fade-in slide-in-from-left-4 duration-300">
           <div className="flex items-center gap-[10px] w-full cursor-pointer" onClick={() => setIsOptionExpanded(false)}>
             <div className="size-[16px] flex items-center justify-center relative shrink-0">
               <Settings2 className="size-full" />
@@ -2162,7 +2173,12 @@ export function ChatInterface({
               <ChevronsLeft className="size-full" />
             </div>
           </div>
-          <OptionPanelContent />
+          <ModelOptionsPanel
+            key={selectedModelDbId || "no-model"}
+            capabilities={selectedCapabilities}
+            value={runtimeOptions}
+            onApply={applyRuntimeOptions}
+          />
         </div>
       )}
 

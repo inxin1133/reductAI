@@ -73,6 +73,10 @@ app.listen(PORT, async () => {
     await ensurePromptSuggestionsSchema()
     await ensureModelApiProfilesSchema()
     await ensureProviderAuthProfilesSchema()
+    // Best-effort: seed default Sora video model_api_profile for OpenAI Sora providers.
+    // Users can edit/override in Admin (Model API Profiles).
+    const { ensureDefaultSoraVideoProfiles } = await import("./services/schemaBootstrap")
+    await ensureDefaultSoraVideoProfiles()
     console.log("ai-agent-service schema bootstrap ok")
   } catch (e) {
     console.error("ai-agent-service schema bootstrap failed:", e)

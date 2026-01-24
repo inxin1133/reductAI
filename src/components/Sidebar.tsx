@@ -521,6 +521,10 @@ export function Sidebar({ className }: SidebarProps) {
   const [createCategoryName, setCreateCategoryName] = useState("")
   const [createCategoryIconChoice, setCreateCategoryIconChoice] = useState<IconChoice | null>(null)
   const [createCategoryTab, setCreateCategoryTab] = useState<"emoji" | "icon">("emoji")
+  const [createLucideQuery, setCreateLucideQuery] = useState("")
+  const [createLucideAll, setCreateLucideAll] = useState<Record<string, React.ElementType> | null>(null)
+  const [createLucideLoading, setCreateLucideLoading] = useState(false)
+  const createLucideLoadSeqRef = useRef(0)
   const [createCategoryBusy, setCreateCategoryBusy] = useState(false)
 
   const openCreateCategoryDialog = (type: "personal" | "team") => {
@@ -528,8 +532,46 @@ export function Sidebar({ className }: SidebarProps) {
     setCreateCategoryName("")
     setCreateCategoryIconChoice(null)
     setCreateCategoryTab("emoji")
+    setCreateLucideQuery("")
     setCreateCategoryOpen(true)
   }
+
+  // Lazy-load full lucide map only when searching in the "create category" dialog.
+  useEffect(() => {
+    if (!createCategoryOpen) return
+    if (createCategoryTab !== "icon") return
+    const q = createLucideQuery.trim().toLowerCase()
+    if (!q) return
+    if (createLucideAll || createLucideLoading) return
+
+    const seq = (createLucideLoadSeqRef.current += 1)
+    setCreateLucideLoading(true)
+    void import("lucide-react")
+      .then((mod) => {
+        if (createLucideLoadSeqRef.current !== seq) return
+        const iconsNs = (mod as unknown as Record<string, unknown>)["icons"]
+        if (iconsNs && typeof iconsNs === "object") {
+          setCreateLucideAll(iconsNs as Record<string, React.ElementType>)
+          return
+        }
+        // Fallback: flatten exports
+        const map: Record<string, React.ElementType> = {}
+        for (const [k, v] of Object.entries(mod as unknown as Record<string, unknown>)) {
+          if (typeof k === "string" && typeof v === "function") map[k] = v as React.ElementType
+        }
+        setCreateLucideAll(map)
+      })
+      .finally(() => {
+        if (createLucideLoadSeqRef.current === seq) setCreateLucideLoading(false)
+      })
+  }, [createCategoryOpen, createCategoryTab, createLucideAll, createLucideLoading, createLucideQuery])
+
+  useEffect(() => {
+    if (createCategoryOpen) return
+    setCreateLucideQuery("")
+    createLucideLoadSeqRef.current += 1
+    setCreateLucideLoading(false)
+  }, [createCategoryOpen])
 
   const performCreateCategory = async (args: { type: "personal" | "team"; name: string; icon: IconChoice }) => {
     const h = authHeaders()
@@ -721,25 +763,90 @@ export function Sidebar({ className }: SidebarProps) {
               </div>
             </TabsContent>
             <TabsContent value="icon" className="mt-3">
-              <div className="grid grid-cols-7 gap-1">
-                {LUCIDE_PRESETS.map((it) => {
-                  const selected = createCategoryIconChoice?.kind === "lucide" && createCategoryIconChoice.value === it.key
+              <div className="flex flex-col gap-2">
+                <Input
+                  value={createLucideQuery}
+                  onChange={(e) => setCreateLucideQuery(e.target.value)}
+                  placeholder="Lucide 아이콘 검색 (예: calendar, bot, file...)"
+                  className="h-9 text-sm"
+                />
+
+                {(() => {
+                  const q = createLucideQuery.trim().toLowerCase()
+                  const presetMatches = !q
+                    ? LUCIDE_PRESETS
+                    : LUCIDE_PRESETS.filter((it) => it.key.toLowerCase().includes(q) || it.label.toLowerCase().includes(q))
+
+                  const presetKeys = new Set(presetMatches.map((x) => x.key))
+                  const extraMatches: Array<{ key: string; Icon: React.ElementType }> = []
+                  if (q && createLucideAll) {
+                    for (const [k, Icon] of Object.entries(createLucideAll)) {
+                      if (extraMatches.length >= 98) break
+                      if (presetKeys.has(k)) continue
+                      if (!k.toLowerCase().includes(q)) continue
+                      extraMatches.push({ key: k, Icon })
+                    }
+                  }
+
+                  const showLoading = q && !presetMatches.length && createLucideLoading
+                  const showHelp = q && (presetMatches.length + extraMatches.length) >= 98
+                  const showEmpty = q && !presetMatches.length && !extraMatches.length && !createLucideLoading
+
                   return (
-                    <button
-                      key={it.key}
-                      type="button"
-                      className={cn(
-                        "h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center",
-                        selected ? "bg-accent" : ""
-                      )}
-                      onClick={() => setCreateCategoryIconChoice({ kind: "lucide", value: it.key })}
-                      title={it.label}
-                      aria-label={it.label}
-                    >
-                      <it.Icon className="size-4" />
-                    </button>
+                    <div className="rounded-md border border-border p-2">
+                      {showLoading ? <div className="text-xs text-muted-foreground">Searching…</div> : null}
+                      {showEmpty ? <div className="text-xs text-muted-foreground">검색 결과가 없습니다.</div> : null}
+
+                      <div className="max-h-[320px] overflow-auto pr-1">
+                        <div className="grid grid-cols-7 gap-1">
+                          {presetMatches.map((it) => {
+                            const selected = createCategoryIconChoice?.kind === "lucide" && createCategoryIconChoice.value === it.key
+                            return (
+                              <button
+                                key={it.key}
+                                type="button"
+                                className={cn(
+                                  "h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center",
+                                  selected ? "bg-accent" : ""
+                                )}
+                                onClick={() => setCreateCategoryIconChoice({ kind: "lucide", value: it.key })}
+                                title={it.label}
+                                aria-label={it.label}
+                              >
+                                <it.Icon className="size-4" />
+                              </button>
+                            )
+                          })}
+                          {extraMatches.map((it) => {
+                            const selected = createCategoryIconChoice?.kind === "lucide" && createCategoryIconChoice.value === it.key
+                            const Icon = it.Icon
+                            return (
+                              <button
+                                key={it.key}
+                                type="button"
+                                className={cn(
+                                  "h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center",
+                                  selected ? "bg-accent" : ""
+                                )}
+                                onClick={() => setCreateCategoryIconChoice({ kind: "lucide", value: it.key })}
+                                title={it.key}
+                                aria-label={it.key}
+                              >
+                                <Icon className="size-4" />
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+
+                      {showHelp ? (
+                        <div className="mt-2 text-[11px] text-muted-foreground">
+                          Showing up to 98 matches. Refine your search to narrow results.
+                        </div>
+                      ) : null}
+                    </div>
                   )
-                })}
+                })()}
               </div>
             </TabsContent>
           </Tabs>

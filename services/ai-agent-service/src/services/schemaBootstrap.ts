@@ -1115,6 +1115,127 @@ export async function ensureModelApiProfilesSchema() {
 }
 
 /**
+ * Seed default OpenAI Sora video profile (best-effort).
+ * - Our runtime can execute video generation via model_api_profiles(purpose=video) using async_job workflow.
+ * - This makes "video" usable out of the box for OpenAI providers. (In many setups the provider slug is just "openai",
+ *   so relying on "sora" in product_name/slug is too strict and causes video to fall back to the legacy "not implemented" path.)
+ *
+ * NOTE: Provider video endpoints can differ by OpenAI version/gateway; this is a sane default that users can edit in Admin.
+ */
+export async function ensureDefaultSoraVideoProfiles() {
+  try {
+    const tenantId = await ensureSystemTenantId()
+
+    // Find OpenAI providers (best-effort).
+    const prov = await query(
+      `
+      SELECT id
+      FROM ai_providers
+      WHERE lower(provider_family) = 'openai'
+      ORDER BY updated_at DESC NULLS LAST
+      `,
+      []
+    )
+    const providerIds = ((prov.rows || []) as Array<Record<string, unknown>>).map((r) => String(r.id || "")).filter(Boolean)
+    if (!providerIds.length) return
+
+    const profileKey = "openai_sora_video_v1"
+    const transport = {
+      kind: "http_json",
+      method: "POST",
+      path: "/videos",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer {{apiKey}}" },
+      body: {
+        model: "{{model}}",
+        prompt: "{{userPrompt}}",
+        seconds: "{{params_seconds}}",
+        size: "{{params_size}}",
+      },
+      timeout_ms: 120000,
+    }
+    const responseMapping = { result_type: "raw_json", mode: "json", extract: { job_id_path: "id" } }
+    const workflow = {
+      type: "async_job",
+      job_id_path: "id",
+      steps: [
+        {
+          name: "poll",
+          method: "GET",
+          path: "/videos/{{job_id}}",
+          interval_ms: 2000,
+          max_attempts: 90,
+          status_path: "status",
+          terminal_states: ["completed", "failed", "canceled", "cancelled", "error"],
+        },
+        { name: "download", method: "GET", path: "/videos/{{job_id}}/content", mode: "binary", content_type: "video/mp4" },
+      ],
+    }
+
+    for (const providerId of providerIds) {
+      // If there is already any ACTIVE video profile for this provider (from previous installs),
+      // don't introduce a competing default that could change runtime behavior.
+      const existingActive = await query(
+        `SELECT id, profile_key
+         FROM model_api_profiles
+         WHERE tenant_id = $1 AND provider_id = $2 AND purpose = 'video' AND is_active = TRUE
+         ORDER BY updated_at DESC NULLS LAST
+         LIMIT 5`,
+        [tenantId, providerId]
+      )
+      const hasOtherActive = ((existingActive.rows || []) as Array<Record<string, unknown>>).some((r) => String(r.profile_key || "") !== profileKey)
+      if (hasOtherActive) {
+        // If we previously inserted our default, disable it to avoid overriding the existing config.
+        await query(
+          `UPDATE model_api_profiles
+           SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+           WHERE tenant_id = $1 AND provider_id = $2 AND profile_key = $3 AND is_active = TRUE`,
+          [tenantId, providerId, profileKey]
+        ).catch(() => null)
+        continue
+      }
+
+      // If our profile exists (active or not), don't recreate.
+      const exists = await query(
+        `SELECT 1 FROM model_api_profiles WHERE tenant_id = $1 AND provider_id = $2 AND profile_key = $3 LIMIT 1`,
+        [tenantId, providerId, profileKey]
+      )
+      if (exists.rows.length) {
+        // Migration/cleanup for older installs:
+        // - Remove optional input_reference from transport.body to avoid sending "" (provider validation error).
+        await query(
+          `
+          UPDATE model_api_profiles
+          SET transport =
+            CASE
+              WHEN jsonb_typeof(transport) = 'object' AND jsonb_typeof(transport->'body') = 'object'
+              THEN jsonb_set(transport, '{body}', (transport->'body') - 'input_reference', true)
+              ELSE transport
+            END,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE tenant_id = $1
+            AND provider_id = $2
+            AND profile_key = $3
+          `,
+          [tenantId, providerId, profileKey]
+        ).catch(() => null)
+        continue
+      }
+      await query(
+        `
+        INSERT INTO model_api_profiles
+          (tenant_id, provider_id, model_id, profile_key, purpose, auth_profile_id, transport, response_mapping, workflow, is_active)
+        VALUES
+          ($1,$2,NULL,$3,'video',NULL,$4::jsonb,$5::jsonb,$6::jsonb,TRUE)
+        `,
+        [tenantId, providerId, profileKey, JSON.stringify(transport), JSON.stringify(responseMapping), JSON.stringify(workflow)]
+      )
+    }
+  } catch (e) {
+    console.warn("ensureDefaultSoraVideoProfiles failed (ignored):", e)
+  }
+}
+
+/**
  * Provider auth profiles schema
  * - provider_api_credentials 위에 "인증 방식"을 추상화합니다.
  * - v1: api_key / oauth2_service_account(google vertex)

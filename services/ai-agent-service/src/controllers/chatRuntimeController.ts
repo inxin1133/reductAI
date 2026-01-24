@@ -104,6 +104,9 @@ function deepInjectVars(input: unknown, vars: Record<string, unknown>): unknown 
       const s = String(raw)
       if (s === "true") return true
       if (s === "false") return false
+      // OpenAI videos API expects seconds as string enum ('4'|'8'|'12'), not a number.
+      // Keep this placeholder as a string even though it looks numeric.
+      if (k === "params_seconds") return s
       if (/^-?\d+(?:\.\d+)?$/.test(s)) return Number(s)
       return s
     }
@@ -1257,10 +1260,17 @@ export async function chatRun(req: Request, res: Response) {
       }
     }
 
+    // Model API id (e.g. "sora-2", "gpt-image-1") is needed during prompt_template injection as well.
+    // If prompt_templates.body contains {"model":"{{model}}"} but {{model}} is missing here, it becomes "" and
+    // later stages cannot recover (causing provider errors like: Invalid value: '' for param 'model').
+    const modelApiIdForTemplate = String(row.model_api_id || "").trim()
+
     // 4) 변수 주입
     // - prompt 템플릿에서 {{input}} / {{userPrompt}} 등을 쓸 수 있게 합니다.
     // - 또한 options 값들을 {{params_<key>}}로 노출해서 (특히 audio/image) template body에 주입할 수 있게 합니다.
     const templateVars: Record<string, unknown> = {
+      model: modelApiIdForTemplate,
+      model_api_id: modelApiIdForTemplate,
       userPrompt: prompt,
       input: prompt,
       prompt,
@@ -1327,10 +1337,13 @@ export async function chatRun(req: Request, res: Response) {
     // Safe rollout: if profile is missing or fails, we fall back to the existing provider_family-specific code.
     const purpose: ModelApiPurpose = (mt === "text" ? "chat" : mt) as ModelApiPurpose
     let usedProfileKey: string | null = null
+    let profileAttempted = false
+    let profileError: unknown = null
     try {
       const profile = await loadModelApiProfile({ tenantId, providerId, modelDbId: chosenModelDbId, purpose })
       if (profile) {
         usedProfileKey = profile.profile_key
+        profileAttempted = true
         const auth = await resolveAuthForModelApiProfile({ providerId, authProfileId: profile.auth_profile_id })
         out = await executeHttpJsonProfile({
           apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
@@ -1359,7 +1372,30 @@ export async function chatRun(req: Request, res: Response) {
       }
     } catch (e) {
       console.warn("[model_api_profiles] execution failed -> fallback:", usedProfileKey, e)
+      profileAttempted = true
+      profileError = e
       out = null
+    }
+
+    // Video is DB-profile driven. If we have no profile (or the profile errored), don't fall back to a generic legacy "not implemented".
+    // Return an actionable error so Admin can add/fix `model_api_profiles(purpose=video)` for the provider.
+    if (mt === "video" && out == null) {
+      return res.status(400).json({
+        message: "Video requires an active model_api_profile (purpose=video) for the selected provider/model.",
+        details: {
+          provider_id: providerId,
+          provider_family: providerKey,
+          model_db_id: chosenModelDbId,
+          model_api_id: modelApiId,
+          purpose,
+          profile_key_used: usedProfileKey,
+          profile_attempted: profileAttempted,
+          error: profileError ? String((profileError as any)?.message || profileError) : null,
+          hint:
+            "Create/activate a model_api_profiles row with purpose=video for this provider (model_id can be NULL to apply to all video models). " +
+            "The built-in executor supports workflow.type=async_job (poll + binary download) and will return content.video.{data_url|url}.",
+        },
+      })
     }
 
     if (out == null) {

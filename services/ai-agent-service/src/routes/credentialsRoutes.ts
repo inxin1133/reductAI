@@ -6,6 +6,7 @@ import {
   updateCredential,
   deleteCredential,
 } from "../controllers/credentialsController"
+import { testSora2Access } from "../controllers/credentialTestController"
 
 const router = express.Router()
 
@@ -15,6 +16,8 @@ router.get("/:id", getCredential)
 router.post("/", createCredential)
 router.put("/:id", updateCredential)
 router.delete("/:id", deleteCredential)
+// Test whether this credential can see / access Sora models (e.g. sora-2)
+router.get("/:id/test-sora", testSora2Access)
 
 export default router
 

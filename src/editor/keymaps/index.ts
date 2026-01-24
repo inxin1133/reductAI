@@ -254,6 +254,9 @@ export function buildEditorKeymap(schema: Schema) {
     // Formatting
     "Mod-b": schema.marks.strong ? toggleMark(schema.marks.strong) : false,
     "Mod-i": schema.marks.em ? toggleMark(schema.marks.em) : false,
+    // Strikethrough
+    "Shift-Mod-x": schema.marks.strike ? toggleMark(schema.marks.strike) : false,
+    "Shift-Mod-s": schema.marks.strike ? toggleMark(schema.marks.strike) : false,
 
     // Notion-like:
     // - In lists: Tab/Shift-Tab should indent/outdent the list ITEM (marker + content), never just the inner paragraph.
