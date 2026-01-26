@@ -154,6 +154,7 @@ function finalizeNormalizedContent(content: JsonRecord, blocks: JsonRecord[]): J
   const images = Array.isArray(content.images) ? (content.images as unknown[]) : null
   const audio = isRecord(content.audio) ? (content.audio as JsonRecord) : null
   const video = isRecord(content.video) ? (content.video as JsonRecord) : null
+  const attachments = Array.isArray((content as JsonRecord).attachments) ? (((content as JsonRecord).attachments as unknown[]) || []) : null
 
   const base: JsonRecord = { blocks }
   if (title) base.title = title
@@ -163,6 +164,7 @@ function finalizeNormalizedContent(content: JsonRecord, blocks: JsonRecord[]): J
   if (images) base.images = images
   if (audio) base.audio = audio
   if (video) base.video = video
+  if (attachments) base.attachments = attachments
   return base
 }
 

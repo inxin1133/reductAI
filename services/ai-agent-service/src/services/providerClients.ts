@@ -363,6 +363,116 @@ export async function openaiGenerateImage(args: {
   return { raw: rawSafe, urls: urls2, b64: b642, data_urls: data_urls2 }
 }
 
+function parseDataUrl(s: string): { mime: string; base64: string } | null {
+  const m = String(s || "").match(/^data:([^;]+);base64,(.*)$/)
+  if (!m) return null
+  const mime = m[1] || ""
+  const base64 = m[2] || ""
+  if (!mime || !base64) return null
+  return { mime, base64 }
+}
+
+export async function openaiEditImage(args: {
+  apiBaseUrl: string
+  apiKey: string
+  model: string
+  prompt: string
+  image_data_url: string
+  // common options (best-effort)
+  n?: number
+  size?: string
+}) {
+  const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl)
+  const base = normalized || "https://api.openai.com/v1"
+  const apiRoot = base.replace(/\/$/, "")
+
+  const parsed = parseDataUrl(args.image_data_url)
+  if (!parsed) throw new Error("OPENAI_IMAGE_EDIT_INVALID_DATA_URL")
+
+  const bytes = Buffer.from(parsed.base64, "base64")
+  const blob = new Blob([bytes], { type: parsed.mime })
+  const fileName = parsed.mime.toLowerCase().includes("png") ? "image.png" : "image"
+
+  const form = new FormData()
+  form.append("model", args.model)
+  form.append("prompt", args.prompt)
+  form.append("image", blob, fileName)
+  if (Number.isFinite(args.n as number)) form.append("n", String(args.n))
+  if (typeof args.size === "string" && args.size.trim()) {
+    const normalizedSize = args.size.trim().replace(/[×*]/g, "x")
+    form.append("size", normalizedSize)
+  }
+
+  const res = await fetch(`${apiRoot}/images/edits`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${args.apiKey}`,
+      // NOTE: do NOT set Content-Type; fetch will set multipart boundary.
+    },
+    body: form as any,
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(`OPENAI_IMAGE_EDIT_FAILED_${res.status}@${apiRoot}:${JSON.stringify(json)}`)
+  }
+
+  // Reuse the same extraction strategy as generations by piggybacking on the existing logic:
+  // Treat `json` as if it were a generations response.
+  const root = json && typeof json === "object" ? (json as Record<string, unknown>) : null
+  const data =
+    (Array.isArray(root?.data) ? (root?.data as unknown[]) : null) ||
+    (Array.isArray(root?.images) ? (root?.images as unknown[]) : null) ||
+    []
+
+  const urls = data
+    .map((d) => {
+      if (!d || typeof d !== "object") return ""
+      const obj = d as Record<string, unknown>
+      const direct = typeof obj.url === "string" ? obj.url : ""
+      if (direct) return String(direct)
+      const nestedUrl = obj.url && typeof obj.url === "object" ? (obj.url as Record<string, unknown>) : null
+      if (nestedUrl && typeof nestedUrl.url === "string") return String(nestedUrl.url)
+      const imageUrl = typeof obj.image_url === "string" ? obj.image_url : ""
+      if (imageUrl) return String(imageUrl)
+      return ""
+    })
+    .filter(Boolean)
+
+  const b64 = data
+    .map((d) => {
+      if (!d || typeof d !== "object") return ""
+      const obj = d as Record<string, unknown>
+      const v =
+        (typeof obj.b64_json === "string" && obj.b64_json) ||
+        (typeof obj.b64 === "string" && obj.b64) ||
+        (typeof obj.base64 === "string" && obj.base64) ||
+        (typeof obj.data === "string" && obj.data) ||
+        ""
+      return v ? String(v) : ""
+    })
+    .filter(Boolean)
+
+  const data_urls = b64.map((s) => `data:image/png;base64,${s}`)
+
+  const rawSafe: Record<string, unknown> = root ? { ...root } : {}
+  try {
+    if (Array.isArray(rawSafe.data)) {
+      rawSafe.data = (rawSafe.data as unknown[]).map((d) => {
+        if (!d || typeof d !== "object") return d
+        const obj = { ...(d as Record<string, unknown>) }
+        if (typeof obj.b64_json === "string") obj.b64_json = `<omitted:${obj.b64_json.length}>`
+        if (typeof obj.b64 === "string") obj.b64 = `<omitted:${obj.b64.length}>`
+        if (typeof obj.base64 === "string") obj.base64 = `<omitted:${obj.base64.length}>`
+        return obj
+      })
+    }
+  } catch {
+    // ignore
+  }
+
+  return { raw: rawSafe, urls, b64, data_urls }
+}
+
 export async function openaiTextToSpeech(args: {
   apiBaseUrl: string
   apiKey: string

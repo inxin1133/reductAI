@@ -173,7 +173,7 @@ export default function FrontAI() {
               modelType: selection.modelType || "",
             })
           }}
-          onSubmit={({ input, providerSlug, model, modelType, options }) => {
+          onSubmit={({ input, providerSlug, model, modelType, options, attachments }) => {
             try {
               localStorage.setItem(LAST_SELECTION_KEY, JSON.stringify({
                 modelApiId: model || "",
@@ -202,6 +202,7 @@ export default function FrontAI() {
                   modelType,
                   options: options || null,
                   sessionLanguage: currentLang || null,
+                  attachments: attachments || null,
                 },
               },
             })

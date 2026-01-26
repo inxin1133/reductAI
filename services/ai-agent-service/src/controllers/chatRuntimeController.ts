@@ -5,6 +5,7 @@ import { ensureSystemTenantId } from "../services/systemTenantService"
 import crypto from "crypto"
 import {
   getProviderBase,
+  openaiEditImage,
   openaiGenerateImage,
   openaiSimulateChat,
   openaiTextToSpeech,
@@ -1095,6 +1096,7 @@ export async function chatRun(req: Request, res: Response) {
       provider_id,
       provider_slug,
       options,
+      attachments,
       // web search toggle (text/chat only)
       web_allowed,
       // browser-derived hints (best-effort)
@@ -1110,6 +1112,7 @@ export async function chatRun(req: Request, res: Response) {
       provider_id?: string | null
       provider_slug?: string | null
       options?: Record<string, unknown>
+      attachments?: unknown[] | null
       web_allowed?: boolean
       web_search_country?: string | null
       web_search_languages?: string[] | null
@@ -1210,6 +1213,18 @@ export async function chatRun(req: Request, res: Response) {
     const cap = isRecord(row.capabilities) ? (row.capabilities as Record<string, unknown>) : {}
     const capDefaults = cap && isRecord(cap.defaults) ? (cap.defaults as Record<string, unknown>) : {}
     const mergedOptions = { ...capDefaults, ...(options || {}) }
+
+    // Incoming attachments (used for image-to-image in image mode)
+    const incomingAttachments = Array.isArray(attachments) ? attachments : []
+    const incomingImageDataUrls: string[] = []
+    for (const a of incomingAttachments) {
+      if (!a || typeof a !== "object") continue
+      const ao = a as Record<string, unknown>
+      const kind = typeof ao.kind === "string" ? ao.kind : ""
+      if (kind !== "image") continue
+      const du = typeof ao.data_url === "string" ? ao.data_url : ""
+      if (du && du.startsWith("data:image/")) incomingImageDataUrls.push(du)
+    }
 
     // conversation ownership / creation
     let convId = conversation_id ? String(conversation_id) : ""
@@ -1349,6 +1364,7 @@ export async function chatRun(req: Request, res: Response) {
     let out: { output_text: string; raw: unknown; content: Record<string, unknown> } | null = null
 
     const webAllowed = Boolean(web_allowed) && mt === "text"
+    const forceBuiltinImageEdit = mt === "image" && incomingImageDataUrls.length > 0
 
     // ✅ DB-driven execution: if a model_api_profile exists for this provider/purpose, try it first.
     // Safe rollout: if profile is missing or fails, we fall back to the existing provider_family-specific code.
@@ -1357,7 +1373,8 @@ export async function chatRun(req: Request, res: Response) {
     let profileAttempted = false
     let profileError: unknown = null
     // Web-search mode is orchestration-controlled. To guarantee `tools` gating, we skip DB-profile execution for text chats.
-    if (!webAllowed) {
+    // Image-with-attachment must use /images/edits (built-in path) so the reference image is actually applied.
+    if (!webAllowed && !forceBuiltinImageEdit) {
       try {
         const profile = await loadModelApiProfile({ tenantId, providerId, modelDbId: chosenModelDbId, purpose })
         if (profile) {
@@ -1655,27 +1672,48 @@ export async function chatRun(req: Request, res: Response) {
       const quality = typeof mergedOptions?.quality === "string" ? mergedOptions.quality : undefined
       const style = typeof mergedOptions?.style === "string" ? mergedOptions.style : undefined
       const background = typeof mergedOptions?.background === "string" ? mergedOptions.background : undefined
-      const r = await openaiGenerateImage({
-        apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-        apiKey: auth.apiKey,
-        model: modelApiId,
-        prompt,
-        n,
-        size,
-        quality,
-        style,
-        background,
-      })
+
+      // If prompt_templates.body provided a `prompt`, use it (lets Admin enforce ref-image rules).
+      const tmpl = injectedTemplate && typeof injectedTemplate === "object" && !Array.isArray(injectedTemplate) ? (injectedTemplate as Record<string, unknown>) : null
+      const promptFromTemplate = tmpl && typeof tmpl.prompt === "string" && tmpl.prompt.trim() ? tmpl.prompt.trim() : ""
+      const promptForImage = promptFromTemplate || prompt
+
+      const r =
+        incomingImageDataUrls.length > 0
+          ? await openaiEditImage({
+              apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+              apiKey: auth.apiKey,
+              model: modelApiId,
+              prompt: promptForImage,
+              image_data_url: incomingImageDataUrls[0],
+              n,
+              size,
+            })
+          : await openaiGenerateImage({
+              apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+              apiKey: auth.apiKey,
+              model: modelApiId,
+              prompt: promptForImage,
+              n,
+              size,
+              quality,
+              style,
+              background,
+            })
       // Prefer real URLs; if API returns base64 only, fall back to data URLs.
       const sourceUrls: string[] = (r.urls && r.urls.length ? r.urls : r.data_urls) || []
       const blocks = sourceUrls.length
         ? sourceUrls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
         : [{ type: "markdown", markdown: "이미지 생성 결과를 받지 못했습니다." }]
-      const blockJson = { title: "이미지 생성", summary: "요청한 이미지 생성 결과입니다.", blocks }
+      const blockJson = {
+        title: "이미지 생성",
+        summary: incomingImageDataUrls.length > 0 ? "첨부 이미지(참조)를 기반으로 편집한 결과입니다." : "요청한 이미지 생성 결과입니다.",
+        blocks,
+      }
       out = {
         output_text: JSON.stringify(blockJson),
         // NOTE: keep a safe(raw) payload from provider client for debugging (it omits huge base64 strings).
-        raw: r.raw,
+        raw: isRecord(r.raw) ? { ...(r.raw as Record<string, unknown>), _debug: { used_edit: incomingImageDataUrls.length > 0 } } : r.raw,
         content: { ...blockJson, images: sourceUrls.map((u) => ({ url: u })), raw: r.raw },
       }
       } else if (mt === "audio" || mt === "music") {
@@ -1733,8 +1771,56 @@ export async function chatRun(req: Request, res: Response) {
     }
 
     // persist messages (user + assistant)
-    const normalizedUserContent = normalizeAiContent({ text: prompt, options: mergedOptions })
+    const userMessageId = crypto.randomUUID()
+
+    // Attachments (from client): assetize any data_url so DB isn't bloated.
+    // Client sends: [{kind:"image"|"file"|"link", ... , data_url? }]
+    const safeAttachments: Record<string, unknown>[] = []
+    const incoming = Array.isArray(attachments) ? attachments : []
+    for (const a of incoming) {
+      if (!a || typeof a !== "object") continue
+      const ao = a as Record<string, unknown>
+      const kind = typeof ao.kind === "string" ? ao.kind : ""
+      if (kind === "link") {
+        const url = typeof ao.url === "string" ? ao.url : ""
+        const title = typeof ao.title === "string" ? ao.title : ""
+        if (url) safeAttachments.push({ kind: "link", url, title })
+        continue
+      }
+      if (kind === "image" || kind === "file") {
+        const name = typeof ao.name === "string" ? ao.name : ""
+        const mime = typeof ao.mime === "string" ? ao.mime : ""
+        const size = typeof ao.size === "number" ? ao.size : Number(ao.size || 0)
+        const dataUrl = typeof ao.data_url === "string" ? ao.data_url : ""
+        const base: Record<string, unknown> = { kind, name, mime, size }
+        if (dataUrl && dataUrl.startsWith("data:")) {
+          try {
+            const assetId = newAssetId()
+            const stored = await storeImageDataUrlAsAsset({
+              tenantId,
+              userId: userId || null,
+              conversationId: convId,
+              messageId: userMessageId,
+              assetId,
+              dataUrl,
+              index: safeAttachments.length,
+            })
+            safeAttachments.push({ ...base, url: stored.url, asset_id: stored.assetId, bytes: stored.bytes })
+          } catch (e) {
+            console.warn("[attachments] failed to store data_url; keeping metadata only", e)
+            safeAttachments.push(base)
+          }
+        } else {
+          const url = typeof ao.url === "string" ? ao.url : ""
+          if (url) safeAttachments.push({ ...base, url })
+          else safeAttachments.push(base)
+        }
+      }
+    }
+
+    const normalizedUserContent = normalizeAiContent({ text: prompt, options: mergedOptions, attachments: safeAttachments })
     await appendMessage({
+      id: userMessageId,
       conversationId: convId,
       role: "user",
       content: normalizedUserContent,
@@ -1812,6 +1898,7 @@ export async function chatRun(req: Request, res: Response) {
     // best-effort: keep conversation model_id updated to last used model
     await query(`UPDATE model_conversations SET model_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [convId, chosenModelDbId])
 
+    const clientDebug = isRecord(req.body) && isRecord((req.body as any).client_debug) ? ((req.body as any).client_debug as Record<string, unknown>) : null
     return res.json({
       ok: true,
       conversation_id: convId,
@@ -1828,6 +1915,12 @@ export async function chatRun(req: Request, res: Response) {
       },
       output_text: out.output_text,
       raw: out.raw,
+      debug: {
+        received_attachments: Array.isArray(attachments) ? attachments.length : 0,
+        received_image_data_urls: incomingImageDataUrls.length,
+        used_profile: usedProfileKey || null,
+        client_debug: clientDebug,
+      },
     })
   } catch (e: unknown) {
     console.error("chatRun error:", e)

@@ -17,6 +17,7 @@ import {
   Settings2,
   Plus,
   ArrowUp,
+  Loader2,
   X,
   Globe,
 } from "lucide-react"
@@ -76,12 +77,20 @@ export interface ChatInterfaceProps {
     model?: string
   }) => void
   submitMode?: "send" | "emit"
-  onSubmit?: (payload: { input: string; providerSlug: string; model: string; modelType: ModelType; options?: Record<string, unknown> }) => void
+  onSubmit?: (payload: {
+    input: string
+    providerSlug: string
+    model: string
+    modelType: ModelType
+    options?: Record<string, unknown>
+    attachments?: Array<Record<string, unknown>>
+  }) => void
   initialSelectedModel?: string
   initialProviderSlug?: string
   initialModelType?: ModelType
   initialOptions?: Record<string, unknown>
   autoSendPrompt?: string | null
+  autoSendAttachments?: Array<Record<string, unknown>> | null
   conversationId?: string | null
   onConversationId?: (id: string) => void
   sessionLanguage?: string
@@ -481,6 +490,7 @@ export function ChatInterface({
   initialModelType,
   initialOptions,
   autoSendPrompt,
+  autoSendAttachments,
   conversationId,
   onConversationId,
   sessionLanguage,
@@ -541,11 +551,26 @@ export function ChatInterface({
   const pendingSelectionRef = React.useRef<{ start: number; end: number } | null>(null)
 
   type ChatAttachment =
-    | { id: string; kind: "file"; name: string; size: number; mime: string; file: File }
-    | { id: string; kind: "image"; name: string; size: number; mime: string; file: File; previewUrl: string }
+    | { id: string; kind: "file"; name: string; size: number; mime: string; file?: File; dataUrl?: string }
+    | { id: string; kind: "image"; name: string; size: number; mime: string; file?: File; previewUrl: string; dataUrl?: string }
     | { id: string; kind: "link"; url: string; title?: string }
 
   const [attachments, setAttachments] = React.useState<ChatAttachment[]>([])
+  // Always keep the latest *state* value in a ref so callbacks can read fresh values
+  // even if they are invoked from a stale closure.
+  const attachmentsStateRef = React.useRef<ChatAttachment[]>([])
+  attachmentsStateRef.current = attachments
+  // Avoid race between "attach" (setState async) and immediate "send":
+  // keep a synchronous ref as the source of truth for serialization & optimistic UI.
+  const attachmentsRef = React.useRef<ChatAttachment[]>([])
+  React.useEffect(() => {
+    // Safety net: if any code path updates attachments state directly (e.g. link dialog),
+    // keep the ref in sync so API serialization never misses attachments.
+    attachmentsRef.current = attachments
+  }, [attachments])
+  // Track created object URLs so we can revoke them on unmount (avoid leaks),
+  // while still allowing sent messages to reference them.
+  const createdObjectUrlsRef = React.useRef<Set<string>>(new Set())
   const fileInputRef = React.useRef<HTMLInputElement | null>(null)
   const imageInputRef = React.useRef<HTMLInputElement | null>(null)
 
@@ -553,7 +578,73 @@ export function ChatInterface({
   const [linkUrl, setLinkUrl] = React.useState("")
   const [linkTitle, setLinkTitle] = React.useState("")
 
+
+
+
+  const [isPreparingAttachments, setIsPreparingAttachments] = React.useState(false)
+  const hasPendingAttachments = React.useMemo(
+    () => attachments.some((a) => a.kind !== "link" && !a.dataUrl),
+    [attachments]
+  )
+  React.useEffect(() => {
+    setIsPreparingAttachments(hasPendingAttachments)
+  }, [hasPendingAttachments])
+
+  const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+
+  const fileToDataUrl = React.useCallback(async (file: File): Promise<string> => {
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "")
+      reader.onerror = () => reject(new Error("FILE_READ_FAILED"))
+      reader.readAsDataURL(file)
+    })
+  }, [])
+
+  const compressImageToDataUrl = React.useCallback(
+    async (file: File, maxBytes: number): Promise<string> => {
+      // Best-effort: downscale + JPEG encode until within limit.
+      // If anything fails, fall back to original data URL.
+      const original = await fileToDataUrl(file)
+      if (file.size <= maxBytes) return original
+      if (!String(file.type || "").startsWith("image/")) return original
+
+      async function toBlobFromDataUrl(dataUrl: string): Promise<Blob> {
+        const resp = await fetch(dataUrl)
+        return await resp.blob()
+      }
+
+      const imgBlob = await toBlobFromDataUrl(original)
+      const bitmap = await createImageBitmap(imgBlob)
+
+      const maxDim = 1024
+      const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height))
+      const w = Math.max(1, Math.round(bitmap.width * scale))
+      const h = Math.max(1, Math.round(bitmap.height * scale))
+
+      const canvas = document.createElement("canvas")
+      canvas.width = w
+      canvas.height = h
+      const ctx = canvas.getContext("2d")
+      if (!ctx) return original
+      ctx.drawImage(bitmap, 0, 0, w, h)
+
+      // Try qualities from high to lower.
+      const qualities = [0.9, 0.82, 0.75, 0.68, 0.6]
+      for (const q of qualities) {
+        const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", q))
+        if (!blob) continue
+        if (blob.size > maxBytes) continue
+        const asFile = new File([blob], file.name || "image.jpg", { type: "image/jpeg" })
+        return await fileToDataUrl(asFile)
+      }
+      return original
+    },
+    [fileToDataUrl]
+  )
+
   const addFiles = React.useCallback((files: FileList | null, mode: "mixed" | "image_only") => {
+    console.log("[addFiles] called with", files?.length, "files, mode:", mode)
     if (!files || files.length === 0) return
     const next: ChatAttachment[] = []
     for (const f of Array.from(files)) {
@@ -562,6 +653,7 @@ export function ChatInterface({
       if (mode === "image_only" && !isImg) continue
       if (isImg) {
         const previewUrl = URL.createObjectURL(f)
+        createdObjectUrlsRef.current.add(previewUrl)
         next.push({
           id: `img_${Date.now()}_${Math.random().toString(16).slice(2)}`,
           kind: "image",
@@ -583,36 +675,153 @@ export function ChatInterface({
       }
     }
     if (!next.length) return
-    setAttachments((prev) => [...prev, ...next])
+    const merged = [...attachmentsRef.current, ...next]
+    attachmentsRef.current = merged
+    setAttachments(merged)
+    console.log("[addFiles] merged attachments:", merged.length, "attachmentsRef.current:", attachmentsRef.current.length)
+
+    // Prepare data URLs in the background so send can be blocked until ready.
+    for (const a of next) {
+      if (a.kind === "link") continue
+      void (async () => {
+        const dataUrl = a.kind === "image" ? await compressImageToDataUrl(a.file!, MAX_ATTACHMENT_BYTES) : await fileToDataUrl(a.file!)
+        console.log("[addFiles] dataUrl ready for", a.id, "len:", dataUrl?.length)
+        attachmentsRef.current = attachmentsRef.current.map((it) => (it.id === a.id ? { ...it, dataUrl } : it))
+        setAttachments((prev) => prev.map((it) => (it.id === a.id ? { ...it, dataUrl } : it)))
+      })()
+    }
+  }, [compressImageToDataUrl, fileToDataUrl, MAX_ATTACHMENT_BYTES])
+
+  const handleDropAttachments = React.useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      // Only accept drop in modes that support attachments (same UX as the + menu).
+      const allowMixed = (["text", "video", "music", "audio", "code"] as ModelType[]).includes(selectedType as ModelType)
+      const allowImagesOnly = selectedType === "image"
+      if (!allowMixed && !allowImagesOnly) return
+
+      const files = e.dataTransfer?.files
+      if (!files || files.length === 0) return
+
+      e.preventDefault()
+      e.stopPropagation()
+
+      addFiles(files, allowImagesOnly ? "image_only" : "mixed")
+    },
+    [addFiles, selectedType]
+  )
+
+  const [isDragOverAttachments, setIsDragOverAttachments] = React.useState(false)
+  const dragDepthRef = React.useRef(0)
+
+  const canAcceptDropForCurrentTab = React.useCallback(() => {
+    const allowMixed = (["text", "video", "music", "audio", "code"] as ModelType[]).includes(selectedType as ModelType)
+    const allowImagesOnly = selectedType === "image"
+    return { allowMixed, allowImagesOnly, allowAny: allowMixed || allowImagesOnly }
+  }, [selectedType])
+
+  const handleDragEnterAttachments = React.useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      const { allowAny } = canAcceptDropForCurrentTab()
+      if (!allowAny) return
+
+      const items = e.dataTransfer?.items
+      const hasFile = items && items.length > 0 ? Array.from(items).some((it) => it.kind === "file") : false
+      if (!hasFile) return
+
+      dragDepthRef.current += 1
+      setIsDragOverAttachments(true)
+    },
+    [canAcceptDropForCurrentTab]
+  )
+
+  const handleDragOverAttachments = React.useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      const { allowAny } = canAcceptDropForCurrentTab()
+      if (!allowAny) return
+
+      const items = e.dataTransfer?.items
+      if (items && items.length > 0) {
+        // Only show copy affordance if there is at least one file item.
+        const hasFile = Array.from(items).some((it) => it.kind === "file")
+        if (!hasFile) return
+      }
+      e.preventDefault()
+      e.dataTransfer.dropEffect = "copy"
+    },
+    [canAcceptDropForCurrentTab]
+  )
+
+  const handleDragLeaveAttachments = React.useCallback(() => {
+    // `dragleave` fires when moving between children; use depth to avoid flicker.
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) setIsDragOverAttachments(false)
   }, [])
 
+  const resetDragOverlay = React.useCallback(() => {
+    dragDepthRef.current = 0
+    setIsDragOverAttachments(false)
+  }, [])
+
+  const handlePasteAttachments = React.useCallback(
+    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const items = e.clipboardData?.items
+      if (!items || items.length === 0) return
+
+      const images: File[] = []
+      for (const it of Array.from(items)) {
+        if (it.kind !== "file") continue
+        const mime = String(it.type || "")
+        if (!mime.startsWith("image/")) continue
+        const f = it.getAsFile()
+        if (f) images.push(f)
+      }
+      if (!images.length) return
+
+      // When clipboard contains an image, attach it instead of trying to paste it into the textarea.
+      e.preventDefault()
+      const dt = new DataTransfer()
+      for (const f of images) dt.items.add(f)
+      addFiles(dt.files, "mixed")
+    },
+    [addFiles]
+  )
+
   const removeAttachment = React.useCallback((id: string) => {
-    setAttachments((prev) => {
-      const target = prev.find((a) => a.id === id)
-      if (target && target.kind === "image" && target.previewUrl) {
+    const prev = attachmentsRef.current
+    const target = prev.find((a) => a.id === id)
+    if (target && target.kind === "image" && target.previewUrl) {
+      try {
+        URL.revokeObjectURL(target.previewUrl)
+        createdObjectUrlsRef.current.delete(target.previewUrl)
+      } catch {
+        // ignore
+      }
+    }
+    const next = prev.filter((a) => a.id !== id)
+    attachmentsRef.current = next
+    setAttachments(next)
+  }, [])
+
+  const clearAttachments = React.useCallback(() => {
+    // IMPORTANT: do NOT revoke previewUrl here.
+    // Sent user messages may reference preview_url for "ChatGPT-style" thumbnails.
+    attachmentsRef.current = []
+    setAttachments([])
+  }, [])
+
+  // Cleanup any remaining object URLs on unmount.
+  React.useEffect(() => {
+    const urls = createdObjectUrlsRef.current
+    return () => {
+      for (const url of urls) {
         try {
-          URL.revokeObjectURL(target.previewUrl)
+          URL.revokeObjectURL(url)
         } catch {
           // ignore
         }
       }
-      return prev.filter((a) => a.id !== id)
-    })
-  }, [])
-
-  const clearAttachments = React.useCallback(() => {
-    setAttachments((prev) => {
-      for (const a of prev) {
-        if (a.kind === "image" && a.previewUrl) {
-          try {
-            URL.revokeObjectURL(a.previewUrl)
-          } catch {
-            // ignore
-          }
-        }
-      }
-      return []
-    })
+      urls.clear()
+    }
   }, [])
 
   const buildAttachmentContext = React.useCallback((items: ChatAttachment[]) => {
@@ -1377,9 +1586,58 @@ export function ChatInterface({
   }, [webAllowed])
 
   const handleSend = React.useCallback(
-    async (overrideInput?: string, overrideModelApiId?: string) => {
+    async (overrideInput?: string, overrideModelApiId?: string, overrideApiAttachments?: Array<Record<string, unknown>>) => {
+      if (isPreparingAttachments || hasPendingAttachments) {
+        alert("첨부파일 업로드가 완료되지 않았습니다. 완료 후 다시 시도해 주세요")
+        return
+      }
       const baseInput = (overrideInput ?? prompt).trim()
-      const attachmentCtx = buildAttachmentContext(attachments)
+      const refSnapshot = attachmentsRef.current
+      const stateSnapshot = attachmentsStateRef.current
+      // DEBUG: log attachment sources
+      console.log("[handleSend] refSnapshot.length:", refSnapshot?.length, "stateSnapshot.length:", stateSnapshot?.length, "overrideApiAttachments:", overrideApiAttachments?.length)
+      let attachmentsSnapshot = (refSnapshot && refSnapshot.length ? refSnapshot : stateSnapshot).slice()
+      if (!attachmentsSnapshot.length && overrideApiAttachments && overrideApiAttachments.length) {
+        // Rehydrate already-serialized attachments (e.g. FrontAI -> Timeline navigation auto-send)
+        attachmentsSnapshot = overrideApiAttachments
+          .map((raw, idx): ChatAttachment | null => {
+            const r = isRecord(raw) ? raw : {}
+            const kind = String(r.kind || "").trim()
+            if (kind === "link") {
+              const url = String((r as any).url || "").trim()
+              if (!url) return null
+              return { id: `nav_link_${idx}_${Date.now()}`, kind: "link", url, title: typeof (r as any).title === "string" ? (r as any).title : undefined }
+            }
+            if (kind === "image") {
+              const dataUrl = String((r as any).data_url || "").trim()
+              if (!dataUrl) return null
+              return {
+                id: `nav_img_${idx}_${Date.now()}`,
+                kind: "image",
+                name: String((r as any).name || "image").trim() || "image",
+                mime: String((r as any).mime || "image/*").trim() || "image/*",
+                size: Number((r as any).size || 0),
+                previewUrl: dataUrl,
+                dataUrl,
+              }
+            }
+            if (kind === "file") {
+              const dataUrl = String((r as any).data_url || "").trim()
+              if (!dataUrl) return null
+              return {
+                id: `nav_file_${idx}_${Date.now()}`,
+                kind: "file",
+                name: String((r as any).name || "file").trim() || "file",
+                mime: String((r as any).mime || "application/octet-stream").trim() || "application/octet-stream",
+                size: Number((r as any).size || 0),
+                dataUrl,
+              }
+            }
+            return null
+          })
+          .filter(Boolean) as ChatAttachment[]
+      }
+      const attachmentCtx = buildAttachmentContext(attachmentsSnapshot)
       const input = `${baseInput}${attachmentCtx ? `\n\n${attachmentCtx}` : ""}`.trim()
       if (!input) return
 
@@ -1413,21 +1671,44 @@ export function ChatInterface({
       onMessage?.({
         role: "user",
         content: input,
-        contentJson: { text: input, options: finalOptions, attachments: attachments.map((a) => (a.kind === "link" ? { kind: "link", url: a.url, title: a.title || "" } : { kind: a.kind, name: a.name, mime: a.mime, size: a.size })) },
+        contentJson: {
+          text: input,
+          options: finalOptions,
+          attachments: attachmentsSnapshot.map((a) =>
+            a.kind === "link"
+              ? { kind: "link", url: a.url, title: a.title || "" }
+              : a.kind === "image"
+                ? { kind: "image", name: a.name, mime: a.mime, size: a.size, preview_url: a.previewUrl }
+                : { kind: a.kind, name: a.name, mime: a.mime, size: a.size }
+          ),
+        },
         summary: userSummary(baseInput),
         providerSlug,
         model: modelApiId,
       })
       setPrompt("")
-      clearAttachments()
+
+      // Serialize attachments for API (File -> data_url). Limit size to avoid huge payloads.
+      const maxAttachments = 6
+      const apiAttachments: Array<Record<string, unknown>> = []
+      for (const a of attachmentsSnapshot.slice(0, maxAttachments)) {
+        if (a.kind === "link") {
+          apiAttachments.push({ kind: "link", url: a.url, title: a.title || "" })
+          continue
+        }
+        if (!a.dataUrl) continue
+        apiAttachments.push({ kind: a.kind, name: a.name, mime: a.mime, size: a.size, data_url: a.dataUrl })
+      }
 
       if (submitMode === "emit") {
-        onSubmit?.({ input, providerSlug, model: modelApiId, modelType: sendModelType, options: finalOptions })
+        onSubmit?.({ input, providerSlug, model: modelApiId, modelType: sendModelType, options: finalOptions, attachments: apiAttachments })
+        clearAttachments()
         return
       }
 
       try {
         const maxTokens = sendModelType === "text" ? 2048 : 512
+
         const webAllowedForRequest = Boolean(webAllowed) && sendModelType === "text"
         const webCountry = webAllowedForRequest ? inferCountryFromBrowser() : null
         const webLanguages =
@@ -1449,6 +1730,14 @@ export function ChatInterface({
             provider_slug: providerSlug,
             model_api_id: modelApiId,
             options: finalOptions,
+            attachments: apiAttachments,
+            client_debug: {
+              attachments_state_len: stateSnapshot.length,
+              attachments_ref_len: refSnapshot.length,
+              attachments_snapshot: attachmentsSnapshot.length,
+              api_attachments: apiAttachments.length,
+              pending_attachments: attachmentsSnapshot.filter((a) => a.kind !== "link" && !a.dataUrl).length,
+            },
             web_allowed: webAllowedForRequest,
             web_search_country: webCountry,
             web_search_languages: webLanguages,
@@ -1490,7 +1779,9 @@ export function ChatInterface({
           providerSlug,
           model: chosenModel,
         })
+        clearAttachments()
       } catch (e) {
+        setIsPreparingAttachments(false)
         const msg = e instanceof Error ? e.message : String(e)
         onMessage?.({
           role: "assistant",
@@ -1501,13 +1792,13 @@ export function ChatInterface({
           model: modelApiId,
         })
       } finally {
+        setIsPreparingAttachments(false)
         handleSendInFlightRef.current.delete(sendKey)
       }
     },
     [
       assistantSummary,
       authHeaders,
-      attachments,
       buildAttachmentContext,
       clearAttachments,
       conversationId,
@@ -1522,6 +1813,7 @@ export function ChatInterface({
       onConversationId,
       onMessage,
       onSubmit,
+      attachments,
       prompt,
       runtimeOptions,
       selectedCapabilities,
@@ -1530,6 +1822,8 @@ export function ChatInterface({
       submitMode,
       userSummary,
       webAllowed,
+      isPreparingAttachments,
+      hasPendingAttachments,
     ]
   )
 
@@ -1554,9 +1848,10 @@ export function ChatInterface({
 
     if (autoSentRef.current === p) return
     autoSentRef.current = p
-    void handleSend(p, desiredModelApiId || undefined)
+    void handleSend(p, desiredModelApiId || undefined, autoSendAttachments || undefined)
   }, [
     autoSendPrompt,
+    autoSendAttachments,
     currentProviderGroup?.provider?.id,
     currentProviderGroup?.provider?.slug,
     handleSend,
@@ -1742,7 +2037,23 @@ export function ChatInterface({
 
               {uiProviderGroup && (
                 // 채팅창 영역 부분
-                <div className="bg-background border border-border box-border flex flex-col gap-0 items-center justify-between py-3 px-4 relative rounded-2xl shadow-sm shrink-0 w-full h-full">
+                <div
+                  className="bg-background border border-border box-border flex flex-col gap-0 items-center justify-between py-3 px-4 relative rounded-2xl shadow-sm shrink-0 w-full h-full"
+                  onDragEnter={handleDragEnterAttachments}
+                  onDragOver={handleDragOverAttachments}
+                  onDragLeave={handleDragLeaveAttachments}
+                  onDrop={(e) => {
+                    handleDropAttachments(e)
+                    resetDragOverlay()
+                  }}
+                >
+                  {isDragOverAttachments ? (
+                    <div className="absolute inset-2 z-40 pointer-events-none rounded-xl border-2 border-primary bg-primary/10 flex items-center justify-center">
+                      <div className="text-sm font-medium text-foreground">
+                        {selectedType === "image" ? "이미지를 놓아 첨부하세요" : "파일/이미지를 놓아 첨부하세요"}
+                      </div>
+                    </div>
+                  ) : null}
                   {/* Compact mode floating panel: overlays above the chat card, does NOT affect layout height */}
                   {isCompact && isCompactPanelOpen ? (
                     <div ref={compactPanelFloatingRef} className="absolute left-0 right-0 bottom-full mb-2 z-50">
@@ -1837,7 +2148,8 @@ export function ChatInterface({
                             }
                           }
                         }}
-                        onPaste={() => {
+                        onPaste={(e) => {
+                          handlePasteAttachments(e)
                           // Sometimes scrollHeight isn't stable until after paste is applied.
                           window.requestAnimationFrame(() => resizePromptTextarea(promptInputRef.current))
                         }}
@@ -1965,6 +2277,9 @@ export function ChatInterface({
                               }
                             })
                           }}
+                          onPaste={(e) => {
+                            handlePasteAttachments(e)
+                          }}
                           onKeyDown={(e) => {
                             if (e.key !== "Enter") return
                             if ((e.nativeEvent as { isComposing?: boolean })?.isComposing) return
@@ -2020,8 +2335,12 @@ export function ChatInterface({
                       </DropdownMenuContent>
                     </DropdownMenu>
 
-                    <Button className="rounded-full h-[36px] w-[36px] p-0" onClick={() => void handleSend()} disabled={!prompt.trim()}>
-                      <ArrowUp className="size-4" />
+                    <Button
+                      className="rounded-full h-[36px] w-[36px] p-0"
+                      onClick={() => void handleSend()}
+                      disabled={!prompt.trim() || isPreparingAttachments || hasPendingAttachments}
+                    >
+                      {isPreparingAttachments ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
                     </Button>   
                     </div>
 

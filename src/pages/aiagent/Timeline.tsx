@@ -179,6 +179,7 @@ type TimelineNavState = {
     model: string
     modelType?: "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
     options?: Record<string, unknown> | null
+    attachments?: Array<Record<string, unknown>> | null
     sessionLanguage?: string | null
   }
 }
@@ -627,6 +628,7 @@ export default function Timeline() {
     model: string
     modelType?: "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
     options?: Record<string, unknown> | null
+    attachments?: Array<Record<string, unknown>> | null
     sessionLanguage?: string | null
   } | null>(null)
 
@@ -1401,9 +1403,36 @@ export default function Timeline() {
                      <div key={m.id || `u_${idx}`} className="w-full flex justify-end">
                        <div className="flex items-end gap-2 lg:w-full">
                          <div className="flex lg:flex-row flex-col-reverse gap-4 w-full justify-end items-end lg:items-start">
-                           <div className="bg-secondary p-3 rounded-lg max-w-[720px]">
-                             <p className="text-base text-primary whitespace-pre-wrap">{m.content}</p>
-                           </div>
+                          <div className="bg-secondary p-3 rounded-lg max-w-[720px]">
+                            {(() => {
+                              const normalized = normalizeContentJson(m.contentJson)
+                              const atts = normalized && Array.isArray((normalized as any).attachments) ? ((normalized as any).attachments as any[]) : []
+                              const token = typeof localStorage !== "undefined" ? localStorage.getItem("token") : null
+                              const withToken = (u: string) => {
+                                const url = String(u || "")
+                                if (!url) return ""
+                                if (!token) return url
+                                if (!url.startsWith("/api/ai/media/assets/")) return url
+                                return `${url}?token=${encodeURIComponent(String(token))}`
+                              }
+                              const images = atts.filter((a) => a && a.kind === "image" && ((typeof a.url === "string" && a.url) || (typeof a.preview_url === "string" && a.preview_url)))
+                              if (!images.length) return null
+                              return (
+                                <div className="mb-2 flex flex-wrap gap-2 justify-end">
+                                  {images.slice(0, 4).map((a, i) => (
+                                    <img
+                                      key={`${m.id || idx}_att_${i}`}
+                                      src={withToken(String((a.url as any) || (a.preview_url as any) || ""))}
+                                      alt={typeof a.name === "string" ? a.name : "attachment"}
+                                      className="h-20 w-20 object-cover rounded-md border"
+                                      loading="lazy"
+                                    />
+                                  ))}
+                                </div>
+                              )
+                            })()}
+                            <p className="text-base text-primary whitespace-pre-wrap">{m.content}</p>
+                          </div>
                            <div className="size-6 bg-teal-500 rounded-[4px] flex items-center justify-center shrink-0">
                              <span className="text-white text-sm font-bold">김</span>
                            </div>
@@ -1551,6 +1580,7 @@ export default function Timeline() {
               initialModelType={initialModelTypeForChat}
               initialOptions={initialOptionsForChat}
               autoSendPrompt={initialToSend?.input || null}
+              autoSendAttachments={initialToSend?.attachments || null}
               sessionLanguage={sessionLanguageForChat}
               conversationId={activeConversationId}
               onConversationId={(id) => {

@@ -35,7 +35,10 @@ const app = express()
 const PORT = process.env.PORT || 3007
 
 app.use(cors())
-app.use(express.json())
+// Attachments can include image data URLs (base64). Increase JSON limit to avoid 413 PayloadTooLargeError.
+// (We still clamp client-side to keep payloads reasonable.)
+app.use(express.json({ limit: "25mb" }))
+app.use(express.urlencoded({ extended: true, limit: "25mb" }))
 
 // AI Providers / Credentials 관리 API
 // - Admin 화면에서 사용하는 설정 API
