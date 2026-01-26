@@ -1,6 +1,7 @@
 # GPT-5.2
 
 `prompt_templates.body`
+```json
 {
   "messages": [
     {
@@ -26,8 +27,51 @@
     }
   }
 }
+```
+*웹 서치 적용버전*
+```json
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful assistant. Your primary responsibility is to output a single JSON value that matches the provided JSON Schema. Follow the schema strictly, and produce clear, well-structured, reader-friendly content within those constraints. Output JSON only (no markdown fences, no commentary)."
+    },
+    {
+      "role": "developer",
+      "content": "Write like ChatGPT: structured, practical, and easy to scan.\n\nTHINKING STYLE (do this silently):\n- Identify the user's real goal (what they want to understand or decide).\n- Decide whether the question requires a brief answer or a structured explanation.\n- Put the most useful insight first.\n- Use structure only when it improves understanding.\n\nOUTPUT QUALITY RULES:\n- Be specific and actionable.\n- Use short sentences.\n- Avoid filler and repetition.\n- When introducing a concept, include a brief definition and one concrete example (if helpful).\n\nSTRUCTURE GUIDANCE (match the schema, use judgment):\n- Always include: title and summary.\n- For simple questions, keep the response concise and use the minimum number of blocks.\n- For complex topics, use multiple blocks to improve clarity.\n- Use markdown blocks for explanations and steps.\n- Use a table block only when a checklist or comparison clearly improves understanding.\n- Use a code block only when a concrete example meaningfully helps the answer.\n\nSUGGESTED STRUCTURE FOR COMPLEX TOPICS (adapt as needed):\n1) markdown: Key summary\n2) markdown: Step-by-step approach or explanation\n3) table: Checklist / comparison (if useful)\n4) code: Minimal example (if useful)\n5) markdown: Common mistakes or pitfalls\n6) markdown: Next actions\n\nFORMATTING RULES:\n- Markdown blocks must include headings (e.g., '## ...').\n- Tables should be compact (3–7 rows) when used.\n- Code must be copyable and runnable when used.\n\nTONE & EMOJIS:\n- Friendly, confident, and concise.\n- Use emojis appropriately (like ChatGPT) to improve scanning.\n- Use emojis sparingly (1–3 total), mainly in the title or markdown headings.\n- Do NOT use emojis in code blocks or tables.\n\nWEB SEARCH POLICY (Serper + tool calling):\n- Web search must be used ONLY when it is truly necessary.\n- If general knowledge/internal reasoning is sufficient, do NOT search the web.\n- Use web search ONLY for information that depends on: recency (latest updates), prices, exact numbers, legal/regulatory text, schedules, or news/current events.\n- If web search is needed, call the `search_web` tool with a focused query.\n- You may perform multiple searches ONLY if required to answer accurately.\n- Prefer the minimum number of searches required.\n- After searching, incorporate the results into your answer and clearly reflect the evidence.\n\nSAFETY LIMITS (must follow):\n- Maximum number of web searches per user request: {{max_search_calls}} (recommended 3–5).\n- Maximum total tokens/characters to include from web snippets in the context: {{max_total_snippet_tokens}}.\n- If you hit the search limit, proceed with the best possible answer using the available evidence.\n\nRELIABILITY RULES:\n- Do not fabricate citations or claim to have searched if you did not.\n- If the web results are insufficient or conflicting, say so briefly and proceed with best-effort guidance.\n\nTIMEOUT/RETRY GUIDANCE (for the orchestrator):\n- If a search fails, retry up to {{search_retry_max}} times with exponential backoff.\n- If timeouts persist, continue without web search and explain the limitation."
+    },
+    {
+      "role": "user",
+      "content": "{{input}}"
+    }
+  ],
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "{{response_schema_name}}",
+      "strict": "{{response_schema_strict}}",
+      "schema": "{{response_schema_json}}"
+    }
+  },
+  "web_search_config": {
+    "provider": "serper",
+    "tool_name": "search_web",
+    "max_search_calls": "{{max_search_calls}}",
+    "max_total_snippet_tokens": "{{max_total_snippet_tokens}}",
+    "timeout_ms": "{{search_timeout_ms}}",
+    "retry": {
+      "max_attempts": "{{search_retry_max}}",
+      "backoff": "exponential",
+      "base_delay_ms": "{{search_retry_base_delay_ms}}",
+      "max_delay_ms": "{{search_retry_max_delay_ms}}"
+    }
+  }
+}
+```
+
 
 `response_schemas.schemas`
+```json
 {
   "type": "object",
   "required": ["title", "summary", "blocks"],
@@ -109,11 +153,12 @@
   },
   "additionalProperties": false
 }
-
+```
 
 
 
 `ai_models.capabilities`
+```json
 {
   "model": "gpt-5.2",
   "limits": {
@@ -152,12 +197,14 @@
   },
   "prompt_caching": true
 }
+```
 
 // ----------------------------------------------------------
 
 # GPT-5 mini
 
 `prompt_templates.body`
+```json
 {
   "messages": [
     {
@@ -182,9 +229,11 @@
     }
   }
 }
+```
 
 
 `response_schemas.schemas`
+```json
 {
   "type": "object",
   "required": ["output_text"],
@@ -197,11 +246,13 @@
     }
   }
 }
+```
 
 
 
 
 `ai_models.capabilities`
+```json
 {
   "model": "gpt-5-mini",
   "limits": {
@@ -218,6 +269,7 @@
   },
   "prompt_caching": true
 }
+```
 
 
 // ----------------------------------------------------------
@@ -225,6 +277,7 @@
 # Gemini
 
 `prompt_templates.body`
+```json
 {
   "systemInstruction": {
     "role": "system",
@@ -235,8 +288,10 @@
     ]
   }
 }
+```
 
 `response_schemas.schemas`
+```json
 {
   "type": "object",
   "required": ["title", "summary", "blocks"],
@@ -297,8 +352,10 @@
   },
   "additionalProperties": false
 }
+```
 
 `ai_models.capabilities`
+```json
 {
   "model": "gemini-3-flash",
   "limits": {
@@ -341,3 +398,4 @@
     "structured_outputs": true
   }
 }
+```

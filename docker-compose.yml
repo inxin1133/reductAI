@@ -146,6 +146,7 @@ services:
       - POSTGRES_HOST=${POSTGRES_HOST}
       - POSTGRES_PORT=${POSTGRES_PORT}
       - JWT_SECRET=${JWT_SECRET}
+      - SERPER_API_KEY=${SERPER_API_KEY}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

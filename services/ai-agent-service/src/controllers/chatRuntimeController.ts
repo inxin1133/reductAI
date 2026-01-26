@@ -1095,6 +1095,11 @@ export async function chatRun(req: Request, res: Response) {
       provider_id,
       provider_slug,
       options,
+      // web search toggle (text/chat only)
+      web_allowed,
+      // browser-derived hints (best-effort)
+      web_search_country,
+      web_search_languages,
     }: {
       model_type?: ModelType
       conversation_id?: string | null
@@ -1105,6 +1110,9 @@ export async function chatRun(req: Request, res: Response) {
       provider_id?: string | null
       provider_slug?: string | null
       options?: Record<string, unknown>
+      web_allowed?: boolean
+      web_search_country?: string | null
+      web_search_languages?: string[] | null
     } = req.body || {}
 
     const prompt = String(userPrompt || "").trim()
@@ -1281,6 +1289,13 @@ export async function chatRun(req: Request, res: Response) {
       response_schema_name: responseSchema?.name || "",
       response_schema_json: responseSchema?.schema || {},
       response_schema_strict: responseSchema?.strict !== false,
+      // Web search policy defaults (used by prompt_templates if present)
+      max_search_calls: 3,
+      max_total_snippet_tokens: 1200,
+      search_timeout_ms: 10000,
+      search_retry_max: 2,
+      search_retry_base_delay_ms: 500,
+      search_retry_max_delay_ms: 2000,
     }
     for (const [k, v] of Object.entries(mergedOptions || {})) {
       if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean") continue
@@ -1333,48 +1348,53 @@ export async function chatRun(req: Request, res: Response) {
 
     let out: { output_text: string; raw: unknown; content: Record<string, unknown> } | null = null
 
+    const webAllowed = Boolean(web_allowed) && mt === "text"
+
     // ✅ DB-driven execution: if a model_api_profile exists for this provider/purpose, try it first.
     // Safe rollout: if profile is missing or fails, we fall back to the existing provider_family-specific code.
     const purpose: ModelApiPurpose = (mt === "text" ? "chat" : mt) as ModelApiPurpose
     let usedProfileKey: string | null = null
     let profileAttempted = false
     let profileError: unknown = null
-    try {
-      const profile = await loadModelApiProfile({ tenantId, providerId, modelDbId: chosenModelDbId, purpose })
-      if (profile) {
-        usedProfileKey = profile.profile_key
-        profileAttempted = true
-        const auth = await resolveAuthForModelApiProfile({ providerId, authProfileId: profile.auth_profile_id })
-        out = await executeHttpJsonProfile({
-          apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-          apiKey: auth.apiKey,
-          accessToken: auth.accessToken,
-          modelApiId,
-          purpose,
-          prompt,
-          input,
-          language: finalLang,
-          maxTokens: safeMaxTokens,
-          history,
-          options: mergedOptions,
-          injectedTemplate,
-          profile,
-          configVars: auth.configVars,
-        })
-        // Defensive fallback:
-        // Some model_api_profiles mappings (especially for OpenAI structured outputs) can yield empty text
-        // even though the provider returned a valid JSON payload. In that case, fall back to the built-in
-        // provider client (which has richer extraction + schema handling).
-        if (!out.output_text || !String(out.output_text).trim()) {
-          console.warn("[model_api_profiles] empty output_text -> fallback to provider client:", usedProfileKey)
-          out = null
+    // Web-search mode is orchestration-controlled. To guarantee `tools` gating, we skip DB-profile execution for text chats.
+    if (!webAllowed) {
+      try {
+        const profile = await loadModelApiProfile({ tenantId, providerId, modelDbId: chosenModelDbId, purpose })
+        if (profile) {
+          usedProfileKey = profile.profile_key
+          profileAttempted = true
+          const auth = await resolveAuthForModelApiProfile({ providerId, authProfileId: profile.auth_profile_id })
+          out = await executeHttpJsonProfile({
+            apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+            apiKey: auth.apiKey,
+            accessToken: auth.accessToken,
+            modelApiId,
+            purpose,
+            prompt,
+            input,
+            language: finalLang,
+            maxTokens: safeMaxTokens,
+            history,
+            options: mergedOptions,
+            injectedTemplate,
+            profile,
+            configVars: auth.configVars,
+          })
+          // Defensive fallback:
+          // Some model_api_profiles mappings (especially for OpenAI structured outputs) can yield empty text
+          // even though the provider returned a valid JSON payload. In that case, fall back to the built-in
+          // provider client (which has richer extraction + schema handling).
+          if (!out.output_text || !String(out.output_text).trim()) {
+            console.warn("[model_api_profiles] empty output_text -> fallback to provider client:", usedProfileKey)
+            out = null
+          }
         }
+      } catch (e) {
+        console.warn("[model_api_profiles] execution failed -> fallback:", usedProfileKey, e)
+        profileAttempted = true
+        profileError = e
+        out = null
       }
-    } catch (e) {
-      console.warn("[model_api_profiles] execution failed -> fallback:", usedProfileKey, e)
-      profileAttempted = true
-      profileError = e
-      out = null
     }
 
     // Video is DB-profile driven. If we have no profile (or the profile errored), don't fall back to a generic legacy "not implemented".
@@ -1403,17 +1423,206 @@ export async function chatRun(req: Request, res: Response) {
       // Fallback: 기존 provider별 하드코딩 실행기
       if (mt === "text") {
         if (providerKey === "openai") {
-        const r = await openaiSimulateChat({
-          apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-          apiKey: auth.apiKey,
-          model: modelApiId,
-          input,
-          maxTokens: safeMaxTokens,
-          outputFormat: "block_json",
-          templateBody: injectedTemplate || undefined,
-          responseSchema,
-        })
-        out = { ...r, content: { output_text: r.output_text, raw: r.raw } }
+        if (webAllowed) {
+          const serperKey = String(process.env.SERPER_API_KEY || "").trim()
+          if (!serperKey) {
+            return res.status(500).json({
+              message: "Web search is enabled, but SERPER_API_KEY is not configured on ai-agent-service.",
+              details: "Set SERPER_API_KEY in ai-agent-service environment (.env) and restart the service.",
+            })
+          }
+
+          const { serperSearch } = await import("../services/serperSearch")
+
+          function normLang(x: string) {
+            const s = String(x || "").trim().toLowerCase()
+            return (s.split(/[-_]/)[0] || "en").slice(0, 8)
+          }
+          function normCountry(x: string) {
+            const s = String(x || "").trim().toLowerCase()
+            return (s || "").replace(/[^a-z]/g, "").slice(0, 2) || ""
+          }
+          // 1) Country: browser hint first (best-effort)
+          // 2) Fallback: language -> country heuristic
+          const lang2 = normLang(finalLang)
+          const countryFromClient = normCountry(web_search_country || "")
+          const countryFromLang =
+            lang2 === "ko" ? "kr" : lang2 === "ja" ? "jp" : lang2 === "zh" ? "cn" : lang2 === "en" ? "us" : "us"
+          const gl = countryFromClient || countryFromLang
+
+          // Language priority: system language (finalLang) first, then browser hint list as fallback.
+          const browserLangs = Array.isArray(web_search_languages) ? web_search_languages : []
+          const hl = lang2 || (browserLangs[0] ? normLang(browserLangs[0]) : "en")
+
+          const maxSearchCalls = 3
+
+          const templateMsgs =
+            injectedTemplate && typeof injectedTemplate === "object" && !Array.isArray(injectedTemplate)
+              ? (injectedTemplate as Record<string, unknown>).messages
+              : null
+          type ToolCall = { id: string; type?: string; function: { name: string; arguments: string } }
+          type ChatMsg =
+            | { role: "system" | "developer" | "user" | "assistant"; content: string; tool_calls?: ToolCall[] }
+            | { role: "tool"; tool_call_id: string; content: string }
+
+          const systemDevMsgs: ChatMsg[] = Array.isArray(templateMsgs)
+            ? templateMsgs
+                .map((m: any): ChatMsg | null => {
+                  const role = typeof m?.role === "string" ? m.role : ""
+                  const content = typeof m?.content === "string" ? m.content : ""
+                  if ((role === "system" || role === "developer") && content) {
+                    return { role: role as "system" | "developer", content }
+                  }
+                  return null
+                })
+                .filter((x): x is ChatMsg => Boolean(x))
+            : []
+
+          const tools = [
+            {
+              type: "function",
+              function: {
+                name: "search_web",
+                description: "Search the web for up-to-date information. Return concise results with titles, links, and snippets.",
+                parameters: {
+                  type: "object",
+                  properties: {
+                    query: { type: "string", description: "Search query" },
+                  },
+                  required: ["query"],
+                },
+              },
+            },
+          ] as const
+
+          const apiRoot = String((auth.endpointUrl || base.apiBaseUrl) || "").replace(/\/$/, "")
+          async function postOpenAi(body: Record<string, unknown>) {
+            async function doPost(payload: Record<string, unknown>) {
+              const r = await fetch(`${apiRoot}/chat/completions`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${auth.apiKey}`, "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+              })
+              const j = await r.json().catch(() => ({}))
+              return { res: r, json: j }
+            }
+
+            const first = await doPost(body)
+            if (first.res.ok) return first
+
+            const errStr = JSON.stringify(first.json || {})
+            const isUnsupportedResponseFormat =
+              first.res.status === 400 && /(response_format|json_object|json_schema|Invalid schema|unsupported)/i.test(errStr)
+            if (isUnsupportedResponseFormat) {
+              const copy = { ...body }
+              delete (copy as any).response_format
+              const retry = await doPost(copy)
+              if (retry.res.ok) return retry
+              return retry
+            }
+
+            const isUnsupportedMaxCompletion =
+              first.res.status === 400 && /max_completion_tokens/i.test(errStr) && /unsupported|unknown/i.test(errStr)
+            if (isUnsupportedMaxCompletion) {
+              const copy = { ...body }
+              const mct = typeof copy.max_completion_tokens === "number" ? copy.max_completion_tokens : undefined
+              delete (copy as any).max_completion_tokens
+              if (typeof mct === "number") copy.max_tokens = mct
+              const retry = await doPost(copy)
+              if (retry.res.ok) return retry
+              return retry
+            }
+
+            return first
+          }
+
+          function extractAssistant(json: any): { content: string; tool_calls: ToolCall[] } {
+            const msg = json?.choices?.[0]?.message
+            const content = typeof msg?.content === "string" ? msg.content : ""
+            const tool_calls = Array.isArray(msg?.tool_calls) ? (msg.tool_calls as ToolCall[]) : []
+            return { content, tool_calls }
+          }
+
+          const messages: ChatMsg[] = [...systemDevMsgs, { role: "user", content: input }]
+
+          let lastRaw: unknown = null
+          let finalText = ""
+
+          for (let i = 0; i < maxSearchCalls + 2; i++) {
+            const allowTools = webAllowed && i < maxSearchCalls
+            const { res: r0, json: j0 } = await postOpenAi({
+              model: modelApiId,
+              messages,
+              ...(allowTools ? { tools, tool_choice: "auto" } : {}),
+              // keep JSON-only behavior consistent with existing UI parser
+              response_format: { type: "json_object" },
+              max_completion_tokens: Math.min(Math.max(safeMaxTokens, 1024), 4096),
+            })
+            lastRaw = j0
+            if (!r0.ok) throw new Error(`OPENAI_TOOL_LOOP_FAILED_${r0.status}@${apiRoot}:${JSON.stringify(j0)}`)
+
+            const a = extractAssistant(j0)
+            if (!a.tool_calls.length) {
+              finalText = String(a.content || "").trim()
+              break
+            }
+
+            // IMPORTANT: For OpenAI chat/completions, tool result messages must follow
+            // the assistant message that contains `tool_calls`.
+            messages.push({ role: "assistant", content: String(a.content || ""), tool_calls: a.tool_calls })
+
+            // Execute tool calls (only the ones we support)
+            for (const tc of a.tool_calls) {
+              if (!tc?.id || tc.function?.name !== "search_web") continue
+              let q = ""
+              try {
+                const parsed = JSON.parse(tc.function.arguments || "{}")
+                q = typeof parsed?.query === "string" ? parsed.query : ""
+              } catch {
+                q = ""
+              }
+              q = String(q || "").trim()
+              if (!q) {
+                messages.push({
+                  role: "tool",
+                  tool_call_id: tc.id,
+                  content: JSON.stringify({ error: "INVALID_QUERY", message: "query is required" }),
+                })
+                continue
+              }
+              const result = await serperSearch({ apiKey: serperKey, query: q, country: gl, language: hl, limit: 5, timeoutMs: 10000 })
+              // Keep tool payload compact (raw is kept server-side only if needed)
+              messages.push({
+                role: "tool",
+                tool_call_id: tc.id,
+                content: JSON.stringify({ query: result.query, country: result.country, language: result.language, organic: result.organic }),
+              })
+            }
+          }
+
+          if (!finalText) {
+            // Last resort: ensure UI has something renderable.
+            finalText = JSON.stringify({
+              title: "응답 생성 실패",
+              summary: "도구 루프에서 최종 응답을 받지 못했습니다. 다시 시도해 주세요.",
+              blocks: [{ type: "markdown", markdown: "## 실패\n웹검색 도구 처리 중 최종 응답이 비어 있습니다.\n\n- 다시 시도하거나\n- 웹 허용을 끄고 재시도해 보세요." }],
+            })
+          }
+
+          out = { output_text: finalText, raw: lastRaw, content: { output_text: finalText, raw: lastRaw as any } }
+        } else {
+          const r = await openaiSimulateChat({
+            apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+            apiKey: auth.apiKey,
+            model: modelApiId,
+            input,
+            maxTokens: safeMaxTokens,
+            outputFormat: "block_json",
+            templateBody: injectedTemplate || undefined,
+            responseSchema,
+          })
+          out = { ...r, content: { output_text: r.output_text, raw: r.raw } }
+        }
         } else if (providerKey === "anthropic") {
         const r = await anthropicSimulateChat({
           apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,

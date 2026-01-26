@@ -128,6 +128,25 @@ const CHAT_PROMPT_SUGGESTIONS_API = "/api/ai/chat-ui/prompt-suggestions"
 const CHAT_RUN_API = "/api/ai/chat/run"
 const FRONT_AI_LAST_SELECTION_KEY = "reductai.frontai.lastSelection.v1"
 
+function inferCountryFromBrowser(): string | null {
+  try {
+    const langs =
+      typeof navigator !== "undefined" && Array.isArray(navigator.languages) && navigator.languages.length
+        ? navigator.languages
+        : typeof navigator !== "undefined" && navigator.language
+          ? [navigator.language]
+          : []
+    for (const l of langs) {
+      const m = String(l).match(/[-_](?<cc>[A-Z]{2})\b/)
+      const cc = (m?.groups as unknown as { cc?: unknown } | undefined)?.cc
+      if (typeof cc === "string" && cc) return cc.toLowerCase()
+    }
+  } catch {
+    // ignore
+  }
+  return null
+}
+
 function tabLabel(t: ModelType) {
   const map: Record<ModelType, string> = {
     text: "채팅",
@@ -1340,6 +1359,23 @@ export function ChatInterface({
 
   const hasOptions = ["image", "video", "audio", "music"].includes(uiSelectedType)
 
+  // Web search toggle (text/chat only)
+  const [webAllowed, setWebAllowed] = React.useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem("reductai:web_allowed")
+      return v === "1"
+    } catch {
+      return false
+    }
+  })
+  React.useEffect(() => {
+    try {
+      localStorage.setItem("reductai:web_allowed", webAllowed ? "1" : "0")
+    } catch {
+      // ignore
+    }
+  }, [webAllowed])
+
   const handleSend = React.useCallback(
     async (overrideInput?: string, overrideModelApiId?: string) => {
       const baseInput = (overrideInput ?? prompt).trim()
@@ -1392,6 +1428,14 @@ export function ChatInterface({
 
       try {
         const maxTokens = sendModelType === "text" ? 2048 : 512
+        const webAllowedForRequest = Boolean(webAllowed) && sendModelType === "text"
+        const webCountry = webAllowedForRequest ? inferCountryFromBrowser() : null
+        const webLanguages =
+          webAllowedForRequest && typeof navigator !== "undefined" && Array.isArray(navigator.languages) && navigator.languages.length
+            ? navigator.languages
+            : webAllowedForRequest && typeof navigator !== "undefined" && navigator.language
+              ? [navigator.language]
+              : null
         const res = await fetch(CHAT_RUN_API, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeaders() },
@@ -1405,6 +1449,9 @@ export function ChatInterface({
             provider_slug: providerSlug,
             model_api_id: modelApiId,
             options: finalOptions,
+            web_allowed: webAllowedForRequest,
+            web_search_country: webCountry,
+            web_search_languages: webLanguages,
           }),
         })
 
@@ -1482,6 +1529,7 @@ export function ChatInterface({
       sessionLanguage,
       submitMode,
       userSummary,
+      webAllowed,
     ]
   )
 
@@ -1871,10 +1919,18 @@ export function ChatInterface({
                       </DropdownMenu>
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <div className="flex items-center gap-1"><span className="text-sm hidden md:block text-muted-foreground">웹검색</span><Globe className="size-4 md:hidden text-muted-foreground" /><Switch /></div>
+                          {uiSelectedType === "text" ? (
+                            <div className="flex items-center gap-1">
+                              <span className="text-sm hidden md:block text-muted-foreground">웹 허용</span>
+                              <Globe className="size-4 md:hidden text-muted-foreground" />
+                              <Switch checked={webAllowed} onCheckedChange={(v) => setWebAllowed(Boolean(v))} />
+                            </div>
+                          ) : (
+                            <div className="hidden" />
+                          )}
                         </TooltipTrigger>
                         <TooltipContent>
-                          <p>웹검색을 통해 최신 정보를 반영합니다.</p>
+                          <p>텍스트(채팅) 모드에서만, 필요시 웹검색(Serper)을 통해 최신 정보를 반영합니다.</p>
                         </TooltipContent>
                       </Tooltip>
                       {/* Timeline compact: single-line prompt textarea (looks like input, switches to multi textarea when it wraps) */}
