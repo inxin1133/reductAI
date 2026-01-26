@@ -533,8 +533,22 @@ export function ChatInterface({
 
   const promptInputRef = React.useRef<HTMLTextAreaElement>(null)
 
-  // 모델별 옵션 유지(세션 유지): in-memory + sessionStorage
-  const [runtimeOptionsByModel, setRuntimeOptionsByModel] = React.useState<Record<string, Record<string, unknown>>>({})
+  // 모델별 옵션 유지(영구 저장): in-memory + localStorage
+  const [runtimeOptionsByModel, setRuntimeOptionsByModel] = React.useState<Record<string, Record<string, unknown>>>(() => {
+    // 초기화 시 localStorage에서 불러오기
+    try {
+      const raw = localStorage.getItem("reductai.chat.runtimeOptionsByModel.v1")
+      if (raw) {
+        const parsed: unknown = JSON.parse(raw)
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          return parsed as Record<string, Record<string, unknown>>
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return {}
+  })
   const STORAGE_KEY = "reductai.chat.runtimeOptionsByModel.v1"
 
   // scroll
@@ -1158,19 +1172,7 @@ export function ChatInterface({
     return selectedModel?.capabilities ?? {}
   }, [selectedModel?.capabilities])
 
-  React.useEffect(() => {
-    // load from sessionStorage once
-    try {
-      const raw = sessionStorage.getItem(STORAGE_KEY)
-      if (!raw) return
-      const parsed: unknown = JSON.parse(raw)
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        setRuntimeOptionsByModel(parsed as Record<string, Record<string, unknown>>)
-      }
-    } catch {
-      // ignore
-    }
-  }, [])
+  // runtimeOptionsByModel는 useState 초기화 시 localStorage에서 불러오므로 별도 로드 불필요
 
   // Prompt focus + stable switching between compact single-line and multi-line modes.
   React.useEffect(() => {
@@ -1221,9 +1223,9 @@ export function ChatInterface({
   }, [compactPromptMode, isCompact])
 
   React.useEffect(() => {
-    // persist lightweight per-session (not cookies)
+    // persist to localStorage (영구 저장)
     try {
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(runtimeOptionsByModel))
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(runtimeOptionsByModel))
     } catch {
       // ignore (storage quota / privacy mode)
     }

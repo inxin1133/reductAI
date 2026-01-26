@@ -201,8 +201,8 @@ export default function FrontAI() {
                   model,
                   modelType,
                   options: options || null,
-                  sessionLanguage: currentLang || null,
                   attachments: attachments || null,
+                  sessionLanguage: currentLang || null,
                 },
               },
             })
