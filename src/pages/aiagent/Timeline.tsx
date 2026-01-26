@@ -15,11 +15,21 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Copy, Volume2, Repeat, ChevronsLeft, PencilLine, GalleryVerticalEnd, MoreHorizontal } from "lucide-react"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Label } from "@/components/ui/label"
+import { Copy, Volume2, Repeat, ChevronsLeft, PencilLine, GalleryVerticalEnd, MoreHorizontal, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ChatInterface } from "@/components/ChatInterface"
 import { ProseMirrorViewer } from "@/components/post/ProseMirrorViewer"
@@ -537,6 +547,15 @@ export default function Timeline() {
   const [renameTarget, setRenameTarget] = React.useState<TimelineConversation | null>(null)
   const [renameValue, setRenameValue] = React.useState("")
   // delete confirm UI removed (toast+undo only)
+
+  // Save to Post modal state
+  type CategoryOption = { id: string; name: string; icon?: string | null; categoryType?: "personal" | "team" }
+  const [savePostModalOpen, setSavePostModalOpen] = React.useState(false)
+  const [savePostCategories, setSavePostCategories] = React.useState<CategoryOption[]>([])
+  const [savePostCategoryId, setSavePostCategoryId] = React.useState<string>("")
+  const [savePostIncludeQuestions, setSavePostIncludeQuestions] = React.useState(true)
+  const [savePostLoading, setSavePostLoading] = React.useState(false)
+  const [savePostCategoriesLoading, setSavePostCategoriesLoading] = React.useState(false)
 
   // 현재 대화에서 마지막으로 사용한 모델을 유지하여 ChatInterface 드롭다운 초기값으로 사용합니다.
   const [stickySelectedModel, setStickySelectedModel] = React.useState<string | undefined>(undefined)
@@ -1196,6 +1215,213 @@ export default function Timeline() {
   const initialOptionsForChat = initialToSend?.options || undefined
   const sessionLanguageForChat = initialToSend?.sessionLanguage || undefined
 
+  // Load categories when modal opens (personal + team)
+  const loadCategoriesForSavePost = React.useCallback(async () => {
+    setSavePostCategoriesLoading(true)
+    try {
+      // Load personal categories
+      const personalRes = await fetch("/api/posts/categories/mine", { headers: { ...authHeaders() } })
+      const personalRows = personalRes.ok
+        ? ((await personalRes.json().catch(() => [])) as Array<{ id: string; name: string; icon?: string | null }>)
+        : []
+
+      // Load team categories
+      const teamRes = await fetch("/api/posts/categories/mine?type=team_page", { headers: { ...authHeaders() } })
+      const teamRows = teamRes.ok
+        ? ((await teamRes.json().catch(() => [])) as Array<{ id: string; name: string; icon?: string | null }>)
+        : []
+
+      // Combine with type indicator
+      const combined: CategoryOption[] = [
+        ...personalRows.map((c) => ({ ...c, categoryType: "personal" as const })),
+        ...teamRows.map((c) => ({ ...c, categoryType: "team" as const })),
+      ]
+
+      setSavePostCategories(combined)
+      if (combined.length && !savePostCategoryId) {
+        setSavePostCategoryId(combined[0].id)
+      }
+    } catch {
+      setSavePostCategories([])
+    } finally {
+      setSavePostCategoriesLoading(false)
+    }
+  }, [authHeaders, savePostCategoryId])
+
+  React.useEffect(() => {
+    if (savePostModalOpen) {
+      void loadCategoriesForSavePost()
+    }
+  }, [savePostModalOpen, loadCategoriesForSavePost])
+
+  // Build ProseMirror document from timeline messages
+  const buildPmDocFromMessages = React.useCallback((msgs: TimelineUiMessage[], includeQuestions: boolean) => {
+    const content: Array<Record<string, unknown>> = []
+
+    // Filter out pending messages
+    const validMsgs = msgs.filter((m) => !m.isPending)
+    console.log("[Timeline] buildPmDocFromMessages: msgs count =", validMsgs.length, "includeQuestions =", includeQuestions)
+
+    for (const m of validMsgs) {
+      if (m.role === "user" && !includeQuestions) continue
+
+      if (m.role === "user") {
+        // Add user question as a heading
+        const questionText = String(m.content || "").trim()
+        if (questionText) {
+          content.push({
+            type: "heading",
+            attrs: { level: 3 },
+            content: [{ type: "text", text: `💬 ${questionText}` }],
+          })
+          content.push({ type: "horizontal_rule" })
+        }
+        continue
+      }
+
+      if (m.role === "assistant") {
+        console.log("[Timeline] assistant message:", { content: m.content?.slice(0, 100), contentJson: m.contentJson })
+
+        // Try multiple approaches to extract content
+        let added = false
+
+        // Approach 1: Try contentJson with aiJsonToPmDoc
+        if (m.contentJson) {
+          const normalized = normalizeContentJson(m.contentJson)
+          console.log("[Timeline] normalized contentJson:", normalized)
+          if (normalized) {
+            const pmDoc = aiJsonToPmDoc(normalized)
+            console.log("[Timeline] aiJsonToPmDoc result:", pmDoc)
+            if (pmDoc && typeof pmDoc === "object" && "content" in pmDoc) {
+              const docContent = (pmDoc as { content: unknown }).content
+              if (Array.isArray(docContent) && docContent.length > 0) {
+                content.push(...(docContent as Array<Record<string, unknown>>))
+                added = true
+              }
+            }
+          }
+        }
+
+        // Approach 2: Try content string as markdown
+        if (!added && typeof m.content === "string" && m.content.trim()) {
+          const mdDoc = markdownToPmDoc(m.content)
+          console.log("[Timeline] markdownToPmDoc result:", mdDoc)
+          if (mdDoc && typeof mdDoc === "object" && "content" in mdDoc) {
+            const docContent = (mdDoc as { content: unknown }).content
+            if (Array.isArray(docContent) && docContent.length > 0) {
+              content.push(...(docContent as Array<Record<string, unknown>>))
+              added = true
+            }
+          }
+        }
+
+        // Approach 3: Plain text fallback
+        if (!added && typeof m.content === "string" && m.content.trim()) {
+          // Split by paragraphs
+          const paragraphs = m.content.split(/\n\n+/).filter((p) => p.trim())
+          for (const p of paragraphs) {
+            content.push({
+              type: "paragraph",
+              content: [{ type: "text", text: p.trim() }],
+            })
+          }
+          added = true
+        }
+
+        if (!added) {
+          console.warn("[Timeline] Could not extract content from assistant message")
+        }
+        continue
+      }
+    }
+
+    if (!content.length) {
+      content.push({
+        type: "paragraph",
+        content: [{ type: "text", text: "(대화 내용이 없습니다)" }],
+      })
+    }
+
+    console.log("[Timeline] Final PM doc content nodes:", content.length)
+    return { type: "doc", content }
+  }, [])
+
+  // Save conversation as post
+  const saveConversationAsPost = React.useCallback(async () => {
+    if (!activeConversationId) {
+      toast.error("저장할 대화를 선택해주세요.")
+      return
+    }
+
+    setSavePostLoading(true)
+    try {
+      // Get conversation title
+      const conv = conversations.find((c) => c.id === activeConversationId)
+      const title = conv?.title || "AI 대화"
+
+      // Build PM doc from messages
+      const pmDoc = buildPmDocFromMessages(messages, savePostIncludeQuestions)
+      console.log("[Timeline] saveConversationAsPost: pmDoc =", JSON.stringify(pmDoc, null, 2))
+
+      // Normalize category_id (handle "__none__" as null)
+      const effectiveCategoryId = savePostCategoryId === "__none__" ? null : savePostCategoryId || null
+
+      // Step 1: Create post via API
+      const createRes = await fetch("/api/posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({
+          title,
+          page_type: "page",
+          status: "draft",
+          visibility: "private",
+          category_id: effectiveCategoryId,
+        }),
+      })
+
+      if (!createRes.ok) {
+        const errText = await createRes.text().catch(() => "")
+        throw new Error(errText || "POST_CREATE_FAILED")
+      }
+
+      const createJson = await createRes.json().catch(() => ({}))
+      const newPostId = String(createJson.id || "")
+      if (!newPostId) throw new Error("POST_CREATE_FAILED_NO_ID")
+
+      // Step 2: Save content via separate API
+      const contentRes = await fetch(`/api/posts/${newPostId}/content`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({
+          docJson: pmDoc,
+          version: 0,
+          pmSchemaVersion: 1,
+        }),
+      })
+
+      if (!contentRes.ok) {
+        const errText = await contentRes.text().catch(() => "")
+        console.warn("[Timeline] savePostContent failed:", errText, "status:", contentRes.status)
+        // Don't throw - the post was created, just navigate even if content save partially failed
+      } else {
+        const contentJson = await contentRes.json().catch(() => ({}))
+        console.log("[Timeline] savePostContent success:", contentJson)
+      }
+
+      toast.success("페이지가 생성되었습니다.")
+      setSavePostModalOpen(false)
+
+      // Navigate to the created post
+      const categoryParam = effectiveCategoryId ? `?category=${encodeURIComponent(effectiveCategoryId)}` : ""
+      navigate(`/posts/${newPostId}/edit${categoryParam}`)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      toast.error(`페이지 생성 실패: ${msg}`)
+    } finally {
+      setSavePostLoading(false)
+    }
+  }, [activeConversationId, authHeaders, buildPmDocFromMessages, conversations, messages, navigate, savePostCategoryId, savePostIncludeQuestions])
+
   return (
     <AppShell
       headerLeftContent={
@@ -1261,7 +1487,16 @@ export default function Timeline() {
         </div>
       }
       headerContent={
-        <div className="bg-background border border-border flex items-center justify-center gap-[6px] px-3 h-[32px] rounded-lg shadow-sm cursor-pointer hover:bg-accent/50 transition-colors">
+        <div
+          className="bg-background border border-border flex items-center justify-center gap-[6px] px-3 h-[32px] rounded-lg shadow-sm cursor-pointer hover:bg-accent/50 transition-colors"
+          onClick={() => {
+            if (!activeConversationId || messages.length === 0) {
+              toast("저장할 대화 내용이 없습니다.")
+              return
+            }
+            setSavePostModalOpen(true)
+          }}
+        >
           <PencilLine className="size-4" />
           <span className="text-sm font-medium">페이지 저장 및 편집</span>
         </div>
@@ -1328,6 +1563,98 @@ export default function Timeline() {
         </>
       }
     >
+      {/* Save to Post Dialog */}
+      <Dialog open={savePostModalOpen} onOpenChange={setSavePostModalOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>페이지로 저장</DialogTitle>
+            <DialogDescription>
+              현재 대화 내용을 페이지로 저장합니다.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 py-4">
+            {/* Category Selection */}
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="category">카테고리 선택</Label>
+              <Select
+                value={savePostCategoryId}
+                onValueChange={setSavePostCategoryId}
+                disabled={savePostCategoriesLoading}
+              >
+                <SelectTrigger id="category">
+                  <SelectValue placeholder={savePostCategoriesLoading ? "불러오는 중..." : "카테고리 선택"} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">카테고리 없음</SelectItem>
+                  {(() => {
+                    const personalCats = savePostCategories.filter((c) => c.categoryType === "personal" || !c.categoryType)
+                    const teamCats = savePostCategories.filter((c) => c.categoryType === "team")
+                    return (
+                      <>
+                        {personalCats.length > 0 && (
+                          <>
+                            <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">나의 페이지</div>
+                            {personalCats.map((cat) => (
+                              <SelectItem key={cat.id} value={cat.id}>
+                                {cat.icon ? `${cat.icon} ` : ""}{cat.name}
+                              </SelectItem>
+                            ))}
+                          </>
+                        )}
+                        {teamCats.length > 0 && (
+                          <>
+                            <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground mt-1">팀 페이지</div>
+                            {teamCats.map((cat) => (
+                              <SelectItem key={cat.id} value={cat.id}>
+                                {cat.icon ? `${cat.icon} ` : ""}{cat.name}
+                              </SelectItem>
+                            ))}
+                          </>
+                        )}
+                      </>
+                    )
+                  })()}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Include Questions Checkbox */}
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="include-questions"
+                checked={savePostIncludeQuestions}
+                onCheckedChange={(checked) => setSavePostIncludeQuestions(checked === true)}
+              />
+              <Label htmlFor="include-questions" className="cursor-pointer">
+                내 질문도 함께 저장
+              </Label>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setSavePostModalOpen(false)}
+              disabled={savePostLoading}
+            >
+              취소
+            </Button>
+            <Button
+              onClick={() => void saveConversationAsPost()}
+              disabled={savePostLoading}
+            >
+              {savePostLoading ? (
+                <>
+                  <Loader2 className="size-4 animate-spin mr-2" />
+                  생성 중...
+                </>
+              ) : (
+                "페이지 생성"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Rename Dialog */}
       <Dialog
         open={Boolean(renameTarget)}
