@@ -405,6 +405,12 @@ export default function PostEditorPage() {
   const [isNavDrawerOpen, setIsNavDrawerOpen] = useState(false)
   const [myPages, setMyPages] = useState<MyPage[]>([])
   const [pageHasContent, setPageHasContent] = useState<Record<string, boolean>>({})
+  // Keep latest pageHasContent in a ref so event handlers (embed removed/added) can read fresh values
+  // without forcing re-subscription of window event listeners.
+  const pageHasContentRef = useRef<Record<string, boolean>>({})
+  useEffect(() => {
+    pageHasContentRef.current = pageHasContent
+  }, [pageHasContent])
   const [iconPickerOpenId, setIconPickerOpenId] = useState<string | null>(null)
   const [visiblePageIds, setVisiblePageIds] = useState<Set<string>>(() => new Set())
   const ioRef = useRef<IntersectionObserver | null>(null)
@@ -442,7 +448,7 @@ export default function PostEditorPage() {
       if (!categoryId || String(categoryId) !== id) return
 
       // If the current category was deleted, auto-navigate to the top category.
-      if (Boolean(d?.deleted)) {
+      if (d?.deleted) {
         const h = authHeaders()
         if (!h.Authorization) return
         void Promise.all([
@@ -797,6 +803,20 @@ export default function PostEditorPage() {
     }
   }, [categoryId, categoryQS, filterNonDeleted, postId, isNew, navigate, sortPages])
 
+  // Save this page as the last viewed page for the current category.
+  // This allows us to return to this page when the user navigates back to the category.
+  useEffect(() => {
+    if (!postId || postId === "new") return
+    if (!categoryId) return
+    if (isDeletedPage) return
+    try {
+      const key = `reductai.posts.lastViewedPage.${categoryId}`
+      localStorage.setItem(key, postId)
+    } catch {
+      // ignore localStorage errors (e.g., private browsing mode)
+    }
+  }, [postId, categoryId, isDeletedPage])
+
   // If current page has a saved Lucide icon, lazy-load lucide map so the title can render it.
   useEffect(() => {
     if (!postId || postId === "new") return
@@ -1076,6 +1096,18 @@ export default function PostEditorPage() {
     setDirty(s !== lastSavedRef.current)
   }, [draftDocJson])
 
+  // Keep the current page's "has content" flag in sync immediately while editing.
+  // This drives the page tree icon (File -> FileText) without needing a refresh or navigation.
+  useEffect(() => {
+    if (!postId || postId === "new") return
+    const has = docJsonHasMeaningfulContent(draftDocJson)
+    setPageHasContent((prev) => {
+      const cur = prev[String(postId)]
+      if (cur === has) return prev
+      return { ...prev, [String(postId)]: has }
+    })
+  }, [draftDocJson, postId])
+
   // Keep the left tree ordering synced with the embed order inside the parent document (instant UX).
   useEffect(() => {
     if (!postId || postId === "new") return
@@ -1192,16 +1224,39 @@ export default function PostEditorPage() {
       // Optimistically hide from tree immediately
       setMyPages((prev) => prev.filter((p) => !ids.includes(String(p.id))))
 
-      // Persist deletion (soft delete) so it disappears everywhere
+      // Persist deletion:
+      // - if page has content => soft delete (trash)
+      // - if page has NO content (File icon state) => soft delete then purge (hard delete)
       const token = localStorage.getItem("token")
       if (!token) return
       void (async () => {
+        let trashedCount = 0
+        let purgedCount = 0
         for (const pid of ids) {
+          const shouldPurgeImmediately = pageHasContentRef.current[String(pid)] === false
           await fetch(`/api/posts/${pid}`, {
             method: "PATCH",
             headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
             body: JSON.stringify({ status: "deleted" }),
           }).catch(() => null)
+
+          if (shouldPurgeImmediately) {
+            await fetch(`/api/posts/trash/${encodeURIComponent(pid)}`, {
+              method: "DELETE",
+              headers: { Authorization: `Bearer ${token}` },
+            }).catch(() => null)
+            purgedCount += 1
+          } else {
+            trashedCount += 1
+          }
+        }
+
+        // Toasts (match the same messages used in manual delete)
+        if (purgedCount > 0) {
+          toast(purgedCount === 1 ? "페이지가 완전 삭제되었습니다." : `${purgedCount}개 페이지가 완전 삭제되었습니다.`)
+        }
+        if (trashedCount > 0) {
+          toast(trashedCount === 1 ? "페이지가 삭제되어 휴지통으로 이동되었습니다." : `${trashedCount}개 페이지가 삭제되어 휴지통으로 이동되었습니다.`)
         }
       })()
     }
@@ -1623,6 +1678,9 @@ export default function PostEditorPage() {
         const targetId = String(id)
         const target = pageById.get(targetId) || null
         const parentId = target?.parent_id ? String(target.parent_id) : null
+        // If the page has NO meaningful content (File icon state), purge immediately (skip trash UX).
+        // Safety: only do this when we have an explicit false in pageHasContent (unknown -> treat as non-empty).
+        const shouldPurgeImmediately = pageHasContent[targetId] === false
         const snapshot: MyPage | null = target
           ? {
               id: String(target.id),
@@ -1654,13 +1712,33 @@ export default function PostEditorPage() {
         }
         const toRemoveIds = Array.from(toRemoveSet)
 
-        // Cascade soft-delete on server for the whole subtree.
-        for (const pid of toRemoveIds) {
-          await fetch(`/api/posts/${pid}`, {
-            method: "PATCH",
-            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ status: "deleted" }),
-          }).catch(() => null)
+        if (shouldPurgeImmediately) {
+          // Purge is only supported via /trash/:id, and it requires the page to be in deleted state.
+          // To "skip trash UX", we soft-delete then immediately purge.
+          // Also: only purge the root target (empty pages should not have children; keep safety anyway).
+          if (toRemoveIds.length > 1) {
+            console.warn("[PostEditorPage] skip immediate purge for subtree delete; falling back to trash flow")
+          } else {
+            const pid = targetId
+            await fetch(`/api/posts/${pid}`, {
+              method: "PATCH",
+              headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ status: "deleted" }),
+            }).catch(() => null)
+            await fetch(`/api/posts/trash/${encodeURIComponent(pid)}`, {
+              method: "DELETE",
+              headers: { Authorization: `Bearer ${token}` },
+            }).catch(() => null)
+          }
+        } else {
+          // Cascade soft-delete on server for the whole subtree.
+          for (const pid of toRemoveIds) {
+            await fetch(`/api/posts/${pid}`, {
+              method: "PATCH",
+              headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ status: "deleted" }),
+            }).catch(() => null)
+          }
         }
 
         // Remove the link block from the parent page content (if any).
@@ -1732,59 +1810,63 @@ export default function PostEditorPage() {
             updated_at: p!.updated_at,
           }))
 
-        toast("페이지가 삭제되어 휴지통으로 이동되었습니다.", {
-          action: snapshot
-            ? {
-                label: "undo",
-                onClick: () => {
-                  void (async () => {
-                    const t = localStorage.getItem("token")
-                    if (!t) return
-                    // Restore server status for whole subtree
-                    for (const s of subtreeSnapshots) {
-                      await fetch(`/api/posts/${String(s.id)}`, {
-                        method: "PATCH",
-                        headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" },
-                        body: JSON.stringify({ status: "draft" }),
-                      }).catch(() => null)
-                    }
-
-                    // Restore tree entry (best-effort)
-                    setMyPages((prev) => {
-                      const existing = new Set(prev.map((p) => String(p.id)))
-                      const toAdd = subtreeSnapshots.filter((s) => !existing.has(String(s.id)))
-                      if (!toAdd.length) return prev
-                      const next = prev.slice()
-                      for (const s of toAdd) next.push(s)
-                      return next
-                    })
-
-                    // Restore link into parent content (best-effort)
-                    if (snapshot.parent_id) {
-                      const par = String(snapshot.parent_id)
-                      if (String(postId || "") === par) {
-                        window.dispatchEvent(
-                          new CustomEvent("reductai:append-page-link", {
-                            detail: { pageId: String(snapshot.id), title: snapshot.title || "New page", display: "embed" },
-                          })
-                        )
-                      } else {
-                        void updatePostContent(par, (doc) =>
-                          appendPageLinkToDocJson(doc, { pageId: String(snapshot.id), title: snapshot.title || "New page", display: "embed" })
-                        )
+        if (shouldPurgeImmediately && toRemoveIds.length === 1) {
+          toast("페이지가 완전 삭제되었습니다.")
+        } else {
+          toast("페이지가 삭제되어 휴지통으로 이동되었습니다.", {
+            action: snapshot
+              ? {
+                  label: "undo",
+                  onClick: () => {
+                    void (async () => {
+                      const t = localStorage.getItem("token")
+                      if (!t) return
+                      // Restore server status for whole subtree
+                      for (const s of subtreeSnapshots) {
+                        await fetch(`/api/posts/${String(s.id)}`, {
+                          method: "PATCH",
+                          headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" },
+                          body: JSON.stringify({ status: "draft" }),
+                        }).catch(() => null)
                       }
-                    }
-                  })()
-                },
-              }
-            : undefined,
-        })
+
+                      // Restore tree entry (best-effort)
+                      setMyPages((prev) => {
+                        const existing = new Set(prev.map((p) => String(p.id)))
+                        const toAdd = subtreeSnapshots.filter((s) => !existing.has(String(s.id)))
+                        if (!toAdd.length) return prev
+                        const next = prev.slice()
+                        for (const s of toAdd) next.push(s)
+                        return next
+                      })
+
+                      // Restore link into parent content (best-effort)
+                      if (snapshot.parent_id) {
+                        const par = String(snapshot.parent_id)
+                        if (String(postId || "") === par) {
+                          window.dispatchEvent(
+                            new CustomEvent("reductai:append-page-link", {
+                              detail: { pageId: String(snapshot.id), title: snapshot.title || "New page", display: "embed" },
+                            })
+                          )
+                        } else {
+                          void updatePostContent(par, (doc) =>
+                            appendPageLinkToDocJson(doc, { pageId: String(snapshot.id), title: snapshot.title || "New page", display: "embed" })
+                          )
+                        }
+                      }
+                    })()
+                  },
+                }
+              : undefined,
+          })
+        }
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Failed to delete"
         setError(msg)
       }
     },
-    [categoryQS, myPages, navigate, pageById, parentById, postId, sortPages]
+    [categoryQS, myPages, navigate, pageById, pageHasContent, parentById, postId, sortPages]
   )
 
   const duplicatePage = useCallback(
@@ -2781,6 +2863,17 @@ export default function PostEditorPage() {
                           value={pageTitle}
                           placeholder="New page"
                           onChange={(e) => setPageTitle(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key !== "Enter") return
+                            // Enter: move focus into the ProseMirror editor.
+                            e.preventDefault()
+                            e.stopPropagation()
+                            try {
+                              window.dispatchEvent(new CustomEvent("reductai:pm-editor:focus"))
+                            } catch {
+                              // ignore
+                            }
+                          }}
                         />
                       </div>
 

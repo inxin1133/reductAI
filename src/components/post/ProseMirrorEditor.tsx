@@ -836,6 +836,18 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     }
     window.addEventListener("reductai:insert-page-link-after", onInsertPageLinkAfter as EventListener)
 
+    // Focus the editor from external UI (e.g., PostEditorPage title input Enter key).
+    const onFocusEditor = () => {
+      const v = viewRef.current
+      if (!v) return
+      try {
+        v.focus()
+      } catch {
+        // ignore
+      }
+    }
+    window.addEventListener("reductai:pm-editor:focus", onFocusEditor as EventListener)
+
     // init derived views
     setMarkdown(exportMarkdown(editorSchema, doc))
     setDocJson(doc.toJSON())
@@ -846,6 +858,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
       window.removeEventListener("reductai:page-title-updated", onTitleUpdated as EventListener)
       window.removeEventListener("reductai:append-page-link", onAppendPageLink as EventListener)
       window.removeEventListener("reductai:insert-page-link-after", onInsertPageLinkAfter as EventListener)
+      window.removeEventListener("reductai:pm-editor:focus", onFocusEditor as EventListener)
       view.destroy()
       viewRef.current = null
     }

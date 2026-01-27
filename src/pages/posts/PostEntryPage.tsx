@@ -58,9 +58,29 @@ export default function PostEntryPage() {
           const pagesJson = await pagesRes.json().catch(() => [])
           const pages = Array.isArray(pagesJson) ? (pagesJson as MyPage[]) : []
           const sorted = sortPages(pages.filter((p) => !isDeletedPage(p)))
-          const firstId = sorted.length > 0 ? String(sorted[0].id || "") : ""
-          if (firstId) {
-            if (!cancelled) navigate(`/posts/${firstId}/edit${categoryId ? `?category=${encodeURIComponent(categoryId)}` : ""}`, { replace: true })
+          const pageIds = new Set(sorted.map((p) => String(p.id || "")))
+
+          // Check if there's a last viewed page for this category that still exists
+          let targetPageId = ""
+          if (categoryId) {
+            try {
+              const lastViewedKey = `reductai.posts.lastViewedPage.${categoryId}`
+              const lastViewedId = localStorage.getItem(lastViewedKey) || ""
+              if (lastViewedId && pageIds.has(lastViewedId)) {
+                targetPageId = lastViewedId
+              }
+            } catch {
+              // ignore localStorage errors
+            }
+          }
+
+          // Fallback to first page if no valid last viewed page
+          if (!targetPageId && sorted.length > 0) {
+            targetPageId = String(sorted[0].id || "")
+          }
+
+          if (targetPageId) {
+            if (!cancelled) navigate(`/posts/${targetPageId}/edit${categoryId ? `?category=${encodeURIComponent(categoryId)}` : ""}`, { replace: true })
             return
           }
         }
