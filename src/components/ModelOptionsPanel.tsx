@@ -155,6 +155,12 @@ export function ModelOptionsPanel({ capabilities, value, onApply, className }: M
 
   const [draft, setDraft] = React.useState<Record<string, unknown>>(initialDraft)
 
+  // value prop이 외부에서 변경되면 draft를 동기화
+  // (넓은 화면 패널은 항상 마운트 상태라서 useState 초기화가 한 번만 실행되므로 필요)
+  React.useEffect(() => {
+    setDraft(initialDraft)
+  }, [initialDraft])
+
   const sanitizeDraft = React.useCallback((d: Record<string, unknown>) => {
     // sanitize + clamp based on spec + limits
     const out: Record<string, unknown> = {}

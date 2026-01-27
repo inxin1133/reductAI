@@ -508,14 +508,44 @@ export function ChatInterface({
   const [uiLoading, setUiLoading] = React.useState(false)
   const [uiConfig, setUiConfig] = React.useState<ChatUiConfig | null>(null)
 
+  // 마지막 선택 상태 저장 키
+  const SELECTION_STORAGE_KEY = "reductai.chat.lastSelection.v1"
+
   // (2) 모드 탭: ai_models.model_type 기준
   const [selectedType, setSelectedType] = React.useState<ModelType>(() => {
     // forceSelectionSync가 true이고 selectionOverride가 있으면 그걸 초기값으로 사용
     if (forceSelectionSync && selectionOverride?.modelType) {
       return selectionOverride.modelType as ModelType
     }
-    return (initialModelType as ModelType) || "text"
+    // initialModelType이 명시되어 있으면 그것 사용
+    if (initialModelType) {
+      return initialModelType as ModelType
+    }
+    // localStorage에서 마지막 선택 복원
+    try {
+      const raw = localStorage.getItem("reductai.chat.lastSelection.v1")
+      if (raw) {
+        const parsed = JSON.parse(raw) as { type?: string }
+        if (parsed.type) return parsed.type as ModelType
+      }
+    } catch {
+      // ignore
+    }
+    return "text"
   })
+  // 마지막 선택된 provider slug (localStorage 복원용)
+  const lastProviderSlugRef = React.useRef<string>((() => {
+    try {
+      const raw = localStorage.getItem("reductai.chat.lastSelection.v1")
+      if (raw) {
+        const parsed = JSON.parse(raw) as { providerSlug?: string }
+        return parsed.providerSlug || ""
+      }
+    } catch {
+      // ignore
+    }
+    return ""
+  })())
   // provider group 선택
   const [selectedProviderId, setSelectedProviderId] = React.useState("")
   // (4) dropdown 대상: status=active는 서버에서, is_available=true만 클라에서 필터
@@ -524,7 +554,21 @@ export function ChatInterface({
     if (forceSelectionSync && selectionOverride?.modelApiId) {
       return selectionOverride.modelApiId
     }
-    return initialSelectedModel || ""
+    // initialSelectedModel이 명시되어 있으면 그것 사용
+    if (initialSelectedModel) {
+      return initialSelectedModel
+    }
+    // localStorage에서 마지막 선택 복원
+    try {
+      const raw = localStorage.getItem("reductai.chat.lastSelection.v1")
+      if (raw) {
+        const parsed = JSON.parse(raw) as { model?: string }
+        if (parsed.model) return parsed.model
+      }
+    } catch {
+      // ignore
+    }
+    return ""
   })
 
   // (8) capabilities.options/defaults 기반 옵션 상태
@@ -604,7 +648,8 @@ export function ChatInterface({
     setIsPreparingAttachments(hasPendingAttachments)
   }, [hasPendingAttachments])
 
-  const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+  const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024 // 10MB
+  const MAX_ATTACHMENTS_COUNT = 6
 
   const fileToDataUrl = React.useCallback(async (file: File): Promise<string> => {
     return await new Promise((resolve, reject) => {
@@ -616,43 +661,56 @@ export function ChatInterface({
   }, [])
 
   const compressImageToDataUrl = React.useCallback(
-    async (file: File, maxBytes: number): Promise<string> => {
+    async (file: File, maxBytes: number): Promise<{ dataUrl: string; compressed: boolean; failed: boolean }> => {
       // Best-effort: downscale + JPEG encode until within limit.
-      // If anything fails, fall back to original data URL.
+      // Canvas toBlob automatically strips EXIF metadata.
+      // If anything fails, return with failed=true for alert handling.
       const original = await fileToDataUrl(file)
-      if (file.size <= maxBytes) return original
-      if (!String(file.type || "").startsWith("image/")) return original
-
-      async function toBlobFromDataUrl(dataUrl: string): Promise<Blob> {
-        const resp = await fetch(dataUrl)
-        return await resp.blob()
+      if (file.size <= maxBytes) return { dataUrl: original, compressed: false, failed: false }
+      if (!String(file.type || "").startsWith("image/")) {
+        // Non-image file exceeds limit - cannot compress
+        return { dataUrl: original, compressed: false, failed: true }
       }
 
-      const imgBlob = await toBlobFromDataUrl(original)
-      const bitmap = await createImageBitmap(imgBlob)
+      try {
+        async function toBlobFromDataUrl(dataUrl: string): Promise<Blob> {
+          const resp = await fetch(dataUrl)
+          return await resp.blob()
+        }
 
-      const maxDim = 1024
-      const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height))
-      const w = Math.max(1, Math.round(bitmap.width * scale))
-      const h = Math.max(1, Math.round(bitmap.height * scale))
+        const imgBlob = await toBlobFromDataUrl(original)
+        const bitmap = await createImageBitmap(imgBlob)
 
-      const canvas = document.createElement("canvas")
-      canvas.width = w
-      canvas.height = h
-      const ctx = canvas.getContext("2d")
-      if (!ctx) return original
-      ctx.drawImage(bitmap, 0, 0, w, h)
+        // Downscale to max 2048px on the longest side
+        const maxDim = 2048
+        const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height))
+        const w = Math.max(1, Math.round(bitmap.width * scale))
+        const h = Math.max(1, Math.round(bitmap.height * scale))
 
-      // Try qualities from high to lower.
-      const qualities = [0.9, 0.82, 0.75, 0.68, 0.6]
-      for (const q of qualities) {
-        const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", q))
-        if (!blob) continue
-        if (blob.size > maxBytes) continue
-        const asFile = new File([blob], file.name || "image.jpg", { type: "image/jpeg" })
-        return await fileToDataUrl(asFile)
+        const canvas = document.createElement("canvas")
+        canvas.width = w
+        canvas.height = h
+        const ctx = canvas.getContext("2d")
+        if (!ctx) return { dataUrl: original, compressed: false, failed: true }
+        ctx.drawImage(bitmap, 0, 0, w, h)
+
+        // Try qualities from high (90) to lower (60)
+        const qualities = [0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60]
+        for (const q of qualities) {
+          const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", q))
+          if (!blob) continue
+          if (blob.size > maxBytes) continue
+          const asFile = new File([blob], file.name || "image.jpg", { type: "image/jpeg" })
+          const dataUrl = await fileToDataUrl(asFile)
+          return { dataUrl, compressed: true, failed: false }
+        }
+
+        // Even lowest quality exceeds limit
+        return { dataUrl: original, compressed: false, failed: true }
+      } catch (err) {
+        console.warn("[compressImageToDataUrl] compression failed:", err)
+        return { dataUrl: original, compressed: false, failed: true }
       }
-      return original
     },
     [fileToDataUrl]
   )
@@ -660,8 +718,22 @@ export function ChatInterface({
   const addFiles = React.useCallback((files: FileList | null, mode: "mixed" | "image_only") => {
     console.log("[addFiles] called with", files?.length, "files, mode:", mode)
     if (!files || files.length === 0) return
+
+    // Check max attachments count
+    const currentCount = attachmentsRef.current.length
+    const remaining = MAX_ATTACHMENTS_COUNT - currentCount
+    if (remaining <= 0) {
+      alert(`최대 ${MAX_ATTACHMENTS_COUNT}개까지만 첨부할 수 있습니다.`)
+      return
+    }
+
+    const fileArray = Array.from(files).slice(0, remaining)
+    if (fileArray.length < files.length) {
+      alert(`최대 ${MAX_ATTACHMENTS_COUNT}개까지만 첨부할 수 있습니다. ${files.length - fileArray.length}개 파일이 제외되었습니다.`)
+    }
+
     const next: ChatAttachment[] = []
-    for (const f of Array.from(files)) {
+    for (const f of fileArray) {
       const mime = String(f.type || "")
       const isImg = mime.startsWith("image/")
       if (mode === "image_only" && !isImg) continue
@@ -678,6 +750,11 @@ export function ChatInterface({
           previewUrl,
         })
       } else {
+        // Non-image file: check size limit directly
+        if (f.size > MAX_ATTACHMENT_BYTES) {
+          alert(`파일 "${f.name}"은(는) ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB를 초과하여 첨부할 수 없습니다.`)
+          continue
+        }
         next.push({
           id: `file_${Date.now()}_${Math.random().toString(16).slice(2)}`,
           kind: "file",
@@ -698,13 +775,27 @@ export function ChatInterface({
     for (const a of next) {
       if (a.kind === "link") continue
       void (async () => {
-        const dataUrl = a.kind === "image" ? await compressImageToDataUrl(a.file!, MAX_ATTACHMENT_BYTES) : await fileToDataUrl(a.file!)
-        console.log("[addFiles] dataUrl ready for", a.id, "len:", dataUrl?.length)
-        attachmentsRef.current = attachmentsRef.current.map((it) => (it.id === a.id ? { ...it, dataUrl } : it))
-        setAttachments((prev) => prev.map((it) => (it.id === a.id ? { ...it, dataUrl } : it)))
+        if (a.kind === "image") {
+          const result = await compressImageToDataUrl(a.file!, MAX_ATTACHMENT_BYTES)
+          if (result.failed) {
+            // Compression failed or still exceeds limit - remove and alert
+            alert(`이미지 "${a.name}"은(는) 압축 후에도 ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB를 초과하여 첨부할 수 없습니다.\n더 작은 이미지를 사용하거나 직접 리사이즈해주세요.`)
+            attachmentsRef.current = attachmentsRef.current.filter((it) => it.id !== a.id)
+            setAttachments((prev) => prev.filter((it) => it.id !== a.id))
+            return
+          }
+          console.log("[addFiles] dataUrl ready for", a.id, "len:", result.dataUrl?.length, "compressed:", result.compressed)
+          attachmentsRef.current = attachmentsRef.current.map((it) => (it.id === a.id ? { ...it, dataUrl: result.dataUrl } : it))
+          setAttachments((prev) => prev.map((it) => (it.id === a.id ? { ...it, dataUrl: result.dataUrl } : it)))
+        } else {
+          const dataUrl = await fileToDataUrl(a.file!)
+          console.log("[addFiles] dataUrl ready for", a.id, "len:", dataUrl?.length)
+          attachmentsRef.current = attachmentsRef.current.map((it) => (it.id === a.id ? { ...it, dataUrl } : it))
+          setAttachments((prev) => prev.map((it) => (it.id === a.id ? { ...it, dataUrl } : it)))
+        }
       })()
     }
-  }, [compressImageToDataUrl, fileToDataUrl, MAX_ATTACHMENT_BYTES])
+  }, [compressImageToDataUrl, fileToDataUrl])
 
   const handleDropAttachments = React.useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
@@ -1231,6 +1322,28 @@ export function ChatInterface({
     }
   }, [runtimeOptionsByModel])
 
+  // 선택 상태(type, provider, model) 영구 저장
+  React.useEffect(() => {
+    // forceSelectionSync 모드이거나 initialProps가 있으면 저장하지 않음 (Timeline 등에서 외부 제어)
+    if (forceSelectionSync) return
+    if (initialSelectedModel || initialProviderSlug) return
+
+    const providerSlug = currentProviderGroup?.provider.slug || ""
+    // 유효한 선택이 있을 때만 저장
+    if (!selectedType || !selectedSubModel) return
+
+    try {
+      const selection = {
+        type: selectedType,
+        providerSlug,
+        model: selectedSubModel,
+      }
+      localStorage.setItem(SELECTION_STORAGE_KEY, JSON.stringify(selection))
+    } catch {
+      // ignore (storage quota / privacy mode)
+    }
+  }, [currentProviderGroup?.provider.slug, forceSelectionSync, initialProviderSlug, initialSelectedModel, selectedSubModel, selectedType])
+
   const resizePromptTextarea = React.useCallback((el: HTMLTextAreaElement | null) => {
     if (!el) return
     // auto-grow up to 12 lines; then scroll
@@ -1274,7 +1387,12 @@ export function ChatInterface({
     if (selectionDirtyRef.current) return
 
     const wantedModel = (selectionOverride?.modelApiId || initialSelectedModel || "").trim()
-    const wantedProviderSlug = (selectionOverride?.providerSlug || initialProviderSlug || "").trim()
+    let wantedProviderSlug = (selectionOverride?.providerSlug || initialProviderSlug || "").trim()
+
+    // localStorage에서 마지막 선택된 provider slug 복원 (initial props가 없을 때만)
+    if (!wantedProviderSlug && !wantedModel && lastProviderSlugRef.current) {
+      wantedProviderSlug = lastProviderSlugRef.current
+    }
 
     const findGroupByModel = wantedModel
       ? currentProviderGroups.find((g) => (g.models || []).some((m) => m.is_available && m.model_api_id === wantedModel))
@@ -1442,7 +1560,22 @@ export function ChatInterface({
     // do not auto-reset their choice just because provider/type changed and `selectableModels` recomputed.
     if (selectionDirtyRef.current) return
     if (forceSelectionSync) return
-    const initial = (initialSelectedModel || "").trim()
+
+    let initial = (initialSelectedModel || "").trim()
+
+    // localStorage에서 마지막 선택된 model 복원 (initial props가 없을 때만)
+    if (!initial) {
+      try {
+        const raw = localStorage.getItem(SELECTION_STORAGE_KEY)
+        if (raw) {
+          const parsed = JSON.parse(raw) as { model?: string }
+          if (parsed.model) initial = parsed.model
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     const picked =
       (initial && selectableModels.find((m) => m.model_api_id === initial)) ||
       selectableModels.find((m) => m.is_default) ||
