@@ -550,7 +550,7 @@ export default function Timeline() {
     }
   }, [])
   const stoppedByConversationRef = React.useRef<Record<string, number>>(readStoppedByConversationFromStorage())
-  const pendingStopRef = React.useRef<{ at: number } | null>(null)
+  const pendingStopRef = React.useRef<{ at: number; text: string } | null>(null)
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null)
   const [messages, setMessages] = React.useState<TimelineUiMessage[]>([])
   const lastSendConversationIdRef = React.useRef<string | null>(null)
@@ -766,6 +766,7 @@ export default function Timeline() {
   const ACTIVE_CONV_KEY = "reductai.timeline.activeConversationId.v1"
   const [isCreatingThread, setIsCreatingThread] = React.useState(false)
   const [initialToSend, setInitialToSend] = React.useState<{
+    requestId?: string
     input: string
     providerSlug: string
     model: string
@@ -1595,6 +1596,30 @@ export default function Timeline() {
     }
   }, [activeConversationId, authHeaders, buildPmDocFromMessages, conversations, messages, navigate, savePostCategoryId, savePostIncludeQuestions])
 
+  const STOP_TEXT = "사용자의 요청에 의해 요청 및 답변이 중지 되었습니다."
+  const applyStopMessage = React.useCallback(
+    (prev: TimelineUiMessage[], stopText: string) => {
+      const next = [...prev]
+      const idx = [...next].reverse().findIndex((m) => m.role === "assistant" && m.isPending)
+      const realIdx = idx >= 0 ? next.length - 1 - idx : -1
+      const row: TimelineUiMessage = {
+        id: `a_${Date.now()}`,
+        role: "assistant",
+        content: stopText,
+        contentJson: { text: stopText, stopped: true },
+        providerSlug: null,
+        providerLogoKey: null,
+        status: "stopped",
+        isPending: false,
+        createdAt: new Date().toISOString(),
+      }
+      if (realIdx >= 0) next[realIdx] = { ...next[realIdx], ...row }
+      else next.push(row)
+      return next
+    },
+    []
+  )
+
   const handleStop = React.useCallback(() => {
     const stoppedAt = Date.now()
     setIsGenerating(false)
@@ -1605,14 +1630,20 @@ export default function Timeline() {
       setConversations((prev) =>
         prev.map((c) => (c.id === activeConversationId ? { ...c, isGenerating: false } : c))
       )
-      setMessages((prev) => prev.filter((m) => !m.isPending))
+      setMessages((prev) => applyStopMessage(prev, STOP_TEXT))
       return
     }
-    pendingStopRef.current = { at: stoppedAt }
+    pendingStopRef.current = { at: stoppedAt, text: STOP_TEXT }
     setIsCreatingThread(false)
-    setInitialToSend(null)
-    setMessages((prev) => prev.filter((m) => !m.isPending))
-  }, [activeConversationId, markConversationStopped])
+    setMessages((prev) => applyStopMessage(prev, STOP_TEXT))
+    if (initialToSend?.requestId) {
+      void fetch("/api/ai/chat/run/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ request_id: initialToSend.requestId }),
+      }).catch(() => null)
+    }
+  }, [STOP_TEXT, activeConversationId, applyStopMessage, authHeaders, initialToSend?.requestId, markConversationStopped])
 
   return (
     <AppShell
@@ -2126,6 +2157,7 @@ export default function Timeline() {
               initialOptions={initialOptionsForChat}
               autoSendPrompt={initialToSend?.input || null}
               autoSendAttachments={initialToSend?.attachments || null}
+              clientRequestId={initialToSend?.requestId || null}
               sessionLanguage={sessionLanguageForChat}
               conversationId={activeConversationId}
               onStop={handleStop}
@@ -2143,13 +2175,20 @@ export default function Timeline() {
                       applyStoppedOverride(applyLocalGeneratingOverride(mergeThreadsPreserveOrder(prev, refreshed)))
                     )
                     if (pendingStopRef.current) {
-                      const stoppedAt = pendingStopRef.current.at
+                      const { at: stoppedAt, text: stopText } = pendingStopRef.current
                       pendingStopRef.current = null
                       markConversationStopped(id, stoppedAt)
                       localGeneratingIdsRef.current.delete(String(id))
                       setIsGenerating(false)
                       setGenPhase(0)
                       setInitialToSend(null)
+                      setIsCreatingThread(false)
+                      setMessages((prev) => applyStopMessage(prev, stopText))
+                      void fetch("/api/ai/chat/run/cancel", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", ...authHeaders() },
+                        body: JSON.stringify({ conversation_id: id }),
+                      }).catch(() => null)
                       return
                     }
                     const msgs = await fetchMessages(id)
@@ -2236,7 +2275,11 @@ export default function Timeline() {
                       prev.map((c) => (c.id === targetConversationId ? { ...c, isGenerating: false } : c))
                     )
                   }
-                  if (targetConversationId && targetConversationId !== activeConversationId) {
+                  if (
+                    targetConversationId &&
+                    targetConversationId !== activeConversationId &&
+                    !(targetConversationId === "__pending__" && !activeConversationId)
+                  ) {
                     lastSendConversationIdRef.current = null
                     return
                   }
@@ -2244,6 +2287,9 @@ export default function Timeline() {
                   setIsGenerating(false)
 
                   const normalized = normalizeContentJson(msg.contentJson ?? msg.content)
+                  const isStopped =
+                    (normalized && typeof (normalized as Record<string, unknown>).stopped === "boolean" && Boolean((normalized as Record<string, unknown>).stopped)) ||
+                    String(msg.content || "") === "사용자의 요청에 의해 요청 및 답변이 중지 되었습니다."
                   let derivedText = extractTextFromJsonContent(normalized ?? msg.content) || String(msg.content || "")
                   if (typeof derivedText === "string" && derivedText.trim().startsWith("{")) {
                     const extracted = extractMessageFromJsonishString(derivedText)
@@ -2269,7 +2315,7 @@ export default function Timeline() {
                       modelDisplayName: aModelDisplayName || undefined,
                       providerSlug: msg.providerSlug,
                       providerLogoKey: null,
-                      status: "success" as const,
+                      status: (isStopped ? "stopped" : "success") as MessageStatus,
                       createdAt: new Date().toISOString(),
                     }
                     if (realIdx >= 0) next[realIdx] = { ...next[realIdx], ...row, isPending: false }

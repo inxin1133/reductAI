@@ -22,6 +22,47 @@ const MODEL_TYPES: ModelType[] = ["text", "image", "audio", "music", "video", "m
 
 type AudioFormat = "mp3" | "wav" | "opus" | "aac" | "flac"
 
+const ACTIVE_RUNS = new Map<
+  string,
+  { abortController: AbortController; assistantMessageId: string; userId: string; tenantId: string }
+>()
+const ACTIVE_RUNS_BY_REQUEST = new Map<
+  string,
+  { abortController: AbortController; assistantMessageId: string; userId: string; tenantId: string }
+>()
+
+function registerActiveRun(args: { conversationId: string; assistantMessageId: string; userId: string; tenantId: string; abortController: AbortController }) {
+  ACTIVE_RUNS.set(args.conversationId, {
+    abortController: args.abortController,
+    assistantMessageId: args.assistantMessageId,
+    userId: args.userId,
+    tenantId: args.tenantId,
+  })
+}
+
+function clearActiveRun(conversationId: string, assistantMessageId?: string | null) {
+  const cur = ACTIVE_RUNS.get(conversationId)
+  if (!cur) return
+  if (assistantMessageId && cur.assistantMessageId !== assistantMessageId) return
+  ACTIVE_RUNS.delete(conversationId)
+}
+
+function registerActiveRunByRequestId(args: { requestId: string; assistantMessageId: string; userId: string; tenantId: string; abortController: AbortController }) {
+  ACTIVE_RUNS_BY_REQUEST.set(args.requestId, {
+    abortController: args.abortController,
+    assistantMessageId: args.assistantMessageId,
+    userId: args.userId,
+    tenantId: args.tenantId,
+  })
+}
+
+function clearActiveRunByRequestId(requestId: string, assistantMessageId?: string | null) {
+  const cur = ACTIVE_RUNS_BY_REQUEST.get(requestId)
+  if (!cur) return
+  if (assistantMessageId && cur.assistantMessageId !== assistantMessageId) return
+  ACTIVE_RUNS_BY_REQUEST.delete(requestId)
+}
+
 function isAudioFormat(v: unknown): v is AudioFormat {
   return v === "mp3" || v === "wav" || v === "opus" || v === "aac" || v === "flac"
 }
@@ -249,6 +290,7 @@ async function executeHttpJsonProfile(args: {
   injectedTemplate: Record<string, unknown> | null
   profile: ModelApiProfileRow
   configVars: Record<string, unknown>
+  signal?: AbortSignal
 }): Promise<{ output_text: string; raw: unknown; content: Record<string, unknown> }> {
   const transport = safeObj(args.profile.transport)
   const responseMapping = safeObj(args.profile.response_mapping)
@@ -317,6 +359,7 @@ async function executeHttpJsonProfile(args: {
     overridePath?: string
     overrideQuery?: Record<string, unknown>
     mode: "json" | "binary"
+    signal?: AbortSignal
   }): Promise<{ ok: boolean; status: number; url: string; json: unknown; buf: Buffer | null; contentType: string | null }> {
     const tr = args2.transportSpec
     const rawHeaders = safeObj(tr.headers)
@@ -355,6 +398,11 @@ async function executeHttpJsonProfile(args: {
     }
 
     const controller = new AbortController()
+    const onAbort = () => controller.abort()
+    if (args2.signal) {
+      if (args2.signal.aborted) controller.abort()
+      else args2.signal.addEventListener("abort", onAbort)
+    }
     const t = setTimeout(() => controller.abort(), Math.max(1000, timeout))
     let res: globalThis.Response
     try {
@@ -366,6 +414,7 @@ async function executeHttpJsonProfile(args: {
       })
     } finally {
       clearTimeout(t)
+      if (args2.signal) args2.signal.removeEventListener("abort", onAbort)
     }
 
     const contentType = res.headers.get("content-type")
@@ -402,6 +451,7 @@ async function executeHttpJsonProfile(args: {
     overrideMethod: method,
     overridePath: path,
     mode: modeRaw === "binary" ? "binary" : "json",
+    signal: args.signal,
   })
   if (!initial.ok) {
     throw new Error(`MODEL_API_PROFILE_HTTP_${initial.status}:${JSON.stringify(initial.json)}@${initial.url}`)
@@ -438,6 +488,7 @@ async function executeHttpJsonProfile(args: {
         overrideMethod: pickString(poll, "method") || "GET",
         overridePath: pollPath,
         mode: "json",
+        signal: args.signal,
       })
       if (!polled.ok) throw new Error(`ASYNC_JOB_POLL_FAILED_${polled.status}:${JSON.stringify(polled.json)}@${polled.url}`)
       lastJson = polled.json
@@ -474,6 +525,7 @@ async function executeHttpJsonProfile(args: {
       overrideMethod: pickString(download, "method") || "GET",
       overridePath: downloadPath,
       mode: downloadMode,
+      signal: args.signal,
     })
     if (!downloaded.ok) throw new Error(`ASYNC_JOB_DOWNLOAD_FAILED_${downloaded.status}:${JSON.stringify(downloaded.json)}@${downloaded.url}`)
 
@@ -892,6 +944,88 @@ async function updateMessageContent(args: {
   return r.rowCount > 0
 }
 
+export async function cancelChatRun(req: Request, res: Response) {
+  try {
+    const userId = (req as AuthedRequest).userId
+    const tenantId = await ensureSystemTenantId()
+    const body = (req.body || {}) as { conversation_id?: string; request_id?: string }
+    const conversationId = String(body.conversation_id || "").trim()
+    const requestId = String(body.request_id || "").trim()
+    if (!conversationId && !requestId) return res.status(400).json({ message: "conversation_id or request_id is required" })
+    if (conversationId && !isUuid(conversationId)) return res.status(400).json({ message: "conversation_id is invalid" })
+
+    const stopText = "사용자의 요청에 의해 요청 및 답변이 중지 되었습니다."
+    if (requestId) {
+      const activeByRequest = ACTIVE_RUNS_BY_REQUEST.get(requestId)
+      if (activeByRequest) {
+        if (activeByRequest.userId !== userId || activeByRequest.tenantId !== tenantId) {
+          return res.status(404).json({ message: "Request not found" })
+        }
+        activeByRequest.abortController.abort()
+        await updateMessageContent({
+          id: activeByRequest.assistantMessageId,
+          status: "stopped",
+          content: normalizeAiContent({ output_text: stopText }),
+          contentText: stopText,
+          summary: null,
+        })
+        clearActiveRunByRequestId(requestId, activeByRequest.assistantMessageId)
+        return res.json({ ok: true, canceled: true })
+      }
+    }
+
+    if (conversationId) {
+      const owns = await ensureConversationOwned({ tenantId, userId, conversationId })
+      if (!owns) return res.status(404).json({ message: "Conversation not found" })
+    }
+
+    const active = ACTIVE_RUNS.get(conversationId)
+    if (active) {
+      active.abortController.abort()
+      await updateMessageContent({
+        id: active.assistantMessageId,
+        status: "stopped",
+        content: normalizeAiContent({ output_text: stopText }),
+        contentText: stopText,
+        summary: null,
+      })
+      clearActiveRun(conversationId, active.assistantMessageId)
+      return res.json({ ok: true, canceled: true })
+    }
+
+    if (conversationId) {
+      const row = await query(
+        `SELECT id
+         FROM model_messages
+         WHERE conversation_id = $1
+           AND role = 'assistant'
+           AND status = 'in_progress'
+         ORDER BY message_order DESC
+         LIMIT 1`,
+        [conversationId]
+      )
+      if (row.rows.length > 0) {
+        const id = String(row.rows[0].id || "")
+        if (id) {
+          await updateMessageContent({
+            id,
+            status: "stopped",
+            content: normalizeAiContent({ output_text: stopText }),
+            contentText: stopText,
+            summary: null,
+          })
+          return res.json({ ok: true, canceled: true })
+        }
+      }
+    }
+    return res.json({ ok: true, canceled: false })
+  } catch (e: unknown) {
+    console.error("cancelChatRun error:", e)
+    const msg = e instanceof Error ? e.message : String(e)
+    return res.status(500).json({ message: "Failed to cancel chat", details: msg })
+  }
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return Boolean(v) && typeof v === "object" && !Array.isArray(v)
 }
@@ -1120,6 +1254,11 @@ export async function getConversationContext(req: Request, res: Response) {
 }
 
 export async function chatRun(req: Request, res: Response) {
+  let assistantMessageId: string | null = null
+  let responseFinalized = false
+  let cleanupActiveRun = () => {}
+  let isAborted = () => false
+  let clientRequestId = ""
   try {
     const userId = (req as AuthedRequest).userId
     const tenantId = await ensureSystemTenantId()
@@ -1141,6 +1280,7 @@ export async function chatRun(req: Request, res: Response) {
       // browser-derived hints (best-effort)
       web_search_country,
       web_search_languages,
+      client_request_id,
     }: {
       model_type?: ModelType
       conversation_id?: string | null
@@ -1155,9 +1295,11 @@ export async function chatRun(req: Request, res: Response) {
       web_allowed?: boolean
       web_search_country?: string | null
       web_search_languages?: string[] | null
+      client_request_id?: string | null
     } = req.body || {}
 
     const prompt = String(userPrompt || "").trim()
+    clientRequestId = String(client_request_id || "").trim()
     if (!prompt) return res.status(400).json({ message: "userPrompt is required" })
 
     const mt = (String(model_type || "").trim() as ModelType) || "text"
@@ -1170,8 +1312,6 @@ export async function chatRun(req: Request, res: Response) {
 
     // We'll fill history language later if conversation exists.
     let historyLang: string | null = null
-    let assistantMessageId: string | null = null
-    let responseFinalized = false
 
     // safe max_tokens
     const maxTokensRequested = clampInt(Number(max_tokens ?? 512) || 512, 16, 8192)
@@ -1481,10 +1621,34 @@ export async function chatRun(req: Request, res: Response) {
       providerLogoKey,
     })
 
+    const requestAbortController = new AbortController()
+    const abortSignal = requestAbortController.signal
     const stopText = "사용자의 요청에 의해 요청 및 답변이 중지 되었습니다."
+    cleanupActiveRun = () => {
+      clearActiveRun(convId, assistantMessageId)
+      if (clientRequestId) clearActiveRunByRequestId(clientRequestId, assistantMessageId)
+    }
+    registerActiveRun({
+      conversationId: convId,
+      assistantMessageId,
+      userId,
+      tenantId,
+      abortController: requestAbortController,
+    })
+    if (clientRequestId) {
+      registerActiveRunByRequestId({
+        requestId: clientRequestId,
+        assistantMessageId,
+        userId,
+        tenantId,
+        abortController: requestAbortController,
+      })
+    }
+    isAborted = () => responseFinalized || req.aborted || abortSignal.aborted
     req.on("close", () => {
       if (responseFinalized) return
       responseFinalized = true
+      requestAbortController.abort()
       if (assistantMessageId) {
         void updateMessageContent({
           id: assistantMessageId,
@@ -1494,6 +1658,7 @@ export async function chatRun(req: Request, res: Response) {
           summary: null,
         })
       }
+      cleanupActiveRun()
     })
 
     const failAndRespond = async (statusCode: number, body: { message: string; details?: unknown }) => {
@@ -1508,6 +1673,7 @@ export async function chatRun(req: Request, res: Response) {
           summary: null,
         })
       }
+      cleanupActiveRun()
       responseFinalized = true
       return res.status(statusCode).json(body)
     }
@@ -1547,6 +1713,7 @@ export async function chatRun(req: Request, res: Response) {
             injectedTemplate,
             profile,
             configVars: auth.configVars,
+            signal: abortSignal,
           })
           // Defensive fallback:
           // Some model_api_profiles mappings (especially for OpenAI structured outputs) can yield empty text
@@ -1670,6 +1837,7 @@ export async function chatRun(req: Request, res: Response) {
                 method: "POST",
                 headers: { Authorization: `Bearer ${auth.apiKey}`, "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
+                signal: abortSignal,
               })
               const j = await r.json().catch(() => ({}))
               return { res: r, json: j }
@@ -1758,7 +1926,15 @@ export async function chatRun(req: Request, res: Response) {
                 })
                 continue
               }
-              const result = await serperSearch({ apiKey: serperKey, query: q, country: gl, language: hl, limit: 5, timeoutMs: 10000 })
+              const result = await serperSearch({
+                apiKey: serperKey,
+                query: q,
+                country: gl,
+                language: hl,
+                limit: 5,
+                timeoutMs: 10000,
+                signal: abortSignal,
+              })
               // Keep tool payload compact (raw is kept server-side only if needed)
               messages.push({
                 role: "tool",
@@ -1788,6 +1964,7 @@ export async function chatRun(req: Request, res: Response) {
             outputFormat: "block_json",
             templateBody: injectedTemplate || undefined,
             responseSchema,
+            signal: abortSignal,
           })
           out = { ...r, content: { output_text: r.output_text, raw: r.raw } }
         }
@@ -1799,6 +1976,7 @@ export async function chatRun(req: Request, res: Response) {
           input,
           maxTokens: safeMaxTokens,
           templateBody: injectedTemplate || undefined,
+          signal: abortSignal,
         })
         out = { ...r, content: { output_text: r.output_text, raw: r.raw } }
         } else if (providerKey === "google") {
@@ -1809,6 +1987,7 @@ export async function chatRun(req: Request, res: Response) {
           input,
           maxTokens: safeMaxTokens,
           templateBody: injectedTemplate || undefined,
+          signal: abortSignal,
         })
         out = { ...r, content: { output_text: r.output_text, raw: r.raw } }
         } else {
@@ -1839,6 +2018,7 @@ export async function chatRun(req: Request, res: Response) {
               image_data_url: incomingImageDataUrls[0],
               n,
               size,
+              signal: abortSignal,
             })
           : await openaiGenerateImage({
               apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
@@ -1850,6 +2030,7 @@ export async function chatRun(req: Request, res: Response) {
               quality,
               style,
               background,
+              signal: abortSignal,
             })
       // Prefer real URLs; if API returns base64 only, fall back to data URLs.
       const sourceUrls: string[] = (r.urls && r.urls.length ? r.urls : r.data_urls) || []
@@ -1899,6 +2080,7 @@ export async function chatRun(req: Request, res: Response) {
         voice,
         format,
         speed,
+        signal: abortSignal,
       })
       const blockJson = {
         title: mt === "music" ? "음악 생성" : "오디오 생성",
@@ -1952,6 +2134,11 @@ export async function chatRun(req: Request, res: Response) {
               ? "비디오 생성"
               : String(contentTextFromBlocks || "").slice(0, 4000)
 
+    if (isAborted()) {
+      cleanupActiveRun()
+      return res.status(499).json({ message: "Client aborted request." })
+    }
+
     const didUpdateAssistant = await updateMessageContent({
       id: assistantMessageId,
       status: "success",
@@ -1959,6 +2146,7 @@ export async function chatRun(req: Request, res: Response) {
       contentText: contentTextForHistory,
       summary: null,
     })
+    cleanupActiveRun()
 
     // Persist assets (FK requires message row exists).
     if (didUpdateAssistant) {
@@ -2013,7 +2201,7 @@ export async function chatRun(req: Request, res: Response) {
   } catch (e: unknown) {
     console.error("chatRun error:", e)
     const msg = e instanceof Error ? e.message : String(e)
-    if (assistantMessageId) {
+    if (assistantMessageId && !isAborted()) {
       const failText = `요청 처리 중 오류가 발생했습니다.\n\n${msg}`
       const failContent = normalizeAiContent({ output_text: failText })
       await updateMessageContent({
@@ -2024,6 +2212,7 @@ export async function chatRun(req: Request, res: Response) {
         summary: null,
       })
     }
+    cleanupActiveRun()
     responseFinalized = true
     return res.status(500).json({ message: "Failed to run chat", details: msg })
   }

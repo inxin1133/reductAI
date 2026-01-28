@@ -92,6 +92,7 @@ export interface ChatInterfaceProps {
   initialOptions?: Record<string, unknown>
   autoSendPrompt?: string | null
   autoSendAttachments?: Array<Record<string, unknown>> | null
+  clientRequestId?: string | null
   conversationId?: string | null
   onConversationId?: (id: string) => void
   sessionLanguage?: string
@@ -137,6 +138,7 @@ type ChatUiConfig = {
 const CHAT_UI_CONFIG_API = "/api/ai/chat-ui/config"
 const CHAT_PROMPT_SUGGESTIONS_API = "/api/ai/chat-ui/prompt-suggestions"
 const CHAT_RUN_API = "/api/ai/chat/run"
+const CHAT_RUN_CANCEL_API = "/api/ai/chat/run/cancel"
 const FRONT_AI_LAST_SELECTION_KEY = "reductai.frontai.lastSelection.v1"
 
 function inferCountryFromBrowser(): string | null {
@@ -493,6 +495,7 @@ export function ChatInterface({
   initialOptions,
   autoSendPrompt,
   autoSendAttachments,
+  clientRequestId,
   conversationId,
   onConversationId,
   sessionLanguage,
@@ -1887,6 +1890,7 @@ export function ChatInterface({
               api_attachments: apiAttachments.length,
               pending_attachments: attachmentsSnapshot.filter((a) => a.kind !== "link" && !a.dataUrl).length,
             },
+            client_request_id: clientRequestId || undefined,
             web_allowed: webAllowedForRequest,
             web_search_country: webCountry,
             web_search_languages: webLanguages,
@@ -1985,6 +1989,13 @@ export function ChatInterface({
   const handleStop = React.useCallback(() => {
     if (!isWaitingForResponse) return
     onStop?.()
+    if (conversationId) {
+      void fetch(CHAT_RUN_CANCEL_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ conversation_id: conversationId }),
+      }).catch(() => null)
+    }
     abortControllerRef.current?.abort()
     abortControllerRef.current = null
     setIsWaitingForResponse(false)
@@ -1998,7 +2009,7 @@ export function ChatInterface({
       model: lastSendMetaRef.current?.model,
     })
     clearAttachments()
-  }, [assistantSummary, clearAttachments, isWaitingForResponse, onMessage, onStop])
+  }, [assistantSummary, authHeaders, clearAttachments, conversationId, isWaitingForResponse, onMessage, onStop])
 
   // Timeline/FrontAI initial prompt auto-send (once)
   const autoSentRef = React.useRef<string>("")

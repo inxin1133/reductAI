@@ -32,11 +32,17 @@ export async function serperSearch(args: {
   // Number of results to return to the model (we'll request a bit more and then truncate)
   limit?: number
   timeoutMs?: number
+  signal?: AbortSignal
 }): Promise<SerperSearchResult> {
   const limit = clampInt(Number(args.limit ?? 5) || 5, 1, 10)
   const timeoutMs = clampInt(Number(args.timeoutMs ?? 10000) || 10000, 2000, 30000)
 
   const controller = new AbortController()
+  const onAbort = () => controller.abort()
+  if (args.signal) {
+    if (args.signal.aborted) controller.abort()
+    else args.signal.addEventListener("abort", onAbort)
+  }
   const t = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const res = await fetch("https://google.serper.dev/search", {
@@ -79,6 +85,7 @@ export async function serperSearch(args: {
     }
   } finally {
     clearTimeout(t)
+    if (args.signal) args.signal.removeEventListener("abort", onAbort)
   }
 }
 

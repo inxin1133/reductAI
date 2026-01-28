@@ -132,6 +132,7 @@ export async function openaiGenerateImage(args: {
   quality?: string
   style?: string
   background?: string
+  signal?: AbortSignal
 }) {
   const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl)
   const base = normalized || "https://api.openai.com/v1"
@@ -167,6 +168,7 @@ export async function openaiGenerateImage(args: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
+      signal: args.signal,
     })
     const json = await res.json().catch(() => ({}))
     return { res, json }
@@ -381,6 +383,7 @@ export async function openaiEditImage(args: {
   // common options (best-effort)
   n?: number
   size?: string
+  signal?: AbortSignal
 }) {
   const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl)
   const base = normalized || "https://api.openai.com/v1"
@@ -410,6 +413,7 @@ export async function openaiEditImage(args: {
       // NOTE: do NOT set Content-Type; fetch will set multipart boundary.
     },
     body: form as any,
+    signal: args.signal,
   })
   const json = await res.json().catch(() => ({}))
   if (!res.ok) {
@@ -481,6 +485,7 @@ export async function openaiTextToSpeech(args: {
   voice?: string
   format?: "mp3" | "wav" | "opus" | "aac" | "flac"
   speed?: number
+  signal?: AbortSignal
 }) {
   const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl)
   const base = normalized || "https://api.openai.com/v1"
@@ -502,6 +507,7 @@ export async function openaiTextToSpeech(args: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
+    signal: args.signal,
   })
   if (!res.ok) {
     const errText = await res.text().catch(() => "")
@@ -606,6 +612,7 @@ export async function googleSimulateChat(args: {
   input: string
   maxTokens: number
   templateBody?: Record<string, unknown> | null
+  signal?: AbortSignal
 }) {
   const normalized = normalizeGoogleBaseUrl(args.apiBaseUrl)
   const base = normalized || "https://generativelanguage.googleapis.com/v1beta"
@@ -634,6 +641,7 @@ export async function googleSimulateChat(args: {
       "x-goog-api-key": args.apiKey,
     },
     body: JSON.stringify(body),
+    signal: args.signal,
   })
   const json = await res.json().catch(() => ({}))
   if (!res.ok) {
@@ -664,6 +672,7 @@ export async function openaiSimulateChat(args: {
   outputFormat?: "block_json"
   templateBody?: Record<string, unknown> | null
   responseSchema?: OpenAiJsonSchema | null
+  signal?: AbortSignal
 }) {
   const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl)
   const base = normalized || "https://api.openai.com/v1"
@@ -682,6 +691,7 @@ export async function openaiSimulateChat(args: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(payload),
+        signal: args.signal,
       })
       const json = await res.json().catch(() => ({}))
       return { res, json }
@@ -1071,6 +1081,7 @@ export async function anthropicSimulateChat(args: {
   input: string
   maxTokens: number
   templateBody?: Record<string, unknown> | null
+  signal?: AbortSignal
 }) {
   const base = (args.apiBaseUrl || "https://api.anthropic.com/v1").replace(/\/+$/g, "")
   const baseBody = {
@@ -1088,6 +1099,7 @@ export async function anthropicSimulateChat(args: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
+    signal: args.signal,
   })
   const json = await res.json().catch(() => ({}))
   if (!res.ok) {
