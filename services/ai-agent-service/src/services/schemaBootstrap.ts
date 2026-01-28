@@ -318,6 +318,7 @@ export async function ensureTimelineSchema() {
       segment_group VARCHAR(50) CHECK (segment_group IN ('normal', 'summary_material', 'retrieved')),
       function_name VARCHAR(255),
       function_call_id VARCHAR(255),
+      status VARCHAR(20) NOT NULL DEFAULT 'none' CHECK (status IN ('none', 'in_progress', 'success', 'failed', 'stopped')),
       input_tokens INTEGER DEFAULT 0,
       cached_input_tokens INTEGER DEFAULT 0,
       output_tokens INTEGER DEFAULT 0,
@@ -394,6 +395,33 @@ export async function ensureTimelineSchema() {
           AND column_name = 'content_text'
       ) THEN
         ALTER TABLE model_messages ADD COLUMN content_text TEXT;
+      END IF;
+
+      -- model_messages: status
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_messages'
+          AND column_name = 'status'
+      ) THEN
+        ALTER TABLE model_messages ADD COLUMN status VARCHAR(20) DEFAULT 'none';
+      END IF;
+      -- backfill status for existing rows
+      UPDATE model_messages
+      SET status = CASE WHEN role = 'assistant' THEN 'success' ELSE 'none' END
+      WHERE status IS NULL;
+      -- ensure NOT NULL + check constraint
+      ALTER TABLE model_messages ALTER COLUMN status SET DEFAULT 'none';
+      ALTER TABLE model_messages ALTER COLUMN status SET NOT NULL;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_model_messages_status'
+      ) THEN
+        ALTER TABLE model_messages
+        ADD CONSTRAINT chk_model_messages_status
+        CHECK (status IN ('none', 'in_progress', 'success', 'failed', 'stopped'));
       END IF;
 
       -- model_messages: summary_tokens/importance/is_pinned/segment_group/updated_at

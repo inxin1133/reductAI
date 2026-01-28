@@ -818,6 +818,7 @@ async function appendMessage(args: {
   content: Record<string, unknown>
   contentText: string
   summary: string | null
+  status: "none" | "in_progress" | "success" | "failed" | "stopped"
   modelApiId: string
   providerSlug: string
   providerKey: string
@@ -830,8 +831,8 @@ async function appendMessage(args: {
   const msgId = args.id ? String(args.id) : null
   const r = await query(
     `
-    INSERT INTO model_messages (id, conversation_id, role, content, content_text, summary, message_order, metadata)
-    VALUES (COALESCE($1::uuid, uuid_generate_v4()), $2,$3,$4::jsonb,$5,$6,$7,$8::jsonb)
+    INSERT INTO model_messages (id, conversation_id, role, content, content_text, summary, status, message_order, metadata)
+    VALUES (COALESCE($1::uuid, uuid_generate_v4()), $2,$3,$4::jsonb,$5,$6,$7,$8,$9::jsonb)
     RETURNING id, message_order
     `,
     [
@@ -841,6 +842,7 @@ async function appendMessage(args: {
       JSON.stringify(args.content),
       args.contentText || null,
       args.summary,
+      args.status,
       nextOrder,
       JSON.stringify({
         model: args.modelApiId,
@@ -851,6 +853,43 @@ async function appendMessage(args: {
     ]
   )
   return { id: String(r.rows[0].id), message_order: Number(r.rows[0].message_order) }
+}
+
+async function updateMessageStatus(args: { id: string; status: "in_progress" | "success" | "failed" | "stopped" }) {
+  const r = await query(
+    `
+    UPDATE model_messages
+    SET status = $2
+    WHERE id = $1
+      AND status = 'in_progress'
+    RETURNING id
+    `,
+    [args.id, args.status]
+  )
+  return r.rowCount > 0
+}
+
+async function updateMessageContent(args: {
+  id: string
+  status: "success" | "failed" | "stopped"
+  content: Record<string, unknown>
+  contentText: string
+  summary: string | null
+}) {
+  const r = await query(
+    `
+    UPDATE model_messages
+    SET content = $2::jsonb,
+        content_text = $3,
+        summary = $4,
+        status = $5
+    WHERE id = $1
+      AND status = 'in_progress'
+    RETURNING id
+    `,
+    [args.id, JSON.stringify(args.content), args.contentText || null, args.summary, args.status]
+  )
+  return r.rowCount > 0
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -1131,6 +1170,8 @@ export async function chatRun(req: Request, res: Response) {
 
     // We'll fill history language later if conversation exists.
     let historyLang: string | null = null
+    let assistantMessageId: string | null = null
+    let responseFinalized = false
 
     // safe max_tokens
     const maxTokensRequested = clampInt(Number(max_tokens ?? 512) || 512, 16, 8192)
@@ -1361,6 +1402,116 @@ export async function chatRun(req: Request, res: Response) {
       .filter(Boolean)
       .join("\n\n")
 
+    // ✅ 선생성: user 메시지 + assistant(in_progress) 메시지
+    const userMessageId = crypto.randomUUID()
+    assistantMessageId = crypto.randomUUID()
+
+    // Attachments (from client): assetize any data_url so DB isn't bloated.
+    // Client sends: [{kind:"image"|"file"|"link", ... , data_url? }]
+    const safeAttachments: Record<string, unknown>[] = []
+    const incoming = Array.isArray(attachments) ? attachments : []
+    for (const a of incoming) {
+      if (!a || typeof a !== "object") continue
+      const ao = a as Record<string, unknown>
+      const kind = typeof ao.kind === "string" ? ao.kind : ""
+      if (kind === "link") {
+        const url = typeof ao.url === "string" ? ao.url : ""
+        const title = typeof ao.title === "string" ? ao.title : ""
+        if (url) safeAttachments.push({ kind: "link", url, title })
+        continue
+      }
+      if (kind === "image" || kind === "file") {
+        const name = typeof ao.name === "string" ? ao.name : ""
+        const mime = typeof ao.mime === "string" ? ao.mime : ""
+        const size = typeof ao.size === "number" ? ao.size : Number(ao.size || 0)
+        const dataUrl = typeof ao.data_url === "string" ? ao.data_url : ""
+        const base: Record<string, unknown> = { kind, name, mime, size }
+        if (dataUrl && dataUrl.startsWith("data:")) {
+          try {
+            const assetId = newAssetId()
+            const stored = await storeImageDataUrlAsAsset({
+              tenantId,
+              userId: userId || null,
+              conversationId: convId,
+              messageId: userMessageId,
+              assetId,
+              dataUrl,
+              index: safeAttachments.length,
+            })
+            safeAttachments.push({ ...base, url: stored.url, asset_id: stored.assetId, bytes: stored.bytes })
+          } catch (e) {
+            console.warn("[attachments] failed to store data_url; keeping metadata only", e)
+            safeAttachments.push(base)
+          }
+        } else {
+          const url = typeof ao.url === "string" ? ao.url : ""
+          if (url) safeAttachments.push({ ...base, url })
+          else safeAttachments.push(base)
+        }
+      }
+    }
+
+    const normalizedUserContent = normalizeAiContent({ text: prompt, options: mergedOptions, attachments: safeAttachments })
+    await appendMessage({
+      id: userMessageId,
+      conversationId: convId,
+      role: "user",
+      content: normalizedUserContent,
+      contentText: extractTextFromJsonContent(normalizedUserContent) || prompt,
+      summary: null,
+      status: "none",
+      modelApiId,
+      providerSlug: String(row.provider_slug || ""),
+      providerKey: providerKey,
+      providerLogoKey,
+    })
+
+    const normalizedAssistantPlaceholder = normalizeAiContent({ output_text: "" })
+    await appendMessage({
+      id: assistantMessageId,
+      conversationId: convId,
+      role: "assistant",
+      content: normalizedAssistantPlaceholder,
+      contentText: "",
+      summary: null,
+      status: "in_progress",
+      modelApiId,
+      providerSlug: String(row.provider_slug || ""),
+      providerKey: providerKey,
+      providerLogoKey,
+    })
+
+    const stopText = "사용자의 요청에 의해 요청 및 답변이 중지 되었습니다."
+    req.on("close", () => {
+      if (responseFinalized) return
+      responseFinalized = true
+      if (assistantMessageId) {
+        void updateMessageContent({
+          id: assistantMessageId,
+          status: "stopped",
+          content: normalizeAiContent({ output_text: stopText }),
+          contentText: stopText,
+          summary: null,
+        })
+      }
+    })
+
+    const failAndRespond = async (statusCode: number, body: { message: string; details?: unknown }) => {
+      if (assistantMessageId) {
+        const failText = body.message || "요청 처리 중 오류가 발생했습니다."
+        const failContent = normalizeAiContent({ output_text: failText })
+        await updateMessageContent({
+          id: assistantMessageId,
+          status: "failed",
+          content: failContent,
+          contentText: String(failText).slice(0, 4000),
+          summary: null,
+        })
+      }
+      responseFinalized = true
+      return res.status(statusCode).json(body)
+    }
+
     let out: { output_text: string; raw: unknown; content: Record<string, unknown> } | null = null
 
     const webAllowed = Boolean(web_allowed) && mt === "text"
@@ -1417,7 +1568,7 @@ export async function chatRun(req: Request, res: Response) {
     // Video is DB-profile driven. If we have no profile (or the profile errored), don't fall back to a generic legacy "not implemented".
     // Return an actionable error so Admin can add/fix `model_api_profiles(purpose=video)` for the provider.
     if (mt === "video" && out == null) {
-      return res.status(400).json({
+      return await failAndRespond(400, {
         message: "Video requires an active model_api_profile (purpose=video) for the selected provider/model.",
         details: {
           provider_id: providerId,
@@ -1443,7 +1594,7 @@ export async function chatRun(req: Request, res: Response) {
         if (webAllowed) {
           const serperKey = String(process.env.SERPER_API_KEY || "").trim()
           if (!serperKey) {
-            return res.status(500).json({
+            return await failAndRespond(500, {
               message: "Web search is enabled, but SERPER_API_KEY is not configured on ai-agent-service.",
               details: "Set SERPER_API_KEY in ai-agent-service environment (.env) and restart the service.",
             })
@@ -1661,11 +1812,11 @@ export async function chatRun(req: Request, res: Response) {
         })
         out = { ...r, content: { output_text: r.output_text, raw: r.raw } }
         } else {
-        return res.status(400).json({ message: `Unsupported provider_family/provider_slug: ${providerKey}` })
+        return await failAndRespond(400, { message: `Unsupported provider_family/provider_slug: ${providerKey}` })
         }
       } else if (mt === "image") {
       if (providerKey !== "openai") {
-        return res.status(400).json({ message: `Image is not supported for provider=${providerKey} yet.` })
+        return await failAndRespond(400, { message: `Image is not supported for provider=${providerKey} yet.` })
       }
       const n = typeof mergedOptions?.n === "number" ? clampInt(mergedOptions.n, 1, 10) : 1
       const size = typeof mergedOptions?.size === "string" ? mergedOptions.size : undefined
@@ -1718,7 +1869,7 @@ export async function chatRun(req: Request, res: Response) {
       }
       } else if (mt === "audio" || mt === "music") {
       if (providerKey !== "openai") {
-        return res.status(400).json({ message: `${mt} is not supported for provider=${providerKey} yet.` })
+        return await failAndRespond(400, { message: `${mt} is not supported for provider=${providerKey} yet.` })
       }
       // Allow prompt_templates.body to override audio request fields.
       const tmpl = injectedTemplate && typeof injectedTemplate === "object" && !Array.isArray(injectedTemplate) ? (injectedTemplate as Record<string, unknown>) : null
@@ -1760,80 +1911,17 @@ export async function chatRun(req: Request, res: Response) {
         content: { ...blockJson, audio: { mime: r.mime, data_url: r.data_url }, raw: r.raw },
       }
       } else if (mt === "video") {
-      return res.status(400).json({
+      return await failAndRespond(400, {
         message: "Video is not implemented yet.",
         details:
           "현재 프로젝트에는 video 생성용 provider client(예: Runway/Pika/Sora)가 아직 없습니다. 어떤 provider_family/endpoint를 사용할지 알려주시면 연동을 구현할 수 있습니다.",
       })
       } else {
-      return res.status(400).json({ message: `Unsupported model_type=${mt}` })
+      return await failAndRespond(400, { message: `Unsupported model_type=${mt}` })
       }
     }
-
-    // persist messages (user + assistant)
-    const userMessageId = crypto.randomUUID()
-
-    // Attachments (from client): assetize any data_url so DB isn't bloated.
-    // Client sends: [{kind:"image"|"file"|"link", ... , data_url? }]
-    const safeAttachments: Record<string, unknown>[] = []
-    const incoming = Array.isArray(attachments) ? attachments : []
-    for (const a of incoming) {
-      if (!a || typeof a !== "object") continue
-      const ao = a as Record<string, unknown>
-      const kind = typeof ao.kind === "string" ? ao.kind : ""
-      if (kind === "link") {
-        const url = typeof ao.url === "string" ? ao.url : ""
-        const title = typeof ao.title === "string" ? ao.title : ""
-        if (url) safeAttachments.push({ kind: "link", url, title })
-        continue
-      }
-      if (kind === "image" || kind === "file") {
-        const name = typeof ao.name === "string" ? ao.name : ""
-        const mime = typeof ao.mime === "string" ? ao.mime : ""
-        const size = typeof ao.size === "number" ? ao.size : Number(ao.size || 0)
-        const dataUrl = typeof ao.data_url === "string" ? ao.data_url : ""
-        const base: Record<string, unknown> = { kind, name, mime, size }
-        if (dataUrl && dataUrl.startsWith("data:")) {
-          try {
-            const assetId = newAssetId()
-            const stored = await storeImageDataUrlAsAsset({
-              tenantId,
-              userId: userId || null,
-              conversationId: convId,
-              messageId: userMessageId,
-              assetId,
-              dataUrl,
-              index: safeAttachments.length,
-            })
-            safeAttachments.push({ ...base, url: stored.url, asset_id: stored.assetId, bytes: stored.bytes })
-          } catch (e) {
-            console.warn("[attachments] failed to store data_url; keeping metadata only", e)
-            safeAttachments.push(base)
-          }
-        } else {
-          const url = typeof ao.url === "string" ? ao.url : ""
-          if (url) safeAttachments.push({ ...base, url })
-          else safeAttachments.push(base)
-        }
-      }
-    }
-
-    const normalizedUserContent = normalizeAiContent({ text: prompt, options: mergedOptions, attachments: safeAttachments })
-    await appendMessage({
-      id: userMessageId,
-      conversationId: convId,
-      role: "user",
-      content: normalizedUserContent,
-      contentText: extractTextFromJsonContent(normalizedUserContent) || prompt,
-      summary: null,
-      modelApiId,
-      providerSlug: String(row.provider_slug || ""),
-      providerKey: providerKey,
-      providerLogoKey,
-    })
 
     // Assetize media fields (image/audio/video data URLs) before persisting assistant message.
-    const assistantMessageId = crypto.randomUUID()
     const rewritten = rewriteContentWithAssetUrls(out.content)
     const assistantContentInput: Record<string, unknown> = isRecord(rewritten.content) ? { ...rewritten.content } : {}
     const blocks = Array.isArray(assistantContentInput.blocks) ? (assistantContentInput.blocks as unknown[]) : []
@@ -1864,31 +1952,28 @@ export async function chatRun(req: Request, res: Response) {
               ? "비디오 생성"
               : String(contentTextFromBlocks || "").slice(0, 4000)
 
-    await appendMessage({
+    const didUpdateAssistant = await updateMessageContent({
       id: assistantMessageId,
-      conversationId: convId,
-      role: "assistant",
+      status: "success",
       content: normalizedAssistantContent,
       contentText: contentTextForHistory,
       summary: null,
-      modelApiId,
-      providerSlug: String(row.provider_slug || ""),
-      providerKey: providerKey,
-      providerLogoKey,
     })
 
     // Persist assets (FK requires message row exists).
-    for (const a of rewritten.assets) {
-      await storeImageDataUrlAsAsset({
-        tenantId,
-        userId: userId || null,
-        conversationId: convId,
-        messageId: assistantMessageId,
-        assetId: a.assetId,
-        dataUrl: a.dataUrl,
-        index: a.index,
-        kind: a.kind,
-      })
+    if (didUpdateAssistant) {
+      for (const a of rewritten.assets) {
+        await storeImageDataUrlAsAsset({
+          tenantId,
+          userId: userId || null,
+          conversationId: convId,
+          messageId: assistantMessageId,
+          assetId: a.assetId,
+          dataUrl: a.dataUrl,
+          index: a.index,
+          kind: a.kind,
+        })
+      }
     }
 
     // Return rewritten (assetized) content to the client as output_text too,
@@ -1896,8 +1981,11 @@ export async function chatRun(req: Request, res: Response) {
     out.output_text = JSON.stringify(rewritten.content)
 
     // best-effort: keep conversation model_id updated to last used model
-    await query(`UPDATE model_conversations SET model_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [convId, chosenModelDbId])
+    if (didUpdateAssistant) {
+      await query(`UPDATE model_conversations SET model_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [convId, chosenModelDbId])
+    }
 
+    responseFinalized = true
     const clientDebug = isRecord(req.body) && isRecord((req.body as any).client_debug) ? ((req.body as any).client_debug as Record<string, unknown>) : null
     return res.json({
       ok: true,
@@ -1925,6 +2013,18 @@ export async function chatRun(req: Request, res: Response) {
   } catch (e: unknown) {
     console.error("chatRun error:", e)
     const msg = e instanceof Error ? e.message : String(e)
+    if (assistantMessageId) {
+      const failText = `요청 처리 중 오류가 발생했습니다.\n\n${msg}`
+      const failContent = normalizeAiContent({ output_text: failText })
+      await updateMessageContent({
+        id: assistantMessageId,
+        status: "failed",
+        content: failContent,
+        contentText: failText.slice(0, 4000),
+        summary: null,
+      })
+    }
+    responseFinalized = true
     return res.status(500).json({ message: "Failed to run chat", details: msg })
   }
 }

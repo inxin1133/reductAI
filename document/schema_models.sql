@@ -798,6 +798,7 @@ CREATE TABLE model_messages (
     segment_group VARCHAR(50) CHECK (segment_group IN ('normal', 'summary_material', 'retrieved')), -- 메시지 그룹(선택)
     function_name VARCHAR(255), -- 함수 이름 (role이 function인 경우)
     function_call_id VARCHAR(255), -- 함수 호출 ID
+    status VARCHAR(20) NOT NULL DEFAULT 'none' CHECK (status IN ('none', 'in_progress', 'success', 'failed', 'stopped')), -- 메시지 처리 상태
     input_tokens INTEGER DEFAULT 0, -- 입력 토큰 수
     cached_input_tokens INTEGER DEFAULT 0, -- 캐시 히트 입력 토큰 수
     output_tokens INTEGER DEFAULT 0, -- 출력 토큰 수
@@ -830,6 +831,7 @@ COMMENT ON COLUMN model_messages.is_pinned IS '고정(핀) 여부';
 COMMENT ON COLUMN model_messages.segment_group IS '메시지 그룹(예: normal, summary_material, retrieved)';
 COMMENT ON COLUMN model_messages.function_name IS '함수 이름 (role이 function인 경우)';
 COMMENT ON COLUMN model_messages.function_call_id IS '함수 호출 ID (함수 호출 추적용)';
+COMMENT ON COLUMN model_messages.status IS '메시지 처리 상태: none/in_progress/success/failed/stopped';
 COMMENT ON COLUMN model_messages.input_tokens IS '입력 토큰 수';
 COMMENT ON COLUMN model_messages.cached_input_tokens IS '캐시 히트 입력 토큰 수';
 COMMENT ON COLUMN model_messages.output_tokens IS '출력 토큰 수';

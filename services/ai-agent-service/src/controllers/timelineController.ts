@@ -220,13 +220,16 @@ export async function listThreads(req: Request, res: Response) {
         lm.created_at AS last_message_created_at,
         la.message_order AS last_assistant_order,
         la.created_at AS last_assistant_created_at,
+        la.status AS last_assistant_status,
         COALESCE(r.last_seen_assistant_order, 0) AS last_seen_assistant_order,
         CASE
           WHEN la.message_order IS NULL THEN false
+          WHEN la.status IS DISTINCT FROM 'success' THEN false
           WHEN la.message_order > COALESCE(r.last_seen_assistant_order, 0) THEN true
           ELSE false
         END AS has_unread,
         CASE
+          WHEN la.status = 'in_progress' THEN true
           WHEN lower(COALESCE(lm.role, '')) = 'user'
             AND lm.created_at IS NOT NULL
             AND (CURRENT_TIMESTAMP - lm.created_at) < interval '10 minutes'
@@ -242,7 +245,7 @@ export async function listThreads(req: Request, res: Response) {
         LIMIT 1
       ) lm ON true
       LEFT JOIN LATERAL (
-        SELECT mm.message_order, mm.created_at
+        SELECT mm.message_order, mm.created_at, mm.status
         FROM model_messages mm
         WHERE mm.conversation_id = c.id AND mm.role = 'assistant'
         ORDER BY mm.message_order DESC
@@ -406,6 +409,7 @@ export async function listMessages(req: Request, res: Response) {
         mm.role,
         mm.content,
         mm.summary,
+        mm.status,
         mm.metadata,
         mm.message_order,
         mm.created_at,
@@ -554,11 +558,12 @@ export async function addMessage(req: Request, res: Response) {
         ? (role === "assistant" ? assistantSummaryOneSentence(summaryIn) : clampText(summaryIn, role === "user" ? 50 : 100))
         : deriveSummary({ role, content: normalizedContent, toolName: toolName || undefined })
 
+    const status = role === "assistant" ? "success" : "none"
     const insert = await query(
-      `INSERT INTO model_messages (conversation_id, role, content, summary, message_order, metadata)
-       VALUES ($1, $2, $3::jsonb, $4, $5, $6::jsonb)
-       RETURNING id, conversation_id, role, content, summary, metadata, message_order, created_at`,
-      [id, role, JSON.stringify(normalizedContent), summary, nextOrder, JSON.stringify(metadata)]
+      `INSERT INTO model_messages (conversation_id, role, content, summary, status, message_order, metadata)
+       VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7::jsonb)
+       RETURNING id, conversation_id, role, content, summary, status, metadata, message_order, created_at`,
+      [id, role, JSON.stringify(normalizedContent), summary, status, nextOrder, JSON.stringify(metadata)]
     )
 
     // 최근순 정렬을 위해 updated_at 갱신

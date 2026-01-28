@@ -99,7 +99,7 @@ body {
 .pm-viewer .ProseMirror h1,
 .pm-viewer .ProseMirror h2,
 .pm-viewer .ProseMirror h3 {
-  margin: 0.35rem 0; /* tweak me */
+  margin: 1rem 0; /* tweak me */
 }
 
 /* Control spacing between text block and following image block */

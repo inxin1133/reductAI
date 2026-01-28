@@ -83,7 +83,7 @@ function TimelineSidebarList({
             onClick={() => onSelect(c.id)}
           >
             <div className="flex items-center gap-2 min-w-0 w-full">
-              {c.hasUnread ? <span className="inline-block size-2 rounded-full bg-red-500 shrink-0" /> : null}
+              {!c.isGenerating && c.hasUnread ? <span className="inline-block size-2 rounded-full bg-red-500 shrink-0" /> : null}
               <p className="text-sm text-foreground truncate w-full">
                 {c.isGenerating ? `답변 작성중${ellipsis}` : c.title}
               </p>
@@ -141,6 +141,8 @@ function TimelineSidebarList({
 
 type ChatRole = "user" | "assistant" | "tool"
 
+type MessageStatus = "none" | "in_progress" | "success" | "failed" | "stopped"
+
 type TimelineMessage = {
   id: string
   role: ChatRole
@@ -151,6 +153,7 @@ type TimelineMessage = {
   providerSlug?: string
   providerLogoKey?: string | null
   isPending?: boolean
+  status?: MessageStatus
   createdAt: string // ISO
 }
 
@@ -179,6 +182,8 @@ type TimelineUiMessage = {
   providerSlug?: string
   providerLogoKey?: string | null
   isPending?: boolean
+  status?: MessageStatus
+  createdAt?: string // ISO
 }
 
 type TimelineNavState = {
@@ -516,9 +521,39 @@ export default function Timeline() {
   })
   const [conversations, setConversations] = React.useState<TimelineConversation[]>([])
   const conversationsRef = React.useRef<TimelineConversation[]>([])
+  const ORDER_STORAGE_KEY = "reductai.timeline.order.v1"
   const localGeneratingIdsRef = React.useRef<Set<string>>(new Set())
+  const STOPPED_BY_CONV_KEY = "reductai.timeline.stoppedByConversationId.v1"
+  const readStoppedByConversationFromStorage = React.useCallback((): Record<string, number> => {
+    try {
+      const raw = sessionStorage.getItem(STOPPED_BY_CONV_KEY)
+      if (!raw) return {}
+      const parsed = JSON.parse(raw) as unknown
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {}
+      const out: Record<string, number> = {}
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        const n = Number(v)
+        if (Number.isFinite(n)) out[String(k)] = n
+      }
+      return out
+    } catch {
+      return {}
+    }
+  }, [])
+  const writeStoppedByConversationToStorage = React.useCallback((next: Record<string, number>) => {
+    try {
+      const keys = Object.keys(next)
+      if (!keys.length) sessionStorage.removeItem(STOPPED_BY_CONV_KEY)
+      else sessionStorage.setItem(STOPPED_BY_CONV_KEY, JSON.stringify(next))
+    } catch {
+      // ignore
+    }
+  }, [])
+  const stoppedByConversationRef = React.useRef<Record<string, number>>(readStoppedByConversationFromStorage())
+  const pendingStopRef = React.useRef<{ at: number } | null>(null)
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null)
   const [messages, setMessages] = React.useState<TimelineUiMessage[]>([])
+  const lastSendConversationIdRef = React.useRef<string | null>(null)
 
   // Chat scroll anchoring (keep the viewport on the generating reply)
   const messagesScrollRef = React.useRef<HTMLDivElement | null>(null)
@@ -535,7 +570,37 @@ export default function Timeline() {
   // Keep a ref to latest conversations to avoid over-broad effect dependencies.
   React.useEffect(() => {
     conversationsRef.current = conversations
+    try {
+      const ids = conversations.map((c) => String(c.id || "")).filter(Boolean)
+      if (ids.length) sessionStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(ids))
+    } catch {
+      // ignore
+    }
   }, [conversations])
+
+  const applySavedOrder = React.useCallback((items: TimelineConversation[]) => {
+    if (!items.length) return items
+    try {
+      const raw = sessionStorage.getItem(ORDER_STORAGE_KEY)
+      const saved = raw ? (JSON.parse(raw) as unknown) : null
+      const order = Array.isArray(saved) ? saved.map((id) => String(id)) : []
+      if (!order.length) return items
+      const byId = new Map(items.map((c) => [String(c.id), c]))
+      const ordered: TimelineConversation[] = []
+      for (const id of order) {
+        const row = byId.get(id)
+        if (row) {
+          ordered.push(row)
+          byId.delete(id)
+        }
+      }
+      // Keep any new conversations at the top (do not reorder existing ones).
+      const remaining = Array.from(byId.values())
+      return remaining.length ? [...remaining, ...ordered] : ordered
+    } catch {
+      return items
+    }
+  }, [])
 
   const applyLocalGeneratingOverride = React.useCallback((items: TimelineConversation[]) => {
     if (!items.length) return items
@@ -543,6 +608,65 @@ export default function Timeline() {
     if (!ids.size) return items
     return items.map((c) => (ids.has(String(c.id)) ? { ...c, isGenerating: true } : c))
   }, [])
+
+  const applyStoppedOverride = React.useCallback((items: TimelineConversation[]) => {
+    const stopped = stoppedByConversationRef.current
+    const keys = Object.keys(stopped || {})
+    if (!items.length || !keys.length) return items
+    return items.map((c) => (stopped[String(c.id)] ? { ...c, isGenerating: false } : c))
+  }, [])
+
+  const STOP_MESSAGE_TEXT = "사용자의 요청에 의해 요청 및 답변이 중지 되었습니다."
+  const buildStopMessage = React.useCallback(
+    (conversationId: string, stoppedAt: number): TimelineMessage => ({
+      id: `stop_${String(conversationId)}_${stoppedAt}`,
+      role: "assistant",
+      content: STOP_MESSAGE_TEXT,
+      contentJson: { text: STOP_MESSAGE_TEXT, stopped: true },
+      providerLogoKey: null,
+      createdAt: new Date(stoppedAt).toISOString(),
+    }),
+    [STOP_MESSAGE_TEXT]
+  )
+
+  const markConversationStopped = React.useCallback(
+    (conversationId: string, stoppedAt: number) => {
+      const id = String(conversationId || "").trim()
+      if (!id) return
+      stoppedByConversationRef.current = { ...stoppedByConversationRef.current, [id]: stoppedAt }
+      writeStoppedByConversationToStorage(stoppedByConversationRef.current)
+    },
+    [writeStoppedByConversationToStorage]
+  )
+
+  const clearConversationStopped = React.useCallback(
+    (conversationId: string) => {
+      const id = String(conversationId || "").trim()
+      if (!id) return
+      if (!stoppedByConversationRef.current[id]) return
+      const next = { ...stoppedByConversationRef.current }
+      delete next[id]
+      stoppedByConversationRef.current = next
+      writeStoppedByConversationToStorage(next)
+    },
+    [writeStoppedByConversationToStorage]
+  )
+
+  const applyStopFilter = React.useCallback(
+    (conversationId: string, items: TimelineMessage[]): TimelineMessage[] => {
+      const id = String(conversationId || "").trim()
+      if (!id) return items
+      const stoppedAt = stoppedByConversationRef.current[id]
+      if (!stoppedAt) return items
+      const filtered = items.filter((m) => {
+        const t = Date.parse(String(m.createdAt || ""))
+        if (!Number.isFinite(t)) return true
+        return t <= stoppedAt
+      })
+      return [...filtered, buildStopMessage(id, stoppedAt)]
+    },
+    [buildStopMessage]
+  )
 
   const [renameTarget, setRenameTarget] = React.useState<TimelineConversation | null>(null)
   const [renameValue, setRenameValue] = React.useState("")
@@ -595,7 +719,7 @@ export default function Timeline() {
   }, [])
 
   const copyAssistantMessage = React.useCallback(
-    async (m: TimelineMessage) => {
+    async (m: TimelineUiMessage) => {
       // Prefer copying HTML (like drag-select copy) so pasting into ProseMirrorEditor preserves tables/headings.
       const fromJson = m.contentJson ? extractTextFromJsonContent(m.contentJson) : ""
       const fromText = typeof m.content === "string" ? m.content : String(m.content || "")
@@ -872,6 +996,7 @@ export default function Timeline() {
       provider_logo_key?: string | null
       provider_slug_resolved?: string | null
       model_display_name?: string | null
+      status?: MessageStatus | null
       created_at: string
       message_order?: number
     }>
@@ -884,10 +1009,12 @@ export default function Timeline() {
           : modelApiId && modelDisplayNameByIdRef.current[modelApiId]
             ? modelDisplayNameByIdRef.current[modelApiId]
             : undefined
+      const status = (m.status || undefined) as MessageStatus | undefined
+      const contentText = extractTextFromJsonContent(normalized ?? m.content) || ""
       return {
       id: m.id,
       role: m.role,
-      content: extractTextFromJsonContent(normalized ?? m.content) || "",
+      content: contentText,
       contentJson: normalized ?? m.content,
       model: modelApiId || undefined,
       modelDisplayName,
@@ -901,11 +1028,14 @@ export default function Timeline() {
               : undefined,
       providerLogoKey:
         typeof m.provider_logo_key === "string" && m.provider_logo_key.trim() ? m.provider_logo_key : null,
+      status,
+      isPending: status === "in_progress",
       createdAt: m.created_at,
       }
     }) as TimelineMessage[]
-    return dedupeById(mapped)
-  }, [authHeaders])
+    const deduped = dedupeById(mapped)
+    return applyStopFilter(threadId, deduped)
+  }, [applyStopFilter, authHeaders])
 
   const renameThread = React.useCallback(
     async (id: string, title: string) => {
@@ -956,6 +1086,9 @@ export default function Timeline() {
                 model: m.model,
                 providerSlug: m.providerSlug,
                 providerLogoKey: m.providerLogoKey,
+                status: m.status,
+                isPending: m.status === "in_progress",
+                createdAt: m.createdAt,
               }))
             )
             const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant")
@@ -991,12 +1124,14 @@ export default function Timeline() {
       // refresh sidebar list (restored thread becomes active again in DB)
       try {
         const refreshed = sortByRecent(await fetchThreads())
-        setConversations((prev) => applyLocalGeneratingOverride(mergeThreadsPreserveOrder(prev, refreshed)))
+        setConversations((prev) =>
+          applyStoppedOverride(applyLocalGeneratingOverride(mergeThreadsPreserveOrder(prev, refreshed)))
+        )
       } catch {
         // ignore
       }
     },
-    [applyLocalGeneratingOverride, authHeaders, fetchThreads]
+    [applyLocalGeneratingOverride, applyStoppedOverride, authHeaders, fetchThreads]
   )
 
   const trashThreadWithToast = React.useCallback(
@@ -1031,22 +1166,24 @@ export default function Timeline() {
     const t = window.setInterval(() => {
       void (async () => {
         try {
-          const refreshed = await fetchThreads()
-          setConversations((prev) => applyLocalGeneratingOverride(mergeThreadsPreserveOrder(prev, refreshed)))
+          const refreshed = applySavedOrder(await fetchThreads())
+          setConversations((prev) =>
+            applyStoppedOverride(applyLocalGeneratingOverride(mergeThreadsPreserveOrder(prev, refreshed)))
+          )
         } catch {
           // ignore
         }
       })()
     }, 1500)
     return () => window.clearInterval(t)
-  }, [applyLocalGeneratingOverride, conversations, fetchThreads])
+  }, [applyLocalGeneratingOverride, applyStoppedOverride, applySavedOrder, conversations, fetchThreads])
 
   // 0) 최초 진입 시 "서버(DB)"에서 대화 목록을 로드하고, "가장 최근 대화"를 자동으로 선택합니다.
   React.useEffect(() => {
     const run = async () => {
       try {
-        const loaded = await fetchThreads()
-        setConversations(applyLocalGeneratingOverride(loaded))
+        const loaded = applySavedOrder(await fetchThreads())
+        setConversations(applyStoppedOverride(applyLocalGeneratingOverride(loaded)))
 
         // FrontAI에서 넘어온 initial이 없으면, 최근 대화를 자동으로 열어줍니다.
         if (!initial && loaded.length > 0) {
@@ -1068,6 +1205,9 @@ export default function Timeline() {
               model: m.model,
               providerSlug: m.providerSlug,
               providerLogoKey: m.providerLogoKey,
+              status: m.status,
+              isPending: m.status === "in_progress",
+              createdAt: m.createdAt,
             }))
           )
           const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant")
@@ -1085,7 +1225,7 @@ export default function Timeline() {
     }
     void run()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [applySavedOrder])
 
   // FrontAI → Timeline initial payload는 1회만 consume해서 ChatInterface(autoSend)로 넘깁니다.
   React.useEffect(() => {
@@ -1176,6 +1316,9 @@ export default function Timeline() {
             modelDisplayName: m.modelDisplayName,
             providerSlug: m.providerSlug,
             providerLogoKey: m.providerLogoKey,
+            status: m.status,
+            isPending: m.status === "in_progress",
+            createdAt: m.createdAt,
           }))
         )
         // Mark as seen in DB (unread indicator across devices).
@@ -1206,6 +1349,36 @@ export default function Timeline() {
       // ignore
     }
   }, [activeConversationId])
+
+  // "읽음" 처리: 실제로 답변(assistant)이 화면에 들어온 순간에만 처리합니다.
+  React.useEffect(() => {
+    if (!activeConversationId) return
+    if (typeof window === "undefined" || typeof IntersectionObserver === "undefined") return
+    const active = conversations.find((c) => c.id === activeConversationId)
+    if (!active?.hasUnread) return
+
+    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant" && !m.isPending)
+    const lastAssistantId = lastAssistant?.id ? String(lastAssistant.id) : ""
+    if (!lastAssistantId) return
+    const el = assistantElByIdRef.current.get(lastAssistantId)
+    if (!el) return
+
+    let done = false
+    const obs = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0]
+        if (!entry || !entry.isIntersecting || done) return
+        done = true
+        setConversations((prev) => prev.map((c) => (c.id === activeConversationId ? { ...c, hasUnread: false } : c)))
+        void markThreadSeen(activeConversationId)
+        obs.disconnect()
+      },
+      { root: messagesScrollRef.current || null, threshold: 0.6 }
+    )
+
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [activeConversationId, conversations, markThreadSeen, messages])
 
   // initial 질문/응답 생성은 ChatInterface(autoSend)가 /api/ai/chat/run(=DB-driven)을 통해 처리합니다.
 
@@ -1421,6 +1594,25 @@ export default function Timeline() {
       setSavePostLoading(false)
     }
   }, [activeConversationId, authHeaders, buildPmDocFromMessages, conversations, messages, navigate, savePostCategoryId, savePostIncludeQuestions])
+
+  const handleStop = React.useCallback(() => {
+    const stoppedAt = Date.now()
+    setIsGenerating(false)
+    setGenPhase(0)
+    if (activeConversationId) {
+      markConversationStopped(activeConversationId, stoppedAt)
+      localGeneratingIdsRef.current.delete(String(activeConversationId))
+      setConversations((prev) =>
+        prev.map((c) => (c.id === activeConversationId ? { ...c, isGenerating: false } : c))
+      )
+      setMessages((prev) => prev.filter((m) => !m.isPending))
+      return
+    }
+    pendingStopRef.current = { at: stoppedAt }
+    setIsCreatingThread(false)
+    setInitialToSend(null)
+    setMessages((prev) => prev.filter((m) => !m.isPending))
+  }, [activeConversationId, markConversationStopped])
 
   return (
     <AppShell
@@ -1733,7 +1925,18 @@ export default function Timeline() {
                           <div className="bg-secondary p-3 rounded-lg max-w-[720px]">
                             {(() => {
                               const normalized = normalizeContentJson(m.contentJson)
-                              const atts = normalized && Array.isArray((normalized as any).attachments) ? ((normalized as any).attachments as any[]) : []
+                              type UserAttachment = {
+                                kind?: string
+                                url?: string
+                                preview_url?: string
+                                name?: string
+                              }
+                              const atts = (() => {
+                                if (!normalized || typeof normalized !== "object") return [] as UserAttachment[]
+                                const raw = (normalized as { attachments?: unknown }).attachments
+                                if (!Array.isArray(raw)) return [] as UserAttachment[]
+                                return raw as UserAttachment[]
+                              })()
                               const token = typeof localStorage !== "undefined" ? localStorage.getItem("token") : null
                               const withToken = (u: string) => {
                                 const url = String(u || "")
@@ -1742,14 +1945,19 @@ export default function Timeline() {
                                 if (!url.startsWith("/api/ai/media/assets/")) return url
                                 return `${url}?token=${encodeURIComponent(String(token))}`
                               }
-                              const images = atts.filter((a) => a && a.kind === "image" && ((typeof a.url === "string" && a.url) || (typeof a.preview_url === "string" && a.preview_url)))
+                              const images = atts.filter(
+                                (a) =>
+                                  a &&
+                                  a.kind === "image" &&
+                                  ((typeof a.url === "string" && a.url) || (typeof a.preview_url === "string" && a.preview_url))
+                              )
                               if (!images.length) return null
                               return (
                                 <div className="mb-2 flex flex-wrap gap-2 justify-end">
                                   {images.slice(0, 4).map((a, i) => (
                                     <img
                                       key={`${m.id || idx}_att_${i}`}
-                                      src={withToken(String((a.url as any) || (a.preview_url as any) || ""))}
+                                      src={withToken(String(a.url || a.preview_url || ""))}
                                       alt={typeof a.name === "string" ? a.name : "attachment"}
                                       className="h-20 w-20 object-cover rounded-md border"
                                       loading="lazy"
@@ -1794,7 +2002,7 @@ export default function Timeline() {
                         <div className="text-base text-primary whitespace-pre-wrap space-y-3">
                           {(() => {
                             // "답변중" 상태 표시 + 타입라이터 표시
-                            if (m.isPending) {
+                            if (m.isPending || m.status === "in_progress") {
                               const step = GENERATING_STEPS[genPhase] || "답변 생성 중"
                               return (
                                 <div className="space-y-2">
@@ -1810,6 +2018,16 @@ export default function Timeline() {
                                   </div>
                                 </div>
                               )
+                            }
+                            const statusNotice =
+                              m.status === "stopped"
+                                ? "사용자의 요청에 의해 요청 및 답변이 중지 되었습니다."
+                                : m.status === "failed"
+                                  ? "응답 생성 실패. 잠시 후 다시 시도해 주세요."
+                                  : ""
+
+                            if (statusNotice) {
+                              return <span className="text-sm text-muted-foreground">{statusNotice}</span>
                             }
 
                             const normalized = normalizeContentJson(m.contentJson)
@@ -1910,14 +2128,30 @@ export default function Timeline() {
               autoSendAttachments={initialToSend?.attachments || null}
               sessionLanguage={sessionLanguageForChat}
               conversationId={activeConversationId}
+              onStop={handleStop}
               onConversationId={(id) => {
                 setActiveConversationId(id)
                 setIsCreatingThread(false)
+                if (lastSendConversationIdRef.current === "__pending__") {
+                  lastSendConversationIdRef.current = String(id || "")
+                }
                 // 첫 질문에서 신규 대화가 생성된 경우: 목록/메시지 즉시 동기화
                 void (async () => {
                   try {
                     const refreshed = sortByRecent(await fetchThreads())
-                    setConversations((prev) => applyLocalGeneratingOverride(mergeThreadsPreserveOrder(prev, refreshed)))
+                    setConversations((prev) =>
+                      applyStoppedOverride(applyLocalGeneratingOverride(mergeThreadsPreserveOrder(prev, refreshed)))
+                    )
+                    if (pendingStopRef.current) {
+                      const stoppedAt = pendingStopRef.current.at
+                      pendingStopRef.current = null
+                      markConversationStopped(id, stoppedAt)
+                      localGeneratingIdsRef.current.delete(String(id))
+                      setIsGenerating(false)
+                      setGenPhase(0)
+                      setInitialToSend(null)
+                      return
+                    }
                     const msgs = await fetchMessages(id)
                     setMessages(
                       msgs.map((m) => ({
@@ -1928,6 +2162,9 @@ export default function Timeline() {
                         model: m.model,
                         providerSlug: m.providerSlug,
                         providerLogoKey: m.providerLogoKey,
+                        status: m.status,
+                        isPending: m.status === "in_progress",
+                        createdAt: m.createdAt,
                       }))
                     )
                     const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant")
@@ -1947,14 +2184,17 @@ export default function Timeline() {
                onMessage={(msg) => {
                 // 1) 화면에 표시 + "답변중"/타입라이터 UX
                 if (msg.role === "user") {
+                  lastSendConversationIdRef.current = activeConversationId || "__pending__"
                   forceScrollToBottomRef.current = true
                   setIsGenerating(true)
                   setGenPhase(0)
+                  pendingStopRef.current = null
                     const pendingId = `pending_${Date.now()}`
                   const userModelApiId = msg.model ? String(msg.model) : ""
                   const userModelDisplayName = userModelApiId ? modelDisplayNameByIdRef.current[userModelApiId] : ""
                   // Optimistic: mark this conversation as "generating" in the sidebar immediately.
                   if (activeConversationId) {
+                    clearConversationStopped(activeConversationId)
                     localGeneratingIdsRef.current.add(String(activeConversationId))
                     setConversations((prev) =>
                       prev.map((c) => (c.id === activeConversationId ? { ...c, isGenerating: true } : c))
@@ -1970,6 +2210,7 @@ export default function Timeline() {
                       model: msg.model,
                       modelDisplayName: userModelDisplayName || undefined,
                       providerSlug: msg.providerSlug,
+                      createdAt: new Date().toISOString(),
                     },
                     {
                       id: pendingId,
@@ -1980,34 +2221,27 @@ export default function Timeline() {
                       modelDisplayName: userModelDisplayName || undefined,
                       providerLogoKey: null,
                       isPending: true,
+                      status: "in_progress",
+                      createdAt: new Date().toISOString(),
                     },
                   ])
                   return
                 }
 
                 if (msg.role === "assistant") {
-                  setIsGenerating(false)
-                  // Optimistic: clear "generating" flag now that we received the final assistant message.
-                  if (activeConversationId) {
-                    localGeneratingIdsRef.current.delete(String(activeConversationId))
+                  const targetConversationId = lastSendConversationIdRef.current || activeConversationId
+                  if (targetConversationId) {
+                    localGeneratingIdsRef.current.delete(String(targetConversationId))
                     setConversations((prev) =>
-                      prev.map((c) => (c.id === activeConversationId ? { ...c, isGenerating: false } : c))
+                      prev.map((c) => (c.id === targetConversationId ? { ...c, isGenerating: false } : c))
                     )
+                  }
+                  if (targetConversationId && targetConversationId !== activeConversationId) {
+                    lastSendConversationIdRef.current = null
+                    return
                   }
 
-                  // If the user is currently on this conversation and near the bottom,
-                  // consider the answer "seen" immediately (so we don't show the red unread bullet).
-                  if (
-                    activeConversationId &&
-                    typeof document !== "undefined" &&
-                    document.visibilityState === "visible" &&
-                    isNearBottomRef.current
-                  ) {
-                    setConversations((prev) =>
-                      prev.map((c) => (c.id === activeConversationId ? { ...c, hasUnread: false } : c))
-                    )
-                    void markThreadSeen(activeConversationId)
-                  }
+                  setIsGenerating(false)
 
                   const normalized = normalizeContentJson(msg.contentJson ?? msg.content)
                   let derivedText = extractTextFromJsonContent(normalized ?? msg.content) || String(msg.content || "")
@@ -2035,19 +2269,24 @@ export default function Timeline() {
                       modelDisplayName: aModelDisplayName || undefined,
                       providerSlug: msg.providerSlug,
                       providerLogoKey: null,
+                      status: "success" as const,
+                      createdAt: new Date().toISOString(),
                     }
                     if (realIdx >= 0) next[realIdx] = { ...next[realIdx], ...row, isPending: false }
                     else next.push({ id: `a_${Date.now()}`, ...row })
                     return next
                   })
+                  lastSendConversationIdRef.current = null
                   if (msg.model) setStickySelectedModel(msg.model)
                   if (msg.providerSlug) setStickySelectedProviderSlug(msg.providerSlug)
 
                   // keep sidebar strictly in sync with model_conversations.updated_at ordering - 대화 목록 동기화
                   void (async () => {
                     try {
-                      const refreshed = await fetchThreads()
-                      setConversations((prev) => applyLocalGeneratingOverride(mergeThreadsPreserveOrder(prev, refreshed)))
+                      const refreshed = applySavedOrder(await fetchThreads())
+                      setConversations((prev) =>
+                        applyStoppedOverride(applyLocalGeneratingOverride(mergeThreadsPreserveOrder(prev, refreshed)))
+                      )
                     } catch {
                       // ignore
                     }
@@ -2065,6 +2304,7 @@ export default function Timeline() {
                     model: msg.model,
                     providerSlug: msg.providerSlug,
                     providerLogoKey: null,
+                    createdAt: new Date().toISOString(),
                   },
                 ])
                }}

@@ -18,6 +18,7 @@ import {
   Plus,
   ArrowUp,
   Loader2,
+  Square,
   X,
   Globe,
 } from "lucide-react"
@@ -94,6 +95,7 @@ export interface ChatInterfaceProps {
   conversationId?: string | null
   onConversationId?: (id: string) => void
   sessionLanguage?: string
+  onStop?: () => void
   onSelectionChange?: (selection: { modelType: ModelType; providerSlug: string | null; modelApiId: string | null }) => void
   forceSelectionSync?: boolean
   selectionOverride?: { modelType?: ModelType; providerSlug?: string; modelApiId?: string }
@@ -494,6 +496,7 @@ export function ChatInterface({
   conversationId,
   onConversationId,
   sessionLanguage,
+  onStop,
   onSelectionChange,
   forceSelectionSync = false,
   selectionOverride,
@@ -1720,8 +1723,14 @@ export function ChatInterface({
     }
   }, [webAllowed])
 
+  const [isWaitingForResponse, setIsWaitingForResponse] = React.useState(false)
+  const [isStopHovered, setIsStopHovered] = React.useState(false)
+  const abortControllerRef = React.useRef<AbortController | null>(null)
+  const lastSendMetaRef = React.useRef<{ providerSlug?: string; model?: string } | null>(null)
+
   const handleSend = React.useCallback(
     async (overrideInput?: string, overrideModelApiId?: string, overrideApiAttachments?: Array<Record<string, unknown>>) => {
+      if (isWaitingForResponse) return
       if (isPreparingAttachments || hasPendingAttachments) {
         alert("첨부파일 업로드가 완료되지 않았습니다. 완료 후 다시 시도해 주세요")
         return
@@ -1802,6 +1811,7 @@ export function ChatInterface({
       }
 
       persistFrontAiSelection(providerSlug, modelApiId, sendModelType)
+      lastSendMetaRef.current = { providerSlug, model: modelApiId }
 
       onMessage?.({
         role: "user",
@@ -1842,6 +1852,7 @@ export function ChatInterface({
       }
 
       try {
+        setIsWaitingForResponse(true)
         const maxTokens = sendModelType === "text" ? 2048 : 512
 
         const webAllowedForRequest = Boolean(webAllowed) && sendModelType === "text"
@@ -1852,9 +1863,12 @@ export function ChatInterface({
             : webAllowedForRequest && typeof navigator !== "undefined" && navigator.language
               ? [navigator.language]
               : null
+        const controller = new AbortController()
+        abortControllerRef.current = controller
         const res = await fetch(CHAT_RUN_API, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeaders() },
+          signal: controller.signal,
           body: JSON.stringify({
             model_type: sendModelType,
             conversation_id: conversationId || null,
@@ -1916,6 +1930,9 @@ export function ChatInterface({
         })
         clearAttachments()
       } catch (e) {
+        if (e instanceof DOMException && e.name === "AbortError") {
+          return
+        }
         setIsPreparingAttachments(false)
         const msg = e instanceof Error ? e.message : String(e)
         onMessage?.({
@@ -1928,6 +1945,8 @@ export function ChatInterface({
         })
       } finally {
         setIsPreparingAttachments(false)
+        setIsWaitingForResponse(false)
+        abortControllerRef.current = null
         handleSendInFlightRef.current.delete(sendKey)
       }
     },
@@ -1959,8 +1978,27 @@ export function ChatInterface({
       webAllowed,
       isPreparingAttachments,
       hasPendingAttachments,
+      isWaitingForResponse,
     ]
   )
+
+  const handleStop = React.useCallback(() => {
+    if (!isWaitingForResponse) return
+    onStop?.()
+    abortControllerRef.current?.abort()
+    abortControllerRef.current = null
+    setIsWaitingForResponse(false)
+    const stopText = "사용자의 요청에 의해 요청 및 답변이 중지 되었습니다."
+    onMessage?.({
+      role: "assistant",
+      content: stopText,
+      contentJson: { text: stopText, stopped: true },
+      summary: assistantSummary(stopText),
+      providerSlug: lastSendMetaRef.current?.providerSlug,
+      model: lastSendMetaRef.current?.model,
+    })
+    clearAttachments()
+  }, [assistantSummary, clearAttachments, isWaitingForResponse, onMessage, onStop])
 
   // Timeline/FrontAI initial prompt auto-send (once)
   const autoSentRef = React.useRef<string>("")
@@ -2289,6 +2327,7 @@ export function ChatInterface({
                           window.requestAnimationFrame(() => resizePromptTextarea(promptInputRef.current))
                         }}
                         onKeyDown={(e) => {
+                          if (isWaitingForResponse) return
                           if (e.key !== "Enter") return
                           if ((e.nativeEvent as { isComposing?: boolean })?.isComposing) return
                           if (isComposingRef.current) return
@@ -2416,6 +2455,7 @@ export function ChatInterface({
                             handlePasteAttachments(e)
                           }}
                           onKeyDown={(e) => {
+                            if (isWaitingForResponse) return
                             if (e.key !== "Enter") return
                             if ((e.nativeEvent as { isComposing?: boolean })?.isComposing) return
                             if (isComposingRef.current) return
@@ -2472,10 +2512,32 @@ export function ChatInterface({
 
                     <Button
                       className="rounded-full h-[36px] w-[36px] p-0"
-                      onClick={() => void handleSend()}
-                      disabled={!prompt.trim() || isPreparingAttachments || hasPendingAttachments}
+                      onClick={() => {
+                        if (isWaitingForResponse) {
+                          handleStop()
+                          return
+                        }
+                        void handleSend()
+                      }}
+                      onMouseEnter={() => {
+                        if (isWaitingForResponse) setIsStopHovered(true)
+                      }}
+                      onMouseLeave={() => {
+                        if (isWaitingForResponse) setIsStopHovered(false)
+                      }}
+                      disabled={isWaitingForResponse ? false : !prompt.trim() || isPreparingAttachments || hasPendingAttachments}
                     >
-                      {isPreparingAttachments ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
+                      {isWaitingForResponse ? (
+                        isStopHovered ? (
+                          <Square className="size-4" />
+                        ) : (
+                          <Loader2 className="size-4 animate-spin" />
+                        )
+                      ) : isPreparingAttachments ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <ArrowUp className="size-4" />
+                      )}
                     </Button>   
                     </div>
 

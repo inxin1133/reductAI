@@ -3,7 +3,7 @@ import { AppShell } from "@/components/layout/AppShell"
 import { useNavigate } from "react-router-dom"
 import { useRef } from "react"
 import { ChatInterface } from "@/components/ChatInterface"
-import {
+import { 
   Select,
   SelectContent,
   SelectItem,
@@ -136,7 +136,7 @@ export default function FrontAI() {
         </Select>
       }
     >
-      {/* Main Body - 메인 바디 */}
+        {/* Main Body - 메인 바디 */}
       <div className="flex flex-1 flex-col gap-[40px] items-center justify-center p-[24px] relative w-full h-full">
         <ChatInterface
           key={`${selection.modelType || "text"}:${selection.providerSlug || "none"}:${selection.modelApiId || "none"}:${selectionVersion}`}
