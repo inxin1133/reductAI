@@ -121,6 +121,7 @@ type UiProviderGroup = {
   model_type: ModelType
   provider: {
     id: string
+    name?: string
     product_name: string
     description: string
     logo_key?: string | null
@@ -2139,10 +2140,9 @@ export function ChatInterface({
                 )}
               </div>
             </div>
-            <div className="flex w-full flex-col items-start relative shrink-0 mt-2">
-              <div className="flex w-full justify-between items-center">
-                <p className="font-medium text-card-foreground text-[14px] truncate">{g.provider.product_name}</p>
-              </div>
+            <div className="flex w-full flex-col items-start relative shrink-0 mt-2">              
+              <p className="font-medium text-card-foreground text-[14px] truncate">{g.provider.product_name}</p>                            
+              <p className="text-xs text-muted-foreground truncate hidden lg:block">{g.provider.name}</p>              
             </div>
           </div>
         ))}
@@ -2271,29 +2271,29 @@ export function ChatInterface({
                     </div>
                   ) : null}
 
-                  <div className={cn("flex flex-1 gap-2 items-start justify-start w-full flex-wrap", attachments.length ? "" : "hidden")}>
+                  <div className={cn("flex flex-1  gap-2 items-start justify-start w-full flex-wrap", attachments.length ? "" : "hidden")}>
                     {/* 첨부파일 및 미디어 삽입영역 */}
                     {attachments.map((a) => (
-                      <Card key={a.id} className="group relative flex items-center gap-2 px-2 py-1 rounded-md border bg-muted/40">
+                      <Card key={a.id} className="group relative flex items-center gap-1 py-0 my-0 rounded-md border bg-muted/40 w-[120px]">
                         {a.kind === "image" ? (
-                          <img src={a.previewUrl} alt={a.name} className="size-7 rounded object-cover border" />
+                          <img src={a.previewUrl} alt={a.name} className="w-full rounded object-center h-[80px] object-cover border" />
                         ) : a.kind === "link" ? (
-                          <div className="size-7 rounded border bg-background flex items-center justify-center">
-                            <Link2 className="size-4 text-muted-foreground" />
+                          <div className="size-7 rounded border bg-background flex items-center justify-center w-full h-[80px]">
+                            <Link2 className="size-6 text-muted-foreground" />
                           </div>
                         ) : (
-                          <div className="size-7 rounded border bg-background flex items-center justify-center">
-                            <Paperclip className="size-4 text-muted-foreground" />
+                          <div className="size-7 rounded border bg-background flex items-center justify-center w-full h-[80px]">
+                            <Paperclip className="size-6 text-muted-foreground" />
                           </div>
                         )}
-                        <div className="min-w-0">
-                          <p className="text-xs font-medium text-foreground truncate max-w-[220px]">
+                        <div className="min-w-0 px-1 py-1 justify-start">
+                          <p className="text-xs text-left font-medium text-foreground truncate w-[110px] line-clamp-1">
                             {a.kind === "link" ? (a.title || a.url) : a.name}
                           </p>
                           {a.kind === "link" ? (
-                            <p className="text-[10px] text-muted-foreground truncate max-w-[220px]">{a.url}</p>
+                            <p className="text-[10px] text-left text-muted-foreground truncate w-[110px] line-clamp-1">{a.url}</p>
                           ) : (
-                            <p className="text-[10px] text-muted-foreground truncate max-w-[220px]">
+                            <p className="text-[10px] text-left text-muted-foreground truncate w-[110px] line-clamp-1">
                               {a.kind === "image" ? "이미지" : "파일"}
                             </p>
                           )}

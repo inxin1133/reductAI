@@ -23,6 +23,7 @@ export async function getChatUiConfig(_req: Request, res: Response) {
         m.sort_order,
         m.capabilities,
         p.id AS provider_id,
+        p.name AS provider_name,
         p.product_name AS provider_product_name,
         p.description AS provider_description,
         p.logo_key AS provider_logo_key,
@@ -52,6 +53,7 @@ export async function getChatUiConfig(_req: Request, res: Response) {
           model_type: modelType,
           provider: {
             id: providerId,
+            name: String(r.provider_name || ""),
             product_name: String(r.provider_product_name || ""),
             description: typeof r.provider_description === "string" ? r.provider_description : "",
             logo_key: typeof r.provider_logo_key === "string" ? r.provider_logo_key : null,

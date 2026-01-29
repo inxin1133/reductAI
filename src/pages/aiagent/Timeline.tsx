@@ -203,7 +203,7 @@ function TimelineSidebarList({
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="size-7"
+                        className="size-6 rounded-full"
                         onClick={(e) => {
                           e.stopPropagation()
                         }}
