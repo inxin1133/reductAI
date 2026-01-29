@@ -203,7 +203,7 @@ function tableFromBlocks(headers: string[], rows: string[][]) {
     if (!raw.trim()) return [] as Array<Record<string, unknown>>
     try {
       const doc = parseMarkdownToPmDoc(editorSchema, raw)
-      const json = doc?.toJSON() as { content?: Array<any> } | undefined
+      const json = doc?.toJSON() as { content?: Array<Record<string, unknown>> } | undefined
       const first = json?.content?.[0]
       // Prefer the first paragraph's inline content.
       if (first?.type === "paragraph" && Array.isArray(first.content)) return first.content as Array<Record<string, unknown>>
@@ -333,6 +333,8 @@ export function aiJsonToPmDoc(contentJson: unknown): PmDocJson | null {
       const md =
         typeof b.markdown === "string"
           ? b.markdown
+          : typeof (b as { text?: unknown }).text === "string"
+            ? String((b as { text?: unknown }).text)
           : typeof b.content === "string"
             ? b.content
             : typeof dataObj?.content === "string"
@@ -365,22 +367,39 @@ export function aiJsonToPmDoc(contentJson: unknown): PmDocJson | null {
     if (t === "table") {
       const contentObj = (b as unknown as { content?: unknown }).content
       const contentRec = contentObj && typeof contentObj === "object" ? (contentObj as Record<string, unknown>) : null
-      const headers = Array.isArray(b.headers)
-        ? b.headers.map(String)
-        : Array.isArray(contentRec?.headers)
-          ? (contentRec?.headers as unknown[]).map(String)
-          : Array.isArray(dataObj?.headers)
-            ? (dataObj?.headers as unknown[]).map(String)
-            : []
-      const rawRows = Array.isArray(b.rows)
-        ? b.rows
-        : Array.isArray(contentRec?.rows)
-          ? (contentRec?.rows as unknown[])
-          : Array.isArray(dataObj?.rows)
-            ? (dataObj?.rows as unknown[])
-            : Array.isArray(dataObj)
-              ? (dataObj as unknown[])
-              : []
+      const tableObj = (b as unknown as { table?: unknown }).table
+      const tableRec = tableObj && typeof tableObj === "object" ? (tableObj as Record<string, unknown>) : null
+      const pickFirstNonEmpty = <T,>(candidates: T[][]): T[] => {
+        for (const c of candidates) {
+          if (Array.isArray(c) && c.length) return c
+        }
+        return []
+      }
+      const columnsFromData = (rec: Record<string, unknown> | null) =>
+        Array.isArray(rec?.columns) ? (rec?.columns as unknown[]).map(String) : []
+      const rowsFromData = (rec: Record<string, unknown> | null) => {
+        const data = Array.isArray(rec?.data) ? (rec?.data as unknown[]) : []
+        return data.map((r) => (Array.isArray(r) ? r.map(String) : []))
+      }
+
+      const headers = pickFirstNonEmpty<string>([
+        Array.isArray(b.headers) ? b.headers.map(String) : [],
+        Array.isArray(contentRec?.headers) ? (contentRec?.headers as unknown[]).map(String) : [],
+        Array.isArray(tableRec?.headers) ? (tableRec?.headers as unknown[]).map(String) : [],
+        Array.isArray(dataObj?.headers) ? (dataObj?.headers as unknown[]).map(String) : [],
+        columnsFromData(tableRec),
+        columnsFromData(dataObj),
+      ])
+
+      const rawRows = pickFirstNonEmpty<unknown>([
+        Array.isArray(b.rows) ? b.rows : [],
+        Array.isArray(contentRec?.rows) ? (contentRec?.rows as unknown[]) : [],
+        Array.isArray(tableRec?.rows) ? (tableRec?.rows as unknown[]) : [],
+        Array.isArray(dataObj?.rows) ? (dataObj?.rows as unknown[]) : [],
+        rowsFromData(tableRec),
+        rowsFromData(dataObj),
+        Array.isArray(dataObj) ? (dataObj as unknown[]) : [],
+      ])
       const rows = rawRows.map((r) => (Array.isArray(r) ? r.map(String) : []))
       const table = tableFromBlocks(headers, rows)
       if (table) content.push(table)

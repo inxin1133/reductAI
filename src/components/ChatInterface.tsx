@@ -100,6 +100,7 @@ export interface ChatInterfaceProps {
   onSelectionChange?: (selection: { modelType: ModelType; providerSlug: string | null; modelApiId: string | null }) => void
   forceSelectionSync?: boolean
   selectionOverride?: { modelType?: ModelType; providerSlug?: string; modelApiId?: string }
+  notifyOnAssistantComplete?: boolean
 }
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
@@ -503,6 +504,7 @@ export function ChatInterface({
   onSelectionChange,
   forceSelectionSync = false,
   selectionOverride,
+  notifyOnAssistantComplete,
 }: ChatInterfaceProps) {
   const isCompact = variant === "compact"
 
@@ -1932,6 +1934,14 @@ export function ChatInterface({
           providerSlug,
           model: chosenModel,
         })
+        if (notifyOnAssistantComplete && typeof window !== "undefined") {
+          const convoId = String(conv || conversationId || "")
+          window.dispatchEvent(
+            new CustomEvent("reductai:timeline:assistant-complete", {
+              detail: { conversationId: convoId || undefined },
+            })
+          )
+        }
         clearAttachments()
       } catch (e) {
         if (e instanceof DOMException && e.name === "AbortError") {

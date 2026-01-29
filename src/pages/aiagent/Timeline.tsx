@@ -62,8 +62,46 @@ function TimelineSidebarList({
   onRename: (c: TimelineConversation) => void
   onDelete: (c: TimelineConversation) => void
 }) {
+  const listRef = React.useRef<HTMLDivElement | null>(null)
+  const [scrollTop, setScrollTop] = React.useState(0)
+  const [viewportHeight, setViewportHeight] = React.useState(0)
+  const ITEM_HEIGHT = 32
+  const ITEM_GAP = 4
+  const ITEM_PITCH = ITEM_HEIGHT + ITEM_GAP
+  const HEADER_OFFSET = showCreatingThread ? ITEM_PITCH : 0
+  const OVERSCAN = 6
+
+  React.useEffect(() => {
+    const el = listRef.current
+    if (!el) return
+    const update = () => setViewportHeight(el.clientHeight)
+    update()
+
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(update)
+      ro.observe(el)
+      return () => ro.disconnect()
+    }
+
+    window.addEventListener("resize", update)
+    return () => window.removeEventListener("resize", update)
+  }, [])
+
+  const effectiveScrollTop = Math.max(0, scrollTop - HEADER_OFFSET)
+  const startIndex = Math.max(0, Math.floor(effectiveScrollTop / ITEM_PITCH) - OVERSCAN)
+  const endIndex = Math.min(
+    conversations.length,
+    Math.ceil((effectiveScrollTop + viewportHeight) / ITEM_PITCH) + OVERSCAN
+  )
+  const visibleConversations = conversations.slice(startIndex, endIndex)
+  const totalHeight = conversations.length * ITEM_PITCH
+
   return (
-    <div className="flex flex-col gap-1 w-full flex-1 overflow-y-auto">
+    <div
+      ref={listRef}
+      className="flex flex-col gap-1 w-full flex-1 overflow-y-auto"
+      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+    >
       {showCreatingThread ? (
         <div className="flex items-center px-2 py-2 rounded-md w-full h-8 bg-accent/60">
           <span className="inline-block size-2 rounded-full bg-primary animate-pulse mr-2" />
@@ -73,59 +111,67 @@ function TimelineSidebarList({
       {conversations.length === 0 ? (
         <div className="px-2 py-2 text-xs text-muted-foreground">저장된 대화가 없습니다.</div>
       ) : (
-        conversations.map((c) => (
-          <div
-            key={c.id}
-            className={cn(
-              "group flex items-center px-2 py-2 rounded-md cursor-pointer hover:bg-accent/50 transition-colors w-full h-8",
-              c.id === activeConversationId ? "bg-accent" : ""
-            )}
-            onClick={() => onSelect(c.id)}
-          >
-            <div className="flex items-center gap-2 min-w-0 w-full">
-              {!c.isGenerating && c.hasUnread ? <span className="inline-block size-2 rounded-full bg-red-500 shrink-0" /> : null}
-              <p className="text-sm text-foreground truncate w-full">
-                {c.isGenerating ? `답변 작성중${ellipsis}` : c.title}
-              </p>
-            </div>
-            <div className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-7"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                    }}
-                  >
-                    <MoreHorizontal className="size-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-                  <DropdownMenuItem
-                    onSelect={(e) => {
-                      e.preventDefault()
-                      onRename(c)
-                    }}
-                  >
-                    이름 바꾸기
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    className="text-destructive focus:text-destructive"
-                    onSelect={(e) => {
-                      e.preventDefault()
-                      onDelete(c)
-                    }}
-                  >
-                    휴지통으로 이동
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          </div>
-        ))
+        <div className="relative w-full" style={{ height: totalHeight }}>
+          {visibleConversations.map((c, i) => {
+            const index = startIndex + i
+            return (
+              <div
+                key={c.id}
+                className={cn(
+                  "group flex items-center px-2 py-2 rounded-md cursor-pointer hover:bg-accent/50 transition-colors w-full h-8",
+                  c.id === activeConversationId ? "bg-accent" : ""
+                )}
+                style={{ position: "absolute", top: index * ITEM_PITCH, left: 0, right: 0 }}
+                onClick={() => onSelect(c.id)}
+              >
+                <div className="flex items-center gap-2 min-w-0 w-full">
+                  {!c.isGenerating && c.hasUnread ? (
+                    <span className="inline-block size-2 rounded-full bg-red-500 shrink-0" />
+                  ) : null}
+                  <p className="text-sm text-foreground truncate w-full">
+                    {c.isGenerating ? `답변 작성중${ellipsis}` : c.title}
+                  </p>
+                </div>
+                <div className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-7"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                        }}
+                      >
+                        <MoreHorizontal className="size-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                      <DropdownMenuItem
+                        onSelect={(e) => {
+                          e.preventDefault()
+                          onRename(c)
+                        }}
+                      >
+                        이름 바꾸기
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        className="text-destructive focus:text-destructive"
+                        onSelect={(e) => {
+                          e.preventDefault()
+                          onDelete(c)
+                        }}
+                      >
+                        휴지통으로 이동
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
+            )
+          })}
+        </div>
       )}
     </div>
   )
@@ -1607,7 +1653,7 @@ export default function Timeline() {
         role: "assistant",
         content: stopText,
         contentJson: { text: stopText, stopped: true },
-        providerSlug: null,
+        providerSlug: undefined,
         providerLogoKey: null,
         status: "stopped",
         isPending: false,
@@ -2160,6 +2206,7 @@ export default function Timeline() {
               clientRequestId={initialToSend?.requestId || null}
               sessionLanguage={sessionLanguageForChat}
               conversationId={activeConversationId}
+              notifyOnAssistantComplete
               onStop={handleStop}
               onConversationId={(id) => {
                 setActiveConversationId(id)

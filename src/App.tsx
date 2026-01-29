@@ -1,4 +1,4 @@
-import { Outlet, createBrowserRouter, RouterProvider, useLocation } from "react-router-dom";
+import { Outlet, createBrowserRouter, RouterProvider, useLocation, useNavigate } from "react-router-dom";
 import { useEffect } from "react";
 import Intro from "./pages/auth/Intro";
 import FrontAI from "./pages/aiagent/FrontAI";
@@ -29,15 +29,42 @@ import PromptSuggestions from "./pages/admin/ai/PromptSuggestions";
 import ModelApiProfiles from "./pages/admin/ai/ModelApiProfiles";
 import ProviderAuthProfiles from "./pages/admin/ai/ProviderAuthProfiles";
 import { Toaster } from "@/components/ui/sonner";
+import { toast } from "sonner";
 
 // Dynamic title per section (User/Admin) - 동적으로 섹션별 타이틀 설정
 function TitleLayout() {
   const location = useLocation();
+  const navigate = useNavigate();
 
   useEffect(() => {
     const isAdmin = location.pathname.startsWith("/admin");
     document.title = isAdmin ? "Reduct Admin" : "Reduct AI Agent";
   }, [location.pathname]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      if (location.pathname.startsWith("/timeline")) return;
+      const detail = (event as CustomEvent<{ conversationId?: string }>).detail;
+      toast("대화에 답변이 생성되었습니다.", {
+        action: {
+          label: "이동",
+          onClick: () => {
+            if (detail?.conversationId) {
+              try {
+                sessionStorage.setItem("reductai.timeline.activeConversationId.v1", detail.conversationId);
+              } catch {
+                // ignore
+              }
+            }
+            navigate("/timeline");
+          },
+        },
+      });
+    };
+
+    window.addEventListener("reductai:timeline:assistant-complete", handler as EventListener);
+    return () => window.removeEventListener("reductai:timeline:assistant-complete", handler as EventListener);
+  }, [location.pathname, navigate]);
 
   return <Outlet />;
 }
@@ -169,7 +196,7 @@ export default function App() {
   return (
     <>
       <RouterProvider router={router} />
-      <Toaster />
+      <Toaster position="top-right" />
     </>
   );
 }
