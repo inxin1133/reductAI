@@ -426,6 +426,14 @@ export default function PostEditorPage() {
   const titleInputRef = useRef<HTMLInputElement | null>(null)
   const [isDeletedPage, setIsDeletedPage] = useState(false)
 
+  // Page tree drag & drop state (Notion-style)
+  const [draggingPageId, setDraggingPageId] = useState<string | null>(null)
+  const [pageDropIndicator, setPageDropIndicator] = useState<{
+    id: string
+    position: "before" | "after" | "inside"
+  } | null>(null)
+  const pageDragBlockClickUntilRef = useRef<number>(0)
+
   const [activeCategory, setActiveCategory] = useState<{
     id: string
     type: "personal" | "team" | "unknown"
@@ -676,6 +684,7 @@ export default function PostEditorPage() {
   const pendingSaveRef = useRef(false)
   const autoTimerRef = useRef<number | null>(null)
   const navigatingRef = useRef<string | null>(null)
+  const draftStateTimerRef = useRef<number | null>(null) // Debounce timer for draftDocJson state updates
   const [dirty, setDirty] = useState(false)
 
   // IMPORTANT:
@@ -773,10 +782,18 @@ export default function PostEditorPage() {
         const title = typeof j.title === "string" && j.title.trim() ? j.title : "New page"
         setPageTitle(title)
         setPageIconRaw(typeof j.icon === "string" ? j.icon : null)
+        const pageCategoryId = typeof j.category_id === "string" ? j.category_id : null
         const status = typeof j.status === "string" ? j.status : ""
         const deletedAt = j.deleted_at != null
         const isDeleted = status === "deleted" || deletedAt
         setIsDeletedPage(isDeleted)
+
+        // If the URL has no category but the page belongs to one, redirect with the correct category.
+        // This fixes the issue where navigating from an embed link loses the category context.
+        if (!categoryId && pageCategoryId && !isDeleted) {
+          navigate(`/posts/${postId}/edit?category=${encodeURIComponent(pageCategoryId)}`, { replace: true })
+          return
+        }
 
         // Safety: if the user somehow lands on a deleted page, redirect away.
         if (isDeleted) {
@@ -1089,9 +1106,8 @@ export default function PostEditorPage() {
     }
   }, [isNew, pageTitle, postId])
 
-  // keep refs in sync
+  // Calculate dirty state (draftRef is already synced immediately in onChange handler)
   useEffect(() => {
-    draftRef.current = draftDocJson
     const s = JSON.stringify(draftDocJson || null)
     setDirty(s !== lastSavedRef.current)
   }, [draftDocJson])
@@ -1143,6 +1159,13 @@ export default function PostEditorPage() {
     }
   }, [canSave, dirty, postId, saveNow])
 
+  // Cleanup draftStateTimer on unmount
+  useEffect(() => {
+    return () => {
+      if (draftStateTimerRef.current) window.clearTimeout(draftStateTimerRef.current)
+    }
+  }, [])
+
   // Safe navigation requested by PageLinkNodeView
   useEffect(() => {
     function onOpenPost(e: Event) {
@@ -1159,12 +1182,13 @@ export default function PostEditorPage() {
         const snapshot = JSON.stringify(draftRef.current || null)
         const shouldSave = forceSave || snapshot !== lastSavedRef.current
         if (shouldSave && canSave) await saveNow({ silent: true })
-        navigate(`/posts/${targetId}/edit`, { state: { focusTitle } })
+        // Preserve categoryQS when navigating to child/embed pages so the sidebar stays filtered correctly.
+        navigate(`/posts/${targetId}/edit${categoryQS}`, { state: { focusTitle } })
       })()
     }
     window.addEventListener("reductai:open-post", onOpenPost as EventListener)
     return () => window.removeEventListener("reductai:open-post", onOpenPost as EventListener)
-  }, [canSave, dirty, navigate, postId, saveNow])
+  }, [canSave, categoryQS, dirty, navigate, postId, saveNow])
 
   // Focus the title input after embed auto-navigation
   useEffect(() => {
@@ -1894,11 +1918,11 @@ export default function PostEditorPage() {
           const srcTitle = String((typeof srcObj.title === "string" ? srcObj.title : "") || pageById.get(String(srcId))?.title || "New page")
           const nextTitle = `${srcTitle} (copy)`
 
-          // Create new page
+          // Create new page (inherit category from parent or use current category context)
           const createRes = await fetch(`/api/posts`, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...authOnly },
-            body: JSON.stringify({ title: nextTitle, page_type: "page", status: "draft", visibility: "private", parent_id: parentId }),
+            body: JSON.stringify({ title: nextTitle, page_type: "page", status: "draft", visibility: "private", parent_id: parentId, category_id: categoryId || null }),
           })
           if (!createRes.ok) throw new Error(await createRes.text())
           const created = await createRes.json().catch(() => ({}))
@@ -1986,8 +2010,211 @@ export default function PostEditorPage() {
         setError(msg)
       }
     },
-    [canSave, childrenByParent, pageById, postId, saveNow]
+    [canSave, categoryId, childrenByParent, pageById, postId, saveNow]
   )
+
+  // Page tree drag & drop handlers
+  const startPageDrag = useCallback((pageId: string, e: React.DragEvent<HTMLElement>) => {
+    e.stopPropagation()
+    pageDragBlockClickUntilRef.current = Date.now() + 250
+    setDraggingPageId(pageId)
+    setPageDropIndicator(null)
+    try {
+      e.dataTransfer.setData("text/plain", pageId)
+      e.dataTransfer.effectAllowed = "move"
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const endPageDrag = useCallback(() => {
+    setDraggingPageId(null)
+    setPageDropIndicator(null)
+  }, [])
+
+  const handlePageDragOver = useCallback((targetId: string, e: React.DragEvent<HTMLElement>) => {
+    if (!draggingPageId || draggingPageId === targetId) return
+    e.preventDefault()
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const y = e.clientY - rect.top
+    const height = rect.height
+    // Notion-style: top 25% = before, bottom 25% = after, middle 50% = inside (as child)
+    let position: "before" | "after" | "inside"
+    if (y < height * 0.25) {
+      position = "before"
+    } else if (y > height * 0.75) {
+      position = "after"
+    } else {
+      position = "inside"
+    }
+    setPageDropIndicator({ id: targetId, position })
+  }, [draggingPageId])
+
+  const handlePageDragLeave = useCallback((targetId: string, e: React.DragEvent<HTMLElement>) => {
+    const related = (e.relatedTarget as Node | null) || null
+    if (related && (e.currentTarget as HTMLElement).contains(related)) return
+    setPageDropIndicator((prev) => {
+      if (!prev) return null
+      if (prev.id !== targetId) return prev
+      return null
+    })
+  }, [])
+
+  const handlePageDrop = useCallback(async (targetId: string, e: React.DragEvent<HTMLElement>) => {
+    e.preventDefault()
+    if (!draggingPageId || draggingPageId === targetId) {
+      endPageDrag()
+      return
+    }
+    const indicator = pageDropIndicator
+    if (!indicator || indicator.id !== targetId) {
+      endPageDrag()
+      return
+    }
+
+    // Prevent dropping a page onto its own descendant
+    const isDescendant = (parentId: string, childId: string): boolean => {
+      const kids = childrenByParent.get(parentId) || []
+      for (const k of kids) {
+        if (String(k.id) === childId) return true
+        if (isDescendant(String(k.id), childId)) return true
+      }
+      return false
+    }
+    if (indicator.position === "inside" && isDescendant(draggingPageId, targetId)) {
+      endPageDrag()
+      return
+    }
+
+    const fromId = draggingPageId
+    const target = pageById.get(targetId)
+    if (!target) {
+      endPageDrag()
+      return
+    }
+
+    // Determine new parent and position
+    let targetParentId: string | null
+    let afterPageId: string | null = null
+    let beforePageId: string | null = null
+
+    if (indicator.position === "inside") {
+      // Move into target as child (at the end)
+      targetParentId = targetId
+    } else {
+      // Move as sibling of target
+      targetParentId = target.parent_id || null
+      if (indicator.position === "before") {
+        beforePageId = targetId
+      } else {
+        afterPageId = targetId
+      }
+    }
+
+    // Optimistically update UI
+    setMyPages((prev) => {
+      const fromPage = prev.find((p) => String(p.id) === fromId)
+      if (!fromPage) return prev
+      const next = prev.filter((p) => String(p.id) !== fromId)
+      const updatedPage: MyPage = { ...fromPage, parent_id: targetParentId }
+      
+      if (indicator.position === "inside") {
+        // Add as child of target (at end)
+        next.push(updatedPage)
+      } else {
+        // Insert before/after target
+        const targetIdx = next.findIndex((p) => String(p.id) === targetId)
+        if (targetIdx < 0) {
+          next.push(updatedPage)
+        } else {
+          const insertIdx = indicator.position === "before" ? targetIdx : targetIdx + 1
+          next.splice(insertIdx, 0, updatedPage)
+        }
+      }
+      return next
+    })
+
+    // Expand parent if moving inside
+    if (indicator.position === "inside") {
+      setExpanded((prev) => {
+        const next = new Set(prev)
+        next.add(targetId)
+        return next
+      })
+    }
+
+    endPageDrag()
+
+    // Call server API
+    try {
+      const h = authHeaders()
+      if (!h.Authorization) return
+      await fetch(`/api/posts/${fromId}/move`, {
+        method: "POST",
+        headers: { ...h, "Content-Type": "application/json" },
+        body: JSON.stringify({ targetParentId, afterPageId, beforePageId }),
+      })
+
+      // If moving inside another page, add embed link to parent's content
+      if (indicator.position === "inside" && targetParentId) {
+        try {
+          // Get the moved page info for title
+          const movedPage = pageById.get(fromId)
+          const movedPageTitle = movedPage?.title || "Untitled"
+
+          // 1. Fetch parent page content
+          const contentRes = await fetch(`/api/posts/${targetParentId}/content`, {
+            headers: h,
+          })
+          if (!contentRes.ok) return
+
+          const contentData = await contentRes.json()
+          const docJson = contentData.docJson || { type: "doc", content: [] }
+          const currentVersion = contentData.version || 0
+
+          // 2. Check if embed link already exists (by pageId)
+          const alreadyExists = (docJson.content || []).some((node: { type?: string; attrs?: { pageId?: string } }) => 
+            node.type === "page_link" && node.attrs?.pageId === fromId
+          )
+
+          if (!alreadyExists) {
+            // 3. Generate unique blockId
+            const blockId = crypto.randomUUID()
+
+            // 4. Add page_link embed at the end with correct attrs
+            const newPageLink = {
+              type: "page_link",
+              attrs: {
+                blockId,
+                pageId: fromId,
+                title: movedPageTitle,
+                display: "embed",
+              },
+            }
+
+            const updatedDocJson = {
+              ...docJson,
+              content: [...(docJson.content || []), newPageLink],
+            }
+
+            // 5. Save updated parent content
+            await fetch(`/api/posts/${targetParentId}/content`, {
+              method: "POST",
+              headers: { ...h, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                docJson: updatedDocJson,
+                baseVersion: currentVersion,
+              }),
+            })
+          }
+        } catch {
+          // Silently fail if embed link couldn't be added
+        }
+      }
+    } catch {
+      // If API fails, we could reload, but for now just leave the optimistic update
+    }
+  }, [draggingPageId, pageDropIndicator, childrenByParent, pageById, endPageDrag])
 
   // 페이지 트리 렌더링 
   const renderTreeNode = (p: MyPage, depth: number) => {
@@ -2040,9 +2267,29 @@ export default function PostEditorPage() {
     // use file-level LUCIDE_PRESETS for icon picker (emoji, lucide)
     // 아이콘 선택기(이모지, lucide)를 위해 파일 레벨의 LUCIDE_PRESETS 사용
 
+    const isDropTarget = pageDropIndicator?.id === id
+    const dropPosition = isDropTarget ? pageDropIndicator.position : null
+    const isDragging = draggingPageId === id
+
     return (
       <div key={id} className="flex flex-col w-full min-w-0">
-        <div className="flex my-0.5 items-center w-full min-w-0" style={{ paddingLeft: depth * 8 }}>
+        <div
+          className="relative flex my-0.5 items-center w-full min-w-0"
+          style={{ paddingLeft: depth * 8 }}
+          draggable
+          onDragStart={(e) => startPageDrag(id, e)}
+          onDragEnd={endPageDrag}
+          onDragOver={(e) => handlePageDragOver(id, e)}
+          onDragLeave={(e) => handlePageDragLeave(id, e)}
+          onDrop={(e) => void handlePageDrop(id, e)}
+        >
+          {/* Drop indicator lines */}
+          {isDropTarget && dropPosition === "before" && (
+            <div className="pointer-events-none absolute left-1 right-1 top-0 h-0.5 rounded bg-primary" />
+          )}
+          {isDropTarget && dropPosition === "after" && (
+            <div className="pointer-events-none absolute left-1 right-1 bottom-0 h-0.5 rounded bg-primary" />
+          )}
           <div
             role="button"
             tabIndex={0}
@@ -2050,14 +2297,23 @@ export default function PostEditorPage() {
               // base (match shadcn button layout/feel)
               "group flex flex-1 items-center shrink-0 rounded-md text-sm font-medium transition-all outline-none",
               "focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]",
-              "h-8 px-1 gap-1 min-w-0 overflow-hidden justify-start",
+              "h-8 px-1 gap-1 min-w-0 overflow-hidden justify-start cursor-grab active:cursor-grabbing",
               // variants
               isActive
                 ? "bg-accent text-secondary-foreground shadow-xs"
                 : "hover:bg-accent hover:text-accent-foreground",
+              // Drop inside indicator
+              isDropTarget && dropPosition === "inside"
+                ? "ring-2 ring-primary ring-inset"
+                : "",
+              // Dragging state
+              isDragging ? "opacity-50" : "",
             ].join(" ")}
             ref={observeTreeRow(id) as unknown as React.Ref<HTMLDivElement>}
-            onClick={() => navigate(`/posts/${id}/edit${categoryQS}`)}
+            onClick={() => {
+              if (Date.now() < pageDragBlockClickUntilRef.current) return
+              navigate(`/posts/${id}/edit${categoryQS}`)
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault()
@@ -3055,7 +3311,13 @@ export default function PostEditorPage() {
                   onChange={(j) => {
                     // Keep draftRef in sync immediately so "save-before-navigate" never misses the latest embed link.
                     draftRef.current = j
-                    setDraftDocJson(j)
+                    // Debounce the state update to avoid triggering expensive useEffects on every keystroke.
+                    // The draftRef.current is always up-to-date for immediate operations like save.
+                    if (draftStateTimerRef.current) window.clearTimeout(draftStateTimerRef.current)
+                    draftStateTimerRef.current = window.setTimeout(() => {
+                      draftStateTimerRef.current = null
+                      setDraftDocJson(j)
+                    }, 100)
                   }}
                 />
               )}

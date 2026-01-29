@@ -11,6 +11,7 @@ import {
   listDeletedPages,
   listMyPageCategories,
   listMyPages,
+  movePage,
   purgeDeletedPage,
   reorderCategories,
   restoreDeletedPage,
@@ -43,6 +44,7 @@ router.get("/mine", requireAuth, listMyPages)
 router.get("/:id/preview", requireAuth, getPostPreview)
 router.patch("/:id", requireAuth, updatePost)
 router.patch("/:id/category", requireAuth, updatePostCategory)
+router.post("/:id/move", requireAuth, movePage)
 router.get("/:id/content", requireAuth, getPostContent)
 router.post("/:id/content", requireAuth, savePostContent)
 

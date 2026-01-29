@@ -59,7 +59,8 @@ import {
   cmdClearTableCellBgColor,
   tableCommands,  
 } from "../../editor/commands"
-import { exportMarkdown } from "../../editor/serializers/markdown"
+// Removed: exportMarkdown was being called on every keystroke causing performance issues
+// import { exportMarkdown } from "../../editor/serializers/markdown"
 import {
   CellSelection,
   isInTable as pmIsInTable,
@@ -230,6 +231,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
   const surfaceRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
   const embedIdsRef = useRef<Set<string>>(new Set())
+  const embedDetectTimerRef = useRef<number | null>(null)
 
   const modEnterShortcutLabel = useMemo(() => {
     if (typeof navigator === "undefined") return "Ctrl+⏎"
@@ -263,8 +265,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     return isMac ? "⌘+⇧+⌫" : "Ctrl+Shift+⌫"
   }, [])
 
-  const [markdown, setMarkdown] = useState("")
-  const [docJson, setDocJson] = useState<PmDocJson>(initialDocJson ?? null)
+  // Removed: markdown state was only used for debug panel and caused expensive exportMarkdown on every keystroke
+  // Removed: docJson state was only used for debug panel display
   const [textColorOpen, setTextColorOpen] = useState(false)
   const [selectionTextColorOpen, setSelectionTextColorOpen] = useState(false)
   const [blockBgOpen, setBlockBgOpen] = useState(false)
@@ -666,38 +668,43 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
         scheduleTableCellMenuUpdate()
         scheduleTableCellSelectionUpdate()
 
-        // Detect removed embed blocks (page_link with display=embed) so we can soft-delete the underlying child pages.
+        // Debounce embed detection to avoid expensive doc.descendants on every keystroke.
         // This is an optimistic UX layer; server also enforces deletion on save.
-        const nextEmbedIds = new Set<string>()
-        nextState.doc.descendants((node) => {
-          if (node.type === editorSchema.nodes.page_link) {
-            const attrs = (node.attrs || {}) as Record<string, unknown>
-            const display = typeof attrs.display === "string" ? attrs.display : ""
-            const pageId = typeof attrs.pageId === "string" ? attrs.pageId : ""
-            if (display === "embed" && pageId) nextEmbedIds.add(pageId)
+        if (embedDetectTimerRef.current) window.clearTimeout(embedDetectTimerRef.current)
+        embedDetectTimerRef.current = window.setTimeout(() => {
+          embedDetectTimerRef.current = null
+          const v = viewRef.current
+          if (!v) return
+          const currentDoc = v.state.doc
+          const nextEmbedIds = new Set<string>()
+          currentDoc.descendants((node) => {
+            if (node.type === editorSchema.nodes.page_link) {
+              const attrs = (node.attrs || {}) as Record<string, unknown>
+              const display = typeof attrs.display === "string" ? attrs.display : ""
+              const pageId = typeof attrs.pageId === "string" ? attrs.pageId : ""
+              if (display === "embed" && pageId) nextEmbedIds.add(pageId)
+            }
+            return true
+          })
+          const removed: string[] = []
+          const added: string[] = []
+          for (const pid of embedIdsRef.current) {
+            if (!nextEmbedIds.has(pid)) removed.push(pid)
           }
-          return true
-        })
-        const removed: string[] = []
-        const added: string[] = []
-        for (const pid of embedIdsRef.current) {
-          if (!nextEmbedIds.has(pid)) removed.push(pid)
-        }
-        for (const pid of nextEmbedIds) {
-          if (!embedIdsRef.current.has(pid)) added.push(pid)
-        }
-        if (removed.length) {
-          window.dispatchEvent(new CustomEvent("reductai:embed-removed", { detail: { pageIds: removed } }))
-        }
-        if (added.length) {
-          window.dispatchEvent(new CustomEvent("reductai:embed-added", { detail: { pageIds: added } }))
-        }
-        embedIdsRef.current = nextEmbedIds
+          for (const pid of nextEmbedIds) {
+            if (!embedIdsRef.current.has(pid)) added.push(pid)
+          }
+          if (removed.length) {
+            window.dispatchEvent(new CustomEvent("reductai:embed-removed", { detail: { pageIds: removed } }))
+          }
+          if (added.length) {
+            window.dispatchEvent(new CustomEvent("reductai:embed-added", { detail: { pageIds: added } }))
+          }
+          embedIdsRef.current = nextEmbedIds
+        }, 150)
 
-        const json = nextState.doc.toJSON()
-        setDocJson(json)
-        onChange?.(json)
-        setMarkdown(exportMarkdown(editorSchema, nextState.doc))
+        // Call onChange with the document JSON for the parent to handle
+        onChange?.(nextState.doc.toJSON())
 
         // Sync block inserter menu state for the React DropdownMenu overlay.
         const ui = blockInserterKey.getState(nextState) as BlockInserterState | undefined
@@ -848,13 +855,12 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     }
     window.addEventListener("reductai:pm-editor:focus", onFocusEditor as EventListener)
 
-    // init derived views
-    setMarkdown(exportMarkdown(editorSchema, doc))
-    setDocJson(doc.toJSON())
+    // init derived views - notify parent of initial doc
     onChange?.(doc.toJSON())
     scheduleSelectionToolbarUpdate()
 
     return () => {
+      if (embedDetectTimerRef.current) window.clearTimeout(embedDetectTimerRef.current)
       window.removeEventListener("reductai:page-title-updated", onTitleUpdated as EventListener)
       window.removeEventListener("reductai:append-page-link", onAppendPageLink as EventListener)
       window.removeEventListener("reductai:insert-page-link-after", onInsertPageLinkAfter as EventListener)
@@ -1806,10 +1812,13 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                   void (async () => {
                     const m = window.location.pathname.match(/^\/posts\/([^/]+)\/edit/)
                     const parent_id = m?.[1] && m[1] !== "new" ? m[1] : null
+                    // Extract category_id from URL query string so child pages inherit the parent's category
+                    const urlParams = new URLSearchParams(window.location.search)
+                    const category_id = urlParams.get("category") || null
                     const r = await fetch(`/api/posts`, {
                       method: "POST",
                       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-                      body: JSON.stringify({ title: "New page", page_type: "page", status: "draft", visibility: "private", parent_id }),
+                      body: JSON.stringify({ title: "New page", page_type: "page", status: "draft", visibility: "private", parent_id, category_id }),
                     })
                     if (!r.ok) return
                     const j = await r.json()
@@ -2721,20 +2730,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
         <div ref={mountRef} />
       </div>
 
-      <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div>
-          <div className="text-sm font-semibold mb-2">docJson</div>
-          <pre className="text-xs whitespace-pre-wrap border rounded-md p-3 bg-muted max-h-[320px] overflow-auto">
-            {JSON.stringify(docJson, null, 2)}
-          </pre>
-        </div>
-        <div>
-          <div className="text-sm font-semibold mb-2">Markdown (export)</div>
-          <pre className="text-xs whitespace-pre-wrap border rounded-md p-3 bg-muted max-h-[320px] overflow-auto">
-            {markdown}
-          </pre>
-        </div>
-      </div>
+      {/* Debug panel removed for performance - was causing expensive JSON.stringify and exportMarkdown on every keystroke */}
     </div>
   )
 }

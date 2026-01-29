@@ -114,10 +114,13 @@ async function createNewPage(): Promise<{ id: string; title: string } | null> {
   try {
     const m = typeof window !== "undefined" ? window.location.pathname.match(/^\/posts\/([^/]+)\/edit/) : null
     const parent_id = m?.[1] && m[1] !== "new" ? m[1] : null
+    // Extract category_id from URL query string so child pages inherit the parent's category
+    const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null
+    const category_id = urlParams?.get("category") || null
     const r = await fetch(`/api/posts`, {
       method: "POST",
       headers: authHeaders(),
-      body: JSON.stringify({ title: "New page", page_type: "page", status: "draft", visibility: "private", parent_id }),
+      body: JSON.stringify({ title: "New page", page_type: "page", status: "draft", visibility: "private", parent_id, category_id }),
     })
     if (!r.ok) return null
     const j = await r.json()

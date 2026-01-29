@@ -51,7 +51,7 @@ export class PageLinkNodeView implements NodeView {
 
   constructor(node: PMNode, view: EditorView, getPos: () => number) {
     const dom = document.createElement("div")
-    dom.className = "my-3 rounded-xl border border-border bg-card p-3 text-card-foreground shadow-sm"
+    dom.className = "my-2 py-3 px-4 text-card-foreground hover:bg-muted rounded-xl"
     // IMPORTANT:
     // This is an atom node rendered inside a contenteditable editor.
     // Mark it non-editable so interactive controls (input/button) don't lose focus to ProseMirror.

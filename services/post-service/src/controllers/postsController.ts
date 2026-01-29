@@ -72,7 +72,7 @@ export async function getPostContent(req: Request, res: Response) {
     const version = await getPostMetaVersion(id)
 
     const p = await query(
-      `SELECT id, title, icon, status, deleted_at
+      `SELECT id, title, icon, category_id, status, deleted_at
        FROM posts
        WHERE id = $1
        LIMIT 1`,
@@ -95,6 +95,7 @@ export async function getPostContent(req: Request, res: Response) {
       version,
       title: row.title,
       icon: row.icon ?? null,
+      category_id: row.category_id ?? null,
       status: row.status,
       deleted_at: row.deleted_at,
     })
@@ -296,9 +297,11 @@ export async function createPost(req: Request, res: Response) {
     await client.query("BEGIN")
 
     // Validate parent_id (must exist and be owned by same user) if provided
+    // Also inherit parent's category_id if none provided explicitly
+    let effectiveCategoryId = categoryId
     if (parentId) {
       const p = await client.query(
-        `SELECT id
+        `SELECT id, category_id
          FROM posts
          WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
          LIMIT 1`,
@@ -308,11 +311,15 @@ export async function createPost(req: Request, res: Response) {
         await client.query("ROLLBACK")
         return res.status(400).json({ message: "Invalid parent_id" })
       }
+      // Inherit parent's category_id if child doesn't specify one
+      if (!effectiveCategoryId && p.rows[0].category_id) {
+        effectiveCategoryId = p.rows[0].category_id
+      }
     }
 
-    // Validate category if provided
-    if (categoryId) {
-      await assertCategoryAccess({ categoryId, tenantId, userId })
+    // Validate category if provided (or inherited)
+    if (effectiveCategoryId) {
+      await assertCategoryAccess({ categoryId: effectiveCategoryId, tenantId, userId })
     }
 
     const r = await client.query(
@@ -321,7 +328,7 @@ export async function createPost(req: Request, res: Response) {
        )
        VALUES ($1,$9,$10,$2,$3,$4,$5,$6,$7,$8::jsonb)
        RETURNING id, parent_id, title, slug, created_at, updated_at`,
-      [tenantId, userId, title, slug, pageType, status, visibility, JSON.stringify({ doc_version: 0 }), parentId, categoryId]
+      [tenantId, userId, title, slug, pageType, status, visibility, JSON.stringify({ doc_version: 0 }), parentId, effectiveCategoryId]
     )
     await client.query("COMMIT")
     return res.status(201).json(r.rows[0])
@@ -1149,4 +1156,166 @@ export async function purgeDeletedPage(req: Request, res: Response) {
   }
 }
 
+/**
+ * Move a page to a new position in the tree.
+ * - Can change parent_id (move into another page or to root)
+ * - Can reorder among siblings
+ * Body: { targetParentId?: string | null, afterPageId?: string | null, beforePageId?: string | null }
+ * - targetParentId: new parent (null = root level)
+ * - afterPageId: place after this sibling
+ * - beforePageId: place before this sibling (takes precedence if both provided)
+ */
+export async function movePage(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const userId = (req as AuthedRequest).userId
+    const tenantId = await resolveTenantId(req as AuthedRequest)
+    const { id } = req.params
+    const body = (req.body || {}) as any
+
+    const targetParentId = body.targetParentId === null ? null :
+      typeof body.targetParentId === "string" && body.targetParentId.trim() ? body.targetParentId.trim() : undefined
+    const afterPageId = typeof body.afterPageId === "string" && body.afterPageId.trim() ? body.afterPageId.trim() : null
+    const beforePageId = typeof body.beforePageId === "string" && body.beforePageId.trim() ? body.beforePageId.trim() : null
+
+    await client.query("BEGIN")
+
+    // Verify the page exists and belongs to user
+    const pageRes = await client.query(
+      `SELECT id, parent_id, category_id, page_order
+       FROM posts
+       WHERE id = $1 AND tenant_id = $2 AND author_id = $3 AND deleted_at IS NULL
+       LIMIT 1`,
+      [id, tenantId, userId]
+    )
+    if (pageRes.rows.length === 0) {
+      await client.query("ROLLBACK")
+      return res.status(404).json({ message: "Page not found" })
+    }
+    const page = pageRes.rows[0]
+    const oldParentId = page.parent_id
+    const categoryId = page.category_id
+
+    // Determine new parent_id
+    let newParentId: string | null = oldParentId
+    if (targetParentId !== undefined) {
+      newParentId = targetParentId
+    }
+
+    // Verify new parent exists and belongs to user (if not null)
+    if (newParentId) {
+      const parentRes = await client.query(
+        `SELECT id, category_id FROM posts
+         WHERE id = $1 AND tenant_id = $2 AND author_id = $3 AND deleted_at IS NULL
+         LIMIT 1`,
+        [newParentId, tenantId, userId]
+      )
+      if (parentRes.rows.length === 0) {
+        await client.query("ROLLBACK")
+        return res.status(400).json({ message: "Invalid targetParentId" })
+      }
+      // Prevent moving a page into itself or its descendants
+      // Check if newParentId is a descendant of id
+      const descendantCheck = await client.query(
+        `WITH RECURSIVE ancestors AS (
+           SELECT id, parent_id FROM posts WHERE id = $1 AND tenant_id = $2
+           UNION ALL
+           SELECT p.id, p.parent_id FROM posts p INNER JOIN ancestors a ON p.id = a.parent_id WHERE p.tenant_id = $2
+         )
+         SELECT id FROM ancestors WHERE id = $3`,
+        [newParentId, tenantId, id]
+      )
+      if (descendantCheck.rows.length > 0) {
+        await client.query("ROLLBACK")
+        return res.status(400).json({ message: "Cannot move a page into itself or its descendant" })
+      }
+    }
+
+    // Get current siblings at the target level
+    const siblingsRes = await client.query(
+      `SELECT id, page_order FROM posts
+       WHERE tenant_id = $1 AND author_id = $2 AND deleted_at IS NULL
+         AND COALESCE(status, '') <> 'deleted'
+         AND ${newParentId ? "parent_id = $3" : "parent_id IS NULL"}
+         AND category_id ${categoryId ? "= $4" : "IS NULL"}
+       ORDER BY page_order ASC, created_at ASC, id ASC`,
+      newParentId
+        ? (categoryId ? [tenantId, userId, newParentId, categoryId] : [tenantId, userId, newParentId])
+        : (categoryId ? [tenantId, userId, categoryId] : [tenantId, userId])
+    )
+    const siblings = siblingsRes.rows.filter((s: any) => String(s.id) !== String(id)) as { id: string; page_order: number }[]
+
+    // Calculate new page_order
+    let newPageOrder = 1
+    if (beforePageId) {
+      const idx = siblings.findIndex((s) => String(s.id) === beforePageId)
+      if (idx >= 0) {
+        newPageOrder = idx + 1
+      }
+    } else if (afterPageId) {
+      const idx = siblings.findIndex((s) => String(s.id) === afterPageId)
+      if (idx >= 0) {
+        newPageOrder = idx + 2
+      } else {
+        newPageOrder = siblings.length + 1
+      }
+    } else {
+      // No position specified, place at end
+      newPageOrder = siblings.length + 1
+    }
+
+    // Update the moved page
+    await client.query(
+      `UPDATE posts
+       SET parent_id = $3, page_order = $4, updated_at = NOW()
+       WHERE id = $1 AND tenant_id = $2`,
+      [id, tenantId, newParentId, newPageOrder]
+    )
+
+    // Reorder siblings to maintain consistent ordering
+    // Insert the moved page at the correct position and renumber
+    const finalOrder = [...siblings]
+    finalOrder.splice(newPageOrder - 1, 0, { id, page_order: newPageOrder })
+    for (let i = 0; i < finalOrder.length; i++) {
+      if (String(finalOrder[i].id) === String(id)) continue // already updated
+      if (finalOrder[i].page_order !== i + 1) {
+        await client.query(
+          `UPDATE posts SET page_order = $3 WHERE id = $1 AND tenant_id = $2`,
+          [finalOrder[i].id, tenantId, i + 1]
+        )
+      }
+    }
+
+    // Update child_count on old and new parents
+    if (oldParentId && oldParentId !== newParentId) {
+      await client.query(
+        `UPDATE posts SET child_count = GREATEST(0, child_count - 1), updated_at = NOW()
+         WHERE id = $1 AND tenant_id = $2`,
+        [oldParentId, tenantId]
+      )
+    }
+    if (newParentId && newParentId !== oldParentId) {
+      await client.query(
+        `UPDATE posts SET child_count = child_count + 1, updated_at = NOW()
+         WHERE id = $1 AND tenant_id = $2`,
+        [newParentId, tenantId]
+      )
+    }
+
+    await client.query("COMMIT")
+
+    // Return updated page info
+    const updated = await query(
+      `SELECT id, parent_id, page_order, title FROM posts WHERE id = $1`,
+      [id]
+    )
+    return res.json(updated.rows[0] || { ok: true })
+  } catch (e) {
+    await client.query("ROLLBACK")
+    console.error("post-service movePage error:", e)
+    return res.status(500).json({ message: "Failed to move page" })
+  } finally {
+    client.release()
+  }
+}
 
