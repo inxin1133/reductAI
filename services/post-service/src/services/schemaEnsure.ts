@@ -28,9 +28,13 @@ export async function ensurePostEditorSchema(): Promise<void> {
 
   // Add new columns (safe even if they already exist)
   await exec(`ALTER TABLE board_categories ADD COLUMN IF NOT EXISTS author_id UUID;`)
+  await exec(`ALTER TABLE board_categories ADD COLUMN IF NOT EXISTS user_id UUID;`)
   await exec(`ALTER TABLE board_categories ADD COLUMN IF NOT EXISTS category_type VARCHAR(50) NOT NULL DEFAULT 'board';`)
   await exec(`ALTER TABLE board_categories ADD COLUMN IF NOT EXISTS icon VARCHAR(100);`)
   await exec(`ALTER TABLE board_categories ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`)
+
+  // Backfill user_id from author_id for existing rows (safe, idempotent).
+  await exec(`UPDATE board_categories SET user_id = author_id WHERE user_id IS NULL AND author_id IS NOT NULL;`)
 
   // Add FK + CHECK constraint if missing
   await exec(`
@@ -42,6 +46,18 @@ export async function ensurePostEditorSchema(): Promise<void> {
         ALTER TABLE board_categories
           ADD CONSTRAINT board_categories_author_id_fkey
           FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE SET NULL;
+      END IF;
+    END $$;
+  `)
+  await exec(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'board_categories_user_id_fkey'
+      ) THEN
+        ALTER TABLE board_categories
+          ADD CONSTRAINT board_categories_user_id_fkey
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL;
       END IF;
     END $$;
   `)
@@ -61,6 +77,7 @@ export async function ensurePostEditorSchema(): Promise<void> {
   // Indexes (idempotent)
   await exec(`CREATE INDEX IF NOT EXISTS idx_board_categories_tenant_id ON board_categories(tenant_id);`)
   await exec(`CREATE INDEX IF NOT EXISTS idx_board_categories_author_id ON board_categories(author_id);`)
+  await exec(`CREATE INDEX IF NOT EXISTS idx_board_categories_user_id ON board_categories(user_id);`)
   await exec(`CREATE INDEX IF NOT EXISTS idx_board_categories_type ON board_categories(tenant_id, category_type);`)
   await exec(`CREATE INDEX IF NOT EXISTS idx_board_categories_parent_id ON board_categories(parent_id);`)
   await exec(`CREATE INDEX IF NOT EXISTS idx_board_categories_slug ON board_categories(tenant_id, slug);`)

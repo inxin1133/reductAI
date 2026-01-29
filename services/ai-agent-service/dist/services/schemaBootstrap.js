@@ -9,6 +9,7 @@ exports.ensurePromptTemplatesSchema = ensurePromptTemplatesSchema;
 exports.ensureResponseSchemasSchema = ensureResponseSchemasSchema;
 exports.ensurePromptSuggestionsSchema = ensurePromptSuggestionsSchema;
 exports.ensureModelApiProfilesSchema = ensureModelApiProfilesSchema;
+exports.ensureDefaultSoraVideoProfiles = ensureDefaultSoraVideoProfiles;
 exports.ensureProviderAuthProfilesSchema = ensureProviderAuthProfilesSchema;
 const db_1 = require("../config/db");
 const systemTenantService_1 = require("./systemTenantService");
@@ -311,6 +312,7 @@ async function ensureTimelineSchema() {
       segment_group VARCHAR(50) CHECK (segment_group IN ('normal', 'summary_material', 'retrieved')),
       function_name VARCHAR(255),
       function_call_id VARCHAR(255),
+      status VARCHAR(20) NOT NULL DEFAULT 'none' CHECK (status IN ('none', 'in_progress', 'success', 'failed', 'stopped')),
       input_tokens INTEGER DEFAULT 0,
       cached_input_tokens INTEGER DEFAULT 0,
       output_tokens INTEGER DEFAULT 0,
@@ -386,6 +388,33 @@ async function ensureTimelineSchema() {
           AND column_name = 'content_text'
       ) THEN
         ALTER TABLE model_messages ADD COLUMN content_text TEXT;
+      END IF;
+
+      -- model_messages: status
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_messages'
+          AND column_name = 'status'
+      ) THEN
+        ALTER TABLE model_messages ADD COLUMN status VARCHAR(20) DEFAULT 'none';
+      END IF;
+      -- backfill status for existing rows
+      UPDATE model_messages
+      SET status = CASE WHEN role = 'assistant' THEN 'success' ELSE 'none' END
+      WHERE status IS NULL;
+      -- ensure NOT NULL + check constraint
+      ALTER TABLE model_messages ALTER COLUMN status SET DEFAULT 'none';
+      ALTER TABLE model_messages ALTER COLUMN status SET NOT NULL;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_model_messages_status'
+      ) THEN
+        ALTER TABLE model_messages
+        ADD CONSTRAINT chk_model_messages_status
+        CHECK (status IN ('none', 'in_progress', 'success', 'failed', 'stopped'));
       END IF;
 
       -- model_messages: summary_tokens/importance/is_pinned/segment_group/updated_at
@@ -1063,6 +1092,106 @@ async function ensureModelApiProfilesSchema() {
     await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_api_profiles_tenant_provider_purpose ON model_api_profiles(tenant_id, provider_id, purpose, is_active);`);
     await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_api_profiles_model_id ON model_api_profiles(model_id);`);
     await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_api_profiles_profile_key ON model_api_profiles(tenant_id, profile_key);`);
+}
+/**
+ * Seed default OpenAI Sora video profile (best-effort).
+ * - Our runtime can execute video generation via model_api_profiles(purpose=video) using async_job workflow.
+ * - This makes "video" usable out of the box for OpenAI providers. (In many setups the provider slug is just "openai",
+ *   so relying on "sora" in product_name/slug is too strict and causes video to fall back to the legacy "not implemented" path.)
+ *
+ * NOTE: Provider video endpoints can differ by OpenAI version/gateway; this is a sane default that users can edit in Admin.
+ */
+async function ensureDefaultSoraVideoProfiles() {
+    try {
+        const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
+        // Find OpenAI providers (best-effort).
+        const prov = await (0, db_1.query)(`
+      SELECT id
+      FROM ai_providers
+      WHERE lower(provider_family) = 'openai'
+      ORDER BY updated_at DESC NULLS LAST
+      `, []);
+        const providerIds = (prov.rows || []).map((r) => String(r.id || "")).filter(Boolean);
+        if (!providerIds.length)
+            return;
+        const profileKey = "openai_sora_video_v1";
+        const transport = {
+            kind: "http_json",
+            method: "POST",
+            path: "/videos",
+            headers: { "Content-Type": "application/json", Authorization: "Bearer {{apiKey}}" },
+            body: {
+                model: "{{model}}",
+                prompt: "{{userPrompt}}",
+                seconds: "{{params_seconds}}",
+                size: "{{params_size}}",
+            },
+            timeout_ms: 120000,
+        };
+        const responseMapping = { result_type: "raw_json", mode: "json", extract: { job_id_path: "id" } };
+        const workflow = {
+            type: "async_job",
+            job_id_path: "id",
+            steps: [
+                {
+                    name: "poll",
+                    method: "GET",
+                    path: "/videos/{{job_id}}",
+                    interval_ms: 2000,
+                    max_attempts: 90,
+                    status_path: "status",
+                    terminal_states: ["completed", "failed", "canceled", "cancelled", "error"],
+                },
+                { name: "download", method: "GET", path: "/videos/{{job_id}}/content", mode: "binary", content_type: "video/mp4" },
+            ],
+        };
+        for (const providerId of providerIds) {
+            // If there is already any ACTIVE video profile for this provider (from previous installs),
+            // don't introduce a competing default that could change runtime behavior.
+            const existingActive = await (0, db_1.query)(`SELECT id, profile_key
+         FROM model_api_profiles
+         WHERE tenant_id = $1 AND provider_id = $2 AND purpose = 'video' AND is_active = TRUE
+         ORDER BY updated_at DESC NULLS LAST
+         LIMIT 5`, [tenantId, providerId]);
+            const hasOtherActive = (existingActive.rows || []).some((r) => String(r.profile_key || "") !== profileKey);
+            if (hasOtherActive) {
+                // If we previously inserted our default, disable it to avoid overriding the existing config.
+                await (0, db_1.query)(`UPDATE model_api_profiles
+           SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+           WHERE tenant_id = $1 AND provider_id = $2 AND profile_key = $3 AND is_active = TRUE`, [tenantId, providerId, profileKey]).catch(() => null);
+                continue;
+            }
+            // If our profile exists (active or not), don't recreate.
+            const exists = await (0, db_1.query)(`SELECT 1 FROM model_api_profiles WHERE tenant_id = $1 AND provider_id = $2 AND profile_key = $3 LIMIT 1`, [tenantId, providerId, profileKey]);
+            if (exists.rows.length) {
+                // Migration/cleanup for older installs:
+                // - Remove optional input_reference from transport.body to avoid sending "" (provider validation error).
+                await (0, db_1.query)(`
+          UPDATE model_api_profiles
+          SET transport =
+            CASE
+              WHEN jsonb_typeof(transport) = 'object' AND jsonb_typeof(transport->'body') = 'object'
+              THEN jsonb_set(transport, '{body}', (transport->'body') - 'input_reference', true)
+              ELSE transport
+            END,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE tenant_id = $1
+            AND provider_id = $2
+            AND profile_key = $3
+          `, [tenantId, providerId, profileKey]).catch(() => null);
+                continue;
+            }
+            await (0, db_1.query)(`
+        INSERT INTO model_api_profiles
+          (tenant_id, provider_id, model_id, profile_key, purpose, auth_profile_id, transport, response_mapping, workflow, is_active)
+        VALUES
+          ($1,$2,NULL,$3,'video',NULL,$4::jsonb,$5::jsonb,$6::jsonb,TRUE)
+        `, [tenantId, providerId, profileKey, JSON.stringify(transport), JSON.stringify(responseMapping), JSON.stringify(workflow)]);
+        }
+    }
+    catch (e) {
+        console.warn("ensureDefaultSoraVideoProfiles failed (ignored):", e);
+    }
 }
 /**
  * Provider auth profiles schema

@@ -256,7 +256,7 @@ export async function listThreads(req: Request, res: Response) {
         AND r.user_id = c.user_id
         AND r.conversation_id = c.id
       WHERE c.tenant_id = $1 AND c.user_id = $2 AND c.status = 'active'
-      ORDER BY c.updated_at DESC
+      ORDER BY c.user_sort_order ASC NULLS LAST, c.updated_at DESC
       `,
       [tenantId, userId]
     )
@@ -654,4 +654,39 @@ export async function purgeThread(req: Request, res: Response) {
   }
 }
 
+// 대화 스레드 순서 변경 (드래그 & 드롭)
+export async function reorderThreads(req: Request, res: Response) {
+  try {
+    const userId = (req as AuthedRequest).userId
+    const tenantId = await ensureSystemTenantId()
+    const body = (req.body || {}) as { orderedIds?: unknown }
+    const orderedIds = Array.isArray(body.orderedIds) ? body.orderedIds.map(String).filter(Boolean) : []
+    if (!orderedIds.length) return res.status(400).json({ message: "orderedIds is required" })
+
+    // ownership check: all IDs must belong to this user
+    const owned = await query(
+      `SELECT id FROM model_conversations WHERE tenant_id = $1 AND user_id = $2 AND status = 'active'`,
+      [tenantId, userId]
+    )
+    const set = new Set((owned.rows || []).map((r: { id: string }) => String(r.id)))
+    for (const id of orderedIds) {
+      if (!set.has(String(id))) return res.status(403).json({ message: "Forbidden reorder" })
+    }
+
+    // update sort order
+    for (let i = 0; i < orderedIds.length; i += 1) {
+      await query(
+        `UPDATE model_conversations
+         SET user_sort_order = $4, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'active'`,
+        [orderedIds[i], tenantId, userId, i + 1]
+      )
+    }
+
+    return res.json({ ok: true })
+  } catch (e) {
+    console.error("reorderThreads error:", e)
+    return res.status(500).json({ message: "Failed to reorder threads" })
+  }
+}
 

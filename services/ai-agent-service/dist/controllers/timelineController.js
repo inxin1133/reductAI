@@ -1,14 +1,51 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.listThreads = listThreads;
+exports.markThreadSeen = markThreadSeen;
+exports.listDeletedThreads = listDeletedThreads;
+exports.restoreThread = restoreThread;
 exports.createThread = createThread;
 exports.listMessages = listMessages;
 exports.getMessageMedia = getMessageMedia;
 exports.addMessage = addMessage;
 exports.updateThreadTitle = updateThreadTitle;
+exports.deleteThread = deleteThread;
+exports.purgeThread = purgeThread;
+exports.reorderThreads = reorderThreads;
 const db_1 = require("../config/db");
 const providerClients_1 = require("../services/providerClients");
 const systemTenantService_1 = require("../services/systemTenantService");
+const normalizeAiContent_1 = require("../utils/normalizeAiContent");
+let ensuredConversationReads = false;
+async function ensureConversationReadsTable() {
+    if (ensuredConversationReads)
+        return;
+    // Best-effort: environments without migrations should still work.
+    try {
+        await (0, db_1.query)(`
+      CREATE TABLE IF NOT EXISTS model_conversation_reads (
+        tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        conversation_id UUID NOT NULL REFERENCES model_conversations(id) ON DELETE CASCADE,
+        last_seen_assistant_order INTEGER NOT NULL DEFAULT 0,
+        last_seen_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (tenant_id, user_id, conversation_id)
+      );
+    `);
+        await (0, db_1.query)(`
+      CREATE INDEX IF NOT EXISTS idx_model_conversation_reads_conversation
+      ON model_conversation_reads(conversation_id);
+    `);
+    }
+    catch {
+        // ignore: if table cannot be created, endpoints will work without DB-read state
+    }
+    finally {
+        ensuredConversationReads = true;
+    }
+}
 function clampText(input, max) {
     const s = String(input || "").replace(/\s+/g, " ").trim();
     if (s.length <= max)
@@ -42,13 +79,6 @@ function extractTextFromJsonContent(content) {
     if (typeof c.output_text === "string")
         return c.output_text;
     return "";
-}
-function normalizeJsonContent(content) {
-    if (content && typeof content === "object")
-        return content;
-    if (typeof content === "string")
-        return { text: content };
-    return { value: content };
 }
 function isRecord(v) {
     return Boolean(v) && typeof v === "object" && !Array.isArray(v);
@@ -85,11 +115,10 @@ function normalizeTitle(s) {
     if (!trimmed)
         return "새 대화";
     // 너무 길면 잘라서 UI 안정성 확보
-    // 요구사항: 15자 이내(한글 기준)
-    const max = 15;
+    // 요구사항: 30자 이내
+    const max = 30;
     if (trimmed.length <= max)
         return trimmed;
-    // 15자 이내를 엄격히 지키기 위해 …를 붙이지 않습니다.
     return trimmed.slice(0, max);
 }
 function fallbackTitleFromPrompt(input) {
@@ -110,7 +139,7 @@ async function generateTitleByOpenAi(firstMessage) {
         const prompt = [
             "다음 사용자 질문을 보고 '대화 타임라인'에 표시할 제목을 만들어줘.",
             "- 한국어로 자연스럽게",
-            "- 15자 이내",
+            "- 30자 이내",
             "- 키워드/부연설명 없이 제목만",
             "- 반드시 JSON으로만 출력",
             "",
@@ -172,17 +201,132 @@ async function resolveAiModelIdByApiModel(modelApiId) {
 // 대화 스레드 목록 (최근 업데이트 순)
 async function listThreads(req, res) {
     try {
+        await ensureConversationReadsTable();
         const userId = req.userId;
         const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
-        const result = await (0, db_1.query)(`SELECT id, user_id, title, created_at, updated_at
-       FROM model_conversations
-       WHERE tenant_id = $1 AND user_id = $2 AND status = 'active'
-       ORDER BY updated_at DESC`, [tenantId, userId]);
+        const result = await (0, db_1.query)(`
+      SELECT
+        c.id,
+        c.user_id,
+        c.title,
+        c.created_at,
+        c.updated_at,
+        lm.role AS last_message_role,
+        lm.message_order AS last_message_order,
+        lm.created_at AS last_message_created_at,
+        la.message_order AS last_assistant_order,
+        la.created_at AS last_assistant_created_at,
+        la.status AS last_assistant_status,
+        COALESCE(r.last_seen_assistant_order, 0) AS last_seen_assistant_order,
+        CASE
+          WHEN la.message_order IS NULL THEN false
+          WHEN la.status IS DISTINCT FROM 'success' THEN false
+          WHEN la.message_order > COALESCE(r.last_seen_assistant_order, 0) THEN true
+          ELSE false
+        END AS has_unread,
+        CASE
+          WHEN la.status = 'in_progress' THEN true
+          WHEN lower(COALESCE(lm.role, '')) = 'user'
+            AND lm.created_at IS NOT NULL
+            AND (CURRENT_TIMESTAMP - lm.created_at) < interval '10 minutes'
+          THEN true
+          ELSE false
+        END AS is_generating
+      FROM model_conversations c
+      LEFT JOIN LATERAL (
+        SELECT mm.role, mm.message_order, mm.created_at
+        FROM model_messages mm
+        WHERE mm.conversation_id = c.id
+        ORDER BY mm.message_order DESC
+        LIMIT 1
+      ) lm ON true
+      LEFT JOIN LATERAL (
+        SELECT mm.message_order, mm.created_at, mm.status
+        FROM model_messages mm
+        WHERE mm.conversation_id = c.id AND mm.role = 'assistant'
+        ORDER BY mm.message_order DESC
+        LIMIT 1
+      ) la ON true
+      LEFT JOIN model_conversation_reads r
+        ON r.tenant_id = c.tenant_id
+        AND r.user_id = c.user_id
+        AND r.conversation_id = c.id
+      WHERE c.tenant_id = $1 AND c.user_id = $2 AND c.status = 'active'
+      ORDER BY c.user_sort_order ASC NULLS LAST, c.updated_at DESC
+      `, [tenantId, userId]);
         res.json(result.rows);
     }
     catch (e) {
         console.error("listThreads error:", e);
         res.status(500).json({ message: "Failed to fetch threads" });
+    }
+}
+// Mark a thread as "seen" (updates unread state across devices)
+async function markThreadSeen(req, res) {
+    try {
+        await ensureConversationReadsTable();
+        const { id } = req.params;
+        const threadId = String(id || "").trim();
+        if (!threadId)
+            return res.status(400).json({ message: "Invalid id" });
+        const userId = req.userId;
+        const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
+        const owns = await (0, db_1.query)(`SELECT 1 FROM model_conversations WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'active'`, [threadId, tenantId, userId]);
+        if (owns.rows.length === 0)
+            return res.status(404).json({ message: "Thread not found" });
+        // Compute the latest assistant message_order for this thread.
+        const last = await (0, db_1.query)(`SELECT COALESCE(MAX(message_order), 0)::int AS last
+       FROM model_messages
+       WHERE conversation_id = $1 AND role = 'assistant'`, [threadId]);
+        const lastAssistantOrder = Number(last.rows[0]?.last || 0);
+        await (0, db_1.query)(`
+      INSERT INTO model_conversation_reads (tenant_id, user_id, conversation_id, last_seen_assistant_order, last_seen_at, updated_at)
+      VALUES ($1, $2::uuid, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT (tenant_id, user_id, conversation_id)
+      DO UPDATE SET last_seen_assistant_order = EXCLUDED.last_seen_assistant_order,
+                    last_seen_at = EXCLUDED.last_seen_at,
+                    updated_at = EXCLUDED.updated_at
+      `, [tenantId, userId, threadId, lastAssistantOrder]);
+        return res.json({ ok: true, id: threadId, last_seen_assistant_order: lastAssistantOrder });
+    }
+    catch (e) {
+        console.error("markThreadSeen error:", e);
+        return res.status(500).json({ message: "Failed to mark thread as seen" });
+    }
+}
+// 삭제된 스레드 목록 (휴지통)
+async function listDeletedThreads(req, res) {
+    try {
+        const userId = req.userId;
+        const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
+        const result = await (0, db_1.query)(`SELECT id, user_id, title, created_at, updated_at
+       FROM model_conversations
+       WHERE tenant_id = $1 AND user_id = $2 AND status = 'deleted'
+       ORDER BY updated_at DESC`, [tenantId, userId]);
+        res.json(result.rows);
+    }
+    catch (e) {
+        console.error("listDeletedThreads error:", e);
+        res.status(500).json({ message: "Failed to fetch deleted threads" });
+    }
+}
+// 삭제된 스레드 복구: status를 'active'로 되돌림
+async function restoreThread(req, res) {
+    try {
+        const { id } = req.params;
+        const userId = req.userId;
+        const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
+        const result = await (0, db_1.query)(`UPDATE model_conversations
+       SET status = 'active', updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'deleted'
+       RETURNING id, user_id, title, created_at, updated_at`, [id, tenantId, userId]);
+        if (result.rows.length === 0)
+            return res.status(404).json({ message: "Thread not found" });
+        return res.json(result.rows[0]);
+    }
+    catch (e) {
+        console.error("restoreThread error:", e);
+        return res.status(500).json({ message: "Failed to restore thread" });
     }
 }
 // 스레드 생성
@@ -230,16 +374,20 @@ async function listMessages(req, res) {
         mm.role,
         mm.content,
         mm.summary,
+        mm.status,
         mm.metadata,
         mm.message_order,
         mm.created_at,
         COALESCE(NULLIF(mm.metadata->>'provider_logo_key',''), p_slug.logo_key, p_family.logo_key) AS provider_logo_key,
-        COALESCE(p_slug.slug, p_family.slug) AS provider_slug_resolved
+        COALESCE(p_slug.slug, p_family.slug) AS provider_slug_resolved,
+        am.display_name AS model_display_name
       FROM model_messages mm
       LEFT JOIN ai_providers p_slug
         ON p_slug.slug = NULLIF(mm.metadata->>'provider_slug', '')
       LEFT JOIN ai_providers p_family
         ON lower(p_family.provider_family) = lower(NULLIF(mm.metadata->>'provider_key', ''))
+      LEFT JOIN ai_models am
+        ON am.model_id = NULLIF(mm.metadata->>'model', '')
       WHERE mm.conversation_id = $1
       ORDER BY mm.message_order ASC
       `, [id]);
@@ -346,13 +494,14 @@ async function addMessage(req, res) {
         const nextOrder = Number(ord.rows?.[0]?.next_order || 1);
         // model_messages는 별도 model 컬럼이 없으므로 metadata에 저장합니다.
         const metadata = { ...(model ? { model } : {}), ...(toolName ? { tool_name: toolName } : {}) };
-        const normalizedContent = normalizeJsonContent(content);
+        const normalizedContent = (0, normalizeAiContent_1.normalizeAiContent)(content);
         const summary = typeof summaryIn === "string" && summaryIn.trim()
             ? (role === "assistant" ? assistantSummaryOneSentence(summaryIn) : clampText(summaryIn, role === "user" ? 50 : 100))
             : deriveSummary({ role, content: normalizedContent, toolName: toolName || undefined });
-        const insert = await (0, db_1.query)(`INSERT INTO model_messages (conversation_id, role, content, summary, message_order, metadata)
-       VALUES ($1, $2, $3::jsonb, $4, $5, $6::jsonb)
-       RETURNING id, conversation_id, role, content, summary, metadata, message_order, created_at`, [id, role, JSON.stringify(normalizedContent), summary, nextOrder, JSON.stringify(metadata)]);
+        const status = role === "assistant" ? "success" : "none";
+        const insert = await (0, db_1.query)(`INSERT INTO model_messages (conversation_id, role, content, summary, status, message_order, metadata)
+       VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7::jsonb)
+       RETURNING id, conversation_id, role, content, summary, status, metadata, message_order, created_at`, [id, role, JSON.stringify(normalizedContent), summary, status, nextOrder, JSON.stringify(metadata)]);
         // 최근순 정렬을 위해 updated_at 갱신
         await (0, db_1.query)(`UPDATE model_conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
         res.status(201).json(insert.rows[0]);
@@ -383,5 +532,79 @@ async function updateThreadTitle(req, res) {
     catch (e) {
         console.error("updateThreadTitle error:", e);
         res.status(500).json({ message: "Failed to update thread title" });
+    }
+}
+// 스레드 삭제(soft delete): status를 'deleted'로 전환하고 목록에서 숨김
+async function deleteThread(req, res) {
+    try {
+        const { id } = req.params;
+        const userId = req.userId;
+        const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
+        const result = await (0, db_1.query)(`UPDATE model_conversations
+       SET status = 'deleted', updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'active'
+       RETURNING id`, [id, tenantId, userId]);
+        if (result.rows.length === 0)
+            return res.status(404).json({ message: "Thread not found" });
+        return res.json({ ok: true, id: String(result.rows[0].id) });
+    }
+    catch (e) {
+        console.error("deleteThread error:", e);
+        return res.status(500).json({ message: "Failed to delete thread" });
+    }
+}
+// 스레드 완전삭제(hard delete): status='deleted'인 대화를 DB에서 영구 삭제합니다.
+// - model_messages FK가 CASCADE가 아닐 수 있으므로, 메시지를 먼저 삭제 후 대화를 삭제합니다.
+async function purgeThread(req, res) {
+    try {
+        const { id } = req.params;
+        const userId = req.userId;
+        const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
+        const threadId = String(id || "").trim();
+        if (!threadId)
+            return res.status(400).json({ message: "Invalid id" });
+        // ownership + must be deleted
+        const owns = await (0, db_1.query)(`SELECT 1 FROM model_conversations WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'deleted'`, [threadId, tenantId, userId]);
+        if (owns.rows.length === 0)
+            return res.status(404).json({ message: "Thread not found" });
+        // delete messages first (safe even if cascade exists)
+        await (0, db_1.query)(`DELETE FROM model_messages WHERE conversation_id = $1`, [threadId]);
+        const del = await (0, db_1.query)(`DELETE FROM model_conversations WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'deleted' RETURNING id`, [threadId, tenantId, userId]);
+        if (del.rows.length === 0)
+            return res.status(404).json({ message: "Thread not found" });
+        return res.json({ ok: true, id: String(del.rows[0].id) });
+    }
+    catch (e) {
+        console.error("purgeThread error:", e);
+        return res.status(500).json({ message: "Failed to purge thread" });
+    }
+}
+// 대화 스레드 순서 변경 (드래그 & 드롭)
+async function reorderThreads(req, res) {
+    try {
+        const userId = req.userId;
+        const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
+        const body = (req.body || {});
+        const orderedIds = Array.isArray(body.orderedIds) ? body.orderedIds.map(String).filter(Boolean) : [];
+        if (!orderedIds.length)
+            return res.status(400).json({ message: "orderedIds is required" });
+        // ownership check: all IDs must belong to this user
+        const owned = await (0, db_1.query)(`SELECT id FROM model_conversations WHERE tenant_id = $1 AND user_id = $2 AND status = 'active'`, [tenantId, userId]);
+        const set = new Set((owned.rows || []).map((r) => String(r.id)));
+        for (const id of orderedIds) {
+            if (!set.has(String(id)))
+                return res.status(403).json({ message: "Forbidden reorder" });
+        }
+        // update sort order
+        for (let i = 0; i < orderedIds.length; i += 1) {
+            await (0, db_1.query)(`UPDATE model_conversations
+         SET user_sort_order = $4, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'active'`, [orderedIds[i], tenantId, userId, i + 1]);
+        }
+        return res.json({ ok: true });
+    }
+    catch (e) {
+        console.error("reorderThreads error:", e);
+        return res.status(500).json({ message: "Failed to reorder threads" });
     }
 }

@@ -1,8 +1,42 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.cancelChatRun = cancelChatRun;
 exports.getConversationContext = getConversationContext;
 exports.chatRun = chatRun;
 const db_1 = require("../config/db");
@@ -11,7 +45,42 @@ const crypto_1 = __importDefault(require("crypto"));
 const providerClients_1 = require("../services/providerClients");
 const authProfilesService_1 = require("../services/authProfilesService");
 const mediaAssetsService_1 = require("../services/mediaAssetsService");
+const normalizeAiContent_1 = require("../utils/normalizeAiContent");
 const MODEL_TYPES = ["text", "image", "audio", "music", "video", "multimodal", "embedding", "code"];
+const ACTIVE_RUNS = new Map();
+const ACTIVE_RUNS_BY_REQUEST = new Map();
+function registerActiveRun(args) {
+    ACTIVE_RUNS.set(args.conversationId, {
+        abortController: args.abortController,
+        assistantMessageId: args.assistantMessageId,
+        userId: args.userId,
+        tenantId: args.tenantId,
+    });
+}
+function clearActiveRun(conversationId, assistantMessageId) {
+    const cur = ACTIVE_RUNS.get(conversationId);
+    if (!cur)
+        return;
+    if (assistantMessageId && cur.assistantMessageId !== assistantMessageId)
+        return;
+    ACTIVE_RUNS.delete(conversationId);
+}
+function registerActiveRunByRequestId(args) {
+    ACTIVE_RUNS_BY_REQUEST.set(args.requestId, {
+        abortController: args.abortController,
+        assistantMessageId: args.assistantMessageId,
+        userId: args.userId,
+        tenantId: args.tenantId,
+    });
+}
+function clearActiveRunByRequestId(requestId, assistantMessageId) {
+    const cur = ACTIVE_RUNS_BY_REQUEST.get(requestId);
+    if (!cur)
+        return;
+    if (assistantMessageId && cur.assistantMessageId !== assistantMessageId)
+        return;
+    ACTIVE_RUNS_BY_REQUEST.delete(requestId);
+}
 function isAudioFormat(v) {
     return v === "mp3" || v === "wav" || v === "opus" || v === "aac" || v === "flac";
 }
@@ -28,10 +97,43 @@ function extractTextFromJsonContent(content) {
     const c = content;
     if (typeof c.text === "string")
         return c.text;
-    if (typeof c.output_text === "string")
-        return c.output_text;
+    if (typeof c.answer === "string")
+        return c.answer;
+    if (typeof c.message === "string")
+        return c.message;
+    if (typeof c.reply === "string")
+        return c.reply;
+    if (typeof c.response === "string")
+        return c.response;
     if (typeof c.input === "string")
         return c.input;
+    const blocks = Array.isArray(c.blocks) ? c.blocks : [];
+    if (blocks.length) {
+        const out = [];
+        for (const b of blocks) {
+            const t = typeof b.type === "string" ? b.type : "";
+            if (t === "markdown") {
+                const md = typeof b.markdown === "string" ? b.markdown : "";
+                if (md)
+                    out.push(md);
+            }
+            else if (t === "code") {
+                const code = typeof b.code === "string" ? b.code : "";
+                const lang = typeof b.language === "string" ? b.language : "plain";
+                if (code)
+                    out.push(`[code:${lang}]\n${code}`);
+            }
+            else if (t === "table") {
+                const headers = Array.isArray(b.headers) ? b.headers.map(String) : [];
+                const rows = Array.isArray(b.rows) ? b.rows : [];
+                out.push(`[table]\n${headers.join(" | ")}\n${rows
+                    .map((r) => (Array.isArray(r) ? r.map(String).join(" | ") : ""))
+                    .join("\n")}`);
+            }
+        }
+        if (out.length)
+            return out.join("\n\n");
+    }
     return "";
 }
 function detectLanguageCode(text) {
@@ -73,16 +175,22 @@ function deepInjectVars(input, vars) {
         if (exact) {
             const k = exact[1];
             const raw = k in vars ? vars[k] : "";
+            if (raw && typeof raw === "object")
+                return raw;
             const s = String(raw);
             if (s === "true")
                 return true;
             if (s === "false")
                 return false;
+            // OpenAI videos API expects seconds as string enum ('4'|'8'|'12'), not a number.
+            // Keep this placeholder as a string even though it looks numeric.
+            if (k === "params_seconds")
+                return s;
             if (/^-?\d+(?:\.\d+)?$/.test(s))
                 return Number(s);
             return s;
         }
-        return input.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, k) => (k in vars ? vars[k] : ""));
+        return input.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, k) => String(k in vars ? vars[k] : ""));
     }
     if (Array.isArray(input))
         return input.map((v) => deepInjectVars(v, vars));
@@ -274,6 +382,13 @@ async function executeHttpJsonProfile(args) {
             headers["Content-Type"] = "application/json";
         }
         const controller = new AbortController();
+        const onAbort = () => controller.abort();
+        if (args2.signal) {
+            if (args2.signal.aborted)
+                controller.abort();
+            else
+                args2.signal.addEventListener("abort", onAbort);
+        }
         const t = setTimeout(() => controller.abort(), Math.max(1000, timeout));
         let res;
         try {
@@ -286,6 +401,8 @@ async function executeHttpJsonProfile(args) {
         }
         finally {
             clearTimeout(t);
+            if (args2.signal)
+                args2.signal.removeEventListener("abort", onAbort);
         }
         const contentType = res.headers.get("content-type");
         if (args2.mode === "binary") {
@@ -316,6 +433,7 @@ async function executeHttpJsonProfile(args) {
         overrideMethod: method,
         overridePath: path,
         mode: modeRaw === "binary" ? "binary" : "json",
+        signal: args.signal,
     });
     if (!initial.ok) {
         throw new Error(`MODEL_API_PROFILE_HTTP_${initial.status}:${JSON.stringify(initial.json)}@${initial.url}`);
@@ -349,6 +467,7 @@ async function executeHttpJsonProfile(args) {
                 overrideMethod: pickString(poll, "method") || "GET",
                 overridePath: pollPath,
                 mode: "json",
+                signal: args.signal,
             });
             if (!polled.ok)
                 throw new Error(`ASYNC_JOB_POLL_FAILED_${polled.status}:${JSON.stringify(polled.json)}@${polled.url}`);
@@ -383,6 +502,7 @@ async function executeHttpJsonProfile(args) {
             overrideMethod: pickString(download, "method") || "GET",
             overridePath: downloadPath,
             mode: downloadMode,
+            signal: args.signal,
         });
         if (!downloaded.ok)
             throw new Error(`ASYNC_JOB_DOWNLOAD_FAILED_${downloaded.status}:${JSON.stringify(downloaded.json)}@${downloaded.url}`);
@@ -424,7 +544,7 @@ async function executeHttpJsonProfile(args) {
         const b64 = buf.toString("base64");
         const dataUrl = `data:${ct};base64,${b64}`;
         const title = args.purpose === "audio" || resultType.includes("audio") ? "오디오 생성" : args.purpose === "music" ? "음악 생성" : args.purpose === "video" ? "비디오 생성" : "파일 생성";
-        const blockJson = { title, summary: "생성이 완료되었습니다.", blocks: [{ type: "markdown", markdown: `${title}이(가) 생성되었습니다.` }] };
+        const blockJson = { title, summary: "생성이 완료되었습니다.", blocks: [{ type: "markdown", markdown: `${title}이 되었습니다.` }] };
         const key = resultType.includes("video") ? "video" : resultType.includes("audio") || args.purpose === "audio" || args.purpose === "music" ? "audio" : "binary";
         return {
             output_text: JSON.stringify(blockJson),
@@ -444,26 +564,139 @@ async function executeHttpJsonProfile(args) {
             throw new Error("JSON_BASE64_MISSING_BASE64");
         const dataUrl = `data:${mime};base64,${b64}`;
         const title = args.purpose === "music" ? "음악 생성" : args.purpose === "audio" ? "오디오 생성" : args.purpose === "video" ? "비디오 생성" : "파일 생성";
-        const blockJson = { title, summary: "생성이 완료되었습니다.", blocks: [{ type: "markdown", markdown: `${title}이(가) 생성되었습니다.` }] };
+        const blockJson = { title, summary: "생성이 완료되었습니다.", blocks: [{ type: "markdown", markdown: `${title}이 되었습니다.` }] };
         const key = args.purpose === "video" ? "video" : "audio";
         return { output_text: JSON.stringify(blockJson), raw: initial.json, content: { ...blockJson, [key]: { mime, data_url: dataUrl }, raw: initial.json } };
     }
     const json = initial.json;
+    function extractBestTextFromJsonPayload(payload) {
+        if (!payload || typeof payload !== "object")
+            return "";
+        const root = payload;
+        // common direct fields
+        if (typeof root.output_text === "string" && root.output_text.trim())
+            return root.output_text;
+        if (typeof root.text === "string" && root.text.trim())
+            return root.text;
+        // OpenAI responses API shape: { output: [{ content: [{ text | output_text | json | parsed | text: {value} }] }] }
+        const output = Array.isArray(root.output) ? root.output : [];
+        for (const item of output) {
+            const itemObj = item && typeof item === "object" ? item : null;
+            const content = Array.isArray(itemObj?.content) ? itemObj?.content : [];
+            for (const c of content) {
+                const cObj = c && typeof c === "object" ? c : null;
+                if (typeof cObj?.output_text === "string" && cObj.output_text.trim())
+                    return cObj.output_text;
+                if (typeof cObj?.text === "string" && cObj.text.trim())
+                    return cObj.text;
+                if (cObj?.text && typeof cObj.text === "object") {
+                    const t = cObj.text;
+                    if (typeof t.value === "string" && t.value.trim())
+                        return t.value;
+                }
+                if (cObj?.json && typeof cObj.json === "object")
+                    return JSON.stringify(cObj.json);
+                if (cObj?.parsed && typeof cObj.parsed === "object")
+                    return JSON.stringify(cObj.parsed);
+            }
+        }
+        return "";
+    }
     if (resultType === "text") {
         const textPath = pickString(extract, "text_path");
         const textVal = textPath ? getByPath(json, textPath) : undefined;
-        const output_text = typeof textVal === "string" ? textVal : JSON.stringify(textVal ?? json);
+        const output_text = typeof textVal === "string" && textVal.trim()
+            ? textVal
+            : extractBestTextFromJsonPayload(json) || JSON.stringify(textVal ?? json);
         return { output_text, raw: json, content: { output_text, raw: json } };
     }
     if (resultType === "image_urls") {
         const urlsPath = pickString(extract, "urls_path");
         const val = urlsPath ? getByPath(json, urlsPath) : [];
-        const urls = Array.isArray(val) ? val.map((v) => (typeof v === "string" ? v : "")).filter(Boolean) : [];
-        const blocks = urls.length
-            ? urls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
+        // Some image endpoints return objects like {url} or {b64_json} instead of a plain string array.
+        const urls = [];
+        const dataUrls = [];
+        function collectFromArray(arr) {
+            for (const v of arr) {
+                if (typeof v === "string" && v.trim()) {
+                    urls.push(v.trim());
+                    continue;
+                }
+                if (v && typeof v === "object" && !Array.isArray(v)) {
+                    const obj = v;
+                    const u = (typeof obj.url === "string" && obj.url.trim()) ||
+                        (typeof obj.image_url === "string" && obj.image_url.trim()) ||
+                        "";
+                    if (u) {
+                        urls.push(String(u).trim());
+                        continue;
+                    }
+                    const b = (typeof obj.b64_json === "string" && obj.b64_json) ||
+                        (typeof obj.b64 === "string" && obj.b64) ||
+                        (typeof obj.base64 === "string" && obj.base64) ||
+                        (typeof obj.data === "string" && obj.data) ||
+                        "";
+                    if (b) {
+                        const s = String(b).trim();
+                        dataUrls.push(s.startsWith("data:image/") ? s : `data:image/png;base64,${s}`);
+                    }
+                }
+            }
+        }
+        if (Array.isArray(val))
+            collectFromArray(val);
+        // Fallback: if urls_path produced nothing (common when it points to `data[].url` but API returns `b64_json`),
+        // try to read from root.data / root.images directly.
+        const root = json && typeof json === "object" ? json : null;
+        if (!urls.length && !dataUrls.length && root) {
+            const data = Array.isArray(root.data) ? root.data : null;
+            const images = Array.isArray(root.images) ? root.images : null;
+            if (data)
+                collectFromArray(data);
+            if (!urls.length && !dataUrls.length && images)
+                collectFromArray(images);
+        }
+        // Prefer real URLs; if API returns base64 only, fall back to data URLs.
+        const sourceUrls = urls.length ? urls : dataUrls;
+        const blocks = sourceUrls.length
+            ? sourceUrls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
             : [{ type: "markdown", markdown: "이미지 생성 결과를 받지 못했습니다." }];
         const blockJson = { title: "이미지 생성", summary: "요청한 이미지 생성 결과입니다.", blocks };
-        return { output_text: JSON.stringify(blockJson), raw: json, content: { ...blockJson, images: urls.map((u) => ({ url: u })), raw: json } };
+        // IMPORTANT: do NOT embed giant base64 blobs in DB content/raw.
+        // Sanitize raw by omitting b64/base64 blobs (store lengths only).
+        let rawSafe = json;
+        try {
+            if (root) {
+                const safe = { ...root };
+                const sanitizeArray = (arr) => arr.map((d) => {
+                    if (!d || typeof d !== "object" || Array.isArray(d))
+                        return d;
+                    const obj = { ...d };
+                    if (typeof obj.b64_json === "string")
+                        obj.b64_json = `<omitted:${obj.b64_json.length}>`;
+                    if (typeof obj.b64 === "string")
+                        obj.b64 = `<omitted:${obj.b64.length}>`;
+                    if (typeof obj.base64 === "string")
+                        obj.base64 = `<omitted:${obj.base64.length}>`;
+                    if (typeof obj.data === "string")
+                        obj.data = `<omitted:${obj.data.length}>`;
+                    return obj;
+                });
+                if (Array.isArray(safe.data))
+                    safe.data = sanitizeArray(safe.data);
+                if (Array.isArray(safe.images))
+                    safe.images = sanitizeArray(safe.images);
+                rawSafe = safe;
+            }
+        }
+        catch {
+            rawSafe = json;
+        }
+        return {
+            output_text: JSON.stringify(blockJson),
+            raw: rawSafe,
+            content: { ...blockJson, images: sourceUrls.map((u) => ({ url: u })), raw: rawSafe },
+        };
     }
     if (resultType === "audio_data_url") {
         const dataUrlPath = pickString(extract, "data_url_path");
@@ -576,8 +809,142 @@ async function ensureConversationOwned(args) {
     const r = await (0, db_1.query)(`SELECT id FROM model_conversations WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'active' LIMIT 1`, [args.conversationId, args.tenantId, args.userId]);
     return r.rows.length > 0;
 }
+// 모달리티별 제목 생성 규칙
+const TITLE_MAX_LEN = 30;
+// Text/Chat 의도 분류 키워드
+const INTENT_KEYWORDS = {
+    설계: ["설계", "아키텍처", "스키마", "구조", "구성", "패턴"],
+    문제해결: ["에러", "오류", "안됨", "실패", "exception", "버그", "fix", "debug"],
+    비용분석: ["비용", "과금", "단가", "토큰", "pricing", "cost"],
+    비교: ["차이", "비교", "vs", "versus", "대", "대비"],
+    추천: ["추천", "좋은", "best", "recommend"],
+    요약: ["요약", "정리", "summary", "summarize"],
+};
+// 코드 관련 기술 키워드
+const CODE_TECH_KEYWORDS = [
+    "react", "vue", "angular", "next", "nuxt", "svelte",
+    "node", "express", "nestjs", "fastify",
+    "python", "django", "flask", "fastapi",
+    "java", "spring", "kotlin",
+    "go", "rust", "c++", "typescript", "javascript",
+    "postgresql", "mysql", "mongodb", "redis",
+    "docker", "kubernetes", "aws", "gcp", "azure",
+];
+function extractIntent(text) {
+    const lower = text.toLowerCase();
+    for (const [intent, keywords] of Object.entries(INTENT_KEYWORDS)) {
+        if (keywords.some((kw) => lower.includes(kw)))
+            return intent;
+    }
+    return null;
+}
+function extractTechKeyword(text) {
+    const lower = text.toLowerCase();
+    for (const tech of CODE_TECH_KEYWORDS) {
+        if (lower.includes(tech))
+            return tech.charAt(0).toUpperCase() + tech.slice(1);
+    }
+    return null;
+}
+function extractSubject(text) {
+    // 첫 줄에서 명사적 키워드 추출 (간단 휴리스틱)
+    const firstLine = text.split("\n")[0]?.trim() || "";
+    // 불필요한 접두어 제거
+    const cleaned = firstLine
+        .replace(/^(안녕하?세?요?|안녕|하이|hello|hi)\s*/i, "")
+        .replace(/[.,!?]+$/, "")
+        .trim();
+    return cleaned || "새 대화";
+}
+function clampTitle(s) {
+    const trimmed = (s || "").replace(/\s+/g, " ").trim();
+    if (!trimmed)
+        return "새 대화";
+    if (trimmed.length <= TITLE_MAX_LEN)
+        return trimmed;
+    return trimmed.slice(0, TITLE_MAX_LEN);
+}
+function generateModalityTitle(args) {
+    const { modelType, prompt, options, attachments } = args;
+    const hasImageAttachment = Array.isArray(attachments) && attachments.some((a) => a?.kind === "image");
+    switch (modelType) {
+        case "text": {
+            // Text/Chat: 의도 + 주제
+            const intent = extractIntent(prompt);
+            const subject = extractSubject(prompt);
+            if (intent) {
+                return clampTitle(`${subject} ${intent}`);
+            }
+            return clampTitle(subject);
+        }
+        case "image": {
+            // Image: 주체 + 스타일 + 작업
+            const style = typeof options?.style === "string" ? options.style : "";
+            const subject = extractSubject(prompt) || "이미지";
+            const action = hasImageAttachment ? "변환" : "생성";
+            const styleSuffix = style ? ` (${style})` : "";
+            return clampTitle(`${subject} 이미지 ${action}${styleSuffix}`);
+        }
+        case "video": {
+            // Video: 주제 + 초 + 작업
+            const seconds = typeof options?.seconds === "number" ? options.seconds : typeof options?.duration === "number" ? options.duration : null;
+            const subject = extractSubject(prompt) || "영상";
+            const action = hasImageAttachment ? "이미지→영상 변환" : "영상 생성";
+            const durSuffix = seconds ? ` ${seconds}s` : "";
+            return clampTitle(`${subject} ${action}${durSuffix}`);
+        }
+        case "music": {
+            // Music: 장르 + 무드 + 길이
+            const genre = typeof options?.genre === "string" ? options.genre : "";
+            const mood = typeof options?.mood === "string" ? options.mood : "";
+            const duration = typeof options?.duration === "number" ? options.duration : null;
+            const parts = [genre, mood].filter(Boolean).join(" ") || extractSubject(prompt) || "음악";
+            const durSuffix = duration ? ` ${duration}s` : "";
+            return clampTitle(`${parts} 음악 생성${durSuffix}`);
+        }
+        case "audio": {
+            // Audio: TTS/STT 구분
+            // STT hint: 첨부파일이 음성이거나 "전사", "자막", "회의" 키워드
+            const lower = prompt.toLowerCase();
+            const isSTT = lower.includes("전사") || lower.includes("자막") || lower.includes("회의") || lower.includes("transcri");
+            if (isSTT) {
+                const subject = extractSubject(prompt) || "음성";
+                return clampTitle(`${subject} 전사 및 요약`);
+            }
+            // TTS
+            const voice = typeof options?.voice === "string" ? options.voice : "";
+            const voicePrefix = voice ? `${voice} ` : "";
+            return clampTitle(`${voicePrefix}음성 내레이션 생성`);
+        }
+        case "code": {
+            // Code: 기술 + 이슈/작업
+            const tech = extractTechKeyword(prompt);
+            const intent = extractIntent(prompt);
+            const subject = extractSubject(prompt);
+            if (tech && intent) {
+                return clampTitle(`${tech} ${intent}`);
+            }
+            if (tech) {
+                return clampTitle(`${tech} ${subject}`);
+            }
+            if (intent) {
+                return clampTitle(`${subject} ${intent}`);
+            }
+            return clampTitle(subject);
+        }
+        default: {
+            // multimodal, embedding, etc.
+            return clampTitle(extractSubject(prompt));
+        }
+    }
+}
 async function createConversation(args) {
-    const title = (String(args.firstMessage || "").split("\n")[0] || "새 대화").trim().slice(0, 15) || "새 대화";
+    const title = generateModalityTitle({
+        modelType: args.modelType || "text",
+        prompt: args.firstMessage,
+        options: args.options,
+        attachments: args.attachments,
+    });
     const r = await (0, db_1.query)(`INSERT INTO model_conversations (tenant_id, user_id, model_id, title, status)
      VALUES ($1, $2::uuid, $3, $4, 'active')
      RETURNING id`, [args.tenantId, args.userId, args.modelDbId, title]);
@@ -590,8 +957,8 @@ async function appendMessage(args) {
     const nextOrder = Number(maxOrder.rows[0]?.max || 0) + 1;
     const msgId = args.id ? String(args.id) : null;
     const r = await (0, db_1.query)(`
-    INSERT INTO model_messages (id, conversation_id, role, content, content_text, summary, message_order, metadata)
-    VALUES (COALESCE($1::uuid, uuid_generate_v4()), $2,$3,$4::jsonb,$5,$6,$7,$8::jsonb)
+    INSERT INTO model_messages (id, conversation_id, role, content, content_text, summary, status, message_order, metadata)
+    VALUES (COALESCE($1::uuid, uuid_generate_v4()), $2,$3,$4::jsonb,$5,$6,$7,$8,$9::jsonb)
     RETURNING id, message_order
     `, [
         msgId,
@@ -600,6 +967,7 @@ async function appendMessage(args) {
         JSON.stringify(args.content),
         args.contentText || null,
         args.summary,
+        args.status,
         nextOrder,
         JSON.stringify({
             model: args.modelApiId,
@@ -609,6 +977,107 @@ async function appendMessage(args) {
         }),
     ]);
     return { id: String(r.rows[0].id), message_order: Number(r.rows[0].message_order) };
+}
+async function updateMessageStatus(args) {
+    const r = await (0, db_1.query)(`
+    UPDATE model_messages
+    SET status = $2
+    WHERE id = $1
+      AND status = 'in_progress'
+    RETURNING id
+    `, [args.id, args.status]);
+    return (r.rowCount ?? 0) > 0;
+}
+async function updateMessageContent(args) {
+    const r = await (0, db_1.query)(`
+    UPDATE model_messages
+    SET content = $2::jsonb,
+        content_text = $3,
+        summary = $4,
+        status = $5
+    WHERE id = $1
+      AND status = 'in_progress'
+    RETURNING id
+    `, [args.id, JSON.stringify(args.content), args.contentText || null, args.summary, args.status]);
+    return (r.rowCount ?? 0) > 0;
+}
+async function cancelChatRun(req, res) {
+    try {
+        const userId = req.userId;
+        const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
+        const body = (req.body || {});
+        const conversationId = String(body.conversation_id || "").trim();
+        const requestId = String(body.request_id || "").trim();
+        if (!conversationId && !requestId)
+            return res.status(400).json({ message: "conversation_id or request_id is required" });
+        if (conversationId && !isUuid(conversationId))
+            return res.status(400).json({ message: "conversation_id is invalid" });
+        const stopText = "사용자의 요청에 의해 요청 및 답변이 중지 되었습니다.";
+        if (requestId) {
+            const activeByRequest = ACTIVE_RUNS_BY_REQUEST.get(requestId);
+            if (activeByRequest) {
+                if (activeByRequest.userId !== userId || activeByRequest.tenantId !== tenantId) {
+                    return res.status(404).json({ message: "Request not found" });
+                }
+                activeByRequest.abortController.abort();
+                await updateMessageContent({
+                    id: activeByRequest.assistantMessageId,
+                    status: "stopped",
+                    content: (0, normalizeAiContent_1.normalizeAiContent)({ output_text: stopText }),
+                    contentText: stopText,
+                    summary: null,
+                });
+                clearActiveRunByRequestId(requestId, activeByRequest.assistantMessageId);
+                return res.json({ ok: true, canceled: true });
+            }
+        }
+        if (conversationId) {
+            const owns = await ensureConversationOwned({ tenantId, userId, conversationId });
+            if (!owns)
+                return res.status(404).json({ message: "Conversation not found" });
+        }
+        const active = ACTIVE_RUNS.get(conversationId);
+        if (active) {
+            active.abortController.abort();
+            await updateMessageContent({
+                id: active.assistantMessageId,
+                status: "stopped",
+                content: (0, normalizeAiContent_1.normalizeAiContent)({ output_text: stopText }),
+                contentText: stopText,
+                summary: null,
+            });
+            clearActiveRun(conversationId, active.assistantMessageId);
+            return res.json({ ok: true, canceled: true });
+        }
+        if (conversationId) {
+            const row = await (0, db_1.query)(`SELECT id
+         FROM model_messages
+         WHERE conversation_id = $1
+           AND role = 'assistant'
+           AND status = 'in_progress'
+         ORDER BY message_order DESC
+         LIMIT 1`, [conversationId]);
+            if (row.rows.length > 0) {
+                const id = String(row.rows[0].id || "");
+                if (id) {
+                    await updateMessageContent({
+                        id,
+                        status: "stopped",
+                        content: (0, normalizeAiContent_1.normalizeAiContent)({ output_text: stopText }),
+                        contentText: stopText,
+                        summary: null,
+                    });
+                    return res.json({ ok: true, canceled: true });
+                }
+            }
+        }
+        return res.json({ ok: true, canceled: false });
+    }
+    catch (e) {
+        console.error("cancelChatRun error:", e);
+        const msg = e instanceof Error ? e.message : String(e);
+        return res.status(500).json({ message: "Failed to cancel chat", details: msg });
+    }
 }
 function isRecord(v) {
     return Boolean(v) && typeof v === "object" && !Array.isArray(v);
@@ -790,13 +1259,23 @@ async function getConversationContext(req, res) {
     }
 }
 async function chatRun(req, res) {
+    let assistantMessageId = null;
+    let responseFinalized = false;
+    let cleanupActiveRun = () => { };
+    let isAborted = () => false;
+    let clientRequestId = "";
     try {
         const userId = req.userId;
         const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
         const { model_type, conversation_id, userPrompt, max_tokens, session_language, 
         // optional: client-selected model override
-        model_api_id, provider_id, provider_slug, options, } = req.body || {};
+        model_api_id, provider_id, provider_slug, options, attachments, 
+        // web search toggle (text/chat only)
+        web_allowed, 
+        // browser-derived hints (best-effort)
+        web_search_country, web_search_languages, client_request_id, } = req.body || {};
         const prompt = String(userPrompt || "").trim();
+        clientRequestId = String(client_request_id || "").trim();
         if (!prompt)
             return res.status(400).json({ message: "userPrompt is required" });
         const mt = String(model_type || "").trim() || "text";
@@ -872,6 +1351,23 @@ async function chatRun(req, res) {
         if (chosen.rows.length === 0)
             return res.status(404).json({ message: "Chosen model not found" });
         const row = chosen.rows[0];
+        const cap = isRecord(row.capabilities) ? row.capabilities : {};
+        const capDefaults = cap && isRecord(cap.defaults) ? cap.defaults : {};
+        const mergedOptions = { ...capDefaults, ...(options || {}) };
+        // Incoming attachments (used for image-to-image in image mode)
+        const incomingAttachments = Array.isArray(attachments) ? attachments : [];
+        const incomingImageDataUrls = [];
+        for (const a of incomingAttachments) {
+            if (!a || typeof a !== "object")
+                continue;
+            const ao = a;
+            const kind = typeof ao.kind === "string" ? ao.kind : "";
+            if (kind !== "image")
+                continue;
+            const du = typeof ao.data_url === "string" ? ao.data_url : "";
+            if (du && du.startsWith("data:image/"))
+                incomingImageDataUrls.push(du);
+        }
         // conversation ownership / creation
         let convId = conversation_id ? String(conversation_id) : "";
         if (convId) {
@@ -880,7 +1376,15 @@ async function chatRun(req, res) {
                 return res.status(404).json({ message: "Conversation not found" });
         }
         else {
-            convId = await createConversation({ tenantId, userId, modelDbId: chosenModelDbId, firstMessage: prompt });
+            convId = await createConversation({
+                tenantId,
+                userId,
+                modelDbId: chosenModelDbId,
+                firstMessage: prompt,
+                modelType: mt,
+                options: options || undefined,
+                attachments: attachments || undefined,
+            });
         }
         // history language (3rd priority): last assistant message
         try {
@@ -917,18 +1421,57 @@ async function chatRun(req, res) {
                 responseSchema = { name: String(r.rows[0].name), strict: Boolean(r.rows[0].strict), schema: s };
             }
         }
+        // Model API id (e.g. "sora-2", "gpt-image-1") is needed during prompt_template injection as well.
+        // If prompt_templates.body contains {"model":"{{model}}"} but {{model}} is missing here, it becomes "" and
+        // later stages cannot recover (causing provider errors like: Invalid value: '' for param 'model').
+        const modelApiIdForTemplate = String(row.model_api_id || "").trim();
         // 4) 변수 주입
-        const injectedTemplate = templateBody
-            ? deepInjectVars(templateBody, {
-                userPrompt: prompt,
-                language: finalLang,
-                shortHistory: history.shortText,
-                longSummary: history.conversationSummary || history.longText,
-            })
-            : null;
+        // - prompt 템플릿에서 {{input}} / {{userPrompt}} 등을 쓸 수 있게 합니다.
+        // - 또한 options 값들을 {{params_<key>}}로 노출해서 (특히 audio/image) template body에 주입할 수 있게 합니다.
+        const templateVars = {
+            model: modelApiIdForTemplate,
+            model_api_id: modelApiIdForTemplate,
+            userPrompt: prompt,
+            input: prompt,
+            prompt,
+            user_input: prompt,
+            language: finalLang,
+            shortHistory: history.shortText,
+            longSummary: history.conversationSummary || history.longText,
+            response_schema_name: responseSchema?.name || "",
+            response_schema_json: responseSchema?.schema || {},
+            response_schema_strict: responseSchema?.strict !== false,
+            // Web search policy defaults (used by prompt_templates if present)
+            max_search_calls: 3,
+            max_total_snippet_tokens: 1200,
+            search_timeout_ms: 10000,
+            search_retry_max: 2,
+            search_retry_base_delay_ms: 500,
+            search_retry_max_delay_ms: 2000,
+        };
+        for (const [k, v] of Object.entries(mergedOptions || {})) {
+            if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean")
+                continue;
+            const safeKey = String(k).replace(/[^a-zA-Z0-9_]/g, "_");
+            if (!safeKey)
+                continue;
+            if (typeof v === "string" && safeKey === "size") {
+                templateVars[`params_${safeKey}`] = v.trim().replace(/[×*]/g, "x");
+                continue;
+            }
+            templateVars[`params_${safeKey}`] = String(v);
+        }
+        const injectedTemplate = templateBody ? deepInjectVars(templateBody, templateVars) : null;
         // 5) 안전 조정 (min/max)
         const modelMaxOut = row.max_output_tokens ? Number(row.max_output_tokens) : null;
-        const safeMaxTokens = modelMaxOut ? clampInt(maxTokensRequested, 16, Math.max(16, modelMaxOut)) : maxTokensRequested;
+        let safeMaxTokens = modelMaxOut ? clampInt(maxTokensRequested, 16, Math.max(16, modelMaxOut)) : maxTokensRequested;
+        // OpenAI GPT-5 mini can spend an entire completion budget on reasoning and emit empty visible text.
+        // Ensure enough budget so it can produce actual output (especially for structured JSON).
+        const providerKeyLowerForBudget = String(row.provider_family || row.provider_slug || "").trim().toLowerCase();
+        const modelApiIdForBudget = String(row.model_api_id || "").trim();
+        if (providerKeyLowerForBudget === "openai" && /gpt-5.*mini/i.test(modelApiIdForBudget)) {
+            safeMaxTokens = Math.max(safeMaxTokens, 4096);
+        }
         // 7) 최종 request body 생성 + provider call
         const providerId = String(row.provider_id);
         const base = await (0, providerClients_1.getProviderBase)(providerId);
@@ -951,53 +1494,409 @@ async function chatRun(req, res) {
         ]
             .filter(Boolean)
             .join("\n\n");
+        // ✅ 선생성: user 메시지 + assistant(in_progress) 메시지
+        const userMessageId = crypto_1.default.randomUUID();
+        assistantMessageId = crypto_1.default.randomUUID();
+        // Attachments (from client): assetize any data_url so DB isn't bloated.
+        // Client sends: [{kind:"image"|"file"|"link", ... , data_url? }]
+        const safeAttachments = [];
+        const incoming = Array.isArray(attachments) ? attachments : [];
+        for (const a of incoming) {
+            if (!a || typeof a !== "object")
+                continue;
+            const ao = a;
+            const kind = typeof ao.kind === "string" ? ao.kind : "";
+            if (kind === "link") {
+                const url = typeof ao.url === "string" ? ao.url : "";
+                const title = typeof ao.title === "string" ? ao.title : "";
+                if (url)
+                    safeAttachments.push({ kind: "link", url, title });
+                continue;
+            }
+            if (kind === "image" || kind === "file") {
+                const name = typeof ao.name === "string" ? ao.name : "";
+                const mime = typeof ao.mime === "string" ? ao.mime : "";
+                const size = typeof ao.size === "number" ? ao.size : Number(ao.size || 0);
+                const dataUrl = typeof ao.data_url === "string" ? ao.data_url : "";
+                const base = { kind, name, mime, size };
+                if (dataUrl && dataUrl.startsWith("data:")) {
+                    try {
+                        const assetId = (0, mediaAssetsService_1.newAssetId)();
+                        const stored = await (0, mediaAssetsService_1.storeImageDataUrlAsAsset)({
+                            tenantId,
+                            userId: userId || null,
+                            conversationId: convId,
+                            messageId: userMessageId,
+                            assetId,
+                            dataUrl,
+                            index: safeAttachments.length,
+                        });
+                        safeAttachments.push({ ...base, url: stored.url, asset_id: stored.assetId, bytes: stored.bytes });
+                    }
+                    catch (e) {
+                        console.warn("[attachments] failed to store data_url; keeping metadata only", e);
+                        safeAttachments.push(base);
+                    }
+                }
+                else {
+                    const url = typeof ao.url === "string" ? ao.url : "";
+                    if (url)
+                        safeAttachments.push({ ...base, url });
+                    else
+                        safeAttachments.push(base);
+                }
+            }
+        }
+        const normalizedUserContent = (0, normalizeAiContent_1.normalizeAiContent)({ text: prompt, options: mergedOptions, attachments: safeAttachments });
+        await appendMessage({
+            id: userMessageId,
+            conversationId: convId,
+            role: "user",
+            content: normalizedUserContent,
+            contentText: extractTextFromJsonContent(normalizedUserContent) || prompt,
+            summary: null,
+            status: "none",
+            modelApiId,
+            providerSlug: String(row.provider_slug || ""),
+            providerKey: providerKey,
+            providerLogoKey,
+        });
+        const normalizedAssistantPlaceholder = (0, normalizeAiContent_1.normalizeAiContent)({ output_text: "" });
+        await appendMessage({
+            id: assistantMessageId,
+            conversationId: convId,
+            role: "assistant",
+            content: normalizedAssistantPlaceholder,
+            contentText: "",
+            summary: null,
+            status: "in_progress",
+            modelApiId,
+            providerSlug: String(row.provider_slug || ""),
+            providerKey: providerKey,
+            providerLogoKey,
+        });
+        const requestAbortController = new AbortController();
+        const abortSignal = requestAbortController.signal;
+        const stopText = "사용자의 요청에 의해 요청 및 답변이 중지 되었습니다.";
+        cleanupActiveRun = () => {
+            clearActiveRun(convId, assistantMessageId);
+            if (clientRequestId)
+                clearActiveRunByRequestId(clientRequestId, assistantMessageId);
+        };
+        registerActiveRun({
+            conversationId: convId,
+            assistantMessageId,
+            userId,
+            tenantId,
+            abortController: requestAbortController,
+        });
+        if (clientRequestId) {
+            registerActiveRunByRequestId({
+                requestId: clientRequestId,
+                assistantMessageId,
+                userId,
+                tenantId,
+                abortController: requestAbortController,
+            });
+        }
+        isAborted = () => responseFinalized || req.aborted || abortSignal.aborted;
+        req.on("close", () => {
+            if (responseFinalized)
+                return;
+            responseFinalized = true;
+            requestAbortController.abort();
+            if (assistantMessageId) {
+                void updateMessageContent({
+                    id: assistantMessageId,
+                    status: "stopped",
+                    content: (0, normalizeAiContent_1.normalizeAiContent)({ output_text: stopText }),
+                    contentText: stopText,
+                    summary: null,
+                });
+            }
+            cleanupActiveRun();
+        });
+        const failAndRespond = async (statusCode, body) => {
+            if (assistantMessageId) {
+                const failText = body.message || "요청 처리 중 오류가 발생했습니다.";
+                const failContent = (0, normalizeAiContent_1.normalizeAiContent)({ output_text: failText });
+                await updateMessageContent({
+                    id: assistantMessageId,
+                    status: "failed",
+                    content: failContent,
+                    contentText: String(failText).slice(0, 4000),
+                    summary: null,
+                });
+            }
+            cleanupActiveRun();
+            responseFinalized = true;
+            return res.status(statusCode).json(body);
+        };
         let out = null;
+        const webAllowed = Boolean(web_allowed) && mt === "text";
+        const forceBuiltinImageEdit = mt === "image" && incomingImageDataUrls.length > 0;
         // ✅ DB-driven execution: if a model_api_profile exists for this provider/purpose, try it first.
         // Safe rollout: if profile is missing or fails, we fall back to the existing provider_family-specific code.
         const purpose = (mt === "text" ? "chat" : mt);
         let usedProfileKey = null;
-        try {
-            const profile = await loadModelApiProfile({ tenantId, providerId, modelDbId: chosenModelDbId, purpose });
-            if (profile) {
-                usedProfileKey = profile.profile_key;
-                const auth = await (0, authProfilesService_1.resolveAuthForModelApiProfile)({ providerId, authProfileId: profile.auth_profile_id });
-                out = await executeHttpJsonProfile({
-                    apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-                    apiKey: auth.apiKey,
-                    accessToken: auth.accessToken,
-                    modelApiId,
-                    purpose,
-                    prompt,
-                    input,
-                    language: finalLang,
-                    maxTokens: safeMaxTokens,
-                    history,
-                    options: options || {},
-                    injectedTemplate,
-                    profile,
-                    configVars: auth.configVars,
-                });
+        let profileAttempted = false;
+        let profileError = null;
+        // Web-search mode is orchestration-controlled. To guarantee `tools` gating, we skip DB-profile execution for text chats.
+        // Image-with-attachment must use /images/edits (built-in path) so the reference image is actually applied.
+        if (!webAllowed && !forceBuiltinImageEdit) {
+            try {
+                const profile = await loadModelApiProfile({ tenantId, providerId, modelDbId: chosenModelDbId, purpose });
+                if (profile) {
+                    usedProfileKey = profile.profile_key;
+                    profileAttempted = true;
+                    const auth = await (0, authProfilesService_1.resolveAuthForModelApiProfile)({ providerId, authProfileId: profile.auth_profile_id });
+                    out = await executeHttpJsonProfile({
+                        apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                        apiKey: auth.apiKey,
+                        accessToken: auth.accessToken,
+                        modelApiId,
+                        purpose,
+                        prompt,
+                        input,
+                        language: finalLang,
+                        maxTokens: safeMaxTokens,
+                        history,
+                        options: mergedOptions,
+                        injectedTemplate,
+                        profile,
+                        configVars: auth.configVars,
+                        signal: abortSignal,
+                    });
+                    // Defensive fallback:
+                    // Some model_api_profiles mappings (especially for OpenAI structured outputs) can yield empty text
+                    // even though the provider returned a valid JSON payload. In that case, fall back to the built-in
+                    // provider client (which has richer extraction + schema handling).
+                    if (!out.output_text || !String(out.output_text).trim()) {
+                        console.warn("[model_api_profiles] empty output_text -> fallback to provider client:", usedProfileKey);
+                        out = null;
+                    }
+                }
+            }
+            catch (e) {
+                console.warn("[model_api_profiles] execution failed -> fallback:", usedProfileKey, e);
+                profileAttempted = true;
+                profileError = e;
+                out = null;
             }
         }
-        catch (e) {
-            console.warn("[model_api_profiles] execution failed -> fallback:", usedProfileKey, e);
-            out = null;
+        // Video is DB-profile driven. If we have no profile (or the profile errored), don't fall back to a generic legacy "not implemented".
+        // Return an actionable error so Admin can add/fix `model_api_profiles(purpose=video)` for the provider.
+        if (mt === "video" && out == null) {
+            return await failAndRespond(400, {
+                message: "Video requires an active model_api_profile (purpose=video) for the selected provider/model.",
+                details: {
+                    provider_id: providerId,
+                    provider_family: providerKey,
+                    model_db_id: chosenModelDbId,
+                    model_api_id: modelApiId,
+                    purpose,
+                    profile_key_used: usedProfileKey,
+                    profile_attempted: profileAttempted,
+                    error: profileError ? String(profileError?.message || profileError) : null,
+                    hint: "Create/activate a model_api_profiles row with purpose=video for this provider (model_id can be NULL to apply to all video models). " +
+                        "The built-in executor supports workflow.type=async_job (poll + binary download) and will return content.video.{data_url|url}.",
+                },
+            });
         }
         if (out == null) {
             const auth = await (0, authProfilesService_1.resolveAuthForModelApiProfile)({ providerId, authProfileId: null });
             // Fallback: 기존 provider별 하드코딩 실행기
             if (mt === "text") {
                 if (providerKey === "openai") {
-                    const r = await (0, providerClients_1.openaiSimulateChat)({
-                        apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-                        apiKey: auth.apiKey,
-                        model: modelApiId,
-                        input,
-                        maxTokens: safeMaxTokens,
-                        templateBody: injectedTemplate || undefined,
-                        responseSchema,
-                    });
-                    out = { ...r, content: { output_text: r.output_text, raw: r.raw } };
+                    if (webAllowed) {
+                        const serperKey = String(process.env.SERPER_API_KEY || "").trim();
+                        if (!serperKey) {
+                            return await failAndRespond(500, {
+                                message: "Web search is enabled, but SERPER_API_KEY is not configured on ai-agent-service.",
+                                details: "Set SERPER_API_KEY in ai-agent-service environment (.env) and restart the service.",
+                            });
+                        }
+                        const { serperSearch } = await Promise.resolve().then(() => __importStar(require("../services/serperSearch")));
+                        function normLang(x) {
+                            const s = String(x || "").trim().toLowerCase();
+                            return (s.split(/[-_]/)[0] || "en").slice(0, 8);
+                        }
+                        function normCountry(x) {
+                            const s = String(x || "").trim().toLowerCase();
+                            return (s || "").replace(/[^a-z]/g, "").slice(0, 2) || "";
+                        }
+                        // 1) Country: browser hint first (best-effort)
+                        // 2) Fallback: language -> country heuristic
+                        const lang2 = normLang(finalLang);
+                        const countryFromClient = normCountry(web_search_country || "");
+                        const countryFromLang = lang2 === "ko" ? "kr" : lang2 === "ja" ? "jp" : lang2 === "zh" ? "cn" : lang2 === "en" ? "us" : "us";
+                        const gl = countryFromClient || countryFromLang;
+                        // Language priority: system language (finalLang) first, then browser hint list as fallback.
+                        const browserLangs = Array.isArray(web_search_languages) ? web_search_languages : [];
+                        const hl = lang2 || (browserLangs[0] ? normLang(browserLangs[0]) : "en");
+                        const maxSearchCalls = 3;
+                        const templateMsgs = injectedTemplate && typeof injectedTemplate === "object" && !Array.isArray(injectedTemplate)
+                            ? injectedTemplate.messages
+                            : null;
+                        const systemDevMsgs = Array.isArray(templateMsgs)
+                            ? templateMsgs
+                                .map((m) => {
+                                const role = typeof m?.role === "string" ? m.role : "";
+                                const content = typeof m?.content === "string" ? m.content : "";
+                                if ((role === "system" || role === "developer") && content) {
+                                    return { role: role, content };
+                                }
+                                return null;
+                            })
+                                .filter((x) => Boolean(x))
+                            : [];
+                        const tools = [
+                            {
+                                type: "function",
+                                function: {
+                                    name: "search_web",
+                                    description: "Search the web for up-to-date information. Return concise results with titles, links, and snippets.",
+                                    parameters: {
+                                        type: "object",
+                                        properties: {
+                                            query: { type: "string", description: "Search query" },
+                                        },
+                                        required: ["query"],
+                                    },
+                                },
+                            },
+                        ];
+                        const apiRoot = String((auth.endpointUrl || base.apiBaseUrl) || "").replace(/\/$/, "");
+                        async function postOpenAi(body) {
+                            async function doPost(payload) {
+                                const r = await fetch(`${apiRoot}/chat/completions`, {
+                                    method: "POST",
+                                    headers: { Authorization: `Bearer ${auth.apiKey}`, "Content-Type": "application/json" },
+                                    body: JSON.stringify(payload),
+                                    signal: abortSignal,
+                                });
+                                const j = await r.json().catch(() => ({}));
+                                return { res: r, json: j };
+                            }
+                            const first = await doPost(body);
+                            if (first.res.ok)
+                                return first;
+                            const errStr = JSON.stringify(first.json || {});
+                            const isUnsupportedResponseFormat = first.res.status === 400 && /(response_format|json_object|json_schema|Invalid schema|unsupported)/i.test(errStr);
+                            if (isUnsupportedResponseFormat) {
+                                const copy = { ...body };
+                                delete copy.response_format;
+                                const retry = await doPost(copy);
+                                if (retry.res.ok)
+                                    return retry;
+                                return retry;
+                            }
+                            const isUnsupportedMaxCompletion = first.res.status === 400 && /max_completion_tokens/i.test(errStr) && /unsupported|unknown/i.test(errStr);
+                            if (isUnsupportedMaxCompletion) {
+                                const copy = { ...body };
+                                const mct = typeof copy.max_completion_tokens === "number" ? copy.max_completion_tokens : undefined;
+                                delete copy.max_completion_tokens;
+                                if (typeof mct === "number")
+                                    copy.max_tokens = mct;
+                                const retry = await doPost(copy);
+                                if (retry.res.ok)
+                                    return retry;
+                                return retry;
+                            }
+                            return first;
+                        }
+                        function extractAssistant(json) {
+                            const msg = json?.choices?.[0]?.message;
+                            const content = typeof msg?.content === "string" ? msg.content : "";
+                            const tool_calls = Array.isArray(msg?.tool_calls) ? msg.tool_calls : [];
+                            return { content, tool_calls };
+                        }
+                        const messages = [...systemDevMsgs, { role: "user", content: input }];
+                        let lastRaw = null;
+                        let finalText = "";
+                        for (let i = 0; i < maxSearchCalls + 2; i++) {
+                            const allowTools = webAllowed && i < maxSearchCalls;
+                            const { res: r0, json: j0 } = await postOpenAi({
+                                model: modelApiId,
+                                messages,
+                                ...(allowTools ? { tools, tool_choice: "auto" } : {}),
+                                // keep JSON-only behavior consistent with existing UI parser
+                                response_format: { type: "json_object" },
+                                max_completion_tokens: Math.min(Math.max(safeMaxTokens, 1024), 4096),
+                            });
+                            lastRaw = j0;
+                            if (!r0.ok)
+                                throw new Error(`OPENAI_TOOL_LOOP_FAILED_${r0.status}@${apiRoot}:${JSON.stringify(j0)}`);
+                            const a = extractAssistant(j0);
+                            if (!a.tool_calls.length) {
+                                finalText = String(a.content || "").trim();
+                                break;
+                            }
+                            // IMPORTANT: For OpenAI chat/completions, tool result messages must follow
+                            // the assistant message that contains `tool_calls`.
+                            messages.push({ role: "assistant", content: String(a.content || ""), tool_calls: a.tool_calls });
+                            // Execute tool calls (only the ones we support)
+                            for (const tc of a.tool_calls) {
+                                if (!tc?.id || tc.function?.name !== "search_web")
+                                    continue;
+                                let q = "";
+                                try {
+                                    const parsed = JSON.parse(tc.function.arguments || "{}");
+                                    q = typeof parsed?.query === "string" ? parsed.query : "";
+                                }
+                                catch {
+                                    q = "";
+                                }
+                                q = String(q || "").trim();
+                                if (!q) {
+                                    messages.push({
+                                        role: "tool",
+                                        tool_call_id: tc.id,
+                                        content: JSON.stringify({ error: "INVALID_QUERY", message: "query is required" }),
+                                    });
+                                    continue;
+                                }
+                                const result = await serperSearch({
+                                    apiKey: serperKey,
+                                    query: q,
+                                    country: gl,
+                                    language: hl,
+                                    limit: 5,
+                                    timeoutMs: 10000,
+                                    signal: abortSignal,
+                                });
+                                // Keep tool payload compact (raw is kept server-side only if needed)
+                                messages.push({
+                                    role: "tool",
+                                    tool_call_id: tc.id,
+                                    content: JSON.stringify({ query: result.query, country: result.country, language: result.language, organic: result.organic }),
+                                });
+                            }
+                        }
+                        if (!finalText) {
+                            // Last resort: ensure UI has something renderable.
+                            finalText = JSON.stringify({
+                                title: "응답 생성 실패",
+                                summary: "도구 루프에서 최종 응답을 받지 못했습니다. 다시 시도해 주세요.",
+                                blocks: [{ type: "markdown", markdown: "## 실패\n웹검색 도구 처리 중 최종 응답이 비어 있습니다.\n\n- 다시 시도하거나\n- 웹 허용을 끄고 재시도해 보세요." }],
+                            });
+                        }
+                        out = { output_text: finalText, raw: lastRaw, content: { output_text: finalText, raw: lastRaw } };
+                    }
+                    else {
+                        const r = await (0, providerClients_1.openaiSimulateChat)({
+                            apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                            apiKey: auth.apiKey,
+                            model: modelApiId,
+                            input,
+                            maxTokens: safeMaxTokens,
+                            outputFormat: "block_json",
+                            templateBody: injectedTemplate || undefined,
+                            responseSchema,
+                            signal: abortSignal,
+                        });
+                        out = { ...r, content: { output_text: r.output_text, raw: r.raw } };
+                    }
                 }
                 else if (providerKey === "anthropic") {
                     const r = await (0, providerClients_1.anthropicSimulateChat)({
@@ -1007,6 +1906,7 @@ async function chatRun(req, res) {
                         input,
                         maxTokens: safeMaxTokens,
                         templateBody: injectedTemplate || undefined,
+                        signal: abortSignal,
                     });
                     out = { ...r, content: { output_text: r.output_text, raw: r.raw } };
                 }
@@ -1018,61 +1918,95 @@ async function chatRun(req, res) {
                         input,
                         maxTokens: safeMaxTokens,
                         templateBody: injectedTemplate || undefined,
+                        signal: abortSignal,
                     });
                     out = { ...r, content: { output_text: r.output_text, raw: r.raw } };
                 }
                 else {
-                    return res.status(400).json({ message: `Unsupported provider_family/provider_slug: ${providerKey}` });
+                    return await failAndRespond(400, { message: `Unsupported provider_family/provider_slug: ${providerKey}` });
                 }
             }
             else if (mt === "image") {
                 if (providerKey !== "openai") {
-                    return res.status(400).json({ message: `Image is not supported for provider=${providerKey} yet.` });
+                    return await failAndRespond(400, { message: `Image is not supported for provider=${providerKey} yet.` });
                 }
-                const n = typeof options?.n === "number" ? clampInt(options.n, 1, 10) : 1;
-                const size = typeof options?.size === "string" ? options.size : undefined;
-                const quality = typeof options?.quality === "string" ? options.quality : undefined;
-                const style = typeof options?.style === "string" ? options.style : undefined;
-                const background = typeof options?.background === "string" ? options.background : undefined;
-                const r = await (0, providerClients_1.openaiGenerateImage)({
-                    apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-                    apiKey: auth.apiKey,
-                    model: modelApiId,
-                    prompt,
-                    n,
-                    size,
-                    quality,
-                    style,
-                    background,
-                });
+                const n = typeof mergedOptions?.n === "number" ? clampInt(mergedOptions.n, 1, 10) : 1;
+                const size = typeof mergedOptions?.size === "string" ? mergedOptions.size : undefined;
+                const quality = typeof mergedOptions?.quality === "string" ? mergedOptions.quality : undefined;
+                const style = typeof mergedOptions?.style === "string" ? mergedOptions.style : undefined;
+                const background = typeof mergedOptions?.background === "string" ? mergedOptions.background : undefined;
+                // If prompt_templates.body provided a `prompt`, use it (lets Admin enforce ref-image rules).
+                const tmpl = injectedTemplate && typeof injectedTemplate === "object" && !Array.isArray(injectedTemplate) ? injectedTemplate : null;
+                const promptFromTemplate = tmpl && typeof tmpl.prompt === "string" && tmpl.prompt.trim() ? tmpl.prompt.trim() : "";
+                const promptForImage = promptFromTemplate || prompt;
+                const r = incomingImageDataUrls.length > 0
+                    ? await (0, providerClients_1.openaiEditImage)({
+                        apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                        apiKey: auth.apiKey,
+                        model: modelApiId,
+                        prompt: promptForImage,
+                        image_data_url: incomingImageDataUrls[0],
+                        n,
+                        size,
+                        signal: abortSignal,
+                    })
+                    : await (0, providerClients_1.openaiGenerateImage)({
+                        apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                        apiKey: auth.apiKey,
+                        model: modelApiId,
+                        prompt: promptForImage,
+                        n,
+                        size,
+                        quality,
+                        style,
+                        background,
+                        signal: abortSignal,
+                    });
                 // Prefer real URLs; if API returns base64 only, fall back to data URLs.
                 const sourceUrls = (r.urls && r.urls.length ? r.urls : r.data_urls) || [];
                 const blocks = sourceUrls.length
                     ? sourceUrls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
                     : [{ type: "markdown", markdown: "이미지 생성 결과를 받지 못했습니다." }];
-                const blockJson = { title: "이미지 생성", summary: "요청한 이미지 생성 결과입니다.", blocks };
+                const blockJson = {
+                    title: "이미지 생성",
+                    summary: incomingImageDataUrls.length > 0 ? "첨부 이미지(참조)를 기반으로 편집한 결과입니다." : "요청한 이미지 생성 결과입니다.",
+                    blocks,
+                };
                 out = {
                     output_text: JSON.stringify(blockJson),
-                    raw: { provider: "openai", kind: "image", model: modelApiId, count: sourceUrls.length },
-                    content: { ...blockJson, images: sourceUrls.map((u) => ({ url: u })), raw: { provider: "openai", kind: "image", model: modelApiId, count: sourceUrls.length } },
+                    // NOTE: keep a safe(raw) payload from provider client for debugging (it omits huge base64 strings).
+                    raw: isRecord(r.raw) ? { ...r.raw, _debug: { used_edit: incomingImageDataUrls.length > 0 } } : r.raw,
+                    content: { ...blockJson, images: sourceUrls.map((u) => ({ url: u })), raw: r.raw },
                 };
             }
             else if (mt === "audio" || mt === "music") {
                 if (providerKey !== "openai") {
-                    return res.status(400).json({ message: `${mt} is not supported for provider=${providerKey} yet.` });
+                    return await failAndRespond(400, { message: `${mt} is not supported for provider=${providerKey} yet.` });
                 }
-                const voice = typeof options?.voice === "string" ? options.voice : undefined;
-                const formatRaw = typeof options?.format === "string" ? options.format.trim().toLowerCase() : "";
+                // Allow prompt_templates.body to override audio request fields.
+                const tmpl = injectedTemplate && typeof injectedTemplate === "object" && !Array.isArray(injectedTemplate) ? injectedTemplate : null;
+                const inputFromTemplate = tmpl && typeof tmpl.input === "string" && tmpl.input.trim() ? tmpl.input.trim() : "";
+                const voice = (tmpl && typeof tmpl.voice === "string" && tmpl.voice.trim() ? tmpl.voice.trim() : "") ||
+                    (typeof mergedOptions?.voice === "string" ? mergedOptions.voice : "") ||
+                    undefined;
+                const formatRaw = ((tmpl && typeof tmpl.format === "string" ? tmpl.format : "") || (typeof mergedOptions?.format === "string" ? mergedOptions.format : "") || "")
+                    .trim()
+                    .toLowerCase();
                 const format = isAudioFormat(formatRaw) ? formatRaw : "mp3";
-                const speed = typeof options?.speed === "number" ? options.speed : undefined;
+                const speed = typeof tmpl?.speed === "number"
+                    ? Number(tmpl.speed)
+                    : typeof mergedOptions?.speed === "number"
+                        ? mergedOptions.speed
+                        : undefined;
                 const r = await (0, providerClients_1.openaiTextToSpeech)({
                     apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
                     apiKey: auth.apiKey,
                     model: modelApiId,
-                    input: prompt,
+                    input: inputFromTemplate || prompt,
                     voice,
                     format,
                     speed,
+                    signal: abortSignal,
                 });
                 const blockJson = {
                     title: mt === "music" ? "음악 생성" : "오디오 생성",
@@ -1086,36 +2020,34 @@ async function chatRun(req, res) {
                 };
             }
             else if (mt === "video") {
-                return res.status(400).json({
+                return await failAndRespond(400, {
                     message: "Video is not implemented yet.",
                     details: "현재 프로젝트에는 video 생성용 provider client(예: Runway/Pika/Sora)가 아직 없습니다. 어떤 provider_family/endpoint를 사용할지 알려주시면 연동을 구현할 수 있습니다.",
                 });
             }
             else {
-                return res.status(400).json({ message: `Unsupported model_type=${mt}` });
+                return await failAndRespond(400, { message: `Unsupported model_type=${mt}` });
             }
         }
-        // persist messages (user + assistant)
-        await appendMessage({
-            conversationId: convId,
-            role: "user",
-            content: { text: prompt, options: options || {} },
-            contentText: prompt,
-            summary: null,
-            modelApiId,
-            providerSlug: String(row.provider_slug || ""),
-            providerKey: providerKey,
-            providerLogoKey,
-        });
         // Assetize media fields (image/audio/video data URLs) before persisting assistant message.
-        const assistantMessageId = crypto_1.default.randomUUID();
         const rewritten = rewriteContentWithAssetUrls(out.content);
+        const assistantContentInput = isRecord(rewritten.content) ? { ...rewritten.content } : {};
+        const blocks = Array.isArray(assistantContentInput.blocks) ? assistantContentInput.blocks : [];
+        if (blocks.length === 0 && typeof out.output_text === "string" && out.output_text.trim()) {
+            assistantContentInput.output_text = out.output_text;
+        }
+        let normalizedAssistantContent = (0, normalizeAiContent_1.normalizeAiContent)(assistantContentInput);
+        const normalizedBlocks = Array.isArray(normalizedAssistantContent.blocks) ? normalizedAssistantContent.blocks : [];
+        if (normalizedBlocks.length === 0 && typeof out.output_text === "string" && out.output_text.trim()) {
+            normalizedAssistantContent = (0, normalizeAiContent_1.normalizeAiContent)({ output_text: out.output_text });
+        }
         // Use a safe, compact content_text for history/context (avoid huge JSON / base64).
-        const title = typeof rewritten.content.title === "string" ? rewritten.content.title : "";
-        const summary = typeof rewritten.content.summary === "string" ? rewritten.content.summary : "";
-        const imgCount = Array.isArray(rewritten.content.images) ? rewritten.content.images.length : 0;
-        const hasAudio = isRecord(rewritten.content.audio);
-        const hasVideo = isRecord(rewritten.content.video);
+        const title = typeof normalizedAssistantContent.title === "string" ? normalizedAssistantContent.title : "";
+        const summary = typeof normalizedAssistantContent.summary === "string" ? normalizedAssistantContent.summary : "";
+        const imgCount = Array.isArray(normalizedAssistantContent.images) ? normalizedAssistantContent.images.length : 0;
+        const hasAudio = isRecord(normalizedAssistantContent.audio);
+        const hasVideo = isRecord(normalizedAssistantContent.video);
+        const contentTextFromBlocks = extractTextFromJsonContent(normalizedAssistantContent);
         const contentTextForHistory = title || summary
             ? `${title || ""}${title && summary ? " - " : ""}${summary || ""}`.slice(0, 4000)
             : imgCount
@@ -1124,41 +2056,49 @@ async function chatRun(req, res) {
                     ? "오디오 생성"
                     : hasVideo
                         ? "비디오 생성"
-                        : String(out.output_text || "").slice(0, 4000);
-        await appendMessage({
+                        : String(contentTextFromBlocks || "").slice(0, 4000);
+        if (isAborted()) {
+            cleanupActiveRun();
+            return res.status(499).json({ message: "Client aborted request." });
+        }
+        const didUpdateAssistant = await updateMessageContent({
             id: assistantMessageId,
-            conversationId: convId,
-            role: "assistant",
-            content: rewritten.content,
+            status: "success",
+            content: normalizedAssistantContent,
             contentText: contentTextForHistory,
             summary: null,
-            modelApiId,
-            providerSlug: String(row.provider_slug || ""),
-            providerKey: providerKey,
-            providerLogoKey,
         });
+        cleanupActiveRun();
         // Persist assets (FK requires message row exists).
-        for (const a of rewritten.assets) {
-            await (0, mediaAssetsService_1.storeImageDataUrlAsAsset)({
-                tenantId,
-                userId: userId || null,
-                conversationId: convId,
-                messageId: assistantMessageId,
-                assetId: a.assetId,
-                dataUrl: a.dataUrl,
-                index: a.index,
-                kind: a.kind,
-            });
+        if (didUpdateAssistant) {
+            for (const a of rewritten.assets) {
+                await (0, mediaAssetsService_1.storeImageDataUrlAsAsset)({
+                    tenantId,
+                    userId: userId || null,
+                    conversationId: convId,
+                    messageId: assistantMessageId,
+                    assetId: a.assetId,
+                    dataUrl: a.dataUrl,
+                    index: a.index,
+                    kind: a.kind,
+                });
+            }
         }
         // Return rewritten (assetized) content to the client as output_text too,
         // so the frontend never receives base64 blobs in output_text.
         out.output_text = JSON.stringify(rewritten.content);
         // best-effort: keep conversation model_id updated to last used model
-        await (0, db_1.query)(`UPDATE model_conversations SET model_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [convId, chosenModelDbId]);
+        if (didUpdateAssistant) {
+            await (0, db_1.query)(`UPDATE model_conversations SET model_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [convId, chosenModelDbId]);
+        }
+        responseFinalized = true;
+        const clientDebug = isRecord(req.body) && isRecord(req.body.client_debug) ? req.body.client_debug : null;
         return res.json({
             ok: true,
             conversation_id: convId,
             language: finalLang,
+            content: normalizedAssistantContent,
+            content_text: contentTextForHistory,
             chosen: {
                 provider_id: providerId,
                 provider_key: providerKey,
@@ -1169,11 +2109,30 @@ async function chatRun(req, res) {
             },
             output_text: out.output_text,
             raw: out.raw,
+            debug: {
+                received_attachments: Array.isArray(attachments) ? attachments.length : 0,
+                received_image_data_urls: incomingImageDataUrls.length,
+                used_profile: usedProfileKey || null,
+                client_debug: clientDebug,
+            },
         });
     }
     catch (e) {
         console.error("chatRun error:", e);
         const msg = e instanceof Error ? e.message : String(e);
+        if (assistantMessageId && !isAborted()) {
+            const failText = `요청 처리 중 오류가 발생했습니다.\n\n${msg}`;
+            const failContent = (0, normalizeAiContent_1.normalizeAiContent)({ output_text: failText });
+            await updateMessageContent({
+                id: assistantMessageId,
+                status: "failed",
+                content: failContent,
+                contentText: failText.slice(0, 4000),
+                summary: null,
+            });
+        }
+        cleanupActiveRun();
+        responseFinalized = true;
         return res.status(500).json({ message: "Failed to run chat", details: msg });
     }
 }

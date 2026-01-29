@@ -27,17 +27,17 @@ async function assertCategoryAccess(args: {
 }): Promise<{ id: string; category_type: string }> {
   const { categoryId, tenantId, userId } = args
   const r = await query(
-    `SELECT id, category_type, author_id
+    `SELECT id, category_type, COALESCE(user_id, author_id) AS owner_id
      FROM board_categories
      WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
      LIMIT 1`,
     [categoryId, tenantId]
   )
   if (r.rows.length === 0) throw new Error("Invalid category_id")
-  const row = r.rows[0] as { id: string; category_type: string; author_id?: string | null }
+  const row = r.rows[0] as { id: string; category_type: string; owner_id?: string | null }
   const type = String(row.category_type || "")
   if (type === "personal_page") {
-    if (String(row.author_id || "") !== String(userId)) throw new Error("Forbidden category_id")
+    if (String(row.owner_id || "") !== String(userId)) throw new Error("Forbidden category_id")
   }
   return { id: row.id, category_type: type }
 }
@@ -391,7 +391,7 @@ export async function listMyPageCategories(req: Request, res: Response) {
        FROM board_categories
        WHERE tenant_id = $1
          AND category_type = $3
-         AND ($3 <> 'personal_page' OR author_id = $2)
+         AND ($3 <> 'personal_page' OR COALESCE(user_id, author_id) = $2)
        LIMIT 1`,
       [tenantId, userId, categoryType]
     )
@@ -400,7 +400,7 @@ export async function listMyPageCategories(req: Request, res: Response) {
        FROM board_categories
        WHERE tenant_id = $1
          AND category_type = $3
-         AND ($3 <> 'personal_page' OR author_id = $2)
+         AND ($3 <> 'personal_page' OR COALESCE(user_id, author_id) = $2)
          AND deleted_at IS NULL
        LIMIT 1`,
       [tenantId, userId, categoryType]
@@ -411,13 +411,13 @@ export async function listMyPageCategories(req: Request, res: Response) {
       const maxR = await client.query(
         `SELECT COALESCE(MAX(display_order), 0) AS m
          FROM board_categories
-         WHERE tenant_id = $1 AND category_type = $3 AND ($3 <> 'personal_page' OR author_id = $2) AND deleted_at IS NULL`,
+         WHERE tenant_id = $1 AND category_type = $3 AND ($3 <> 'personal_page' OR COALESCE(user_id, author_id) = $2) AND deleted_at IS NULL`,
         [tenantId, userId, categoryType]
       )
       const nextOrder = Number(maxR.rows[0]?.m || 0) + 1
       await client.query(
-        `INSERT INTO board_categories (tenant_id, author_id, category_type, parent_id, name, slug, icon, display_order, is_active, metadata)
-         VALUES ($1, $2, $3, NULL, $4, $5, NULL, $6, TRUE, '{}'::jsonb)`,
+        `INSERT INTO board_categories (tenant_id, author_id, user_id, category_type, parent_id, name, slug, icon, display_order, is_active, metadata)
+         VALUES ($1, $2, $2, $3, NULL, $4, $5, NULL, $6, TRUE, '{}'::jsonb)`,
         [tenantId, userId, categoryType, defaultName, slug, nextOrder]
       )
     }
@@ -427,7 +427,7 @@ export async function listMyPageCategories(req: Request, res: Response) {
        FROM board_categories
        WHERE tenant_id = $1
          AND category_type = $3
-         AND ($3 <> 'personal_page' OR author_id = $2)
+         AND ($3 <> 'personal_page' OR COALESCE(user_id, author_id) = $2)
          AND deleted_at IS NULL
        ORDER BY display_order ASC, created_at ASC, id ASC`,
       [tenantId, userId, categoryType]
@@ -466,14 +466,14 @@ export async function createMyPageCategory(req: Request, res: Response) {
     const maxR = await client.query(
       `SELECT COALESCE(MAX(display_order), 0) AS m
        FROM board_categories
-       WHERE tenant_id = $1 AND category_type = $3 AND ($3 <> 'personal_page' OR author_id = $2) AND deleted_at IS NULL`,
+       WHERE tenant_id = $1 AND category_type = $3 AND ($3 <> 'personal_page' OR COALESCE(user_id, author_id) = $2) AND deleted_at IS NULL`,
       [tenantId, userId, categoryType]
     )
     const nextOrder = Number(maxR.rows[0]?.m || 0) + 1
 
     const ins = await client.query(
-      `INSERT INTO board_categories (tenant_id, author_id, category_type, parent_id, name, slug, icon, display_order, is_active, metadata)
-       VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, TRUE, '{}'::jsonb)
+      `INSERT INTO board_categories (tenant_id, author_id, user_id, category_type, parent_id, name, slug, icon, display_order, is_active, metadata)
+       VALUES ($1, $2, $2, $3, NULL, $4, $5, $6, $7, TRUE, '{}'::jsonb)
        RETURNING id, parent_id, name, slug, icon, display_order, created_at, updated_at`,
       [tenantId, userId, categoryType, name, slug, icon, nextOrder]
     )
@@ -508,15 +508,15 @@ export async function updateCategory(req: Request, res: Response) {
 
     // Ensure category exists & ownership rules (personal_page requires author match)
     const cur = await query(
-      `SELECT id, category_type, author_id
+      `SELECT id, category_type, COALESCE(user_id, author_id) AS owner_id
        FROM board_categories
        WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
        LIMIT 1`,
       [id, tenantId]
     )
     if (cur.rows.length === 0) return res.status(404).json({ message: "Category not found" })
-    const row = cur.rows[0] as { category_type: string; author_id?: string | null }
-    if (String(row.category_type) === "personal_page" && String(row.author_id || "") !== String(userId)) {
+    const row = cur.rows[0] as { category_type: string; owner_id?: string | null }
+    if (String(row.category_type) === "personal_page" && String(row.owner_id || "") !== String(userId)) {
       return res.status(403).json({ message: "Forbidden" })
     }
 
@@ -567,15 +567,15 @@ export async function deleteCategory(req: Request, res: Response) {
     const { id } = req.params
 
     const cur = await client.query(
-      `SELECT id, category_type, author_id
+      `SELECT id, category_type, COALESCE(user_id, author_id) AS owner_id
        FROM board_categories
        WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
        LIMIT 1`,
       [id, tenantId]
     )
     if (cur.rows.length === 0) return res.status(404).json({ message: "Category not found" })
-    const row = cur.rows[0] as { category_type: string; author_id?: string | null }
-    if (String(row.category_type) === "personal_page" && String(row.author_id || "") !== String(userId)) {
+    const row = cur.rows[0] as { category_type: string; owner_id?: string | null }
+    if (String(row.category_type) === "personal_page" && String(row.owner_id || "") !== String(userId)) {
       return res.status(403).json({ message: "Forbidden" })
     }
 
@@ -642,7 +642,7 @@ export async function reorderCategories(req: Request, res: Response) {
     if (categoryType === "personal_page") {
       const owned = await client.query(
         `SELECT id FROM board_categories
-         WHERE tenant_id = $1 AND category_type = 'personal_page' AND author_id = $2 AND deleted_at IS NULL`,
+         WHERE tenant_id = $1 AND category_type = 'personal_page' AND COALESCE(user_id, author_id) = $2 AND deleted_at IS NULL`,
         [tenantId, userId]
       )
       const set = new Set((owned.rows || []).map((r: any) => String(r.id)))

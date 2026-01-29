@@ -2437,7 +2437,7 @@ export function ChatInterface({
                           )}
                         </TooltipTrigger>
                         <TooltipContent>
-                          <p>텍스트(채팅) 모드에서만, 필요시 웹검색(Serper)을 통해 최신 정보를 반영합니다.</p>
+                          <p>웹 허용 시, AI가 판단하여 웹 검색이 필요할 경우 웹 검색을 통해 최신 정보를 반영합니다. 웹검색은 적은량의 추가 비용이 발생합니다.</p>
                         </TooltipContent>
                       </Tooltip>
                       {/* Timeline compact: single-line prompt textarea (looks like input, switches to multi textarea when it wraps) */}

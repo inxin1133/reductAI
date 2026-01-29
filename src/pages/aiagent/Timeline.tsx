@@ -53,6 +53,7 @@ function TimelineSidebarList({
   onSelect,
   onRename,
   onDelete,
+  onReorder,
 }: {
   conversations: TimelineConversation[]
   activeConversationId: string | null
@@ -61,6 +62,7 @@ function TimelineSidebarList({
   onSelect: (id: string) => void
   onRename: (c: TimelineConversation) => void
   onDelete: (c: TimelineConversation) => void
+  onReorder: (orderedIds: string[]) => void
 }) {
   const listRef = React.useRef<HTMLDivElement | null>(null)
   const [scrollTop, setScrollTop] = React.useState(0)
@@ -70,6 +72,24 @@ function TimelineSidebarList({
   const ITEM_PITCH = ITEM_HEIGHT + ITEM_GAP
   const HEADER_OFFSET = showCreatingThread ? ITEM_PITCH : 0
   const OVERSCAN = 6
+
+  // Drag & Drop state
+  const [draggingId, setDraggingId] = React.useState<string | null>(null)
+  const [dropIndicator, setDropIndicator] = React.useState<{ id: string; position: "before" | "after" } | null>(null)
+  const dragBlockClickUntilRef = React.useRef<number>(0)
+
+  const startDrag = (id: string, e: React.DragEvent<HTMLElement>) => {
+    dragBlockClickUntilRef.current = Date.now() + 250
+    setDraggingId(id)
+    setDropIndicator(null)
+    e.dataTransfer.effectAllowed = "move"
+    e.dataTransfer.setData("text/plain", id)
+  }
+
+  const endDrag = () => {
+    setDraggingId(null)
+    setDropIndicator(null)
+  }
 
   React.useEffect(() => {
     const el = listRef.current
@@ -114,21 +134,66 @@ function TimelineSidebarList({
         <div className="relative w-full" style={{ height: totalHeight }}>
           {visibleConversations.map((c, i) => {
             const index = startIndex + i
+            const isDropTarget = dropIndicator?.id === c.id
+            const dropPosition = isDropTarget ? dropIndicator?.position : null
             return (
               <div
                 key={c.id}
+                draggable
+                onDragStart={(e) => startDrag(c.id, e)}
+                onDragEnd={endDrag}
+                onDragOver={(e) => {
+                  if (!draggingId || draggingId === c.id) return
+                  e.preventDefault()
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  const y = e.clientY - rect.top
+                  setDropIndicator({ id: c.id, position: y < rect.height / 2 ? "before" : "after" })
+                }}
+                onDragLeave={(e) => {
+                  if (e.currentTarget.contains(e.relatedTarget as Node)) return
+                  setDropIndicator((prev) => (prev?.id === c.id ? null : prev))
+                }}
+                onDrop={(e) => {
+                  if (!draggingId || draggingId === c.id) return
+                  e.preventDefault()
+                  const fromId = draggingId
+                  const toId = c.id
+                  const pos = dropIndicator?.position || "after"
+                  const fromIdx = conversations.findIndex((x) => x.id === fromId)
+                  const toIdx = conversations.findIndex((x) => x.id === toId)
+                  if (fromIdx < 0 || toIdx < 0) return
+                  const next = conversations.filter((x) => x.id !== fromId)
+                  const insertAt = pos === "before" ? toIdx : toIdx + 1
+                  const adjustedInsert = fromIdx < toIdx ? insertAt - 1 : insertAt
+                  next.splice(adjustedInsert, 0, conversations[fromIdx])
+                  onReorder(next.map((x) => x.id))
+                  setDraggingId(null)
+                  setDropIndicator(null)
+                }}
                 className={cn(
-                  "group flex items-center px-2 py-2 rounded-md cursor-pointer hover:bg-accent/50 transition-colors w-full h-8",
-                  c.id === activeConversationId ? "bg-accent" : ""
+                  "group flex items-center px-2 py-2 rounded-md cursor-pointer hover:bg-accent/50 transition-colors w-full h-8 relative",
+                  c.id === activeConversationId ? "bg-accent" : "",
+                  draggingId === c.id ? "opacity-50" : ""
                 )}
                 style={{ position: "absolute", top: index * ITEM_PITCH, left: 0, right: 0 }}
-                onClick={() => onSelect(c.id)}
+                onClick={() => {
+                  if (Date.now() < dragBlockClickUntilRef.current) return
+                  onSelect(c.id)
+                }}
               >
+                {isDropTarget && (
+                  <div
+                    className={cn(
+                      "absolute left-0 right-0 h-0.5 bg-primary z-10",
+                      dropPosition === "before" ? "top-0" : "bottom-0"
+                    )}
+                  />
+                )}
                 <div className="flex items-center gap-2 min-w-0 w-full">
                   {!c.isGenerating && c.hasUnread ? (
                     <span className="inline-block size-2 rounded-full bg-red-500 shrink-0" />
                   ) : null}
-                  <p className="text-sm text-foreground truncate w-full">
+                  <p className="text-sm text-foreground truncate w-full" title={c.title || ""}>
                     {c.isGenerating ? `답변 작성중${ellipsis}` : c.title}
                   </p>
                 </div>
@@ -1028,8 +1093,31 @@ export default function Timeline() {
       hasUnread: Boolean(r.has_unread),
       messages: [],
     })) as TimelineConversation[]
-    return sortByRecent(dedupeById(mapped))
+    // Note: sortByRecent is used as fallback; DB now returns user_sort_order first
+    return dedupeById(mapped)
   }, [authHeaders])
+
+  const reorderThreads = React.useCallback(
+    async (orderedIds: string[]) => {
+      // Optimistic update
+      setConversations((prev) => {
+        const byId = new Map(prev.map((c) => [c.id, c]))
+        return orderedIds.map((id) => byId.get(id)).filter(Boolean) as TimelineConversation[]
+      })
+      try {
+        await fetch(`${TIMELINE_API_BASE}/threads/reorder`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify({ orderedIds }),
+        })
+      } catch {
+        // Revert on error by refreshing
+        const refreshed = await fetchThreads()
+        setConversations(applyStoppedOverride(applyLocalGeneratingOverride(refreshed)))
+      }
+    },
+    [applyLocalGeneratingOverride, applyStoppedOverride, authHeaders, fetchThreads]
+  )
 
   const fetchMessages = React.useCallback(async (threadId: string) => {
     const res = await fetch(`${TIMELINE_API_BASE}/threads/${threadId}/messages`, { headers: { ...authHeaders() } })
@@ -1749,6 +1837,7 @@ export default function Timeline() {
                   onDelete={(c) => {
                     void trashThreadWithToast(c)
                   }}
+                  onReorder={(orderedIds) => void reorderThreads(orderedIds)}
                 />
               </HoverCardContent>
             </HoverCard>
@@ -1811,6 +1900,7 @@ export default function Timeline() {
                   onDelete={(c) => {
                     void trashThreadWithToast(c)
                   }}
+                  onReorder={(orderedIds) => void reorderThreads(orderedIds)}
                 />
 
                 {/* Resize handle (desktop only) */}
@@ -1976,7 +2066,7 @@ export default function Timeline() {
       </Dialog>
 
       <div className="flex-1 flex flex-col h-full relative w-full">
-        {/* Chat Messages Scroll Area */}
+        {/* Chat Messages Scroll Area 사이드바 대화목록 구역 */}
         <div
           ref={messagesScrollRef}
           className="overflow-y-auto p-6 flex flex-col w-full gap-4 items-center h-full"

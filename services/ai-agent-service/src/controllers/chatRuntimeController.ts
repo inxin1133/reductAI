@@ -852,8 +852,41 @@ async function ensureConversationOwned(args: { tenantId: string; userId: string;
   return r.rows.length > 0
 }
 
-async function createConversation(args: { tenantId: string; userId: string; modelDbId: string; firstMessage: string }) {
-  const title = (String(args.firstMessage || "").split("\n")[0] || "새 대화").trim().slice(0, 15) || "새 대화"
+// 모달리티별 임시 제목
+function getTempTitle(modelType: ModelType): string {
+  switch (modelType) {
+    case "text": return "New Chat"
+    case "image": return "New Image"
+    case "video": return "New Video"
+    case "music": return "New Music"
+    case "audio": return "New Audio"
+    case "code": return "New Code"
+    default: return "New Chat"
+  }
+}
+
+// 응답에 title 없을 때 fallback 제목
+function getFallbackTitle(modelType: ModelType, prompt: string): string {
+  switch (modelType) {
+    case "text":
+    case "code":
+      return (prompt || "").trim().slice(0, 20) || (modelType === "text" ? "New Chat" : "New Code")
+    case "image": return "이미지 생성"
+    case "video": return "비디오 생성"
+    case "music": return "음악 생성"
+    case "audio": return "오디오 생성"
+    default: return "New Chat"
+  }
+}
+
+async function createConversation(args: {
+  tenantId: string
+  userId: string
+  modelDbId: string
+  firstMessage: string
+  modelType?: ModelType
+}) {
+  const title = getTempTitle(args.modelType || "text")
   const r = await query(
     `INSERT INTO model_conversations (tenant_id, user_id, model_id, title, status)
      VALUES ($1, $2::uuid, $3, $4, 'active')
@@ -918,7 +951,7 @@ async function updateMessageStatus(args: { id: string; status: "in_progress" | "
     `,
     [args.id, args.status]
   )
-  return r.rowCount > 0
+  return (r.rowCount ?? 0) > 0
 }
 
 async function updateMessageContent(args: {
@@ -941,7 +974,7 @@ async function updateMessageContent(args: {
     `,
     [args.id, JSON.stringify(args.content), args.contentText || null, args.summary, args.status]
   )
-  return r.rowCount > 0
+  return (r.rowCount ?? 0) > 0
 }
 
 export async function cancelChatRun(req: Request, res: Response) {
@@ -1413,7 +1446,7 @@ export async function chatRun(req: Request, res: Response) {
       const ok = await ensureConversationOwned({ tenantId, userId, conversationId: convId })
       if (!ok) return res.status(404).json({ message: "Conversation not found" })
     } else {
-      convId = await createConversation({ tenantId, userId, modelDbId: chosenModelDbId, firstMessage: prompt })
+      convId = await createConversation({ tenantId, userId, modelDbId: chosenModelDbId, firstMessage: prompt, modelType: mt })
     }
 
     // history language (3rd priority): last assistant message
@@ -2171,6 +2204,20 @@ export async function chatRun(req: Request, res: Response) {
     // best-effort: keep conversation model_id updated to last used model
     if (didUpdateAssistant) {
       await query(`UPDATE model_conversations SET model_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [convId, chosenModelDbId])
+    }
+
+    // Update conversation title: use content.title if present, otherwise fallback
+    if (didUpdateAssistant) {
+      const responseTitle = typeof normalizedAssistantContent.title === "string" && normalizedAssistantContent.title.trim()
+        ? normalizedAssistantContent.title.trim()
+        : null
+      const finalTitle = responseTitle || getFallbackTitle(mt, prompt)
+      // Only update if title is still a temp title (to avoid overwriting user-edited titles)
+      const tempTitle = getTempTitle(mt)
+      await query(
+        `UPDATE model_conversations SET title = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND title = $3`,
+        [convId, finalTitle, tempTitle]
+      )
     }
 
     responseFinalized = true

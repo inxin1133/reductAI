@@ -345,6 +345,7 @@ CREATE TABLE IF NOT EXISTS board_categories (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     author_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
     category_type VARCHAR(50) NOT NULL DEFAULT 'board' CHECK (category_type IN ('board', 'personal_page', 'team_page')),
     parent_id UUID REFERENCES board_categories(id) ON DELETE SET NULL,
     name VARCHAR(255) NOT NULL,
@@ -363,6 +364,7 @@ CREATE TABLE IF NOT EXISTS board_categories (
 
 CREATE INDEX IF NOT EXISTS idx_board_categories_tenant_id ON board_categories(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_board_categories_author_id ON board_categories(author_id);
+CREATE INDEX IF NOT EXISTS idx_board_categories_user_id ON board_categories(user_id);
 CREATE INDEX IF NOT EXISTS idx_board_categories_type ON board_categories(tenant_id, category_type);
 CREATE INDEX IF NOT EXISTS idx_board_categories_parent_id ON board_categories(parent_id);
 CREATE INDEX IF NOT EXISTS idx_board_categories_slug ON board_categories(tenant_id, slug);

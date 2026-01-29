@@ -11,8 +11,14 @@ const router = express_1.default.Router();
 router.use(requireAuth_1.requireAuth);
 // threads
 router.get("/threads", timelineController_1.listThreads);
+router.get("/threads/deleted", timelineController_1.listDeletedThreads);
 router.post("/threads", timelineController_1.createThread);
 router.patch("/threads/:id", timelineController_1.updateThreadTitle);
+router.delete("/threads/:id", timelineController_1.deleteThread);
+router.post("/threads/:id/seen", timelineController_1.markThreadSeen);
+router.post("/threads/:id/restore", timelineController_1.restoreThread);
+router.delete("/threads/:id/purge", timelineController_1.purgeThread);
+router.post("/threads/reorder", timelineController_1.reorderThreads);
 // messages
 router.get("/threads/:id/messages", timelineController_1.listMessages);
 router.post("/threads/:id/messages", timelineController_1.addMessage);

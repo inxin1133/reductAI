@@ -716,6 +716,7 @@ CREATE TABLE model_conversations (
     total_tokens INTEGER DEFAULT 0, -- 총 사용 토큰 수
     message_count INTEGER DEFAULT 0, -- 메시지 수
     status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived', 'deleted')),
+    user_sort_order INTEGER, -- 사용자가 직접 지정한 정렬 순서 (NULL이면 updated_at 기준)
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -728,6 +729,7 @@ CREATE INDEX idx_model_conversations_model_id ON model_conversations(model_id);
 CREATE INDEX idx_model_conversations_status ON model_conversations(status);
 CREATE INDEX idx_model_conversations_created_at ON model_conversations(tenant_id, created_at DESC);
 CREATE INDEX idx_model_conversations_updated_at ON model_conversations(tenant_id, updated_at DESC);
+CREATE INDEX idx_model_conversations_user_sort_order ON model_conversations(tenant_id, user_id, user_sort_order);
 
 COMMENT ON TABLE model_conversations IS 'AI 모델 대화 세션을 관리하는 테이블. 채팅 히스토리를 추적합니다.';
 COMMENT ON COLUMN model_conversations.id IS '대화 세션의 고유 식별자 (UUID)';
@@ -742,6 +744,7 @@ COMMENT ON COLUMN model_conversations.conversation_summary_tokens IS '대화 요
 COMMENT ON COLUMN model_conversations.total_tokens IS '총 사용 토큰 수';
 COMMENT ON COLUMN model_conversations.message_count IS '메시지 수';
 COMMENT ON COLUMN model_conversations.status IS '대화 상태: active(활성), archived(보관), deleted(삭제)';
+COMMENT ON COLUMN model_conversations.user_sort_order IS '사용자가 직접 지정한 정렬 순서 (NULL이면 updated_at 기준)';
 COMMENT ON COLUMN model_conversations.metadata IS '대화의 추가 메타데이터 (JSON 형식)';
 COMMENT ON COLUMN model_conversations.created_at IS '대화 생성 시각';
 COMMENT ON COLUMN model_conversations.updated_at IS '대화 최종 수정 시각';

@@ -9,6 +9,7 @@ import {
   listThreads,
   markThreadSeen,
   purgeThread,
+  reorderThreads,
   restoreThread,
   updateThreadTitle,
 } from "../controllers/timelineController"
@@ -28,6 +29,7 @@ router.delete("/threads/:id", deleteThread)
 router.post("/threads/:id/seen", markThreadSeen)
 router.post("/threads/:id/restore", restoreThread)
 router.delete("/threads/:id/purge", purgeThread)
+router.post("/threads/reorder", reorderThreads)
 
 // messages
 router.get("/threads/:id/messages", listMessages)

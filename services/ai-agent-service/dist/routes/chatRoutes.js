@@ -12,6 +12,7 @@ const router = express_1.default.Router();
 router.post("/", chatController_1.chatCompletion);
 // DB-driven runtime endpoint (routing -> model -> template -> history -> call)
 router.post("/run", requireAuth_1.requireAuth, chatRuntimeController_1.chatRun);
+router.post("/run/cancel", requireAuth_1.requireAuth, chatRuntimeController_1.cancelChatRun);
 // History-only endpoint (short content rows + long summaries)
 router.get("/conversations/:id/context", requireAuth_1.requireAuth, chatRuntimeController_1.getConversationContext);
 exports.default = router;

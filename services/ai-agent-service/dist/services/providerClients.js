@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.openaiGenerateImage = openaiGenerateImage;
+exports.openaiEditImage = openaiEditImage;
 exports.openaiTextToSpeech = openaiTextToSpeech;
 exports.getProviderAuth = getProviderAuth;
 exports.getProviderBase = getProviderBase;
@@ -158,6 +159,7 @@ async function openaiGenerateImage(args) {
                 "Content-Type": "application/json",
             },
             body: JSON.stringify(body),
+            signal: args.signal,
         });
         const json = await res.json().catch(() => ({}));
         return { res, json };
@@ -167,8 +169,10 @@ async function openaiGenerateImage(args) {
     let r = await post(bodyWithResponseFormat);
     let bodyToRetry = null;
     for (let attempt = 0; attempt < 4 && !r.res.ok; attempt++) {
-        const msg = r.json?.error?.message;
-        const param = r.json?.error?.param;
+        const root = r.json && typeof r.json === "object" ? r.json : null;
+        const err = root?.error && typeof root.error === "object" ? root.error : null;
+        const msg = typeof err?.message === "string" ? err.message : "";
+        const param = typeof err?.param === "string" ? err.param : "";
         const isUnknown = r.res.status === 400 &&
             typeof msg === "string" &&
             msg.toLowerCase().includes("unknown parameter") &&
@@ -192,13 +196,281 @@ async function openaiGenerateImage(args) {
         throw new Error(`OPENAI_IMAGE_FAILED_${r.res.status}@${apiRoot}:${JSON.stringify(r.json)}`);
     }
     const json = r.json;
-    const data = Array.isArray(json?.data) ? json.data : [];
-    const urls = data.map((d) => (typeof d?.url === "string" ? d.url : "")).filter(Boolean);
-    const b64 = data.map((d) => (typeof d?.b64_json === "string" ? d.b64_json : "")).filter(Boolean);
+    const root = json && typeof json === "object" ? json : null;
+    // Some gateways may return 200 with an embedded error object.
+    // Treat that as an error so callers can surface the actual reason (policy, invalid prompt, etc).
+    try {
+        const err = root?.error && typeof root.error === "object" ? root.error : null;
+        const msg = typeof err?.message === "string" ? err.message : "";
+        if (msg && msg.trim()) {
+            throw new Error(`OPENAI_IMAGE_FAILED_200@${apiRoot}:${JSON.stringify(root)}`);
+        }
+    }
+    catch (e) {
+        // If this throws, it will be caught by the outer try/caller; rethrow to preserve behavior.
+        if (e instanceof Error)
+            throw e;
+        throw new Error(String(e));
+    }
+    // OpenAI(and compatible gateways) can return slightly different shapes/field names:
+    // - { data: [{ url }, { b64_json }] }
+    // - { images: [...] }
+    // - nested url objects, or alternative base64 keys (b64/base64/data)
+    const data = (Array.isArray(root?.data) ? root?.data : null) ||
+        (Array.isArray(root?.images) ? root?.images : null) ||
+        [];
+    const urls = data
+        .map((d) => {
+        if (!d || typeof d !== "object")
+            return "";
+        const obj = d;
+        const direct = typeof obj.url === "string" ? obj.url : "";
+        if (direct)
+            return String(direct);
+        const nestedUrl = obj.url && typeof obj.url === "object" ? obj.url : null;
+        if (nestedUrl && typeof nestedUrl.url === "string")
+            return String(nestedUrl.url);
+        const imageUrl = typeof obj.image_url === "string" ? obj.image_url : "";
+        if (imageUrl)
+            return String(imageUrl);
+        return "";
+    })
+        .filter(Boolean);
+    const b64 = data
+        .map((d) => {
+        if (!d || typeof d !== "object")
+            return "";
+        const obj = d;
+        const v = (typeof obj.b64_json === "string" && obj.b64_json) ||
+            (typeof obj.b64 === "string" && obj.b64) ||
+            (typeof obj.base64 === "string" && obj.base64) ||
+            (typeof obj.data === "string" && obj.data) ||
+            "";
+        return v ? String(v) : "";
+    })
+        .filter(Boolean);
     // If the API returns base64 only, convert it to data URLs so the frontend can render without saving files.
     // OpenAI image generations commonly return PNG bytes; default to image/png if unknown.
     const data_urls = b64.map((s) => `data:image/png;base64,${s}`);
-    return { raw: json, urls, b64, data_urls };
+    function looksLikeUrl(s) {
+        const t = s.trim();
+        if (!t)
+            return false;
+        if (t.startsWith("data:image/"))
+            return true;
+        if (!/^https?:\/\//i.test(t))
+            return false;
+        // allow signed urls without extensions; reject clearly non-image urls only if obvious
+        return true;
+    }
+    function deepCollect(node, depth, out) {
+        if (!node || depth <= 0)
+            return;
+        if (typeof node === "string") {
+            const s = node.trim();
+            if (s.startsWith("data:image/"))
+                out.urls.push(s);
+            else if (looksLikeUrl(s))
+                out.urls.push(s);
+            return;
+        }
+        if (Array.isArray(node)) {
+            for (const it of node)
+                deepCollect(it, depth - 1, out);
+            return;
+        }
+        if (typeof node !== "object")
+            return;
+        const obj = node;
+        for (const [k, v] of Object.entries(obj)) {
+            const key = k.toLowerCase();
+            if (typeof v === "string") {
+                const s = v.trim();
+                if ((key === "url" || key.endsWith("_url") || key.includes("image_url")) && looksLikeUrl(s))
+                    out.urls.push(s);
+                if ((key.includes("b64") || key.includes("base64")) && s)
+                    out.b64.push(s);
+                if (s.startsWith("data:image/"))
+                    out.urls.push(s);
+            }
+            else if (v && typeof v === "object") {
+                // common nested shapes: { image_url: { url: "..." } }
+                if ((key === "url" || key.endsWith("_url") || key.includes("image_url")) && typeof v.url === "string") {
+                    const s = String(v.url || "").trim();
+                    if (looksLikeUrl(s))
+                        out.urls.push(s);
+                }
+                deepCollect(v, depth - 1, out);
+            }
+            else if (Array.isArray(v)) {
+                deepCollect(v, depth - 1, out);
+            }
+        }
+    }
+    // If we still have nothing, try a deep scan of the raw response (best-effort).
+    let urls2 = urls;
+    let b642 = b64;
+    let data_urls2 = data_urls;
+    if (!urls2.length && !data_urls2.length) {
+        const collected = { urls: [], b64: [] };
+        deepCollect(root, 8, collected);
+        const uniqueUrls = Array.from(new Set(collected.urls)).filter(Boolean);
+        const uniqueB64 = Array.from(new Set(collected.b64)).filter(Boolean);
+        urls2 = uniqueUrls;
+        b642 = uniqueB64;
+        data_urls2 = uniqueB64.map((s) => (s.startsWith("data:image/") ? s : `data:image/png;base64,${s}`));
+    }
+    // Avoid returning huge base64 blobs in raw logs/metadata.
+    const rawSafe = root ? { ...root } : {};
+    try {
+        if (Array.isArray(rawSafe.data)) {
+            rawSafe.data = rawSafe.data.map((d) => {
+                if (!d || typeof d !== "object")
+                    return d;
+                const obj = { ...d };
+                if (typeof obj.b64_json === "string")
+                    obj.b64_json = `<omitted:${obj.b64_json.length}>`;
+                if (typeof obj.b64 === "string")
+                    obj.b64 = `<omitted:${obj.b64.length}>`;
+                if (typeof obj.base64 === "string")
+                    obj.base64 = `<omitted:${obj.base64.length}>`;
+                return obj;
+            });
+        }
+        if (Array.isArray(rawSafe.images)) {
+            rawSafe.images = rawSafe.images.map((d) => {
+                if (!d || typeof d !== "object")
+                    return d;
+                const obj = { ...d };
+                if (typeof obj.b64_json === "string")
+                    obj.b64_json = `<omitted:${obj.b64_json.length}>`;
+                if (typeof obj.b64 === "string")
+                    obj.b64 = `<omitted:${obj.b64.length}>`;
+                if (typeof obj.base64 === "string")
+                    obj.base64 = `<omitted:${obj.base64.length}>`;
+                return obj;
+            });
+        }
+    }
+    catch {
+        // ignore
+    }
+    // Provide lightweight debug hints when we couldn't extract anything.
+    if (!urls2.length && !data_urls2.length) {
+        try {
+            rawSafe._debug = {
+                top_keys: root ? Object.keys(root) : [],
+                data_len: Array.isArray(root?.data) ? root.data.length : 0,
+                images_len: Array.isArray(root?.images) ? root.images.length : 0,
+            };
+        }
+        catch {
+            // ignore
+        }
+    }
+    return { raw: rawSafe, urls: urls2, b64: b642, data_urls: data_urls2 };
+}
+function parseDataUrl(s) {
+    const m = String(s || "").match(/^data:([^;]+);base64,(.*)$/);
+    if (!m)
+        return null;
+    const mime = m[1] || "";
+    const base64 = m[2] || "";
+    if (!mime || !base64)
+        return null;
+    return { mime, base64 };
+}
+async function openaiEditImage(args) {
+    const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl);
+    const base = normalized || "https://api.openai.com/v1";
+    const apiRoot = base.replace(/\/$/, "");
+    const parsed = parseDataUrl(args.image_data_url);
+    if (!parsed)
+        throw new Error("OPENAI_IMAGE_EDIT_INVALID_DATA_URL");
+    const bytes = Buffer.from(parsed.base64, "base64");
+    const blob = new Blob([bytes], { type: parsed.mime });
+    const fileName = parsed.mime.toLowerCase().includes("png") ? "image.png" : "image";
+    const form = new FormData();
+    form.append("model", args.model);
+    form.append("prompt", args.prompt);
+    form.append("image", blob, fileName);
+    if (Number.isFinite(args.n))
+        form.append("n", String(args.n));
+    if (typeof args.size === "string" && args.size.trim()) {
+        const normalizedSize = args.size.trim().replace(/[×*]/g, "x");
+        form.append("size", normalizedSize);
+    }
+    const res = await fetch(`${apiRoot}/images/edits`, {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${args.apiKey}`,
+            // NOTE: do NOT set Content-Type; fetch will set multipart boundary.
+        },
+        body: form,
+        signal: args.signal,
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(`OPENAI_IMAGE_EDIT_FAILED_${res.status}@${apiRoot}:${JSON.stringify(json)}`);
+    }
+    // Reuse the same extraction strategy as generations by piggybacking on the existing logic:
+    // Treat `json` as if it were a generations response.
+    const root = json && typeof json === "object" ? json : null;
+    const data = (Array.isArray(root?.data) ? root?.data : null) ||
+        (Array.isArray(root?.images) ? root?.images : null) ||
+        [];
+    const urls = data
+        .map((d) => {
+        if (!d || typeof d !== "object")
+            return "";
+        const obj = d;
+        const direct = typeof obj.url === "string" ? obj.url : "";
+        if (direct)
+            return String(direct);
+        const nestedUrl = obj.url && typeof obj.url === "object" ? obj.url : null;
+        if (nestedUrl && typeof nestedUrl.url === "string")
+            return String(nestedUrl.url);
+        const imageUrl = typeof obj.image_url === "string" ? obj.image_url : "";
+        if (imageUrl)
+            return String(imageUrl);
+        return "";
+    })
+        .filter(Boolean);
+    const b64 = data
+        .map((d) => {
+        if (!d || typeof d !== "object")
+            return "";
+        const obj = d;
+        const v = (typeof obj.b64_json === "string" && obj.b64_json) ||
+            (typeof obj.b64 === "string" && obj.b64) ||
+            (typeof obj.base64 === "string" && obj.base64) ||
+            (typeof obj.data === "string" && obj.data) ||
+            "";
+        return v ? String(v) : "";
+    })
+        .filter(Boolean);
+    const data_urls = b64.map((s) => `data:image/png;base64,${s}`);
+    const rawSafe = root ? { ...root } : {};
+    try {
+        if (Array.isArray(rawSafe.data)) {
+            rawSafe.data = rawSafe.data.map((d) => {
+                if (!d || typeof d !== "object")
+                    return d;
+                const obj = { ...d };
+                if (typeof obj.b64_json === "string")
+                    obj.b64_json = `<omitted:${obj.b64_json.length}>`;
+                if (typeof obj.b64 === "string")
+                    obj.b64 = `<omitted:${obj.b64.length}>`;
+                if (typeof obj.base64 === "string")
+                    obj.base64 = `<omitted:${obj.base64.length}>`;
+                return obj;
+            });
+        }
+    }
+    catch {
+        // ignore
+    }
+    return { raw: rawSafe, urls, b64, data_urls };
 }
 async function openaiTextToSpeech(args) {
     const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl);
@@ -220,6 +492,7 @@ async function openaiTextToSpeech(args) {
             "Content-Type": "application/json",
         },
         body: JSON.stringify(body),
+        signal: args.signal,
     });
     if (!res.ok) {
         const errText = await res.text().catch(() => "");
@@ -337,6 +610,7 @@ async function googleSimulateChat(args) {
             "x-goog-api-key": args.apiKey,
         },
         body: JSON.stringify(body),
+        signal: args.signal,
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -346,7 +620,7 @@ async function googleSimulateChat(args) {
     const parts = json?.candidates?.[0]?.content?.parts;
     const text = Array.isArray(parts) && parts.length
         ? parts
-            .map((p) => (typeof p?.text === "string" ? p.text : ""))
+            .map((p) => p && typeof p === "object" && typeof p.text === "string" ? String(p.text) : "")
             .filter(Boolean)
             .join("")
         : "";
@@ -360,60 +634,190 @@ async function openaiSimulateChat(args) {
     // - 일부 최신 모델(GPT-5 계열)은 chat/completions에서 max_tokens를 거부하고 max_completion_tokens를 요구합니다.
     // - 일부 모델은 chat 모델이 아니어서 /v1/chat/completions 자체를 거부할 수 있습니다 → /v1/responses로 fallback.
     async function postJson(url, body) {
-        const res = await fetch(url, {
-            method: "POST",
-            headers: {
-                Authorization: `Bearer ${args.apiKey}`,
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify(body),
-        });
-        const json = await res.json().catch(() => ({}));
-        return { res, json };
+        async function doPost(payload) {
+            const res = await fetch(url, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${args.apiKey}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(payload),
+                signal: args.signal,
+            });
+            const json = await res.json().catch(() => ({}));
+            return { res, json };
+        }
+        const first = await doPost(body);
+        if (first.res.ok)
+            return first;
+        // Defensive retry: some environments reject optional params like `reasoning`.
+        // If we see "Unknown parameter: 'reasoning'", drop it once and retry.
+        if (first.res.status === 400 && body && typeof body === "object") {
+            const root = first.json && typeof first.json === "object" ? first.json : null;
+            const err = root?.error && typeof root.error === "object" ? root.error : null;
+            const msg = typeof err?.message === "string" ? err.message : "";
+            const param = typeof err?.param === "string" ? err.param : "";
+            const isUnknownReasoning = /unknown parameter/i.test(msg) && (param === "reasoning" || /'reasoning'/.test(msg));
+            if (isUnknownReasoning) {
+                const copy = { ...body };
+                delete copy.reasoning;
+                return await doPost(copy);
+            }
+        }
+        return first;
+    }
+    function isMiniModel(model) {
+        return /mini/i.test(String(model || "").trim());
+    }
+    function reasoningEffortForModel(model) {
+        // gpt-5-mini tends to burn completion tokens on reasoning; keep it as low as possible.
+        return isMiniModel(model) ? "minimal" : "low";
+    }
+    function fallbackBlockJsonForEmptyOutput() {
+        return {
+            title: "응답 생성 실패",
+            summary: "모델이 빈 응답을 반환했습니다. 다시 시도해 주세요.",
+            blocks: [
+                {
+                    type: "markdown",
+                    markdown: "## 생성 실패\n모델 응답이 비어 있어 내용을 생성하지 못했습니다.\n\n- 질문을 조금 더 구체화하거나\n- 다시 시도(재생성)하거나\n- 다른 모델로 전환해 보세요.",
+                },
+            ],
+        };
     }
     function extractTextFromChatCompletions(json) {
-        return json?.choices?.[0]?.message?.content ?? "";
+        const root = json && typeof json === "object" ? json : null;
+        const choices = Array.isArray(root?.choices) ? root?.choices : [];
+        const first = choices[0] && typeof choices[0] === "object" ? choices[0] : null;
+        const msg = first?.message && typeof first.message === "object" ? first.message : null;
+        const content = msg?.content;
+        if (typeof content === "string" && content)
+            return content;
+        // Some SDKs/models return content as array parts: [{type:"text", text:"..."}]
+        if (Array.isArray(content)) {
+            const joined = content
+                .map((p) => {
+                if (!p || typeof p !== "object")
+                    return "";
+                const po = p;
+                if (typeof po.text === "string")
+                    return po.text;
+                if (po.text && typeof po.text === "object") {
+                    const t = po.text;
+                    if (typeof t.value === "string")
+                        return t.value;
+                }
+                return "";
+            })
+                .filter(Boolean)
+                .join("");
+            if (joined.trim())
+                return joined;
+        }
+        // Some structured-output style responses may put the JSON into tool_calls arguments.
+        const toolCalls = Array.isArray(msg?.tool_calls) ? msg?.tool_calls : [];
+        for (const tc of toolCalls) {
+            const tco = tc && typeof tc === "object" ? tc : null;
+            const fn = tco?.function && typeof tco.function === "object" ? tco.function : null;
+            const args = fn?.arguments;
+            if (typeof args === "string" && args.trim())
+                return args;
+        }
+        return typeof content === "string" ? content : "";
     }
     function extractTextFromResponses(json) {
         // responses API는 포맷이 환경/버전에 따라 달라질 수 있어 여러 케이스를 흡수합니다.
-        if (typeof json?.output_text === "string")
-            return json.output_text;
-        const output = Array.isArray(json?.output) ? json.output : [];
+        const root = json && typeof json === "object" ? json : null;
+        if (typeof root?.output_text === "string" && root.output_text.trim())
+            return root.output_text;
+        const output = Array.isArray(root?.output) ? root.output : [];
         for (const item of output) {
-            const content = Array.isArray(item?.content) ? item.content : [];
+            const itemObj = item && typeof item === "object" ? item : null;
+            const content = Array.isArray(itemObj?.content) ? itemObj.content : [];
             for (const c of content) {
-                if (typeof c?.text === "string")
-                    return c.text;
-                if (typeof c?.output_text === "string")
-                    return c.output_text;
+                const cObj = c && typeof c === "object" ? c : null;
+                // Plain text
+                if (typeof cObj?.text === "string" && cObj.text.trim())
+                    return cObj.text;
+                if (typeof cObj?.output_text === "string" && cObj.output_text.trim())
+                    return cObj.output_text;
+                if (typeof cObj?.value === "string" && cObj.value.trim())
+                    return cObj.value;
+                // Sometimes `text` is an object (e.g. { value: "..." })
+                if (cObj?.text && typeof cObj.text === "object") {
+                    const t = cObj.text;
+                    if (typeof t.value === "string" && t.value.trim())
+                        return t.value;
+                }
+                // JSON-schema / structured output can come back as a JSON object on the content item
+                if (cObj?.json && typeof cObj.json === "object")
+                    return JSON.stringify(cObj.json);
+                if (cObj?.parsed && typeof cObj.parsed === "object")
+                    return JSON.stringify(cObj.parsed);
+                // Some variants may nest payload under `content`
+                if (cObj?.content && typeof cObj.content === "object") {
+                    const inner = cObj.content;
+                    if (typeof inner.text === "string" && inner.text.trim())
+                        return inner.text;
+                    if (inner.json && typeof inner.json === "object")
+                        return JSON.stringify(inner.json);
+                    if (inner.parsed && typeof inner.parsed === "object")
+                        return JSON.stringify(inner.parsed);
+                }
+                // Tool-call style items
+                if (typeof cObj?.arguments === "string" && cObj.arguments.trim())
+                    return cObj.arguments;
             }
         }
         return "";
     }
-    function deepMerge(a, b) {
-        // b wins. arrays are replaced.
-        if (Array.isArray(a) || Array.isArray(b))
-            return b ?? a;
-        if (!a || typeof a !== "object")
-            return b;
-        if (!b || typeof b !== "object")
-            return b;
-        const out = { ...a };
-        for (const [k, v] of Object.entries(b)) {
-            const av = out[k];
-            out[k] = deepMerge(av, v);
+    function extractTemplateMessages(templateBody) {
+        if (!templateBody || typeof templateBody !== "object")
+            return [];
+        const msgs = templateBody.messages;
+        if (!Array.isArray(msgs))
+            return [];
+        const out = [];
+        for (const m of msgs) {
+            const mo = m && typeof m === "object" ? m : null;
+            const role = typeof mo?.role === "string" ? String(mo.role) : "";
+            const content = typeof mo?.content === "string" ? String(mo.content) : "";
+            if (!role || !content)
+                continue;
+            out.push({ role, content });
         }
         return out;
     }
+    function sanitizeTemplateForResponses(templateBody) {
+        if (!templateBody || typeof templateBody !== "object")
+            return null;
+        const out = { ...templateBody };
+        // `responses` API does not accept chat-style `messages`. We still use it to derive `instructions`.
+        delete out.messages;
+        return out;
+    }
+    function buildInstructionsFromTemplate(templateBody) {
+        const msgs = extractTemplateMessages(templateBody);
+        if (!msgs.length)
+            return "";
+        const sys = msgs.filter((m) => m.role === "system").map((m) => m.content).join("\n\n").trim();
+        const dev = msgs.filter((m) => m.role === "developer").map((m) => m.content).join("\n\n").trim();
+        // Responses API best practice: put policy/format guidance into `instructions`
+        const parts = [sys, dev].filter(Boolean);
+        return parts.join("\n\n").trim();
+    }
     function responsesBody() {
         const schema = args.responseSchema || (args.outputFormat === "block_json" ? openAiBlockJsonSchema() : null);
+        const templateInstructions = buildInstructionsFromTemplate(args.templateBody || null);
+        const sanitizedTemplate = sanitizeTemplateForResponses(args.templateBody || null);
         const baseBody = {
             model: args.model,
             input: args.input,
             // responses API에서는 max_output_tokens 사용
             max_output_tokens: args.maxTokens,
             // GPT-5 계열은 reasoning 토큰을 과도하게 소모할 수 있어 기본 effort를 낮춥니다.
-            reasoning: { effort: "low" },
+            reasoning: { effort: reasoningEffortForModel(args.model) },
+            ...(templateInstructions ? { instructions: templateInstructions } : {}),
             // 서버 레벨 JSON 강제 (가능한 경우)
             ...(schema
                 ? {
@@ -426,14 +830,6 @@ async function openaiSimulateChat(args) {
                             strict: schema.strict !== false,
                         },
                     },
-                    text: {
-                        format: {
-                            type: "json_schema",
-                            name: schema.name,
-                            schema: schema.schema,
-                            strict: schema.strict !== false,
-                        },
-                    },
                 }
                 : {
                     // 텍스트 출력 우선
@@ -441,26 +837,34 @@ async function openaiSimulateChat(args) {
                 }),
         };
         // templateBody(JSONB)를 base body에 merge (runtime/base wins)
-        return args.templateBody && typeof args.templateBody === "object" ? deepMerge(args.templateBody, baseBody) : baseBody;
+        return sanitizedTemplate && typeof sanitizedTemplate === "object" ? deepMerge(sanitizedTemplate, baseBody) : baseBody;
     }
     function responsesBodyJsonObject() {
         // json_schema가 미지원일 때의 차선책: JSON object만 강제 (형식/필드 규칙은 프롬프트로)
+        const templateInstructions = buildInstructionsFromTemplate(args.templateBody || null);
+        const sanitizedTemplate = sanitizeTemplateForResponses(args.templateBody || null);
         return {
+            ...(sanitizedTemplate || {}),
             model: args.model,
             input: args.input,
             max_output_tokens: args.maxTokens,
-            reasoning: { effort: "low" },
+            reasoning: { effort: reasoningEffortForModel(args.model) },
+            ...(templateInstructions ? { instructions: templateInstructions } : {}),
             response_format: { type: "json_object" },
             text: { verbosity: "low" },
         };
     }
     function responsesBodyPlain() {
         // 최후의 차선책: 포맷 파라미터 없이 responses를 호출 (프롬프트로 JSON-only 유도)
+        const templateInstructions = buildInstructionsFromTemplate(args.templateBody || null);
+        const sanitizedTemplate = sanitizeTemplateForResponses(args.templateBody || null);
         return {
+            ...(sanitizedTemplate || {}),
             model: args.model,
             input: args.input,
             max_output_tokens: args.maxTokens,
-            reasoning: { effort: "low" },
+            reasoning: { effort: reasoningEffortForModel(args.model) },
+            ...(templateInstructions ? { instructions: templateInstructions } : {}),
             text: { verbosity: "low" },
         };
     }
@@ -474,7 +878,8 @@ async function openaiSimulateChat(args) {
             // 토큰 제한으로 잘린 경우: 1회 더 큰 토큰으로 재시도해서 "완성본"을 우선 반환
             if (truncated) {
                 const bigger = Math.min(Math.max(args.maxTokens, 2048), 4096);
-                const retry = await postJson(`${apiRoot}/responses`, { ...body, max_output_tokens: bigger });
+                const bodyObj = body && typeof body === "object" ? body : {};
+                const retry = await postJson(`${apiRoot}/responses`, { ...bodyObj, max_output_tokens: bigger });
                 if (retry.res.ok) {
                     const t2 = extractTextFromResponses(retry.json);
                     if (t2 && t2.length >= (text || "").length) {
@@ -506,11 +911,23 @@ async function openaiSimulateChat(args) {
     // 1) 우선 chat/completions 시도 (max_completion_tokens 우선)
     {
         const schema = args.outputFormat === "block_json" ? openAiBlockJsonSchema() : null;
+        const templateMsgs = extractTemplateMessages(args.templateBody || null);
+        const hasTemplateSystemOrDev = templateMsgs.some((m) => m.role === "system" || m.role === "developer");
+        const chatMessages = hasTemplateSystemOrDev
+            ? [
+                ...templateMsgs.filter((m) => m.role === "system" || m.role === "developer"),
+                { role: "user", content: args.input },
+            ]
+            : [{ role: "user", content: args.input }];
+        const maxCompletionTokens = 
+        // If the caller requests structured output and we're forced into chat/completions,
+        // give the model enough room to both reason and emit visible output.
+        args.outputFormat === "block_json" ? Math.min(Math.max(args.maxTokens, 2048), 4096) : args.maxTokens;
         const { res, json } = await postJson(`${apiRoot}/chat/completions`, {
             model: args.model,
-            messages: [{ role: "user", content: args.input }],
+            messages: chatMessages,
             // 최신 모델은 max_tokens 대신 max_completion_tokens를 요구할 수 있음
-            max_completion_tokens: args.maxTokens,
+            max_completion_tokens: maxCompletionTokens,
             ...(schema
                 ? {
                     response_format: {
@@ -529,7 +946,13 @@ async function openaiSimulateChat(args) {
                 if (tried.ok)
                     return { raw: tried.raw, output_text: tried.output_text };
             }
-            return { raw: json, output_text: text };
+            if (text && text.trim())
+                return { raw: json, output_text: text };
+            // Last resort: don't store empty output_text if we got a payload.
+            // Prefer a renderable block-json so the UI doesn't show blank.
+            console.warn("[openaiSimulateChat] empty extracted text; returning fallback block_json", { model: args.model, endpoint: "chat/completions" });
+            const fallback = fallbackBlockJsonForEmptyOutput();
+            return { raw: json, output_text: JSON.stringify(fallback) };
         }
         const errMsg = JSON.stringify(json || {});
         const isUnsupportedResponseFormat = res.status === 400 && /(response_format|json_schema|Invalid schema|unsupported)/i.test(errMsg);
@@ -545,7 +968,8 @@ async function openaiSimulateChat(args) {
                 ...(schema ? { response_format: { type: "json_object" } } : {}),
             });
             if (retry.res.ok) {
-                return { raw: retry.json, output_text: extractTextFromChatCompletions(retry.json) };
+                const t = extractTextFromChatCompletions(retry.json);
+                return { raw: retry.json, output_text: t && t.trim() ? t : JSON.stringify(retry.json ?? {}) };
             }
             throw new Error(`OPENAI_SIMULATE_FAILED_${retry.res.status}@${apiRoot}:${JSON.stringify(retry.json)}`);
         }
@@ -554,7 +978,8 @@ async function openaiSimulateChat(args) {
             const r2 = await postJson(`${apiRoot}/responses`, responsesBody());
             if (!r2.res.ok)
                 throw new Error(`OPENAI_SIMULATE_FAILED_${r2.res.status}@${apiRoot}:${JSON.stringify(r2.json)}`);
-            return { raw: r2.json, output_text: extractTextFromResponses(r2.json) };
+            const t = extractTextFromResponses(r2.json);
+            return { raw: r2.json, output_text: t && t.trim() ? t : JSON.stringify(r2.json ?? {}) };
         }
         // response_format 자체가 모델/계정에서 미지원이면: response_format 제거하고 재시도(프롬프트 기반 fallback)
         if (schema && isUnsupportedResponseFormat) {
@@ -563,8 +988,10 @@ async function openaiSimulateChat(args) {
                 messages: [{ role: "user", content: args.input }],
                 max_completion_tokens: args.maxTokens,
             });
-            if (retry.res.ok)
-                return { raw: retry.json, output_text: extractTextFromChatCompletions(retry.json) };
+            if (retry.res.ok) {
+                const t = extractTextFromChatCompletions(retry.json);
+                return { raw: retry.json, output_text: t && t.trim() ? t : JSON.stringify(retry.json ?? {}) };
+            }
             throw new Error(`OPENAI_SIMULATE_FAILED_${retry.res.status}@${apiRoot}:${JSON.stringify(retry.json)}`);
         }
         // max_tokens 거부(특히 GPT-5) 등은 responses로 재시도하는 편이 안전합니다.
@@ -577,13 +1004,15 @@ async function openaiSimulateChat(args) {
                 max_completion_tokens: args.maxTokens,
             });
             if (retry.res.ok) {
-                return { raw: retry.json, output_text: extractTextFromChatCompletions(retry.json) };
+                const t = extractTextFromChatCompletions(retry.json);
+                return { raw: retry.json, output_text: t && t.trim() ? t : JSON.stringify(retry.json ?? {}) };
             }
             // 그래도 실패하면 responses로 fallback
             const r2 = await postJson(`${apiRoot}/responses`, responsesBody());
             if (!r2.res.ok)
                 throw new Error(`OPENAI_SIMULATE_FAILED_${r2.res.status}@${apiRoot}:${JSON.stringify(r2.json)}`);
-            return { raw: r2.json, output_text: extractTextFromResponses(r2.json) };
+            const t = extractTextFromResponses(r2.json);
+            return { raw: r2.json, output_text: t && t.trim() ? t : JSON.stringify(r2.json ?? {}) };
         }
         throw new Error(`OPENAI_SIMULATE_FAILED_${res.status}@${apiRoot}:${JSON.stringify(json)}`);
     }
@@ -604,6 +1033,7 @@ async function anthropicSimulateChat(args) {
             "Content-Type": "application/json",
         },
         body: JSON.stringify(body),
+        signal: args.signal,
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
