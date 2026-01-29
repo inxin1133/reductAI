@@ -53,7 +53,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -412,6 +412,9 @@ export default function PostEditorPage() {
     pageHasContentRef.current = pageHasContent
   }, [pageHasContent])
   const [iconPickerOpenId, setIconPickerOpenId] = useState<string | null>(null)
+  // Embed block icon picker state (separate from sidebar icon picker)
+  const [embedIconPickerId, setEmbedIconPickerId] = useState<string | null>(null)
+  const [embedIconPickerAnchor, setEmbedIconPickerAnchor] = useState<{ left: number; top: number } | null>(null)
   const [visiblePageIds, setVisiblePageIds] = useState<Set<string>>(() => new Set())
   const ioRef = useRef<IntersectionObserver | null>(null)
   const observedElsRef = useRef<Map<string, HTMLElement>>(new Map())
@@ -854,14 +857,31 @@ export default function PostEditorPage() {
 
   // Reset picker UI when closing / switching rows
   useEffect(() => {
-    if (!iconPickerOpenId && !titleIconOpen && !categoryIconOpen) {
+    if (!iconPickerOpenId && !titleIconOpen && !categoryIconOpen && !embedIconPickerId) {
       setIconPickerTab("emoji")
       setLucideQuery("")
       // Cancel any in-flight lucide import (best-effort) and clear loading state.
       lucideLoadSeqRef.current += 1
       setLucideLoading(false)
     }
-  }, [categoryIconOpen, iconPickerOpenId, titleIconOpen])
+  }, [categoryIconOpen, iconPickerOpenId, titleIconOpen, embedIconPickerId])
+
+  // Listen for embed block icon picker open event
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ postId?: string; anchorRect?: { left: number; top: number } }>
+      const pageId = ce.detail?.postId
+      const anchorRect = ce.detail?.anchorRect
+      if (!pageId) return
+      
+      setEmbedIconPickerId(pageId)
+      if (anchorRect) {
+        setEmbedIconPickerAnchor({ left: anchorRect.left, top: anchorRect.top })
+      }
+    }
+    window.addEventListener("reductai:open-page-icon-picker", handler)
+    return () => window.removeEventListener("reductai:open-page-icon-picker", handler)
+  }, [])
 
   const savePageIcon = useCallback(
     async (pageId: string, choice: PageIconChoice | null) => {
@@ -876,6 +896,11 @@ export default function PostEditorPage() {
       if (String(pageId) === String(postId || "")) {
         setPageIconRaw(nextIcon)
       }
+
+      // Dispatch event immediately so embed blocks can update their icon
+      window.dispatchEvent(new CustomEvent("reductai:page-icon-updated", {
+        detail: { postId: pageId, icon: nextIcon },
+      }))
 
       try {
         const r = await fetch(`/api/posts/${pageId}`, {
@@ -894,6 +919,10 @@ export default function PostEditorPage() {
         if (String(pageId) === String(postId || "")) {
           setPageIconRaw(serverIcon)
         }
+        // Dispatch event again with confirmed server icon
+        window.dispatchEvent(new CustomEvent("reductai:page-icon-updated", {
+          detail: { postId: pageId, icon: serverIcon },
+        }))
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Failed to update icon"
         toast.error(msg)
@@ -1169,11 +1198,16 @@ export default function PostEditorPage() {
   // Safe navigation requested by PageLinkNodeView
   useEffect(() => {
     function onOpenPost(e: Event) {
-      const ce = e as CustomEvent<{ postId?: string; focusTitle?: boolean; forceSave?: boolean }>
+      const ce = e as CustomEvent<{ postId?: string; focusTitle?: boolean; forceSave?: boolean; categoryId?: string | null }>
       const targetId = String(ce.detail?.postId || "")
       if (!targetId) return
       const focusTitle = Boolean(ce.detail?.focusTitle)
       const forceSave = Boolean(ce.detail?.forceSave)
+      // Use categoryId from event if provided, otherwise fall back to current categoryQS
+      const targetCategoryId = ce.detail?.categoryId
+      const targetCategoryQS = targetCategoryId
+        ? `?category=${encodeURIComponent(targetCategoryId)}`
+        : categoryQS
       navigatingRef.current = targetId
       void (async () => {
         // IMPORTANT:
@@ -1182,8 +1216,8 @@ export default function PostEditorPage() {
         const snapshot = JSON.stringify(draftRef.current || null)
         const shouldSave = forceSave || snapshot !== lastSavedRef.current
         if (shouldSave && canSave) await saveNow({ silent: true })
-        // Preserve categoryQS when navigating to child/embed pages so the sidebar stays filtered correctly.
-        navigate(`/posts/${targetId}/edit${categoryQS}`, { state: { focusTitle } })
+        // Navigate to target page with its category so the sidebar switches correctly.
+        navigate(`/posts/${targetId}/edit${targetCategoryQS}`, { state: { focusTitle } })
       })()
     }
     window.addEventListener("reductai:open-post", onOpenPost as EventListener)
@@ -2158,9 +2192,10 @@ export default function PostEditorPage() {
       // If moving inside another page, add embed link to parent's content
       if (indicator.position === "inside" && targetParentId) {
         try {
-          // Get the moved page info for title
+          // Get the moved page info for title and icon
           const movedPage = pageById.get(fromId)
           const movedPageTitle = movedPage?.title || "Untitled"
+          const movedPageIcon = (movedPage as unknown as { icon?: string | null })?.icon || null
 
           // 1. Fetch parent page content
           const contentRes = await fetch(`/api/posts/${targetParentId}/content`, {
@@ -2188,6 +2223,7 @@ export default function PostEditorPage() {
                 blockId,
                 pageId: fromId,
                 title: movedPageTitle,
+                icon: movedPageIcon,
                 display: "embed",
               },
             }
@@ -3286,7 +3322,7 @@ export default function PostEditorPage() {
               <Skeleton className="h-[420px] w-full" />
             </div>
           ) : (
-            <div className="">
+            <div className="pb-[300px]">
               {isEmptyPagePlaceholder ? (
                 <div className="space-y-3">
                   <div className="text-sm text-muted-foreground">
@@ -3379,6 +3415,153 @@ export default function PostEditorPage() {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    {/* Embed block icon picker popover */}
+    <Popover
+      open={!!embedIconPickerId}
+      onOpenChange={(open) => {
+        if (!open) {
+          setEmbedIconPickerId(null)
+          setEmbedIconPickerAnchor(null)
+        }
+      }}
+    >
+      <PopoverAnchor
+        style={{
+          position: "fixed",
+          left: embedIconPickerAnchor?.left ?? 0,
+          top: embedIconPickerAnchor?.top ?? 0,
+          width: 0,
+          height: 0,
+        }}
+      />
+      <PopoverContent align="start" sideOffset={6} className="w-[370px] p-3 z-[100]">
+        <Tabs value={iconPickerTab} onValueChange={(v) => setIconPickerTab(v === "icon" ? "icon" : "emoji")}>
+          <TabsList>
+            <TabsTrigger value="emoji">이모지</TabsTrigger>
+            <TabsTrigger value="icon">아이콘</TabsTrigger>
+          </TabsList>
+          <TabsContent value="emoji">
+            <div className="max-h-[360px] overflow-auto pr-1">
+              <EmojiPicker
+                theme={typeof document !== "undefined" && document.documentElement.classList.contains("dark") ? Theme.DARK : Theme.LIGHT}
+                previewConfig={{ showPreview: false }}
+                onEmojiClick={(emoji: EmojiClickData) => {
+                  const native = emoji?.emoji ? String(emoji.emoji) : ""
+                  if (!native || !embedIconPickerId) return
+                  void savePageIcon(embedIconPickerId, { kind: "emoji", value: native })
+                  setEmbedIconPickerId(null)
+                  setEmbedIconPickerAnchor(null)
+                }}
+              />
+            </div>
+            <div className="mt-2 flex justify-end">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  if (embedIconPickerId) void savePageIcon(embedIconPickerId, null)
+                  setEmbedIconPickerId(null)
+                  setEmbedIconPickerAnchor(null)
+                }}
+              >
+                Reset
+              </Button>
+            </div>
+          </TabsContent>
+          <TabsContent value="icon">
+            <div className="mb-2">
+              <Input
+                value={lucideQuery}
+                onChange={(e) => setLucideQuery(e.target.value)}
+                placeholder="Search icons (e.g. calendar, bot, file...)"
+                className="h-8 text-sm"
+              />
+            </div>
+
+            {lucideQuery.trim() ? (
+              <>
+                {lucideLoading && !lucideAll ? (
+                  <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
+                ) : null}
+                <div className="max-h-[300px] overflow-auto pr-1">
+                  <div className="grid grid-cols-7 gap-1">
+                    {(() => {
+                      const q = lucideQuery.trim().toLowerCase()
+                      const map = lucideAll || {}
+                      const keys = Object.keys(map)
+                        .filter((k) => k.toLowerCase().includes(q))
+                        .slice(0, 98)
+                      if (!lucideLoading && lucideAll && keys.length === 0) {
+                        return (
+                          <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
+                            No matches. Try a different keyword.
+                          </div>
+                        )
+                      }
+                      return keys.map((k) => {
+                        const Cmp = map[k]
+                        return (
+                          <button
+                            key={k}
+                            type="button"
+                            className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                            onClick={() => {
+                              if (embedIconPickerId) void savePageIcon(embedIconPickerId, { kind: "lucide", value: k })
+                              setEmbedIconPickerId(null)
+                              setEmbedIconPickerAnchor(null)
+                            }}
+                            title={k}
+                            aria-label={k}
+                          >
+                            <Cmp className="size-4" />
+                          </button>
+                        )
+                      })
+                    })()}
+                  </div>
+                </div>
+                <div className="mt-2 text-[11px] text-muted-foreground">
+                  Showing up to 98 matches. Refine your search to narrow results.
+                </div>
+              </>
+            ) : (
+              <div className="grid grid-cols-7 gap-1">
+                {LUCIDE_PRESETS.map((it) => (
+                  <button
+                    key={it.key}
+                    type="button"
+                    className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                    onClick={() => {
+                      if (embedIconPickerId) void savePageIcon(embedIconPickerId, { kind: "lucide", value: it.key })
+                      setEmbedIconPickerId(null)
+                      setEmbedIconPickerAnchor(null)
+                    }}
+                    title={it.label}
+                    aria-label={it.label}
+                  >
+                    <it.Icon className="size-4" />
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="mt-2 flex justify-end">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  if (embedIconPickerId) void savePageIcon(embedIconPickerId, null)
+                  setEmbedIconPickerId(null)
+                  setEmbedIconPickerAnchor(null)
+                }}
+              >
+                Reset
+              </Button>
+            </div>
+          </TabsContent>
+        </Tabs>
+      </PopoverContent>
+    </Popover>
     </>
   )
 }

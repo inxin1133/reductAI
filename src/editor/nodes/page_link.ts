@@ -4,6 +4,7 @@ import type { NodeSpec } from "prosemirror-model"
 // attrs:
 // - pageId: target posts.id
 // - title: cached title for display (optional)
+// - icon: cached icon for display (optional) - format: "emoji:😀" or "lucide:File"
 // - display: link | embed
 export const pageLinkNodeSpec: NodeSpec = {
   inline: false,
@@ -15,6 +16,7 @@ export const pageLinkNodeSpec: NodeSpec = {
     blockId: { default: null },
     pageId: { default: null },
     title: { default: "" },
+    icon: { default: null },
     display: { default: "link" },
   },
   toDOM: (node) => {
@@ -23,17 +25,19 @@ export const pageLinkNodeSpec: NodeSpec = {
       "div",
       {
         class:
-          "my-3 rounded-xl border border-border bg-card p-3 text-card-foreground shadow-sm",
+          "my-2 py-3 px-4 text-card-foreground hover:bg-muted rounded-xl cursor-pointer",
         "data-page-link": "1",
         "data-block-id": blockId || "",
         "data-page-id": pageId || "",
         "data-display": display || "link",
       },
-      // Step 4 요구사항: embed는 title만 렌더링 (콘텐츠/요약 포함 X)
-      ["div", { class: "font-semibold", "data-role": "title" }, title || "Untitled page"],
-      display === "link"
-        ? ["div", { class: "mt-1 text-xs text-muted-foreground", "data-role": "hint" }, "Link"]
-        : ["div", { class: "hidden", "data-role": "hint" }, ""],
+      [
+        "div",
+        { class: "flex items-center gap-2", "data-role": "title-wrap" },
+        // Link icon placeholder - actual icon rendered by nodeview
+        ["span", { class: "shrink-0 text-muted-foreground size-4", "data-role": "link-icon" }, "🔗"],
+        ["span", { class: "font-semibold", "data-role": "title" }, title || "Untitled page"],
+      ],
     ]
   },
   parseDOM: [

@@ -259,21 +259,13 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
       key: "page",
       title: "Page Link",
       keywords: ["page", "link"],
-      applyReplace: (view) => {
-        const n = schema.nodes.page_link
-        if (!n) return
-        const pageId = window.prompt("Target pageId (posts.id)?", "") || ""
-        if (!pageId.trim()) return
-        const title = window.prompt("Title (optional)", "") || ""
-        replaceCurrentBlock(view, n.create({ pageId: pageId.trim(), title, display: "link" }))
+      applyReplace: () => {
+        // Open page link picker via event (handled by ProseMirrorEditor)
+        window.dispatchEvent(new CustomEvent("reductai:open-page-link-picker", { detail: { display: "link" } }))
       },
-      applyInsert: (view, args) => {
-        const n = schema.nodes.page_link
-        if (!n) return
-        const pageId = window.prompt("Target pageId (posts.id)?", "") || ""
-        if (!pageId.trim()) return
-        const title = window.prompt("Title (optional)", "") || ""
-        insertBlockRelative(view, { ...args, node: n.create({ pageId: pageId.trim(), title, display: "link" }) })
+      applyInsert: () => {
+        // Open page link picker via event (handled by ProseMirrorEditor)
+        window.dispatchEvent(new CustomEvent("reductai:open-page-link-picker", { detail: { display: "link" } }))
       },
     },
     {

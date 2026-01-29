@@ -121,6 +121,12 @@ import {
   ArrowUp,
   ArrowDown,
   Repeat,
+  FileText,
+  ChevronDown,
+  ChevronRight,
+  Search,
+  FolderOpen,
+  Users,
 } from "lucide-react"
 
 type PmDocJson = unknown
@@ -296,6 +302,111 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
   const [tableCellMenuAnchor, setTableCellMenuAnchor] = useState<{ left: number; top: number } | null>(null)
   const [tableCellMenuOpen, setTableCellMenuOpen] = useState(false)
   const tableMenuRafRef = useRef<number | null>(null)
+
+  // Page Link picker state
+  const [pageLinkPickerOpen, setPageLinkPickerOpen] = useState(false)
+  const [pageLinkSearch, setPageLinkSearch] = useState("")
+  const [pageLinkCategories, setPageLinkCategories] = useState<{
+    personal: Array<{ id: string; name: string; icon: string | null }>
+    team: Array<{ id: string; name: string; icon: string | null }>
+  }>({ personal: [], team: [] })
+  const [pageLinkPages, setPageLinkPages] = useState<Array<{
+    id: string
+    title: string
+    icon: string | null
+    category_id: string | null
+    parent_id: string | null
+    hasContent: boolean
+  }>>([])
+  const [pageLinkExpandedCats, setPageLinkExpandedCats] = useState<Set<string>>(new Set())
+  // Store editor state when popover opens (to restore insertion point)
+  const pageLinkEditorStateRef = useRef<EditorState | null>(null)
+  // Anchor position for page link popover (at cursor/block position)
+  const [pageLinkAnchor, setPageLinkAnchor] = useState<{ left: number; top: number } | null>(null)
+
+  // Calculate anchor position from current selection
+  const calcPageLinkAnchor = useCallback(() => {
+    const view = viewRef.current
+    const surface = surfaceRef.current
+    if (!view || !surface) return null
+    
+    const { from } = view.state.selection
+    const coords = view.coordsAtPos(from)
+    const surfaceRect = surface.getBoundingClientRect()
+    
+    return {
+      left: coords.left - surfaceRect.left,
+      top: coords.bottom - surfaceRect.top + 4,
+    }
+  }, [])
+
+  // Open page link picker at cursor position
+  const openPageLinkPicker = useCallback(() => {
+    if (viewRef.current) {
+      pageLinkEditorStateRef.current = viewRef.current.state
+    }
+    const anchor = calcPageLinkAnchor()
+    if (anchor) {
+      setPageLinkAnchor(anchor)
+    }
+    setPageLinkPickerOpen(true)
+  }, [calcPageLinkAnchor])
+
+  // Listen for page link picker open event (from blockCommandRegistry)
+  useEffect(() => {
+    const handler = () => {
+      openPageLinkPicker()
+    }
+    window.addEventListener("reductai:open-page-link-picker", handler)
+    return () => window.removeEventListener("reductai:open-page-link-picker", handler)
+  }, [openPageLinkPicker])
+
+  // Load categories and pages when page link picker opens
+  useEffect(() => {
+    if (!pageLinkPickerOpen) return
+    const token = localStorage.getItem("token")
+    if (!token) return
+
+    const headers = { Authorization: `Bearer ${token}` }
+
+    // Fetch personal and team categories in parallel
+    Promise.all([
+      fetch("/api/posts/categories/mine?type=personal_page", { headers }).then((r) => r.ok ? r.json() : []),
+      fetch("/api/posts/categories/mine?type=team_page", { headers }).then((r) => r.ok ? r.json() : []),
+    ])
+      .then(([personalData, teamData]) => {
+        const personal = (personalData || []).map((cat: Record<string, unknown>) => ({
+          id: String(cat.id),
+          name: String(cat.name || "Untitled"),
+          icon: cat.icon ? String(cat.icon) : null,
+        }))
+        const team = (teamData || []).map((cat: Record<string, unknown>) => ({
+          id: String(cat.id),
+          name: String(cat.name || "Untitled"),
+          icon: cat.icon ? String(cat.icon) : null,
+        }))
+        setPageLinkCategories({ personal, team })
+      })
+      .catch(() => null)
+
+    // Fetch pages
+    fetch("/api/posts/mine", { headers })
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!data || !Array.isArray(data)) return
+        const pages = data.map((p: Record<string, unknown>) => ({
+          id: String(p.id),
+          title: String(p.title || "Untitled"),
+          icon: p.icon ? String(p.icon) : null,
+          category_id: p.category_id ? String(p.category_id) : null,
+          parent_id: p.parent_id ? String(p.parent_id) : null,
+          hasContent: Boolean(p.has_content),
+        }))
+        setPageLinkPages(pages)
+      })
+      .catch(() => null)
+  }, [pageLinkPickerOpen])
+
   // Table cell selection toolbar (drag/F5 selection).
   const [tableCellSelectionAnchor, setTableCellSelectionAnchor] = useState<{ left: number; top: number } | null>(null)
   const tableSelectionRafRef = useRef<number | null>(null)
@@ -1792,10 +1903,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                 size="sm"
                 onMouseDown={(e) => {
                   e.preventDefault()
-                  const pageId = window.prompt("Target pageId (posts.id)?", "") || ""
-                  if (!pageId) return
-                  const title = window.prompt("Title (optional)", "") || ""
-                  run(cmdInsertPageLink(editorSchema, { pageId, title, display: "link" }))
+                  openPageLinkPicker()
                 }}
               >
                 <Link2 />
@@ -2728,6 +2836,236 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
           </PopoverContent>
         </Popover>
         <div ref={mountRef} />
+
+        {/* Page Link Picker Popover - positioned at cursor */}
+        <Popover
+          open={pageLinkPickerOpen}
+          onOpenChange={(open) => {
+            setPageLinkPickerOpen(open)
+            if (!open) {
+              setPageLinkSearch("")
+              setPageLinkExpandedCats(new Set())
+              setPageLinkAnchor(null)
+            }
+          }}
+        >
+          <PopoverAnchor
+            style={{
+              position: "absolute",
+              left: pageLinkAnchor?.left ?? 0,
+              top: pageLinkAnchor?.top ?? 0,
+              width: 0,
+              height: 0,
+            }}
+          />
+          <PopoverContent
+            className="w-80 p-0 max-h-96 overflow-hidden flex flex-col z-50"
+            align="start"
+            sideOffset={4}
+          >
+            {/* Search */}
+            <div className="p-2 border-b">
+              <div className="relative">
+                <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+                <input
+                  type="text"
+                  className="w-full pl-8 pr-3 py-1.5 text-sm border rounded-md focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  placeholder="페이지 검색..."
+                  value={pageLinkSearch}
+                  onChange={(e) => setPageLinkSearch(e.target.value)}
+                  autoFocus
+                />
+              </div>
+            </div>
+
+            {/* Categories and Pages */}
+            <div className="flex-1 overflow-y-auto p-1">
+              {(() => {
+                const searchLower = pageLinkSearch.toLowerCase().trim()
+                const decodeIcon = (raw: string | null): { kind: "emoji" | "lucide"; value: string } | null => {
+                  if (!raw) return null
+                  if (raw.startsWith("emoji:")) return { kind: "emoji", value: raw.slice(6) }
+                  if (raw.startsWith("lucide:")) return { kind: "lucide", value: raw.slice(7) }
+                  return null
+                }
+
+                const renderPageIcon = (iconRaw: string | null, hasContent: boolean) => {
+                  const choice = decodeIcon(iconRaw)
+                  if (!choice) {
+                    const DefaultIcon = hasContent ? FileText : File
+                    return <DefaultIcon className="size-4 shrink-0" />
+                  }
+                  if (choice.kind === "emoji") {
+                    return <span className="text-sm leading-none shrink-0">{choice.value}</span>
+                  }
+                  const DefaultIcon = hasContent ? FileText : File
+                  return <DefaultIcon className="size-4 shrink-0" />
+                }
+
+                const handleSelectPage = (page: { id: string; title: string; icon: string | null; hasContent: boolean }) => {
+                  const view = viewRef.current
+                  if (!view) return
+                  
+                  const savedState = pageLinkEditorStateRef.current
+                  if (savedState) {
+                    const n = editorSchema.nodes.page_link
+                    if (!n) return
+                    const tr = savedState.tr.replaceSelectionWith(n.create({
+                      pageId: page.id,
+                      title: page.title,
+                      icon: page.icon,
+                      display: "link",
+                    })).scrollIntoView()
+                    view.dispatch(tr)
+                    view.focus()
+                  }
+                  
+                  setPageLinkPickerOpen(false)
+                  setPageLinkSearch("")
+                  pageLinkEditorStateRef.current = null
+                }
+
+                const filteredPages = searchLower
+                  ? pageLinkPages.filter((p) => p.title.toLowerCase().includes(searchLower))
+                  : pageLinkPages
+
+                if (searchLower) {
+                  return (
+                    <div className="space-y-0.5">
+                      {filteredPages.length === 0 ? (
+                        <div className="text-sm text-muted-foreground p-2">검색 결과가 없습니다</div>
+                      ) : (
+                        filteredPages.map((page) => (
+                          <button
+                            key={page.id}
+                            className="w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md hover:bg-accent text-left"
+                            onClick={() => handleSelectPage(page)}
+                          >
+                            {renderPageIcon(page.icon, page.hasContent)}
+                            <span className="truncate">{page.title}</span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )
+                }
+
+                const pagesByCat = new Map<string, typeof filteredPages>()
+                const uncategorized: typeof filteredPages = []
+                for (const p of filteredPages) {
+                  if (!p.parent_id) {
+                    if (p.category_id) {
+                      const arr = pagesByCat.get(p.category_id) || []
+                      arr.push(p)
+                      pagesByCat.set(p.category_id, arr)
+                    } else {
+                      uncategorized.push(p)
+                    }
+                  }
+                }
+
+                const renderCategory = (
+                  cat: { id: string; name: string; icon: string | null },
+                  type: "personal" | "team"
+                ) => {
+                  const catId = `${type}:${cat.id}`
+                  const isExpanded = pageLinkExpandedCats.has(catId)
+                  const pages = pagesByCat.get(cat.id) || []
+                  const catIcon = decodeIcon(cat.icon)
+
+                  return (
+                    <div key={catId}>
+                      <button
+                        className="w-full flex items-center gap-2 px-2 py-1.5 text-sm font-medium rounded-md hover:bg-accent text-left"
+                        onClick={() => {
+                          setPageLinkExpandedCats((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(catId)) next.delete(catId)
+                            else next.add(catId)
+                            return next
+                          })
+                        }}
+                      >
+                        {isExpanded ? (
+                          <ChevronDown className="size-4 shrink-0" />
+                        ) : (
+                          <ChevronRight className="size-4 shrink-0" />
+                        )}
+                        {catIcon?.kind === "emoji" ? (
+                          <span className="text-sm leading-none">{catIcon.value}</span>
+                        ) : (
+                          <FolderOpen className="size-4 shrink-0" />
+                        )}
+                        <span className="truncate">{cat.name}</span>
+                        <span className="ml-auto text-xs text-muted-foreground">{pages.length}</span>
+                      </button>
+                      {isExpanded && pages.length > 0 && (
+                        <div className="ml-4 space-y-0.5">
+                          {pages.map((page) => (
+                            <button
+                              key={page.id}
+                              className="w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md hover:bg-accent text-left"
+                              onClick={() => handleSelectPage(page)}
+                            >
+                              {renderPageIcon(page.icon, page.hasContent)}
+                              <span className="truncate">{page.title}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                }
+
+                return (
+                  <div className="space-y-1">
+                    {pageLinkCategories.personal.length > 0 && (
+                      <div>
+                        <div className="px-2 py-1 text-xs font-semibold text-muted-foreground flex items-center gap-1">
+                          <FolderOpen className="size-3" /> 개인 페이지
+                        </div>
+                        {pageLinkCategories.personal.map((cat) => renderCategory(cat, "personal"))}
+                      </div>
+                    )}
+
+                    {pageLinkCategories.team.length > 0 && (
+                      <div>
+                        <div className="px-2 py-1 text-xs font-semibold text-muted-foreground flex items-center gap-1">
+                          <Users className="size-3" /> 팀 페이지
+                        </div>
+                        {pageLinkCategories.team.map((cat) => renderCategory(cat, "team"))}
+                      </div>
+                    )}
+
+                    {uncategorized.length > 0 && (
+                      <div>
+                        <div className="px-2 py-1 text-xs font-semibold text-muted-foreground">기타</div>
+                        <div className="space-y-0.5">
+                          {uncategorized.map((page) => (
+                            <button
+                              key={page.id}
+                              className="w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md hover:bg-accent text-left"
+                              onClick={() => handleSelectPage(page)}
+                            >
+                              {renderPageIcon(page.icon, page.hasContent)}
+                              <span className="truncate">{page.title}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {pageLinkCategories.personal.length === 0 &&
+                      pageLinkCategories.team.length === 0 &&
+                      uncategorized.length === 0 && (
+                        <div className="text-sm text-muted-foreground p-2">페이지가 없습니다</div>
+                      )}
+                  </div>
+                )
+              })()}
+            </div>
+          </PopoverContent>
+        </Popover>
       </div>
 
       {/* Debug panel removed for performance - was causing expensive JSON.stringify and exportMarkdown on every keystroke */}

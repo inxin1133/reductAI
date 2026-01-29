@@ -718,7 +718,7 @@ export async function getPostPreview(req: Request, res: Response) {
   try {
     const { id } = req.params
     const p = await query(
-      `SELECT id, title, icon, excerpt, updated_at
+      `SELECT id, title, icon, excerpt, updated_at, category_id
        FROM posts
        WHERE id = $1 AND deleted_at IS NULL
        LIMIT 1`,
@@ -746,7 +746,14 @@ export async function getPostPreview(req: Request, res: Response) {
     }
     if (summary.length > 140) summary = summary.slice(0, 140) + "…"
 
-    return res.json({ id: row.id, title: row.title, icon: row.icon ?? null, summary, updated_at: row.updated_at })
+    return res.json({
+      id: row.id,
+      title: row.title,
+      icon: row.icon ?? null,
+      summary,
+      updated_at: row.updated_at,
+      category_id: row.category_id ?? null,
+    })
   } catch (e) {
     console.error("post-service getPostPreview error:", e)
     return res.status(500).json({ message: "Failed to load preview" })
