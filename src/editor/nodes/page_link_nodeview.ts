@@ -1,9 +1,9 @@
 import type { Node as PMNode } from "prosemirror-model"
 import type { EditorView, NodeView } from "prosemirror-view"
 
-type Preview = { title: string; summary: string; icon: string | null }
+type Preview = { title: string; summary: string; icon: string | null; hasContent: boolean }
 
-const previewCache = new Map<string, { title: string; icon: string | null; fetchedAt: number }>()
+const previewCache = new Map<string, { title: string; icon: string | null; hasContent: boolean; fetchedAt: number }>()
 const PREVIEW_TTL_MS = 5_000
 
 function authHeaders(): Record<string, string> {
@@ -21,7 +21,9 @@ async function fetchPreview(pageId: string): Promise<Preview | null> {
     const title = typeof j.title === "string" ? j.title : "New page"
     const summary = typeof j.summary === "string" ? j.summary : ""
     const icon = typeof j.icon === "string" ? j.icon : null
-    return { title, summary, icon }
+    // If summary exists (excerpt from content), the page has content
+    const hasContent = summary.trim().length > 0
+    return { title, summary, icon, hasContent }
   } catch {
     return null
   }
@@ -327,11 +329,15 @@ export class PageLinkNodeView implements NodeView {
       })
       this.view.dispatch(tr)
       
+      // Get cached hasContent for icon render
+      const cachedPreview = curPageId ? previewCache.get(curPageId) : null
+      const hasContent = cachedPreview?.hasContent ?? false
+      
       // Update UI immediately (sync), then async load if needed
-      this.pageIconEl.innerHTML = renderIconHtml(updatedIcon ?? null, !!curNode.attrs.title)
+      this.pageIconEl.innerHTML = renderIconHtml(updatedIcon ?? null, hasContent)
       
       // Async load for dynamic icons and update again if changed
-      void renderIconHtmlAsync(updatedIcon ?? null, !!curNode.attrs.title).then((asyncHtml) => {
+      void renderIconHtmlAsync(updatedIcon ?? null, hasContent).then((asyncHtml) => {
         if (this.pageIconEl && this.pageIconEl.innerHTML !== asyncHtml) {
           this.pageIconEl.innerHTML = asyncHtml
         }
@@ -379,12 +385,16 @@ export class PageLinkNodeView implements NodeView {
     this.currentKey = key
 
     const titleText = cachedTitle || "New page"
+    
+    // Get cached hasContent for initial icon render
+    const cachedPreview = pageId ? previewCache.get(pageId) : null
+    const cachedHasContent = cachedPreview?.hasContent ?? false
 
     // Render page icon immediately from cached attrs
-    this.pageIconEl.innerHTML = renderIconHtml(cachedIcon, !!cachedTitle)
+    this.pageIconEl.innerHTML = renderIconHtml(cachedIcon, cachedHasContent)
     
     // Async load for dynamic icons and update again if changed
-    void renderIconHtmlAsync(cachedIcon, !!cachedTitle).then((asyncHtml) => {
+    void renderIconHtmlAsync(cachedIcon, cachedHasContent).then((asyncHtml) => {
       if (this.pageIconEl && this.pageIconEl.innerHTML !== asyncHtml) {
         this.pageIconEl.innerHTML = asyncHtml
       }
@@ -420,14 +430,15 @@ export class PageLinkNodeView implements NodeView {
     const cached = previewCache.get(pageId)
     const shouldFetch = !cached || now - cached.fetchedAt > PREVIEW_TTL_MS
     const p = shouldFetch ? await fetchPreview(pageId) : null
-    if (p) previewCache.set(pageId, { title: p.title, icon: p.icon, fetchedAt: now })
+    if (p) previewCache.set(pageId, { title: p.title, icon: p.icon, hasContent: p.hasContent, fetchedAt: now })
 
     const freshTitle = (p?.title || cached?.title || titleText || "New page").trim()
     const freshIcon = p?.icon ?? cached?.icon ?? cachedIcon
+    const freshHasContent = p?.hasContent ?? cached?.hasContent ?? false
 
     // Update page icon UI (sync first, then async load if needed)
-    this.pageIconEl.innerHTML = renderIconHtml(freshIcon, !!freshTitle)
-    void renderIconHtmlAsync(freshIcon, !!freshTitle).then((asyncHtml) => {
+    this.pageIconEl.innerHTML = renderIconHtml(freshIcon, freshHasContent)
+    void renderIconHtmlAsync(freshIcon, freshHasContent).then((asyncHtml) => {
       if (this.pageIconEl && this.pageIconEl.innerHTML !== asyncHtml) {
         this.pageIconEl.innerHTML = asyncHtml
       }

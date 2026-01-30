@@ -165,16 +165,36 @@ export async function savePostContent(req: Request, res: Response) {
 
     const blocks = docJsonToBlocks({ postId: id, docJson: body.docJson, pmSchemaVersion })
 
+    // Guard against invalid page_link refs (missing posts) to avoid FK errors.
+    const refIds = Array.from(
+      new Set(
+        blocks
+          .map((b) => (typeof b.ref_post_id === "string" ? b.ref_post_id : null))
+          .filter((v): v is string => Boolean(v))
+      )
+    )
+    const validRefIds = new Set<string>()
+    if (refIds.length) {
+      const refRes = await client.query(`SELECT id FROM posts WHERE id = ANY($1::uuid[])`, [refIds])
+      for (const row of refRes.rows as Array<{ id: string }>) {
+        validRefIds.add(String(row.id))
+      }
+    }
+
     const nextEmbedIds = new Set<string>()
     for (const b of blocks) {
       if (b.block_type !== "page_link") continue
       const pm = b.content?.pm || b.content
       const display = pm?.attrs?.display
       const pid = typeof b.ref_post_id === "string" ? b.ref_post_id : null
-      if (display === "embed" && pid) nextEmbedIds.add(pid)
+      if (display === "embed" && pid && validRefIds.has(pid)) nextEmbedIds.add(pid)
     }
 
     for (const b of blocks) {
+      const refId = typeof b.ref_post_id === "string" ? b.ref_post_id : null
+      if (refId && !validRefIds.has(refId)) {
+        continue
+      }
       await client.query(
         `INSERT INTO post_blocks (
            post_id, parent_block_id, block_type, sort_key, content, content_text, ref_post_id, external_embed_id,
@@ -1238,18 +1258,29 @@ export async function movePage(req: Request, res: Response) {
       }
     }
 
-    // Get current siblings at the target level
-    const siblingsRes = await client.query(
-      `SELECT id, page_order FROM posts
+    // Get current siblings at the target level (build query dynamically to avoid $ index mismatch)
+    let siblingsQuery = `SELECT id, page_order FROM posts
        WHERE tenant_id = $1 AND author_id = $2 AND deleted_at IS NULL
-         AND COALESCE(status, '') <> 'deleted'
-         AND ${newParentId ? "parent_id = $3" : "parent_id IS NULL"}
-         AND category_id ${categoryId ? "= $4" : "IS NULL"}
-       ORDER BY page_order ASC, created_at ASC, id ASC`,
-      newParentId
-        ? (categoryId ? [tenantId, userId, newParentId, categoryId] : [tenantId, userId, newParentId])
-        : (categoryId ? [tenantId, userId, categoryId] : [tenantId, userId])
-    )
+         AND COALESCE(status, '') <> 'deleted'`
+    const siblingsParams: (string | null)[] = [tenantId, userId]
+
+    if (newParentId) {
+      siblingsQuery += ` AND parent_id = $${siblingsParams.length + 1}`
+      siblingsParams.push(newParentId)
+    } else {
+      siblingsQuery += ` AND parent_id IS NULL`
+    }
+
+    if (categoryId) {
+      siblingsQuery += ` AND category_id = $${siblingsParams.length + 1}`
+      siblingsParams.push(categoryId)
+    } else {
+      siblingsQuery += ` AND category_id IS NULL`
+    }
+
+    siblingsQuery += ` ORDER BY page_order ASC, created_at ASC, id ASC`
+
+    const siblingsRes = await client.query(siblingsQuery, siblingsParams)
     const siblings = siblingsRes.rows.filter((s: any) => String(s.id) !== String(id)) as { id: string; page_order: number }[]
 
     // Calculate new page_order

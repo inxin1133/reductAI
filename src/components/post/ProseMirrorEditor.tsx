@@ -890,13 +890,15 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     }
     window.addEventListener("reductai:page-title-updated", onTitleUpdated as EventListener)
 
-    // Append an embed/link block to the end of the current document (used by page tree "+" UX).
+    // Append an embed/link block to the end of the current document (used by page tree "+" UX and drag-drop).
     const onAppendPageLink = (e: Event) => {
-      const ce = e as CustomEvent<{ pageId?: string; title?: string; display?: string }>
+      const ce = e as CustomEvent<{ pageId?: string; title?: string; display?: string; blockId?: string; icon?: string | null }>
       const pageId = String(ce.detail?.pageId || "")
       if (!pageId) return
       const title = String(ce.detail?.title || "New page")
       const display = String(ce.detail?.display || "embed")
+      const blockId = ce.detail?.blockId || crypto.randomUUID()
+      const icon = ce.detail?.icon ?? null
       const v = viewRef.current
       if (!v) return
       const nodeType = editorSchema.nodes.page_link
@@ -910,10 +912,143 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
         insertPos = doc.content.size - last.nodeSize
       }
 
-      const linkNode = nodeType.create({ pageId, title, display })
+      const linkNode = nodeType.create({ blockId, pageId, title, icon, display })
       v.dispatch(v.state.tr.insert(insertPos, linkNode).scrollIntoView())
     }
     window.addEventListener("reductai:append-page-link", onAppendPageLink as EventListener)
+    
+    // Also listen for insert-page-embed event (alias for append-page-link with embed display)
+    const onInsertPageEmbed = (e: Event) => {
+      const ce = e as CustomEvent<{ pageId?: string; title?: string; blockId?: string; icon?: string | null; display?: string }>
+      const pageId = String(ce.detail?.pageId || "")
+      if (!pageId) return
+      const title = String(ce.detail?.title || "New page")
+      const display = String(ce.detail?.display || "embed")
+      const blockId = ce.detail?.blockId || crypto.randomUUID()
+      const icon = ce.detail?.icon ?? null
+      const v = viewRef.current
+      if (!v) return
+      const nodeType = editorSchema.nodes.page_link
+      if (!nodeType) return
+
+      const doc = v.state.doc
+      let insertPos = doc.content.size
+      const last = doc.lastChild
+      if (last && last.type === editorSchema.nodes.paragraph && last.content.size === 0) {
+        insertPos = doc.content.size - last.nodeSize
+      }
+
+      const linkNode = nodeType.create({ blockId, pageId, title, icon, display })
+      v.dispatch(v.state.tr.insert(insertPos, linkNode).scrollIntoView())
+    }
+    window.addEventListener("reductai:insert-page-embed", onInsertPageEmbed as EventListener)
+
+    // Reorder page_link embeds in the document based on the given order
+    const onReorderPageEmbeds = (e: Event) => {
+      const ce = e as CustomEvent<{ pageIds?: string[] }>
+      const pageIds = ce.detail?.pageIds
+      if (!pageIds || !Array.isArray(pageIds) || pageIds.length === 0) return
+      
+      const v = viewRef.current
+      if (!v) return
+      const nodeType = editorSchema.nodes.page_link
+      if (!nodeType) return
+
+      // Collect all page_link nodes with their positions
+      const pageLinkNodes: Array<{ node: typeof v.state.doc.firstChild; pos: number; pageId: string }> = []
+      const otherNodes: Array<{ node: typeof v.state.doc.firstChild; pos: number }> = []
+      
+      v.state.doc.forEach((node, offset) => {
+        if (node.type === nodeType) {
+          const pageId = String((node.attrs as Record<string, unknown>).pageId || "")
+          pageLinkNodes.push({ node, pos: offset, pageId })
+        } else {
+          otherNodes.push({ node, pos: offset })
+        }
+      })
+
+      if (pageLinkNodes.length < 2) return // Nothing to reorder
+
+      // Sort page_link nodes based on the given order
+      const orderedPageLinks = [...pageLinkNodes].sort((a, b) => {
+        const idxA = pageIds.indexOf(a.pageId)
+        const idxB = pageIds.indexOf(b.pageId)
+        // If not in the order list, keep at end in original order
+        if (idxA < 0 && idxB < 0) return 0
+        if (idxA < 0) return 1
+        if (idxB < 0) return -1
+        return idxA - idxB
+      })
+
+      // Check if order actually changed
+      const currentOrder = pageLinkNodes.map((n) => n.pageId).join(",")
+      const newOrder = orderedPageLinks.map((n) => n.pageId).join(",")
+      if (currentOrder === newOrder) return // No change needed
+
+      // Rebuild document with new order
+      // Strategy: delete all page_links, then insert them in new order at the end
+      let tr = v.state.tr
+      
+      // Delete page_link nodes from end to start to preserve positions
+      const sortedByPosDesc = [...pageLinkNodes].sort((a, b) => b.pos - a.pos)
+      for (const { pos, node } of sortedByPosDesc) {
+        if (node) {
+          tr = tr.delete(pos, pos + node.nodeSize)
+        }
+      }
+      
+      // Find the end position (before trailing empty paragraph if any)
+      let insertPos = tr.doc.content.size
+      const last = tr.doc.lastChild
+      if (last && last.type === editorSchema.nodes.paragraph && last.content.size === 0) {
+        insertPos = tr.doc.content.size - last.nodeSize
+      }
+      
+      // Insert page_link nodes in new order
+      for (const { node } of orderedPageLinks) {
+        if (node) {
+          tr = tr.insert(insertPos, node)
+          insertPos += node.nodeSize
+        }
+      }
+
+      v.dispatch(tr)
+    }
+    window.addEventListener("reductai:reorder-page-embeds", onReorderPageEmbeds as EventListener)
+
+    // Remove a page_link embed by pageId
+    const onRemovePageEmbed = (e: Event) => {
+      const ce = e as CustomEvent<{ pageId?: string }>
+      const pageId = String(ce.detail?.pageId || "")
+      if (!pageId) return
+      
+      const v = viewRef.current
+      if (!v) return
+      const nodeType = editorSchema.nodes.page_link
+      if (!nodeType) return
+
+      // Find and delete the page_link node with matching pageId
+      let deletePos: number | null = null
+      let deleteSize = 0
+      v.state.doc.descendants((node, pos) => {
+        if (deletePos != null) return false
+        if (node.type !== nodeType) return true
+        const attrs = (node.attrs || {}) as Record<string, unknown>
+        const pid = typeof attrs.pageId === "string" ? attrs.pageId : ""
+        if (pid === pageId) {
+          deletePos = pos
+          deleteSize = node.nodeSize
+          return false
+        }
+        return true
+      })
+
+      if (deletePos != null) {
+        const tr = v.state.tr.delete(deletePos, deletePos + deleteSize)
+        v.dispatch(tr)
+      }
+    }
+    window.addEventListener("reductai:remove-page-embed", onRemovePageEmbed as EventListener)
 
     // Insert a page_link block right after a specific existing page_link (by pageId).
     const onInsertPageLinkAfter = (e: Event) => {
@@ -974,6 +1109,9 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
       if (embedDetectTimerRef.current) window.clearTimeout(embedDetectTimerRef.current)
       window.removeEventListener("reductai:page-title-updated", onTitleUpdated as EventListener)
       window.removeEventListener("reductai:append-page-link", onAppendPageLink as EventListener)
+      window.removeEventListener("reductai:insert-page-embed", onInsertPageEmbed as EventListener)
+      window.removeEventListener("reductai:reorder-page-embeds", onReorderPageEmbeds as EventListener)
+      window.removeEventListener("reductai:remove-page-embed", onRemovePageEmbed as EventListener)
       window.removeEventListener("reductai:insert-page-link-after", onInsertPageLinkAfter as EventListener)
       window.removeEventListener("reductai:pm-editor:focus", onFocusEditor as EventListener)
       view.destroy()

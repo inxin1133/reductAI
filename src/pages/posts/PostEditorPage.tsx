@@ -2126,6 +2126,10 @@ export default function PostEditorPage() {
       endPageDrag()
       return
     }
+    
+    // Get the page being moved and its current parent
+    const fromPage = pageById.get(fromId)
+    const oldParentId = fromPage?.parent_id || null
 
     // Determine new parent and position
     let targetParentId: string | null
@@ -2180,14 +2184,48 @@ export default function PostEditorPage() {
     endPageDrag()
 
     // Call server API
+    const h = authHeaders()
+    if (!h.Authorization) return
+    
     try {
-      const h = authHeaders()
-      if (!h.Authorization) return
-      await fetch(`/api/posts/${fromId}/move`, {
+      const moveRes = await fetch(`/api/posts/${fromId}/move`, {
         method: "POST",
         headers: { ...h, "Content-Type": "application/json" },
         body: JSON.stringify({ targetParentId, afterPageId, beforePageId }),
       })
+      
+      if (!moveRes.ok) {
+        console.error("Move API failed:", await moveRes.text())
+        // Refresh to restore correct state
+        const refreshUrl = categoryId
+          ? `/api/posts/mine?categoryId=${encodeURIComponent(categoryId)}`
+          : "/api/posts/mine"
+        const pagesRes = await fetch(refreshUrl, { headers: h })
+        if (pagesRes.ok) {
+          const pagesData = await pagesRes.json()
+          setMyPages(Array.isArray(pagesData) ? pagesData : [])
+        }
+        return
+      }
+
+      // Refresh myPages to get correct page_order from server (with category filter)
+      let refreshedPages: MyPage[] = []
+      try {
+        const refreshUrl = categoryId
+          ? `/api/posts/mine?categoryId=${encodeURIComponent(categoryId)}`
+          : "/api/posts/mine"
+        const pagesRes = await fetch(refreshUrl, { headers: h })
+        if (pagesRes.ok) {
+          const pagesData = await pagesRes.json()
+          refreshedPages = Array.isArray(pagesData) ? pagesData : []
+          setMyPages(refreshedPages)
+        }
+      } catch {
+        // Ignore refresh error
+      }
+
+      // TODO: Sync embed link order in parent's content when reordering siblings
+      // This feature is temporarily disabled to fix basic drag-and-drop functionality
 
       // If moving inside another page, add embed link to parent's content
       if (indicator.position === "inside" && targetParentId) {
@@ -2197,60 +2235,117 @@ export default function PostEditorPage() {
           const movedPageTitle = movedPage?.title || "Untitled"
           const movedPageIcon = (movedPage as unknown as { icon?: string | null })?.icon || null
 
-          // 1. Fetch parent page content
-          const contentRes = await fetch(`/api/posts/${targetParentId}/content`, {
-            headers: h,
-          })
-          if (!contentRes.ok) return
+          // Check if we're currently viewing the parent page
+          const isViewingParent = String(postId) === String(targetParentId)
+          
+          // Generate unique blockId
+          const blockId = crypto.randomUUID()
 
-          const contentData = await contentRes.json()
-          const docJson = contentData.docJson || { type: "doc", content: [] }
-          const currentVersion = contentData.version || 0
-
-          // 2. Check if embed link already exists (by pageId)
-          const alreadyExists = (docJson.content || []).some((node: { type?: string; attrs?: { pageId?: string } }) => 
-            node.type === "page_link" && node.attrs?.pageId === fromId
-          )
-
-          if (!alreadyExists) {
-            // 3. Generate unique blockId
-            const blockId = crypto.randomUUID()
-
-            // 4. Add page_link embed at the end with correct attrs
-            const newPageLink = {
-              type: "page_link",
-              attrs: {
+          if (isViewingParent) {
+            // If we're viewing the parent page, just insert in editor - autosave will handle persistence
+            window.dispatchEvent(new CustomEvent("reductai:insert-page-embed", {
+              detail: {
                 blockId,
                 pageId: fromId,
                 title: movedPageTitle,
                 icon: movedPageIcon,
                 display: "embed",
               },
-            }
-
-            const updatedDocJson = {
-              ...docJson,
-              content: [...(docJson.content || []), newPageLink],
-            }
-
-            // 5. Save updated parent content
-            await fetch(`/api/posts/${targetParentId}/content`, {
-              method: "POST",
-              headers: { ...h, "Content-Type": "application/json" },
-              body: JSON.stringify({
-                docJson: updatedDocJson,
-                baseVersion: currentVersion,
-              }),
+            }))
+          } else {
+            // If not viewing the parent, save directly to server
+            // 1. Fetch parent page content
+            const contentRes = await fetch(`/api/posts/${targetParentId}/content`, {
+              headers: h,
             })
+            if (!contentRes.ok) return
+
+            const contentData = await contentRes.json()
+            const docJson = contentData.docJson || { type: "doc", content: [] }
+            const currentVersion = contentData.version || 0
+
+            // 2. Check if embed link already exists (by pageId)
+            const alreadyExists = (docJson.content || []).some((node: { type?: string; attrs?: { pageId?: string } }) => 
+              node.type === "page_link" && node.attrs?.pageId === fromId
+            )
+
+            if (!alreadyExists) {
+              // 3. Add page_link embed at the end with correct attrs
+              const newPageLink = {
+                type: "page_link",
+                attrs: {
+                  blockId,
+                  pageId: fromId,
+                  title: movedPageTitle,
+                  icon: movedPageIcon,
+                  display: "embed",
+                },
+              }
+
+              const updatedDocJson = {
+                ...docJson,
+                content: [...(docJson.content || []), newPageLink],
+              }
+
+              // 4. Save updated parent content
+              await fetch(`/api/posts/${targetParentId}/content`, {
+                method: "POST",
+                headers: { ...h, "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  docJson: updatedDocJson,
+                  baseVersion: currentVersion,
+                }),
+              })
+            }
           }
         } catch {
           // Silently fail if embed link couldn't be added
         }
       }
+
+      // If page was moved out of a parent (to top-level or different parent), remove embed from old parent
+      if (oldParentId && oldParentId !== targetParentId) {
+        try {
+          const isViewingOldParent = String(postId) === String(oldParentId)
+          
+          if (isViewingOldParent) {
+            // Dispatch event to remove embed from editor
+            window.dispatchEvent(new CustomEvent("reductai:remove-page-embed", {
+              detail: { pageId: fromId },
+            }))
+          } else {
+            // Remove embed from old parent's content on server
+            const contentRes = await fetch(`/api/posts/${oldParentId}/content`, { headers: h })
+            if (contentRes.ok) {
+              const contentData = await contentRes.json()
+              const docJson = contentData.docJson || { type: "doc", content: [] }
+              const currentVersion = contentData.version || 0
+              
+              // Filter out the page_link for the moved page
+              const filteredContent = (docJson.content || []).filter(
+                (node: { type?: string; attrs?: { pageId?: string } }) =>
+                  !(node.type === "page_link" && node.attrs?.pageId === fromId)
+              )
+              
+              // Only save if content changed
+              if (filteredContent.length !== (docJson.content || []).length) {
+                const updatedDocJson = { ...docJson, content: filteredContent }
+                await fetch(`/api/posts/${oldParentId}/content`, {
+                  method: "POST",
+                  headers: { ...h, "Content-Type": "application/json" },
+                  body: JSON.stringify({ docJson: updatedDocJson, baseVersion: currentVersion }),
+                })
+              }
+            }
+          }
+        } catch {
+          // Silently fail
+        }
+      }
     } catch {
       // If API fails, we could reload, but for now just leave the optimistic update
     }
-  }, [draggingPageId, pageDropIndicator, childrenByParent, pageById, endPageDrag])
+  }, [draggingPageId, pageDropIndicator, childrenByParent, pageById, endPageDrag, postId, categoryId])
 
   // 페이지 트리 렌더링 
   const renderTreeNode = (p: MyPage, depth: number) => {
@@ -2844,13 +2939,13 @@ export default function PostEditorPage() {
             </HoverCard>
           ) : null}
 
-          <Breadcrumb className="min-w-0 overflow-hidden">
-            <BreadcrumbList className="min-w-0 overflow-hidden flex-nowrap whitespace-nowrap break-normal">
+          <Breadcrumb className="min-w-0 overflow-hidden flex-1">
+            <BreadcrumbList className="min-w-0 overflow-hidden flex-nowrap flex-1">
               {breadcrumbData.visible.map((c, idx) => {
                 const isLast = idx === breadcrumbData.visible.length - 1
                 if (c.id === "__ellipsis__") {
                   return (
-                    <BreadcrumbItem key={`ellipsis_${idx}`}>
+                    <BreadcrumbItem key={`ellipsis_${idx}`} className="shrink-0">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild className="gap-0">
                           <Button                            
@@ -2879,35 +2974,35 @@ export default function PostEditorPage() {
                           ))}
                         </DropdownMenuContent>
                       </DropdownMenu>
-                      {!isLast ? <BreadcrumbSeparator /> : null}
+                      {!isLast ? <BreadcrumbSeparator className="shrink-0" /> : null}
                     </BreadcrumbItem>
                   )
                 }
                 const iconEl = renderHeaderIcon(c.id)
                 const label = (
-                  <span className="inline-flex items-center gap-1.5 max-w-[160px] min-w-[30px] min-w-0 align-bottom">
+                  <span className="flex items-center gap-1.5 min-w-[40px] max-w-full overflow-hidden">
                     {iconEl ? <span className="shrink-0">{iconEl}</span> : null}
-                    <span className="min-w-0 truncate">{c.title || "New page"}</span>
+                    <span className="truncate">{c.title || "New page"}</span>
                   </span>
                 )
                 return (
-                  <BreadcrumbItem key={c.id} className="min-w-0">
+                  <BreadcrumbItem key={c.id} className="min-w-0 shrink overflow-hidden">
                     {isLast ? (
-                      <BreadcrumbPage className="min-w-0">{label}</BreadcrumbPage>
+                      <BreadcrumbPage className="min-w-0 overflow-hidden block">{label}</BreadcrumbPage>
                     ) : (
                       <BreadcrumbLink
                         asChild
-                        className="min-w-0 cursor-pointer"
+                        className="min-w-0 overflow-hidden cursor-pointer block"
                         onClick={(e) => {
                           e.preventDefault()
                           if (isMobile) setIsNavDrawerOpen(false)
                           navigate(`/posts/${c.id}/edit${categoryQS}`)
                         }}
                       >
-                        <span className="min-w-0">{label}</span>
+                        <span className="min-w-0 overflow-hidden block">{label}</span>
                       </BreadcrumbLink>
                     )}
-                    {!isLast ? <BreadcrumbSeparator /> : null}
+                    {!isLast ? <BreadcrumbSeparator className="shrink-0" /> : null}
                   </BreadcrumbItem>
                 )
               })}
