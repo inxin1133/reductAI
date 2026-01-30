@@ -1198,17 +1198,32 @@ export default function PostEditorPage() {
   // Safe navigation requested by PageLinkNodeView
   useEffect(() => {
     function onOpenPost(e: Event) {
-      const ce = e as CustomEvent<{ postId?: string; focusTitle?: boolean; forceSave?: boolean; categoryId?: string | null }>
+      const ce = e as CustomEvent<{
+        postId?: string
+        focusTitle?: boolean
+        forceSave?: boolean
+        categoryId?: string | null
+        fromEmbed?: boolean
+      }>
       const targetId = String(ce.detail?.postId || "")
       if (!targetId) return
       const focusTitle = Boolean(ce.detail?.focusTitle)
       const forceSave = Boolean(ce.detail?.forceSave)
+      const fromEmbed = Boolean(ce.detail?.fromEmbed)
       // Use categoryId from event if provided, otherwise fall back to current categoryQS
       const targetCategoryId = ce.detail?.categoryId
       const targetCategoryQS = targetCategoryId
         ? `?category=${encodeURIComponent(targetCategoryId)}`
         : categoryQS
       navigatingRef.current = targetId
+      // If navigation came from an embed in the current page, force open this page in the sidebar.
+      if (fromEmbed && postId) {
+        setExpanded((prev) => {
+          const next = new Set(prev)
+          next.add(String(postId))
+          return next
+        })
+      }
       void (async () => {
         // IMPORTANT:
         // The embed flow may navigate immediately after inserting the embed link, before React `dirty`

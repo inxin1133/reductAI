@@ -205,17 +205,17 @@ export class PageLinkNodeView implements NodeView {
     link2Icon.innerHTML = LUCIDE_ICON_SVGS.Link2
     titleWrap.appendChild(link2Icon)
 
-    // Page icon (emoji or File/FileText) - clickable to open icon picker
+    // Page icon (emoji or File/FileText) - clickable only for embed
     const pageIcon = document.createElement("button")
     pageIcon.type = "button"
-    pageIcon.className = "shrink-0 h-6 w-6 flex items-center justify-center rounded-md hover:bg-neutral-200"
+    pageIcon.className = "shrink-0 h-6 w-6 flex items-center justify-center rounded-md"
     pageIcon.setAttribute("data-role", "page-icon")
-    pageIcon.title = "아이콘 변경"
     titleWrap.appendChild(pageIcon)
 
     const titleBtn = document.createElement("button")
     titleBtn.type = "button"
-    titleBtn.className = "font-semibold text-left hover:underline underline-offset-2"
+    titleBtn.className =
+      "font-semibold text-left underline underline-offset-2 decoration-solid decoration-muted-foreground/50 decoration-[1px] cursor-pointer"
     titleBtn.setAttribute("data-role", "title-btn")
     titleWrap.appendChild(titleBtn)
 
@@ -262,13 +262,12 @@ export class PageLinkNodeView implements NodeView {
       this.commitTitle()
     })
 
-    titleBtn.addEventListener("mousedown", stopMouseDown)
-    titleBtn.addEventListener("click", (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      const pageId = String((this.view.state.doc.nodeAt(this.getPos())?.attrs as any)?.pageId || "")
+    const navigateToPage = () => {
+      const curNode = this.view.state.doc.nodeAt(this.getPos())
+      const pageId = String((curNode?.attrs as any)?.pageId || "")
+      const display = String((curNode?.attrs as any)?.display || "link")
       if (!pageId) return
-      
+
       // Check access permission before navigating and get category_id
       void (async () => {
         try {
@@ -283,19 +282,33 @@ export class PageLinkNodeView implements NodeView {
           const categoryId = data.category_id || null
           // Let the host page decide how to navigate (and optionally flush autosave first).
           // Include categoryId so the sidebar can switch to the correct category.
-          window.dispatchEvent(new CustomEvent("reductai:open-post", { detail: { postId: pageId, categoryId } }))
+          window.dispatchEvent(
+            new CustomEvent("reductai:open-post", {
+              detail: { postId: pageId, categoryId, fromEmbed: display === "embed" },
+            })
+          )
         } catch {
           alert("페이지에 접근하는 중 오류가 발생했습니다.")
         }
       })()
+    }
+
+    titleBtn.addEventListener("mousedown", stopMouseDown)
+    titleBtn.addEventListener("click", (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      navigateToPage()
     })
 
-    // Page icon click -> open icon picker
+    // Page icon click -> open icon picker (embed only)
     pageIcon.addEventListener("mousedown", stopMouseDown)
     pageIcon.addEventListener("click", (e) => {
       e.preventDefault()
       e.stopPropagation()
-      const pageId = String((this.view.state.doc.nodeAt(this.getPos())?.attrs as any)?.pageId || "")
+      const curNode = this.view.state.doc.nodeAt(this.getPos())
+      const curDisplay = String((curNode?.attrs as any)?.display || "link")
+      if (curDisplay !== "embed") return
+      const pageId = String((curNode?.attrs as any)?.pageId || "")
       if (!pageId) return
       
       // Get the bounding rect of the icon for popover positioning
@@ -308,6 +321,16 @@ export class PageLinkNodeView implements NodeView {
           anchorRect: { left: rect.left, top: rect.bottom, width: rect.width, height: rect.height },
         },
       }))
+    })
+
+    // Entire block click -> navigate (avoid when editing embed title)
+    dom.addEventListener("click", (e) => {
+      // Do not navigate while editing the embed title input
+      if (this.titleInput.style.display === "block") return
+      // Avoid double-handling when a child already handled navigation
+      if ((e.target as HTMLElement | null)?.closest?.("[data-role=\"title-input\"]")) return
+      if ((e.target as HTMLElement | null)?.closest?.("[data-role=\"page-icon\"]")) return
+      navigateToPage()
     })
 
     // Listen for icon updates from the icon picker
@@ -400,6 +423,19 @@ export class PageLinkNodeView implements NodeView {
       }
     })
     
+    // Page icon interactivity: embed only
+    if (display === "embed") {
+      this.pageIconEl.className = "shrink-0 h-6 w-6 flex items-center justify-center rounded-md hover:bg-neutral-200"
+      this.pageIconEl.title = "아이콘 변경"
+      this.pageIconEl.style.pointerEvents = "auto"
+      this.pageIconEl.tabIndex = 0
+    } else {
+      this.pageIconEl.className = "shrink-0 h-6 w-6 flex items-center justify-center rounded-md"
+      this.pageIconEl.title = ""
+      this.pageIconEl.style.pointerEvents = "none"
+      this.pageIconEl.tabIndex = -1
+    }
+
     // Show/hide Link2 icon based on display type
     this.link2IconEl.style.display = display === "link" ? "inline" : "none"
 
