@@ -76,6 +76,12 @@ docker compose up --build
 ## 내리기
 docker compose down
 
+# 서비스만 재시작
+docker compose up -d --build post-service
+
+# 서비스만 간단히 재시작
+docker compose restart post-service
+
 ## 내리고 재빌드
 docker compose down      
 docker compose up -d --build

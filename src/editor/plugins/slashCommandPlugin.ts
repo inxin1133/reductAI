@@ -80,7 +80,8 @@ export function slashCommandPlugin(schema: Schema) {
         }
 
         const text = getTextBeforeCursorFromState(newState)
-        const m = text.match(/(?:^|\s)\/([a-zA-Z0-9_-]{0,30})$/)
+        // Allow IME composition and non-Latin characters by matching any non-space token.
+        const m = text.match(/(?:^|\s)\/([^\s/]{0,30})$/u)
         if (!m) {
           return { active: false, query: "", from: 0, to: 0, index: 0, items: [], dismissed }
         }

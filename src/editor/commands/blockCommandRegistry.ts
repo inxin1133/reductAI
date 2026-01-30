@@ -256,9 +256,9 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
       },
     },
     {
-      key: "page",
+      key: "link",
       title: "Page Link",
-      keywords: ["page", "link"],
+      keywords: ["link", "링크"],
       applyReplace: () => {
         // Open page link picker via event (handled by ProseMirrorEditor)
         window.dispatchEvent(new CustomEvent("reductai:open-page-link-picker", { detail: { display: "link" } }))
@@ -269,9 +269,9 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
       },
     },
     {
-      key: "embed",
-      title: "Page Embed",
-      keywords: ["embed", "page"],
+      key: "page",
+      title: "New Page",
+      keywords: ["page", "new", "페이지", "새 페이지"],
       applyReplace: (view) => {
         const n = schema.nodes.page_link
         if (!n) return

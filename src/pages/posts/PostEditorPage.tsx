@@ -58,7 +58,6 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
 import EmojiPicker, { Theme } from "emoji-picker-react"
@@ -605,10 +604,11 @@ export default function PostEditorPage() {
   }, [categoryId, navigate])
 
   // Tree row actions (rename / duplicate / delete / add child)
-  const [renameOpen, setRenameOpen] = useState(false)
+  // Inline rename state (no modal, like category rename)
   const [renameTargetId, setRenameTargetId] = useState<string>("")
   const [renameValue, setRenameValue] = useState<string>("")
   const renameInputRef = useRef<HTMLInputElement | null>(null)
+  const renameFocusUntilRef = useRef<number>(0)
 
   const PM_TOOLBAR_OPEN_KEY = "reductai:pmEditor:toolbarOpen"
   const [pmToolbarOpen, setPmToolbarOpen] = useState<boolean>(() => {
@@ -1644,8 +1644,16 @@ export default function PostEditorPage() {
       const title = cur?.title || "New page"
       setRenameTargetId(String(id))
       setRenameValue(title)
-      setRenameOpen(true)
-      window.setTimeout(() => renameInputRef.current?.focus(), 0)
+      renameFocusUntilRef.current = Date.now() + 250
+      window.setTimeout(() => {
+        const input = renameInputRef.current
+        if (input) {
+          input.focus()
+          // Move cursor to end of text
+          const len = input.value.length
+          input.setSelectionRange(len, len)
+        }
+      }, 0)
     },
     [pageById]
   )
@@ -1653,7 +1661,11 @@ export default function PostEditorPage() {
   const applyRename = useCallback(async () => {
     const id = String(renameTargetId || "").trim()
     const title = String(renameValue || "").trim()
-    if (!id || !title) return
+    if (!id || !title) {
+      setRenameTargetId("")
+      setRenameValue("")
+      return
+    }
     const token = localStorage.getItem("token")
     if (!token) return
     try {
@@ -1665,12 +1677,18 @@ export default function PostEditorPage() {
       setMyPages((prev) => prev.map((p) => (String(p.id) === id ? { ...p, title } : p)))
       window.dispatchEvent(new CustomEvent("reductai:page-title-updated", { detail: { postId: id, title } }))
       if (String(postId || "") === id) setPageTitle(title)
-      setRenameOpen(false)
+      setRenameTargetId("")
+      setRenameValue("")
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to rename"
       setError(msg)
     }
   }, [postId, renameTargetId, renameValue])
+
+  const cancelRename = useCallback(() => {
+    setRenameTargetId("")
+    setRenameValue("")
+  }, [])
 
   const createChildPage = useCallback(
     async (parentId: string) => {
@@ -2618,9 +2636,35 @@ export default function PostEditorPage() {
                 </Tabs>
               </PopoverContent>
             </Popover>
-            <div className="flex flex-1" title={p.title || "New page"}>
-              <p className="line-clamp-1">{p.title || "New page"}</p>   
-            </div>   
+            {renameTargetId === id ? (
+              <input
+                ref={renameInputRef}
+                className="min-w-0 w-full flex-1 bg-background outline-none rounded-sm px-1 py-0.5 text-sm border border-border"
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    void applyRename()
+                  } else if (e.key === "Escape") {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    cancelRename()
+                  }
+                }}
+                onBlur={() => {
+                  if (Date.now() < renameFocusUntilRef.current) return
+                  void applyRename()
+                }}
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              />
+            ) : (
+              <div className="flex flex-1 min-w-0 overflow-hidden" title={p.title || "New page"}>
+                <p className="line-clamp-1 break-all">{p.title || "New page"}</p>   
+              </div>
+            )}   
             <div className="flex items-center gap-1 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto transition-opacity">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -2635,10 +2679,19 @@ export default function PostEditorPage() {
                     <Ellipsis className="size-3" />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-44" onPointerDown={(e) => e.stopPropagation()}>
-                  <DropdownMenuItem
-                    onSelect={(e) => {
+                <DropdownMenuContent
+                  align="end"
+                  className="w-44"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onCloseAutoFocus={(e) => {
+                    // Prevent Radix from restoring focus to the trigger button (it steals focus from our rename input).
+                    if (renameTargetId) {
                       e.preventDefault()
+                    }
+                  }}
+                >
+                  <DropdownMenuItem
+                    onSelect={() => {
                       openRename(id)
                     }}
                   >
@@ -3472,59 +3525,6 @@ export default function PostEditorPage() {
         </div>
       </div>
     </AppShell>
-    <Dialog
-      open={renameOpen}
-      onOpenChange={(v) => {
-        setRenameOpen(v)
-        if (!v) {
-          setRenameTargetId("")
-          setRenameValue("")
-        }
-      }}
-    >
-      <DialogContent
-        className="sm:max-w-md"
-        onPointerDownOutside={(e) => {
-          // allow closing
-          void e
-        }}
-      >
-        <DialogHeader>
-          <DialogTitle>이름 바꾸기</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-2">
-          <Input
-            ref={renameInputRef}
-            value={renameValue}
-            onChange={(e) => setRenameValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault()
-                void applyRename()
-              }
-            }}
-            placeholder="페이지 이름"
-          />
-        </div>
-        <DialogFooter className="gap-2 sm:gap-2">
-          <Button
-            variant="outline"
-            onClick={() => {
-              setRenameOpen(false)
-            }}
-          >
-            취소
-          </Button>
-          <Button
-            onClick={() => {
-              void applyRename()
-            }}
-          >
-            저장
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
 
     {/* Embed block icon picker popover */}
     <Popover
