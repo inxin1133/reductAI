@@ -84,8 +84,32 @@ function createEmptyHeading(schema: Schema, level: 1 | 2 | 3) {
   return schema.nodes.heading.createAndFill({ level })!
 }
 
+const CODE_BLOCK_PREF_KEY = "reductai:code-block-settings"
+
+function readCodeBlockPrefs(): { language?: string; wrap?: boolean; lineNumbers?: boolean } {
+  if (typeof window === "undefined") return {}
+  try {
+    const raw = window.localStorage.getItem(CODE_BLOCK_PREF_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as { language?: string; wrap?: boolean; lineNumbers?: boolean }
+    if (!parsed || typeof parsed !== "object") return {}
+    return parsed
+  } catch {
+    return {}
+  }
+}
+
+function getCodeBlockDefaultAttrs() {
+  const prefs = readCodeBlockPrefs()
+  return {
+    language: String(prefs.language || "plain"),
+    wrap: prefs.wrap ?? true,
+    lineNumbers: prefs.lineNumbers !== false,
+  }
+}
+
 function createEmptyCodeBlock(schema: Schema) {
-  return schema.nodes.code_block.createAndFill({ language: "plain" })!
+  return schema.nodes.code_block.createAndFill(getCodeBlockDefaultAttrs())!
 }
 
 function createEmptyBlockquote(schema: Schema) {
@@ -293,7 +317,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
       key: "code",
       title: "코드 블록",
       keywords: ["code", "codeblock", "코드", "코드블록"],
-      applyReplace: (view) => setBlockTypeOnSelection(view, schema.nodes.code_block),
+      applyReplace: (view) => setBlockTypeOnSelection(view, schema.nodes.code_block, getCodeBlockDefaultAttrs()),
       applyInsert: (view, args) =>
         insertBlockRelative(view, { ...args, node: createEmptyCodeBlock(schema) }),
     },

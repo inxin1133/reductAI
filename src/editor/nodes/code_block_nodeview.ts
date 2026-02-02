@@ -7,6 +7,10 @@ type CodeBlockAttrs = { language?: string; wrap?: boolean; lineNumbers?: boolean
 
 type LangOption = { value: string; label: string }
 
+type CodeBlockPrefs = { language?: string; wrap?: boolean; lineNumbers?: boolean }
+
+const CODE_BLOCK_PREF_KEY = "reductai:code-block-settings"
+
 function normalizeLang(lang: string) {
   const l = String(lang || "plain").toLowerCase().trim()
   if (!l) return "plain"
@@ -51,6 +55,15 @@ const LIST_ORDERED_ICON: IconNode = [
   ["path", { d: "M4 9h2" }],
   ["path", { d: "M6.5 20H3.4c0-1 2.6-1.925 2.6-3.5a1.5 1.5 0 0 0-2.6-1.02" }],
 ]
+
+function writeCodeBlockPrefs(next: CodeBlockPrefs) {
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.setItem(CODE_BLOCK_PREF_KEY, JSON.stringify(next))
+  } catch {
+    // ignore
+  }
+}
 
 function createIcon(iconNode: IconNode) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg")
@@ -110,6 +123,12 @@ export class CodeBlockNodeView implements NodeView {
     const actions = document.createElement("div")
     actions.className = "pm-code-block-actions"
     popover.appendChild(actions)
+
+    const divider = document.createElement("span")
+    divider.className = "pm-code-block-divider"
+    divider.setAttribute("aria-hidden", "true")
+    divider.textContent = "|"
+    actions.appendChild(divider)
 
     const copyButton = document.createElement("button")
     copyButton.type = "button"
@@ -181,6 +200,12 @@ export class CodeBlockNodeView implements NodeView {
       } catch {
         // ignore
       }
+      const merged = { ...curAttrs, ...next }
+      writeCodeBlockPrefs({
+        language: normalizeLang(String(merged.language || "plain")),
+        wrap: merged.wrap ?? true,
+        lineNumbers: merged.lineNumbers !== false,
+      })
     }
 
     // Change language via dropdown

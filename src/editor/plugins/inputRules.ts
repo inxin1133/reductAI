@@ -3,6 +3,30 @@ import { Fragment } from "prosemirror-model"
 import { TextSelection } from "prosemirror-state"
 import { InputRule, wrappingInputRule, textblockTypeInputRule } from "prosemirror-inputrules"
 
+const CODE_BLOCK_PREF_KEY = "reductai:code-block-settings"
+
+function readCodeBlockPrefs(): { language?: string; wrap?: boolean; lineNumbers?: boolean } {
+  if (typeof window === "undefined") return {}
+  try {
+    const raw = window.localStorage.getItem(CODE_BLOCK_PREF_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as { language?: string; wrap?: boolean; lineNumbers?: boolean }
+    if (!parsed || typeof parsed !== "object") return {}
+    return parsed
+  } catch {
+    return {}
+  }
+}
+
+function getCodeBlockDefaultAttrs() {
+  const prefs = readCodeBlockPrefs()
+  return {
+    language: String(prefs.language || "plain"),
+    wrap: prefs.wrap ?? true,
+    lineNumbers: prefs.lineNumbers !== false,
+  }
+}
+
 function markInputRule(regexp: RegExp, markType: any) {
   return new InputRule(regexp, (state, match, start, end) => {
     const m = match[match.length - 1]
@@ -267,7 +291,7 @@ export function buildInputRules(schema: Schema) {
         // Delete the triple backticks only; keep the rest as code content.
         tr.delete(start, Math.min(end, start + 3))
         // Convert current block to code_block
-        tr.setBlockType(tr.selection.from, tr.selection.to, schema.nodes.code_block)
+        tr.setBlockType(tr.selection.from, tr.selection.to, schema.nodes.code_block, getCodeBlockDefaultAttrs())
         // Ensure cursor is inside the code_block
         setCursorInsideFirstTextblock(tr, $from.before($from.depth), $from.after($from.depth))
         return tr

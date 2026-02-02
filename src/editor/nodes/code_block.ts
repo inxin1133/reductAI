@@ -8,7 +8,7 @@ export const codeBlockNodeSpec: NodeSpec = {
     blockId: { default: null },
     bgColor: { default: "" },
     indent: { default: 0 },
-    wrap: { default: false },
+    wrap: { default: true },
     lineNumbers: { default: true },
   },
   content: "text*",
