@@ -202,6 +202,7 @@ export class PageLinkNodeView implements NodeView {
     const link2Icon = document.createElement("span")
     link2Icon.className = "shrink-0 text-muted-foreground"
     link2Icon.setAttribute("data-role", "link2-icon")
+    link2Icon.title = "페이지 링크"
     link2Icon.innerHTML = LUCIDE_ICON_SVGS.Link2
     titleWrap.appendChild(link2Icon)
 
