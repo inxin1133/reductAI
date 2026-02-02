@@ -2,6 +2,7 @@ import type { Schema, Node as PMNode } from "prosemirror-model"
 import type { EditorView } from "prosemirror-view"
 import { wrapInList } from "prosemirror-schema-list"
 import { TextSelection } from "prosemirror-state"
+import { cmdBlockquote, cmdChecklist, cmdDuplicateBlock } from "./index"
 
 export type BlockInsertSide = "before" | "after"
 
@@ -44,6 +45,20 @@ function insertBlockRelative(view: EditorView, args: { blockFrom: number; blockT
   view.focus()
 }
 
+function duplicateBlockRelative(view: EditorView, args: { blockFrom: number; blockTo: number; side: BlockInsertSide }) {
+  const { state, dispatch } = view
+  const node = state.doc.nodeAt(args.blockFrom)
+  if (!node) return
+  const insertPos = args.side === "before" ? args.blockFrom : args.blockTo + 1
+  let tr = state.tr.insert(insertPos, node)
+
+  // Place cursor inside the duplicated node if possible
+  const resolved = tr.doc.resolve(Math.min(insertPos + 1, tr.doc.content.size))
+  tr = tr.setSelection(TextSelection.near(resolved, 1)).scrollIntoView()
+  dispatch(tr)
+  view.focus()
+}
+
 function replaceCurrentBlock(view: EditorView, node: PMNode) {
   const range = findNearestBlockRange(view)
   if (!range) return
@@ -73,6 +88,13 @@ function createEmptyCodeBlock(schema: Schema) {
   return schema.nodes.code_block.createAndFill({ language: "plain" })!
 }
 
+function createEmptyBlockquote(schema: Schema) {
+  const blockquote = schema.nodes.blockquote
+  const para = schema.nodes.paragraph
+  if (!blockquote || !para) return null
+  return blockquote.create(null, [para.createAndFill()!])
+}
+
 function createBulletList2(schema: Schema) {
   const bullet = schema.nodes.bullet_list
   const item = schema.nodes.list_item
@@ -100,6 +122,15 @@ function createTable2x2(schema: Schema) {
   const mkCell = () => cell.createAndFill(null, paragraph.createAndFill())!
   const mkRow = () => row.create(null, [mkCell(), mkCell()])
   return table.create(null, [mkRow(), mkRow()])
+}
+
+function createCheckList(schema: Schema) {
+  const bullet = schema.nodes.bullet_list
+  const item = schema.nodes.list_item
+  const para = schema.nodes.paragraph
+  if (!bullet || !item || !para) return null
+  const li = item.create({ checked: false }, [para.createAndFill()!])
+  return bullet.create({ listKind: "check" }, [li])
 }
 
 function authHeaders(): Record<string, string> {
@@ -139,7 +170,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     {
       key: "text",
       title: "Text",
-      keywords: ["text", "paragraph"],
+      keywords: ["text", "paragraph", "텍스트", "문장", "문단"],
       applyReplace: (view) => setBlockTypeOnSelection(view, schema.nodes.paragraph),
       applyInsert: (view, args) =>
         insertBlockRelative(view, { ...args, node: createEmptyParagraph(schema) }),
@@ -147,7 +178,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     {
       key: "h1",
       title: "Heading 1",
-      keywords: ["h1", "heading"],
+      keywords: ["h1", "heading", "H1", "제목1", "제목 1", "헤드라인1", "헤드라인 1"],
       applyReplace: (view) => setBlockTypeOnSelection(view, schema.nodes.heading, { level: 1 }),
       applyInsert: (view, args) =>
         insertBlockRelative(view, { ...args, node: createEmptyHeading(schema, 1) }),
@@ -155,7 +186,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     {
       key: "h2",
       title: "Heading 2",
-      keywords: ["h2", "heading"],
+      keywords: ["h2", "heading", "H2", "제목2", "제목 2", "헤드라인2", "헤드라인 2"],
       applyReplace: (view) => setBlockTypeOnSelection(view, schema.nodes.heading, { level: 2 }),
       applyInsert: (view, args) =>
         insertBlockRelative(view, { ...args, node: createEmptyHeading(schema, 2) }),
@@ -163,7 +194,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     {
       key: "h3",
       title: "Heading 3",
-      keywords: ["h3", "heading"],
+      keywords: ["h3", "heading", "H3", "제목3", "제목 3", "헤드라인3", "헤드라인 3"],
       applyReplace: (view) => setBlockTypeOnSelection(view, schema.nodes.heading, { level: 3 }),
       applyInsert: (view, args) =>
         insertBlockRelative(view, { ...args, node: createEmptyHeading(schema, 3) }),
@@ -171,7 +202,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     {
       key: "list",
       title: "Bullet List",
-      keywords: ["list", "bullet", "ul"],
+      keywords: ["list", "bullet", "ul", "글머리 기호 목록", "목록", "블릿", "리스트"],
       applyReplace: (view) => {
         const cmd = wrapInList(schema.nodes.bullet_list)
         cmd(view.state, view.dispatch, view)
@@ -186,7 +217,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     {
       key: "ordered",
       title: "Ordered List",
-      keywords: ["ordered", "ol", "number"],
+      keywords: ["ordered", "ol", "number", "번호", "번호매기기", "번호매기기 목록"],
       applyReplace: (view) => {
         const cmd = wrapInList(schema.nodes.ordered_list)
         cmd(view.state, view.dispatch, view)
@@ -199,9 +230,39 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
       },
     },
     {
+      key: "checklist",
+      title: "Check List",
+      keywords: ["check", "checklist", "todo", "task", "체크", "체크리스트", "할일", "작업"],
+      applyReplace: (view) => {
+        const cmd = cmdChecklist(schema)
+        cmd(view.state, view.dispatch)
+        view.focus()
+      },
+      applyInsert: (view, args) => {
+        const node = createCheckList(schema)
+        if (!node) return
+        insertBlockRelative(view, { ...args, node })
+      },
+    },
+    {
+      key: "quote",
+      title: "Quote",
+      keywords: ["quote", "blockquote", "인용"],
+      applyReplace: (view) => {
+        const cmd = cmdBlockquote(schema)
+        cmd(view.state, view.dispatch)
+        view.focus()
+      },
+      applyInsert: (view, args) => {
+        const node = createEmptyBlockquote(schema)
+        if (!node) return
+        insertBlockRelative(view, { ...args, node })
+      },
+    },
+    {
       key: "table",
       title: "Table (2x2)",
-      keywords: ["table", "grid"],
+      keywords: ["table", "grid", "표", "테이블"],
       applyReplace: (view) => {
         const t = createTable2x2(schema)
         if (!t) return
@@ -216,7 +277,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     {
       key: "divider",
       title: "Divider",
-      keywords: ["divider", "hr", "horizontal"],
+      keywords: ["divider", "hr", "horizontal", "구분선", "선"],
       applyReplace: (view) => {
         const hr = schema.nodes.horizontal_rule
         if (!hr) return
@@ -231,7 +292,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     {
       key: "code",
       title: "Code Block",
-      keywords: ["code", "codeblock"],
+      keywords: ["code", "codeblock", "코드", "코드블록"],
       applyReplace: (view) => setBlockTypeOnSelection(view, schema.nodes.code_block),
       applyInsert: (view, args) =>
         insertBlockRelative(view, { ...args, node: createEmptyCodeBlock(schema) }),
@@ -239,7 +300,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     {
       key: "image",
       title: "Image",
-      keywords: ["image", "img", "picture"],
+      keywords: ["image", "img", "picture", "이미지"],
       applyReplace: (view) => {
         const img = schema.nodes.image
         if (!img) return
@@ -253,6 +314,19 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
         const src = window.prompt("Image URL?", "https://") || ""
         if (!src.trim()) return
         insertBlockRelative(view, { ...args, node: img.create({ src: src.trim() }) })
+      },
+    },
+    {
+      key: "duplicate",
+      title: "Duplicate block",
+      keywords: ["duplicate", "copy", "duplicate block", "복제", "복사"],
+      applyReplace: (view) => {
+        const cmd = cmdDuplicateBlock(schema)
+        cmd(view.state, view.dispatch)
+        view.focus()
+      },
+      applyInsert: (view, args) => {
+        duplicateBlockRelative(view, args)
       },
     },
     {

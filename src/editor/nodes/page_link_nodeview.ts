@@ -1,5 +1,8 @@
+import React from "react"
 import type { Node as PMNode } from "prosemirror-model"
 import type { EditorView, NodeView } from "prosemirror-view"
+import { createRoot, type Root } from "react-dom/client"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 type Preview = { title: string; summary: string; icon: string | null; hasContent: boolean }
 
@@ -177,6 +180,7 @@ async function updatePostTitle(pageId: string, title: string): Promise<boolean> 
 export class PageLinkNodeView implements NodeView {
   dom: HTMLElement
   private link2IconEl: HTMLSpanElement
+  private link2TooltipRoot: Root | null = null
   private pageIconEl: HTMLButtonElement
   private titleBtn: HTMLButtonElement
   private titleInput: HTMLInputElement
@@ -202,8 +206,24 @@ export class PageLinkNodeView implements NodeView {
     const link2Icon = document.createElement("span")
     link2Icon.className = "shrink-0 text-muted-foreground"
     link2Icon.setAttribute("data-role", "link2-icon")
-    link2Icon.title = "페이지 링크"
-    link2Icon.innerHTML = LUCIDE_ICON_SVGS.Link2
+    // Render Link2 icon with shared Tooltip component.
+    this.link2TooltipRoot = createRoot(link2Icon)
+    this.link2TooltipRoot.render(
+      React.createElement(
+        Tooltip,
+        null,
+        React.createElement(
+          TooltipTrigger,
+          { asChild: true },
+          React.createElement("span", {
+            className: "inline-flex items-center",
+            "aria-label": "페이지 링크",
+            dangerouslySetInnerHTML: { __html: LUCIDE_ICON_SVGS.Link2 },
+          })
+        ),
+        React.createElement(TooltipContent, { sideOffset: 4, className: "z-[200]" }, "페이지 링크")
+      )
+    )
     titleWrap.appendChild(link2Icon)
 
     // Page icon (emoji or File/FileText) - clickable only for embed
@@ -510,6 +530,10 @@ export class PageLinkNodeView implements NodeView {
     if (this.iconUpdateHandler) {
       window.removeEventListener("reductai:page-icon-updated", this.iconUpdateHandler)
       this.iconUpdateHandler = null
+    }
+    if (this.link2TooltipRoot) {
+      this.link2TooltipRoot.unmount()
+      this.link2TooltipRoot = null
     }
   }
 }

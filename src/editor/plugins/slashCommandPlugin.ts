@@ -36,7 +36,7 @@ function deleteSlashQuery(view: EditorView, from: number, to: number) {
 }
 
 function makeCommands(schema: Schema): SlashCmd[] {
-  const blocks = getBlockCommandRegistry(schema)
+  const blocks = getBlockCommandRegistry(schema).filter((b) => b.key !== "duplicate")
   return blocks.map((b) => ({
     key: b.key,
     title: b.title,
@@ -138,8 +138,19 @@ export function slashCommandPlugin(schema: Schema) {
         // position to cursor
         const coords = view.coordsAtPos(st.to)
         dom.style.left = `${coords.left}px`
-        dom.style.top = `${coords.bottom + 6}px`
         dom.style.display = "block"
+
+        // Flip menu upward when near the viewport bottom
+        const margin = 6
+        const menuHeight = dom.offsetHeight || 0
+        const spaceBelow = window.innerHeight - coords.bottom - margin
+        const spaceAbove = coords.top - margin
+        if (menuHeight && spaceBelow < menuHeight && spaceAbove > spaceBelow) {
+          const top = Math.max(8, coords.top - menuHeight - margin)
+          dom.style.top = `${top}px`
+        } else {
+          dom.style.top = `${coords.bottom + margin}px`
+        }
       }
 
       function onClick(e: MouseEvent) {

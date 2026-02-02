@@ -2069,7 +2069,7 @@ export default function Timeline() {
         {/* Chat Messages Scroll Area 사이드바 대화목록 구역 */}
         <div
           ref={messagesScrollRef}
-          className="overflow-y-auto p-6 flex flex-col w-full gap-4 items-center h-full"
+          className="overflow-y-auto px-6 pb-6 pt-[84px] flex flex-col w-full gap-4 items-center h-full"
           onScroll={() => {
             const el = messagesScrollRef.current
             if (!el) return

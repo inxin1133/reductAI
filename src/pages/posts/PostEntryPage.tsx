@@ -102,7 +102,7 @@ export default function PostEntryPage() {
   // Keep layout stable while redirecting (avoid flicker between routes)
   return (
     <AppShell>
-      <div className="h-full w-full overflow-auto">
+      <div className="h-full w-full overflow-auto pt-[60px]">
         <div className="max-w-4xl mx-auto px-12 pt-10 space-y-3">
           <Skeleton className="h-8 w-48" />
           <Skeleton className="h-10 w-full" />

@@ -263,7 +263,7 @@ export default function TrashPage() {
         </div>
       }
     >
-      <div className="flex-1 h-full w-full overflow-hidden">
+      <div className="flex-1 h-full w-full overflow-hidden pt-[60px]">
         <div className="h-full w-full max-w-[1000px] mx-auto p-6">
           <Tabs value={tab} onValueChange={(v) => setTab(v === "pages" ? "pages" : "timeline")}>
             <TabsList>

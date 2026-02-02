@@ -34,9 +34,16 @@ export function AppShell({
           <div className={cn("h-full shrink-0", leftPaneClassName)}>{leftPane}</div>
         ) : null}
 
-        <div className="flex-1 flex flex-col h-full w-full overflow-hidden">
-          <UserHeader leftContent={headerLeftContent}>{headerContent}</UserHeader>
-          <div className={cn("flex-1 h-full w-full overflow-hidden", bodyClassName)}>{children}</div>
+        <div className="flex-1 flex flex-col h-full w-full overflow-hidden relative">
+          <UserHeader
+            className="absolute top-0 left-0 right-0 z-50"
+            leftContent={headerLeftContent}
+          >
+            {headerContent}
+          </UserHeader>
+          <div className={cn("flex-1 h-full w-full overflow-hidden", bodyClassName)}>
+            {children}
+          </div>
         </div>
       </div>
     </div>

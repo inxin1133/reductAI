@@ -1170,7 +1170,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     v.dispatch(v.state.tr.setMeta(blockInserterKey, { menuOpen: false, query: "", menuAnchor: null }))
   }
 
-  const closeHandleMenu = () => {
+  const closeHandleMenu = useCallback(() => {
     const v = viewRef.current
     if (!v) return
     v.dispatch(
@@ -1182,7 +1182,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
         handleMenuTo: null,
       })
     )
-  }
+  }, [])
 
   const runBlockMenuCommand = (commandKey: string, side: "before" | "after") => {
     window.dispatchEvent(new CustomEvent("reductai:block-inserter:run", { detail: { commandKey, side } }))
@@ -1257,10 +1257,58 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
       v.focus()
       return
     }
-    run(cmdDuplicateBlock(editorSchema))
+    const slice = state.doc.slice(from, to)
+    const insertPos = to
+    let tr = state.tr.insert(insertPos, slice.content).scrollIntoView()
+    try {
+      tr = tr.setSelection(TextSelection.near(tr.doc.resolve(Math.min(insertPos + 1, tr.doc.content.size))))
+    } catch {
+      // ignore selection errors
+    }
+    v.dispatch(tr)
+    v.focus()
   }
 
-  const deleteHandleBlock = () => {
+  const applyHandleBlockBgColor = useCallback(
+    (bgColor: string) => {
+      const v = viewRef.current
+      if (!v || !handleMenuRange || !handleMenuKind) return
+      const { from, to } = handleMenuRange
+      const state = v.state
+      let tr = state.tr
+      let changed = false
+
+      if (handleMenuKind === "table_row") {
+        state.doc.nodesBetween(from, to, (node, pos) => {
+          if (node.type === editorSchema.nodes.table_cell || node.type === editorSchema.nodes.table_header) {
+            tr = tr.setNodeMarkup(pos, undefined, { ...(node.attrs as Record<string, unknown>), bgColor })
+            changed = true
+          }
+          return true
+        })
+      } else {
+        const node = state.doc.nodeAt(from)
+        if (!node) return
+        tr = tr.setNodeMarkup(from, undefined, { ...(node.attrs as Record<string, unknown>), bgColor })
+        changed = true
+      }
+
+      if (changed) {
+        v.dispatch(tr.scrollIntoView())
+        v.focus()
+      }
+    },
+    [handleMenuKind, handleMenuRange]
+  )
+
+  const run = useCallback((cmd: PmCommand) => {
+    const view = viewRef.current
+    if (!view) return
+    cmd(view.state, view.dispatch, view)
+    view.focus()
+  }, [])
+
+  const deleteHandleBlock = useCallback(() => {
     const v = viewRef.current
     if (!v || !handleMenuRange || !handleMenuKind) return
     const { from, to } = handleMenuRange
@@ -1283,7 +1331,19 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     }
     v.dispatch(state.tr.delete(from, to).scrollIntoView())
     v.focus()
-  }
+  }, [handleMenuKind, handleMenuRange, run])
+
+  useEffect(() => {
+    if (!handleMenuOpen) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return
+      e.preventDefault()
+      deleteHandleBlock()
+      closeHandleMenu()
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [handleMenuOpen, deleteHandleBlock, closeHandleMenu])
 
   const runHandleReplaceCommand = (commandKey: string) => {
     const v = viewRef.current
@@ -1291,13 +1351,6 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     const cmd = blockCommandsFull.find((c) => c.key === commandKey)
     if (!cmd) return
     cmd.applyReplace(v)
-  }
-
-  const run = (cmd: PmCommand) => {
-    const view = viewRef.current
-    if (!view) return
-    cmd(view.state, view.dispatch, view)
-    view.focus()
   }
 
   const cycleTableCellSelectionMode = () => {
@@ -1459,6 +1512,13 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     view.focus()
   }
 
+  const blockMenuAlign = (() => {
+    if (!blockMenuAnchor || typeof window === "undefined") return "start" as const
+    const vh = window.innerHeight || 0
+    // If anchor is in the lower portion, align menu to the bottom so it opens upward.
+    return blockMenuAnchor.top > vh * 0.6 ? ("end" as const) : ("start" as const)
+  })()
+
   return (
     <div className="w-full">
 
@@ -1488,7 +1548,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
           </DropdownMenuTrigger>
           <DropdownMenuContent
             side="right"
-            align="start"
+            align={blockMenuAlign}
             sideOffset={6}
             // block inserter rail uses z-60; keep menu above it
             className="w-[320px] p-0 z-[70]"
@@ -1624,9 +1684,13 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                     deleteHandleBlock()
                     closeHandleMenu()
                   }}
+                  className="flex items-center justify-between gap-2"
                 >
-                  <X className="size-4" />
-                  삭제
+                  <span className="flex items-center gap-2">
+                    <X className="size-4" />
+                    삭제
+                  </span>
+                  <span className="rounded border border-border px-1 text-[10px] text-muted-foreground">del</span>
                 </DropdownMenuItem>
               </>
             ) : (
@@ -1642,7 +1706,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                   복제
                 </DropdownMenuItem>
                 <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
+                  <DropdownMenuSubTrigger className="gap-2">
                     <Repeat className="size-4" />
                     전환
                   </DropdownMenuSubTrigger>
@@ -1695,7 +1759,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
                 <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
+                  <DropdownMenuSubTrigger className="gap-2">
                     <Paintbrush className="size-4" />
                     배경색
                   </DropdownMenuSubTrigger>
@@ -1714,7 +1778,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                           ].join(" ")}
                           onMouseDown={(e) => {
                             e.preventDefault()
-                            run(cmdSetBlockBgColor(editorSchema, c.key))
+                            applyHandleBlockBgColor(c.key)
                             closeHandleMenu()
                           }}
                           aria-label={c.label}
@@ -1728,7 +1792,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                         size="sm"
                         onMouseDown={(e) => {
                           e.preventDefault()
-                          run(cmdClearBlockBgColor(editorSchema))
+                          applyHandleBlockBgColor("")
                           closeHandleMenu()
                         }}
                       >
@@ -1744,9 +1808,13 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                     deleteHandleBlock()
                     closeHandleMenu()
                   }}
+                  className="flex items-center justify-between gap-2"
                 >
-                  <X className="size-4" />
-                  삭제
+                  <span className="flex items-center gap-2">
+                    <X className="size-4" />
+                    삭제
+                  </span>
+                  <span className="rounded border border-border px-1 text-[10px] text-muted-foreground">del</span>
                 </DropdownMenuItem>
               </>
             )}

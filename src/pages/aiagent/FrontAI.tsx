@@ -137,7 +137,7 @@ export default function FrontAI() {
       }
     >
         {/* Main Body - 메인 바디 */}
-      <div className="flex flex-1 flex-col gap-[40px] items-center justify-center p-[24px] relative w-full h-full">
+      <div className="flex flex-1 flex-col gap-[40px] items-center justify-center px-[24px] pb-[24px] pt-[84px] relative w-full h-full">
         <ChatInterface
           key={`${selection.modelType || "text"}:${selection.providerSlug || "none"}:${selection.modelApiId || "none"}:${selectionVersion}`}
           // FrontAI에서는 "첫 질문 시작"만 하고, 실제 대화는 Timeline에서 이어가도록 합니다.

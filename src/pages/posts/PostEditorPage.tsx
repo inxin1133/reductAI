@@ -79,6 +79,23 @@ function emitCategoryUpdated(detail: CategoryUpdatedDetail) {
   }
 }
 
+function readExpandedSetFromStorage(key: string) {
+  try {
+    if (typeof window === "undefined") return new Set<string>()
+    const raw = window.localStorage.getItem(key)
+    if (!raw) return new Set<string>()
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return new Set<string>()
+    const next = new Set<string>()
+    for (const item of parsed) {
+      if (item) next.add(String(item))
+    }
+    return next
+  } catch {
+    return new Set<string>()
+  }
+}
+
 function authHeaders() {
   const token = localStorage.getItem("token")
   const headers: Record<string, string> = {}
@@ -368,6 +385,7 @@ export default function PostEditorPage() {
 
   const NAV_OPEN_KEY = "reductai:postEditor:navOpen"
   const NAV_WIDTH_KEY = "reductai:postEditor:navWidth"
+  const EXPANDED_KEY_PREFIX = "reductai:postEditor:treeExpanded:"
   const NAV_MIN_W = 220
   const NAV_MAX_W = 380
   const getInitialNavOpen = () => {
@@ -1435,8 +1453,25 @@ export default function PostEditorPage() {
     return m
   }, [myPages])
 
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [expanded, setExpanded] = useState<Set<string>>(() =>
+    readExpandedSetFromStorage(`${EXPANDED_KEY_PREFIX}${categoryId || "all"}`)
+  )
   const [autoExpandAncestors, setAutoExpandAncestors] = useState(true)
+
+  // Persist expanded accordion state per category.
+  useEffect(() => {
+    setExpanded(readExpandedSetFromStorage(`${EXPANDED_KEY_PREFIX}${categoryId || "all"}`))
+  }, [categoryId])
+
+  useEffect(() => {
+    try {
+      if (typeof window === "undefined") return
+      const key = `${EXPANDED_KEY_PREFIX}${categoryId || "all"}`
+      window.localStorage.setItem(key, JSON.stringify(Array.from(expanded)))
+    } catch {
+      // ignore storage errors
+    }
+  }, [categoryId, expanded])
 
   const expandableIds = useMemo(() => {
     const ids = new Set<string>()
@@ -2439,7 +2474,7 @@ export default function PostEditorPage() {
       <div key={id} className="flex flex-col w-full min-w-0">
         <div
           className="relative flex my-0.5 items-center w-full min-w-0"
-          style={{ paddingLeft: depth * 8 }}
+          style={{ paddingLeft: depth * 14 }}
           draggable
           onDragStart={(e) => startPageDrag(id, e)}
           onDragEnd={endPageDrag}
@@ -2447,7 +2482,7 @@ export default function PostEditorPage() {
           onDragLeave={(e) => handlePageDragLeave(id, e)}
           onDrop={(e) => void handlePageDrop(id, e)}
         >
-          {/* Drop indicator lines */}
+          {/* Drop indicator lines - 드래그 앤 드롭 인디케이터 라인 */}
           {isDropTarget && dropPosition === "before" && (
             <div className="pointer-events-none absolute left-1 right-1 top-0 h-0.5 rounded bg-primary" />
           )}
@@ -3220,7 +3255,7 @@ export default function PostEditorPage() {
       }
     >
       {/* Editor (Main Body slot) */}
-      <div className="flex-1 h-full overflow-auto">
+      <div className="flex-1 h-full overflow-auto pt-[60px]">
         <div className={[isWideLayout ? "w-full" : "max-w-4xl", "mx-auto px-12"].join(" ")}>
           <div className="mb-4">
 
