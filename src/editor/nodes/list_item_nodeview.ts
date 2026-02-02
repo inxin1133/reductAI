@@ -6,6 +6,7 @@ type ListItemAttrs = {
   blockId?: string
   bgColor?: string
   checked?: boolean
+  listKind?: string
 }
 
 export class ListItemNodeView implements NodeView {
@@ -30,19 +31,22 @@ export class ListItemNodeView implements NodeView {
     this.render(node)
   }
 
-  private isChecklistItem(): boolean {
+  private getParentListKind(): string {
     const pos = this.getPos()
     const $pos = this.view.state.doc.resolve(pos)
     const parent = $pos.parent
-    if (parent.type.name !== "bullet_list") return false
+    if (parent.type.name !== "bullet_list") return ""
     const parentAttrs = parent.attrs as unknown as { listKind?: unknown }
-    return String(parentAttrs.listKind ?? "bullet") === "check"
+    return String(parentAttrs.listKind ?? "bullet")
   }
 
   private render(node: PMNode) {
     const attrs = (node.attrs || {}) as unknown as ListItemAttrs
     const bgColor = String(attrs.bgColor ?? "")
     const checked = Boolean(attrs.checked)
+    const attrKind = String(attrs.listKind || "")
+    const listKind = attrKind || this.getParentListKind()
+    const isChecklist = listKind === "check"
 
     // Base classes
     const cls = ["pm-list-item", getBgColorClasses(bgColor)].filter(Boolean).join(" ")
@@ -50,8 +54,7 @@ export class ListItemNodeView implements NodeView {
     this.dom.setAttribute("data-block-id", String(attrs.blockId || ""))
     this.dom.setAttribute("data-bg-color", bgColor)
     this.dom.setAttribute("data-checked", checked ? "true" : "false")
-
-    const isChecklist = this.isChecklistItem()
+    this.dom.setAttribute("data-list-kind", listKind || "")
 
     // Ensure checkbox exists only for checklist mode
     if (isChecklist) {

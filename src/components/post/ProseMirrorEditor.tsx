@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { EditorState, NodeSelection, TextSelection, type Transaction } from "prosemirror-state"
 import { EditorView } from "prosemirror-view"
-import { DOMParser as PMDOMParser, type Node as PMNode } from "prosemirror-model"
+import { DOMParser as PMDOMParser, type Node as PMNode, Fragment } from "prosemirror-model"
 import type { Slice } from "prosemirror-model"
+import { liftListItem } from "prosemirror-schema-list"
 import { Button } from "@/components/ui/button"
 import { editorSchema } from "../../editor/schema"
 import { buildEditorPlugins } from "../../editor/plugins"
@@ -1245,6 +1246,14 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     selectHandleBlock()
   }, [handleMenuOpen, selectHandleBlock])
 
+  useEffect(() => {
+    if (!handleMenuOpen) return
+    const t = window.setTimeout(() => {
+      viewRef.current?.focus()
+    }, 0)
+    return () => window.clearTimeout(t)
+  }, [handleMenuOpen])
+
   const duplicateHandleBlock = () => {
     const v = viewRef.current
     if (!v || !handleMenuRange || !handleMenuKind) return
@@ -1308,6 +1317,87 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     view.focus()
   }, [])
 
+  const clearHandleSelection = useCallback(() => {
+    const v = viewRef.current
+    if (!v) return
+    const basePos = handleMenuRange?.from ?? v.state.selection.from
+    const safePos = Math.min(Math.max(0, basePos + 1), v.state.doc.content.size)
+    let tr = v.state.tr.setMeta(selectionModePluginKey, selectionModeInitState())
+    try {
+      tr = tr.setSelection(TextSelection.near(tr.doc.resolve(safePos), 1))
+    } catch {
+      // ignore selection errors
+    }
+    v.dispatch(tr.scrollIntoView())
+    v.focus()
+  }, [handleMenuRange])
+
+  const convertHandleBlockToPage = useCallback(async () => {
+    const v = viewRef.current
+    if (!v || !handleMenuRange) return
+    const { from, to } = handleMenuRange
+    const node = v.state.doc.nodeAt(from)
+    if (!node) return
+
+    const token = localStorage.getItem("token")
+    if (!token) return
+
+    const text = node.textBetween(0, node.content.size, "\n", "\n") || node.textContent
+    const lines = String(text || "").split(/\r?\n/)
+    const title = (lines[0] || "").trim() || "New page"
+    const bodyText = lines.slice(1).join("\n").trim()
+
+    const m = window.location.pathname.match(/^\/posts\/([^/]+)\/edit/)
+    const parent_id = m?.[1] && m[1] !== "new" ? m[1] : null
+    const urlParams = new URLSearchParams(window.location.search)
+    const category_id = urlParams.get("category") || null
+
+    const r = await fetch(`/api/posts`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ title, page_type: "page", status: "draft", visibility: "private", parent_id, category_id }),
+    })
+    if (!r.ok) return
+    const j = await r.json()
+    const pageId = typeof j.id === "string" ? j.id : ""
+    if (!pageId) return
+
+    window.dispatchEvent(new CustomEvent("reductai:page-created", { detail: { postId: pageId, parent_id, title } }))
+
+    const pageNode = editorSchema.nodes.page_link
+    if (pageNode) {
+      const tr = v.state.tr
+        .replaceWith(from, to, pageNode.create({ pageId, title, display: "embed" }))
+        .scrollIntoView()
+      v.dispatch(tr)
+      v.focus()
+    }
+
+    if (bodyText) {
+      try {
+        const contentRes = await fetch(`/api/posts/${pageId}/content`, { headers: { Authorization: `Bearer ${token}` } })
+        if (!contentRes.ok) return
+        const contentData = await contentRes.json()
+        const baseVersion = contentData.version || 0
+        const paragraphs = bodyText
+          .split(/\n+/)
+          .map((line) =>
+            line.trim()
+              ? { type: "paragraph", content: [{ type: "text", text: line }] }
+              : { type: "paragraph" }
+          )
+        const docJson = { type: "doc", content: paragraphs }
+        await fetch(`/api/posts/${pageId}/content`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ docJson, baseVersion }),
+        })
+      } catch {
+        // ignore content save errors
+      }
+    }
+  }, [handleMenuRange])
+
   const deleteHandleBlock = useCallback(() => {
     const v = viewRef.current
     if (!v || !handleMenuRange || !handleMenuKind) return
@@ -1329,7 +1419,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
       run(tableCommands.deleteRow)
       return
     }
-    v.dispatch(state.tr.delete(from, to).scrollIntoView())
+    v.dispatch(state.tr.delete(from, to).setMeta(selectionModePluginKey, selectionModeInitState()).scrollIntoView())
     v.focus()
   }, [handleMenuKind, handleMenuRange, run])
 
@@ -1339,17 +1429,138 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
       if (e.key !== "Delete" && e.key !== "Backspace") return
       e.preventDefault()
       deleteHandleBlock()
+      clearHandleSelection()
       closeHandleMenu()
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [handleMenuOpen, deleteHandleBlock, closeHandleMenu])
+  }, [handleMenuOpen, deleteHandleBlock, clearHandleSelection, closeHandleMenu])
 
   const runHandleReplaceCommand = (commandKey: string) => {
     const v = viewRef.current
     if (!v) return
     const cmd = blockCommandsFull.find((c) => c.key === commandKey)
     if (!cmd) return
+    const state = v.state
+    const bulletList = editorSchema.nodes.bullet_list
+    const orderedList = editorSchema.nodes.ordered_list
+    const listItem = editorSchema.nodes.list_item
+    const paragraph = editorSchema.nodes.paragraph
+    const heading = editorSchema.nodes.heading
+    const blockquote = editorSchema.nodes.blockquote
+    const codeBlock = editorSchema.nodes.code_block
+    const isListTarget = commandKey === "list" || commandKey === "ordered" || commandKey === "checklist"
+
+    const listContext = (() => {
+      if (!handleMenuRange) return null
+      const { from } = handleMenuRange
+      const nodeAt = state.doc.nodeAt(from)
+      if (nodeAt && (nodeAt.type === bulletList || nodeAt.type === orderedList)) {
+        return { listPos: from, listNode: nodeAt }
+      }
+      const $pos = state.doc.resolve(Math.min(from + 1, state.doc.content.size))
+      for (let d = $pos.depth; d > 0; d -= 1) {
+        const n = $pos.node(d)
+        if (n.type === bulletList || n.type === orderedList) {
+          return { listPos: $pos.before(d), listNode: n as PMNode }
+        }
+      }
+      return null
+    })()
+
+    if (listContext && isListTarget) {
+      const { listPos, listNode } = listContext
+      const blockId = (listNode.attrs as { blockId?: string | null }).blockId || null
+      const itemKind = commandKey === "checklist" ? "check" : commandKey === "ordered" ? "ordered" : "bullet"
+      const listItems = (() => {
+        if (!listItem) return listNode.content
+        const items: PMNode[] = []
+        listNode.content.forEach((child) => {
+          if (child.type === listItem) {
+            const baseAttrs = { ...(child.attrs as Record<string, unknown>) }
+            const nextAttrs = {
+              ...baseAttrs,
+              listKind: itemKind,
+              checked: itemKind === "check" ? Boolean(baseAttrs.checked) : false,
+            }
+            items.push(listItem.create(nextAttrs, child.content, child.marks))
+          } else {
+            items.push(child)
+          }
+        })
+        return Fragment.fromArray(items)
+      })()
+      let replacement: PMNode | null = null
+      if (commandKey === "ordered" && orderedList) {
+        const listType = (listNode.attrs as { listType?: string }).listType || "1"
+        const order = (listNode.attrs as { order?: number }).order || 1
+        replacement = orderedList.create({ order, listType, blockId }, listItems)
+      } else if (bulletList) {
+        const bulletStyle = (listNode.attrs as { bulletStyle?: string }).bulletStyle || "disc"
+        const listKind = commandKey === "checklist" ? "check" : "bullet"
+        replacement = bulletList.create({ bulletStyle, blockId, listKind }, listItems)
+      }
+      if (replacement) {
+        const tr = state.tr.replaceWith(listPos, listPos + listNode.nodeSize, replacement).scrollIntoView()
+        v.dispatch(tr)
+        v.focus()
+      }
+      return
+    }
+
+    // If the current block IS a list (top-level), convert the list to the target block type.
+    if (listContext && handleMenuKind !== "list_item" && !isListTarget) {
+      const { listPos, listNode } = listContext
+      const rawLines = listNode.textBetween(0, listNode.content.size, "\n", "\n")
+      const lines = String(rawLines || "").split(/\r?\n/).filter((l) => l.length > 0)
+
+      if (commandKey === "page") {
+        void convertHandleBlockToPage()
+        return
+      }
+
+      const mkParagraphs = (items: string[]) =>
+        items.length
+          ? items.map((line) => (line ? paragraph.create(null, [editorSchema.text(line)]) : paragraph.createAndFill()!))
+          : [paragraph.createAndFill()!]
+
+      let replacement: PMNode[] = []
+      if (commandKey === "text") {
+        replacement = mkParagraphs(lines)
+      } else if ((commandKey === "h1" || commandKey === "h2" || commandKey === "h3") && heading) {
+        const level = commandKey === "h1" ? 1 : commandKey === "h2" ? 2 : 3
+        const first = lines[0] || ""
+        const rest = lines.slice(1)
+        const headNode = heading.create({ level }, first ? [editorSchema.text(first)] : [])
+        replacement = [headNode, ...mkParagraphs(rest)]
+      } else if (commandKey === "quote" && blockquote) {
+        const paras = mkParagraphs(lines)
+        replacement = [blockquote.create(null, paras)]
+      } else if (commandKey === "code" && codeBlock) {
+        const text = lines.join("\n")
+        replacement = [codeBlock.create({ language: "plain" }, text ? [editorSchema.text(text)] : [])]
+      }
+
+      if (replacement.length) {
+        const tr = state.tr.replaceWith(listPos, listPos + listNode.nodeSize, replacement).scrollIntoView()
+        v.dispatch(tr)
+        v.focus()
+        return
+      }
+    }
+
+    // list item -> non-list target: lift out of list first, then apply the command.
+    if (handleMenuKind === "list_item" && handleMenuRange && listItem) {
+      const { from } = handleMenuRange
+      const inside = Math.min(from + 1, state.doc.content.size)
+      v.dispatch(
+        state.tr
+          .setSelection(TextSelection.near(state.doc.resolve(inside), 1))
+          .setMeta(selectionModePluginKey, selectionModeInitState())
+      )
+      const lift = liftListItem(listItem)
+      lift(v.state, v.dispatch, v)
+    }
     cmd.applyReplace(v)
   }
 
@@ -1636,6 +1847,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
       {handleMenuOpen && handleMenuAnchor ? (
         <DropdownMenu
           open={handleMenuOpen}
+          modal={false}
           onOpenChange={(open) => {
             if (!open) closeHandleMenu()
           }}
@@ -1661,6 +1873,14 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
             align="start"
             sideOffset={6}
             className="min-w-[220px] p-1 z-[80]"
+            onFocusOutside={(e) => {
+              const target = e.target as Node | null
+              const editorDom = viewRef.current?.dom || null
+              if (target && editorDom && editorDom.contains(target)) {
+                // Keep menu open when we refocus the editor for selection hotkeys.
+                e.preventDefault()
+              }
+            }}
             onCloseAutoFocus={(e) => {
               e.preventDefault()
             }}
@@ -1671,6 +1891,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                   onSelect={(e) => {
                     e.preventDefault()
                     duplicateHandleBlock()
+                    clearHandleSelection()
                     closeHandleMenu()
                   }}
                 >
@@ -1682,6 +1903,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                   onSelect={(e) => {
                     e.preventDefault()
                     deleteHandleBlock()
+                    clearHandleSelection()
                     closeHandleMenu()
                   }}
                   className="flex items-center justify-between gap-2"
@@ -1695,17 +1917,25 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
               </>
             ) : (
               <>
+                {(() => {
+                  const v = viewRef.current
+                  const node = handleMenuRange?.from != null ? v?.state.doc.nodeAt(handleMenuRange.from) : null
+                  const isTableBlock = node?.type?.name === "table"
+                  return (
+                    <>
                 <DropdownMenuItem
                   onSelect={(e) => {
                     e.preventDefault()
                     duplicateHandleBlock()
+                    clearHandleSelection()
                     closeHandleMenu()
                   }}
                 >
                   <CopyPlus className="size-4" />
                   복제
                 </DropdownMenuItem>
-                <DropdownMenuSub>
+                {!isTableBlock ? (
+                  <DropdownMenuSub>
                   <DropdownMenuSubTrigger className="gap-2">
                     <Repeat className="size-4" />
                     전환
@@ -1727,7 +1957,12 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                         key={it.key}
                         onSelect={(e) => {
                           e.preventDefault()
-                          runHandleReplaceCommand(it.key)
+                          if (it.key === "page") {
+                            void convertHandleBlockToPage()
+                          } else {
+                            runHandleReplaceCommand(it.key)
+                          }
+                          clearHandleSelection()
                           closeHandleMenu()
                         }}
                         className="flex items-center justify-between"
@@ -1748,7 +1983,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                             (it.key === "h3" && type === "heading" && attrs.level === 3) ||
                             (it.key === "quote" && type === "blockquote") ||
                             (it.key === "code" && type === "code_block") ||
-                            (it.key === "list" && type === "bullet_list") ||
+                            (it.key === "list" && type === "bullet_list" && attrs.listKind !== "check") ||
                             (it.key === "ordered" && type === "ordered_list") ||
                             (it.key === "checklist" && type === "bullet_list" && attrs.listKind === "check") ||
                             (it.key === "page" && type === "page_link")
@@ -1758,7 +1993,9 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                     ))}
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
-                <DropdownMenuSub>
+                ) : null}
+                {!isTableBlock ? (
+                  <DropdownMenuSub>
                   <DropdownMenuSubTrigger className="gap-2">
                     <Paintbrush className="size-4" />
                     배경색
@@ -1779,6 +2016,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                           onMouseDown={(e) => {
                             e.preventDefault()
                             applyHandleBlockBgColor(c.key)
+                            clearHandleSelection()
                             closeHandleMenu()
                           }}
                           aria-label={c.label}
@@ -1793,6 +2031,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                         onMouseDown={(e) => {
                           e.preventDefault()
                           applyHandleBlockBgColor("")
+                          clearHandleSelection()
                           closeHandleMenu()
                         }}
                       >
@@ -1801,11 +2040,13 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                     </div>
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
+                ) : null}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onSelect={(e) => {
                     e.preventDefault()
                     deleteHandleBlock()
+                    clearHandleSelection()
                     closeHandleMenu()
                   }}
                   className="flex items-center justify-between gap-2"
@@ -1816,6 +2057,9 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                   </span>
                   <span className="rounded border border-border px-1 text-[10px] text-muted-foreground">del</span>
                 </DropdownMenuItem>
+                    </>
+                  )
+                })()}
               </>
             )}
           </DropdownMenuContent>

@@ -170,7 +170,15 @@ export function tableCellSelectionKeysPlugin() {
           // if selection no longer matches our kind, reset
           const sel = tr.selection
           if (next.kind === "cell" && !(sel instanceof CellSelection)) return selectionModeInitState()
-          if (next.kind === "block" && !(sel instanceof NodeSelection) && !(sel instanceof TextSelection)) return selectionModeInitState()
+          // Allow table cell selections while in block mode so block selection persists across tables.
+          if (
+            next.kind === "block" &&
+            !(sel instanceof NodeSelection) &&
+            !(sel instanceof TextSelection) &&
+            !(sel instanceof CellSelection)
+          ) {
+            return selectionModeInitState()
+          }
         }
         return next
       },
