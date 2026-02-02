@@ -218,10 +218,40 @@ export function buildInputRules(schema: Schema) {
     )
   }
 
-  // Inline code: `text` -> code mark
+  // Inline code: `text` -> code mark (+ trailing space to exit code)
   if (schema.marks.code) {
-    // Similar to prosemirror example: apply code mark and strip backticks.
-    rules.push(markInputRule(/`([^`]+)`$/, schema.marks.code))
+    const codeMark = schema.marks.code
+    rules.push(
+      new InputRule(/`([^`]+)`$/, (state, match, start, end) => {
+        const m = match[match.length - 1]
+        if (!m) return null
+        const tr = state.tr
+        const textStart = start + match[0].indexOf(m)
+        const textEnd = textStart + m.length
+        if (textEnd < end) tr.delete(textEnd, end)
+        if (start < textStart) tr.delete(start, textStart)
+        tr.addMark(start, start + m.length, codeMark.create())
+        tr.removeStoredMark(codeMark)
+
+        const spacePos = start + m.length
+        const nextPos = Math.min(spacePos + 1, tr.doc.content.size)
+        const nextChar = tr.doc.textBetween(spacePos, nextPos, "\0", "\0")
+        if (nextChar === " ") {
+          if (tr.doc.rangeHasMark(spacePos, spacePos + 1, codeMark)) {
+            tr.removeMark(spacePos, spacePos + 1, codeMark)
+          }
+        } else {
+          tr.insert(spacePos, schema.text(" "))
+        }
+        const selPos = Math.min(tr.doc.content.size, spacePos + 1)
+        try {
+          tr.setSelection(TextSelection.create(tr.doc, selPos))
+        } catch {
+          // ignore
+        }
+        return tr
+      })
+    )
   }
 
   // 9) Code block: ``` (only at the start of a top-level paragraph)

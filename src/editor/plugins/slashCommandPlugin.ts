@@ -22,6 +22,70 @@ type SlashState = {
 
 const key = new PluginKey<SlashState>("slashCommand")
 
+const SLASH_GROUPS: Array<{ title: string; keys: string[] }> = [
+  {
+    title: "텍스트",
+    keys: ["text", "h1", "h2", "h3", "quote", "divider", "code", "list", "ordered", "checklist", "link", "page"],
+  },
+  { title: "미디어", keys: ["image"] },
+  { title: "표", keys: ["table"] },
+]
+
+const KEY_ORDER = new Map(
+  SLASH_GROUPS.flatMap((g) => g.keys.map((k, i) => [k, i] as const))
+)
+const GROUP_ORDER = new Map(
+  SLASH_GROUPS.flatMap((g, i) => g.keys.map((k) => [k, i] as const))
+)
+
+const SHORTCUTS: Record<string, string> = {
+  h1: "#",
+  h2: "##",
+  h3: "###",
+  quote: "\"",
+  divider: "---",
+  list: "-",
+  ordered: "1.",
+  checklist: "[]",
+  code: "```",
+}
+
+const ICON_HTML: Record<string, string> = {
+  text: `<span style="font-weight:700;font-size:12px;">T</span>`,
+  h1: `<span style="font-weight:700;font-size:11px;">H1</span>`,
+  h2: `<span style="font-weight:700;font-size:11px;">H2</span>`,
+  h3: `<span style="font-weight:700;font-size:11px;">H3</span>`,
+  quote: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21c3 0 7-1 7-8V7H3z"/><path d="M14 21c3 0 7-1 7-8V7h-7z"/></svg>`,
+  divider: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg>`,
+  list: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3" cy="6" r="1"/><circle cx="3" cy="12" r="1"/><circle cx="3" cy="18" r="1"/></svg>`,
+  ordered: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><path d="M4 6h1v4"/><path d="M4 12h2"/><path d="M4 18h2"/></svg>`,
+  checklist: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 6 2 2 4-4"/><path d="M10 6h11"/><path d="m3 12 2 2 4-4"/><path d="M10 12h11"/><path d="m3 18 2 2 4-4"/><path d="M10 18h11"/></svg>`,
+  code: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>`,
+  image: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>`,
+  table: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>`,
+  link: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
+  page: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>`,
+}
+
+function escapeHtml(input: string) {
+  return input.replace(/[&<>"']/g, (m) => {
+    switch (m) {
+      case "&":
+        return "&amp;"
+      case "<":
+        return "&lt;"
+      case ">":
+        return "&gt;"
+      case "\"":
+        return "&quot;"
+      case "'":
+        return "&#39;"
+      default:
+        return m
+    }
+  })
+}
+
 function getTextBeforeCursorFromState(state: any, max = 80) {
   const { $from } = state.selection
   if (!$from.parent.isTextblock) return ""
@@ -48,10 +112,26 @@ function makeCommands(schema: Schema): SlashCmd[] {
   }))
 }
 
+function sortByGroups(items: SlashCmd[]) {
+  const withIndex = items.map((item, idx) => ({ item, idx }))
+  withIndex.sort((a, b) => {
+    const ga = GROUP_ORDER.get(a.item.key) ?? 99
+    const gb = GROUP_ORDER.get(b.item.key) ?? 99
+    if (ga !== gb) return ga - gb
+    const ka = KEY_ORDER.get(a.item.key) ?? 99
+    const kb = KEY_ORDER.get(b.item.key) ?? 99
+    if (ka !== kb) return ka - kb
+    return a.idx - b.idx
+  })
+  return withIndex.map((it) => it.item)
+}
+
 function filterCommands(all: SlashCmd[], query: string) {
   const q = query.trim().toLowerCase()
-  if (!q) return all
-  return all.filter((c) => c.key.startsWith(q) || c.keywords.some((k) => k.startsWith(q)))
+  const filtered = !q
+    ? all
+    : all.filter((c) => c.key.startsWith(q) || c.keywords.some((k) => k.startsWith(q)))
+  return sortByGroups(filtered)
 }
 
 export function slashCommandPlugin(schema: Schema) {
@@ -123,17 +203,44 @@ export function slashCommandPlugin(schema: Schema) {
         }
 
         const items = st.items || []
-        dom.innerHTML =
-          items.length === 0
-            ? `<div style="padding:8px;color:rgba(0,0,0,0.5)">No results</div>`
-            : items
-                .map((it, i) => {
-                  const active = i === st.index
-                  return `<div data-i="${i}" style="padding:8px 10px;border-radius:8px;cursor:pointer;${
-                    active ? "background:rgba(0,0,0,0.06);" : ""
-                  }"><div style="font-size:13px;font-weight:700">${it.title}</div><div style="font-size:12px;color:rgba(0,0,0,0.55)">/${it.key}</div></div>`
-                })
-                .join("")
+        if (items.length === 0) {
+          dom.innerHTML = `<div style="padding:8px;color:rgba(0,0,0,0.5)">No results</div>`
+          return
+        }
+        const indexByKey = new Map(items.map((it, i) => [it.key, i]))
+        const grouped = SLASH_GROUPS.map((g) => ({
+          title: g.title,
+          items: items.filter((it) => g.keys.includes(it.key)),
+        })).filter((g) => g.items.length > 0)
+        const other = items.filter((it) => !GROUP_ORDER.has(it.key))
+        if (other.length) grouped.push({ title: "기타", items: other })
+
+        const renderItem = (it: SlashCmd) => {
+          const i = indexByKey.get(it.key) ?? 0
+          const active = i === st.index
+          const icon = ICON_HTML[it.key] || `<span style="font-weight:700;font-size:11px;">•</span>`
+          const shortcut = SHORTCUTS[it.key]
+          return `<div data-i="${i}" style="padding:8px 10px;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px;${
+            active ? "background:rgba(0,0,0,0.06);" : ""
+          }">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;color:rgba(0,0,0,0.6)">${icon}</span>
+              <div style="font-size:13px;font-weight:600">${escapeHtml(it.title)}</div>
+            </div>
+            ${shortcut ? `<div style="font-size:11px;color:rgba(0,0,0,0.5);font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">${escapeHtml(shortcut)}</div>` : ""}
+          </div>`
+        }
+
+        dom.innerHTML = grouped
+          .map((group, idx) => {
+            const header = `<div style="padding:6px 10px 4px;font-size:11px;font-weight:600;color:rgba(0,0,0,0.5)">${escapeHtml(
+              group.title
+            )}</div>`
+            const body = group.items.map(renderItem).join("")
+            const sep = idx < grouped.length - 1 ? `<div style="height:1px;margin:6px 0;background:rgba(0,0,0,0.06)"></div>` : ""
+            return `<div>${header}${body}${sep}</div>`
+          })
+          .join("")
 
         // position to cursor
         const coords = view.coordsAtPos(st.to)

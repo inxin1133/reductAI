@@ -1,4 +1,4 @@
-import { Plugin, PluginKey } from "prosemirror-state"
+import { Plugin, PluginKey, TextSelection } from "prosemirror-state"
 import type { EditorView } from "prosemirror-view"
 import { Decoration, DecorationSet } from "prosemirror-view"
 import type { Node as PMNode, Schema } from "prosemirror-model"
@@ -9,6 +9,8 @@ export type BlockInserterState = {
   blockFrom: number
   blockTo: number
   menuOpen: boolean
+  menuMode?: "insert" | "replace"
+  menuPlacement?: "above" | "below"
   index: number
   query: string
   kind: "top" | "list_item" | "table_row"
@@ -87,6 +89,8 @@ export function blockInserterPlugin(schema: Schema) {
         blockFrom: 0,
         blockTo: 0,
         menuOpen: false,
+        menuMode: "insert",
+        menuPlacement: "below",
         index: 0,
         query: "",
         kind: "top",
@@ -168,7 +172,15 @@ export function blockInserterPlugin(schema: Schema) {
 
         if (event.key === "Escape") {
           event.preventDefault()
-          view.dispatch(view.state.tr.setMeta(blockInserterKey, { menuOpen: false, query: "", menuAnchor: null }))
+          view.dispatch(
+            view.state.tr.setMeta(blockInserterKey, {
+              menuOpen: false,
+              menuMode: "insert",
+              menuPlacement: "below",
+              query: "",
+              menuAnchor: null,
+            })
+          )
           return true
         }
         return false
@@ -421,14 +433,56 @@ export function blockInserterPlugin(schema: Schema) {
       function openMenu() {
         const st = blockInserterKey.getState(view.state) as BlockInserterState
         const r = btn.getBoundingClientRect()
-        view.dispatch(
-          view.state.tr.setMeta(blockInserterKey, {
+        const para = schema.nodes.paragraph?.createAndFill()
+        if (para) {
+          const insertPos = clamp(st.blockTo, 0, view.state.doc.content.size)
+          let tr = view.state.tr.insert(insertPos, para)
+          try {
+            const selPos = Math.min(insertPos + 1, tr.doc.content.size)
+            tr = tr.setSelection(TextSelection.near(tr.doc.resolve(selPos), 1)).scrollIntoView()
+          } catch {
+            // ignore selection errors
+          }
+          const newFrom = insertPos
+          const newTo = insertPos + para.nodeSize
+          const selPos = clamp(newFrom + 1, 0, tr.doc.content.size)
+          let anchor = { left: r.left, top: r.top, width: r.width, height: r.height }
+          let placement: "above" | "below" = "below"
+          try {
+            const coords = view.coordsAtPos(selPos)
+            const vh = window.innerHeight || 0
+            placement = coords.top > vh * 0.6 ? "above" : "below"
+            const anchorTop = placement === "above" ? coords.top - 8 : coords.bottom + 8
+            anchor = { left: coords.left, top: anchorTop, width: 1, height: 1 }
+          } catch {
+            // ignore anchor calc errors
+          }
+          tr = tr.setMeta(blockInserterKey, {
             menuOpen: true,
+            menuMode: "replace",
+            menuPlacement: placement,
             index: 0,
             query: st.query || "",
-            menuAnchor: { left: r.left, top: r.top, width: r.width, height: r.height },
+            menuAnchor: anchor,
+            blockFrom: newFrom,
+            blockTo: newTo,
+            kind: "top",
           })
-        )
+          view.dispatch(tr)
+          view.focus()
+        } else {
+          view.dispatch(
+            view.state.tr.setMeta(blockInserterKey, {
+              menuOpen: true,
+              menuMode: "insert",
+              menuPlacement: "below",
+              index: 0,
+              query: st.query || "",
+              menuAnchor: { left: r.left, top: r.top, width: r.width, height: r.height },
+            })
+          )
+          view.focus()
+        }
         setOverUI(true)
         rail.style.display = "flex"
       }
@@ -530,7 +584,34 @@ export function blockInserterPlugin(schema: Schema) {
         if (!st.menuOpen) return
         const cmd = commands.find((c) => c.key === cmdKey)
         if (!cmd) return
-        view.dispatch(view.state.tr.setMeta(blockInserterKey, { menuOpen: false, query: "", menuAnchor: null }))
+        if (st.menuMode === "replace") {
+          try {
+            const selPos = clamp(st.blockFrom + 1, 0, view.state.doc.content.size)
+            view.dispatch(view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(selPos), 1)))
+          } catch {
+            // ignore selection errors
+          }
+          cmd.applyReplace(view)
+          view.dispatch(
+            view.state.tr.setMeta(blockInserterKey, {
+              menuOpen: false,
+              menuMode: "insert",
+              menuPlacement: "below",
+              query: "",
+              menuAnchor: null,
+            })
+          )
+          return
+        }
+        view.dispatch(
+          view.state.tr.setMeta(blockInserterKey, {
+            menuOpen: false,
+            menuMode: "insert",
+            menuPlacement: "below",
+            query: "",
+            menuAnchor: null,
+          })
+        )
         cmd.applyInsert(view, { blockFrom: st.blockFrom, blockTo: st.blockTo, side })
       }
       window.addEventListener("reductai:block-inserter:run", onRunMenu as EventListener)

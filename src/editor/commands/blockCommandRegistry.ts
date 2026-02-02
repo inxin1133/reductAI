@@ -169,7 +169,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
   return [
     {
       key: "text",
-      title: "Text",
+      title: "텍스트",
       keywords: ["text", "paragraph", "텍스트", "문장", "문단"],
       applyReplace: (view) => setBlockTypeOnSelection(view, schema.nodes.paragraph),
       applyInsert: (view, args) =>
@@ -177,7 +177,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     },
     {
       key: "h1",
-      title: "Heading 1",
+      title: "제목1",
       keywords: ["h1", "heading", "H1", "제목1", "제목 1", "헤드라인1", "헤드라인 1"],
       applyReplace: (view) => setBlockTypeOnSelection(view, schema.nodes.heading, { level: 1 }),
       applyInsert: (view, args) =>
@@ -185,7 +185,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     },
     {
       key: "h2",
-      title: "Heading 2",
+      title: "제목2",
       keywords: ["h2", "heading", "H2", "제목2", "제목 2", "헤드라인2", "헤드라인 2"],
       applyReplace: (view) => setBlockTypeOnSelection(view, schema.nodes.heading, { level: 2 }),
       applyInsert: (view, args) =>
@@ -193,7 +193,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     },
     {
       key: "h3",
-      title: "Heading 3",
+      title: "제목3",
       keywords: ["h3", "heading", "H3", "제목3", "제목 3", "헤드라인3", "헤드라인 3"],
       applyReplace: (view) => setBlockTypeOnSelection(view, schema.nodes.heading, { level: 3 }),
       applyInsert: (view, args) =>
@@ -201,7 +201,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     },
     {
       key: "list",
-      title: "Bullet List",
+      title: "글머리 기호 목록",
       keywords: ["list", "bullet", "ul", "글머리 기호 목록", "목록", "블릿", "리스트"],
       applyReplace: (view) => {
         const cmd = wrapInList(schema.nodes.bullet_list)
@@ -216,7 +216,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     },
     {
       key: "ordered",
-      title: "Ordered List",
+      title: "번호 매기기 목록",
       keywords: ["ordered", "ol", "number", "번호", "번호매기기", "번호매기기 목록"],
       applyReplace: (view) => {
         const cmd = wrapInList(schema.nodes.ordered_list)
@@ -231,7 +231,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     },
     {
       key: "checklist",
-      title: "Check List",
+      title: "할 일 목록",
       keywords: ["check", "checklist", "todo", "task", "체크", "체크리스트", "할일", "작업"],
       applyReplace: (view) => {
         const cmd = cmdChecklist(schema)
@@ -246,7 +246,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     },
     {
       key: "quote",
-      title: "Quote",
+      title: "인용",
       keywords: ["quote", "blockquote", "인용"],
       applyReplace: (view) => {
         const cmd = cmdBlockquote(schema)
@@ -261,7 +261,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     },
     {
       key: "table",
-      title: "Table (2x2)",
+      title: "표",
       keywords: ["table", "grid", "표", "테이블"],
       applyReplace: (view) => {
         const t = createTable2x2(schema)
@@ -276,7 +276,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     },
     {
       key: "divider",
-      title: "Divider",
+      title: "구분선",
       keywords: ["divider", "hr", "horizontal", "구분선", "선"],
       applyReplace: (view) => {
         const hr = schema.nodes.horizontal_rule
@@ -291,7 +291,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     },
     {
       key: "code",
-      title: "Code Block",
+      title: "코드 블록",
       keywords: ["code", "codeblock", "코드", "코드블록"],
       applyReplace: (view) => setBlockTypeOnSelection(view, schema.nodes.code_block),
       applyInsert: (view, args) =>
@@ -299,7 +299,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     },
     {
       key: "image",
-      title: "Image",
+      title: "이미지",
       keywords: ["image", "img", "picture", "이미지"],
       applyReplace: (view) => {
         const img = schema.nodes.image
@@ -318,7 +318,7 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
     },
     {
       key: "duplicate",
-      title: "Duplicate block",
+      title: "복제",
       keywords: ["duplicate", "copy", "duplicate block", "복제", "복사"],
       applyReplace: (view) => {
         const cmd = cmdDuplicateBlock(schema)
@@ -330,21 +330,8 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
       },
     },
     {
-      key: "link",
-      title: "Page Link",
-      keywords: ["link", "링크"],
-      applyReplace: () => {
-        // Open page link picker via event (handled by ProseMirrorEditor)
-        window.dispatchEvent(new CustomEvent("reductai:open-page-link-picker", { detail: { display: "link" } }))
-      },
-      applyInsert: () => {
-        // Open page link picker via event (handled by ProseMirrorEditor)
-        window.dispatchEvent(new CustomEvent("reductai:open-page-link-picker", { detail: { display: "link" } }))
-      },
-    },
-    {
       key: "page",
-      title: "New Page",
+      title: "페이지 추가",
       keywords: ["page", "new", "페이지", "새 페이지"],
       applyReplace: (view) => {
         const n = schema.nodes.page_link
@@ -379,6 +366,19 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
         })()
       },
     },
+    {
+      key: "link",
+      title: "링크(페이지)",
+      keywords: ["link", "링크"],
+      applyReplace: () => {
+        // Open page link picker via event (handled by ProseMirrorEditor)
+        window.dispatchEvent(new CustomEvent("reductai:open-page-link-picker", { detail: { display: "link" } }))
+      },
+      applyInsert: () => {
+        // Open page link picker via event (handled by ProseMirrorEditor)
+        window.dispatchEvent(new CustomEvent("reductai:open-page-link-picker", { detail: { display: "link" } }))
+      },
+    },    
   ]
 }
 

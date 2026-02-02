@@ -119,8 +119,6 @@ import {
   SquareDashed,
   SquareRoundCorner,
   SquareMousePointer,
-  ArrowUp,
-  ArrowDown,
   Repeat,
   FileText,
   ChevronDown,
@@ -160,12 +158,23 @@ function posAtTopLevelIndex(doc: PMNode, index: number): { pos: number; node: PM
   return null
 }
 
-function ToolbarTooltip({ label, children }: { label: string; children: React.ReactNode }) {
+function ToolbarTooltip({
+  label,
+  shortcut,
+  children,
+}: {
+  label: string
+  shortcut?: string
+  children: React.ReactNode
+}) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
       <TooltipContent side="top" sideOffset={6}>
-        {label}
+        <div className="flex flex-col gap-0.5">
+          <span>{label}</span>
+          {shortcut ? <span className="text-[11px] text-muted-foreground">{shortcut}</span> : null}
+        </div>
       </TooltipContent>
     </Tooltip>
   )
@@ -272,6 +281,71 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     return isMac ? "⌘+⇧+⌫" : "Ctrl+Shift+⌫"
   }, [])
 
+  const modBoldShortcutLabel = useMemo(() => {
+    if (typeof navigator === "undefined") return "Ctrl+B"
+    const platform = navigator.platform || ""
+    const ua = navigator.userAgent || ""
+    const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua)
+    return isMac ? "⌘+B" : "Ctrl+B"
+  }, [])
+
+  const modItalicShortcutLabel = useMemo(() => {
+    if (typeof navigator === "undefined") return "Ctrl+I"
+    const platform = navigator.platform || ""
+    const ua = navigator.userAgent || ""
+    const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua)
+    return isMac ? "⌘+I" : "Ctrl+I"
+  }, [])
+
+  const modUnderlineShortcutLabel = useMemo(() => {
+    if (typeof navigator === "undefined") return "Ctrl+U"
+    const platform = navigator.platform || ""
+    const ua = navigator.userAgent || ""
+    const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua)
+    return isMac ? "⌘+U" : "Ctrl+U"
+  }, [])
+
+  const modStrikethroughShortcutLabel = useMemo(() => {
+    if (typeof navigator === "undefined") return "Ctrl+S"
+    const platform = navigator.platform || ""
+    const ua = navigator.userAgent || ""
+    const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua)
+    return isMac ? "⌘+S or ⌘+X" : "Ctrl+S or Ctrl+X"
+  }, [])
+
+  const modRowPlusShortcutLabel = useMemo(() => {
+    if (typeof navigator === "undefined") return "Ctrl+Enter"
+    const platform = navigator.platform || ""
+    const ua = navigator.userAgent || ""
+    const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua)
+    return isMac ? "⌘+Enter" : "Ctrl+Enter"
+  }, [])
+
+
+  const modColPlusShortcutLabel = useMemo(() => {
+    if (typeof navigator === "undefined") return "Ctrl+Shift+Enter"
+    const platform = navigator.platform || ""
+    const ua = navigator.userAgent || ""
+    const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua)
+    return isMac ? "⌘+⇧+Enter" : "Ctrl+Shift+Enter"
+  }, [])
+
+  const modRowMinusShortcutLabel = useMemo(() => {
+    if (typeof navigator === "undefined") return "Ctrl+⌫"
+    const platform = navigator.platform || ""
+    const ua = navigator.userAgent || ""
+    const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua)
+    return isMac ? "⌘+⌫" : "Ctrl+⌫"
+  }, [])
+
+  const modColMinusShortcutLabel = useMemo(() => {
+    if (typeof navigator === "undefined") return "Ctrl+Shift+⌫"
+    const platform = navigator.platform || ""
+    const ua = navigator.userAgent || ""
+    const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua)
+    return isMac ? "⌘+⇧+⌫" : "Ctrl+Shift+⌫"
+  }, [])
+
   // Removed: markdown state was only used for debug panel and caused expensive exportMarkdown on every keystroke
   // Removed: docJson state was only used for debug panel display
   const [textColorOpen, setTextColorOpen] = useState(false)
@@ -282,8 +356,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
 
   const [blockMenuOpen, setBlockMenuOpen] = useState(false)
   const [blockMenuAnchor, setBlockMenuAnchor] = useState<MenuAnchor | null>(null)
+  const [blockMenuPlacement, setBlockMenuPlacement] = useState<"above" | "below">("below")
   const [blockMenuQuery, setBlockMenuQuery] = useState("")
-  const blockMenuInputRef = useRef<HTMLInputElement | null>(null)
   const blockMenuSigRef = useRef<string>("")
   const [handleMenuOpen, setHandleMenuOpen] = useState(false)
   const [handleMenuAnchor, setHandleMenuAnchor] = useState<MenuAnchor | null>(null)
@@ -822,11 +896,13 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
         const ui = blockInserterKey.getState(nextState) as BlockInserterState | undefined
         const open = Boolean(ui?.menuOpen)
         const anchor = ui?.menuAnchor || null
-        const sig = `${open ? 1 : 0}:${anchor ? `${Math.round(anchor.left)},${Math.round(anchor.top)},${Math.round(anchor.width)},${Math.round(anchor.height)}` : ""}`
+        const placement = (ui?.menuPlacement as "above" | "below") || "below"
+        const sig = `${open ? 1 : 0}:${anchor ? `${Math.round(anchor.left)},${Math.round(anchor.top)},${Math.round(anchor.width)},${Math.round(anchor.height)}` : ""}:${placement}`
         if (sig !== blockMenuSigRef.current) {
           blockMenuSigRef.current = sig
           setBlockMenuOpen(open)
           setBlockMenuAnchor(anchor)
+          setBlockMenuPlacement(placement)
           if (!open) setBlockMenuQuery("")
         }
 
@@ -1159,16 +1235,26 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     }
   }, [scheduleTableCellSelectionUpdate, tableCellSelectionAnchor])
 
-  // Focus the menu search input when opened.
+  // Keep cursor in the editor when the + menu opens (no auto-focus on input).
   useEffect(() => {
     if (!blockMenuOpen) return
-    window.setTimeout(() => blockMenuInputRef.current?.focus(), 0)
+    const t = window.setTimeout(() => {
+      viewRef.current?.focus()
+    }, 0)
+    return () => window.clearTimeout(t)
   }, [blockMenuOpen])
 
   const closeBlockMenu = () => {
     const v = viewRef.current
     if (!v) return
-    v.dispatch(v.state.tr.setMeta(blockInserterKey, { menuOpen: false, query: "", menuAnchor: null }))
+    const tr = v.state.tr.setMeta(blockInserterKey, {
+      menuOpen: false,
+      menuMode: "insert",
+      query: "",
+      menuAnchor: null,
+    })
+    v.dispatch(tr)
+    v.focus()
   }
 
   const closeHandleMenu = useCallback(() => {
@@ -1662,6 +1748,49 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     run(cmd)
   }
 
+  const applyInlineCodeWithSpace = (e: React.MouseEvent) => {
+    e.preventDefault()
+    const v = viewRef.current
+    if (!v) return
+    const code = editorSchema.marks.code
+    if (!code) return
+    const { state } = v
+    const { from, to, empty } = state.selection
+    if (empty) {
+      run(cmdToggleCodeMark(editorSchema))
+      return
+    }
+
+    const hadCode = state.doc.rangeHasMark(from, to, code)
+    if (hadCode) {
+      const tr = state.tr.removeMark(from, to, code).setStoredMarks(null)
+      v.dispatch(tr.scrollIntoView())
+      v.focus()
+      return
+    }
+
+    let tr = state.tr.addMark(from, to, code.create())
+    tr = tr.removeStoredMark(code)
+    const insertPos = tr.mapping.map(to)
+    const nextPos = Math.min(insertPos + 1, tr.doc.content.size)
+    const nextChar = tr.doc.textBetween(insertPos, nextPos, "\0", "\0")
+    if (nextChar === " ") {
+      if (tr.doc.rangeHasMark(insertPos, insertPos + 1, code)) {
+        tr = tr.removeMark(insertPos, insertPos + 1, code)
+      }
+    } else {
+      tr = tr.insert(insertPos, editorSchema.text(" "))
+    }
+    const selPos = Math.min(tr.doc.content.size, insertPos + 1)
+    try {
+      tr = tr.setSelection(TextSelection.create(tr.doc, selPos))
+    } catch {
+      // ignore selection errors
+    }
+    v.dispatch(tr.scrollIntoView())
+    v.focus()
+  }
+
   const insertTableFromPopover = (e: React.MouseEvent, rows: number, cols: number) => {
     runFromToolbar(e, cmdInsertTable(editorSchema, { rows, cols }))
     setTableInsertOpen(false)
@@ -1723,12 +1852,50 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
     view.focus()
   }
 
-  const blockMenuAlign = (() => {
-    if (!blockMenuAnchor || typeof window === "undefined") return "start" as const
-    const vh = window.innerHeight || 0
-    // If anchor is in the lower portion, align menu to the bottom so it opens upward.
-    return blockMenuAnchor.top > vh * 0.6 ? ("end" as const) : ("start" as const)
-  })()
+  const blockMenuAlign = blockMenuPlacement === "above" ? ("end" as const) : ("start" as const)
+  const blockMenuMeta: Record<string, { icon: React.ReactNode; shortcut?: string }> = {
+    text: { icon: <Type className="size-4" /> },
+    h1: { icon: <Heading1 className="size-4" />, shortcut: "#" },
+    h2: { icon: <Heading2 className="size-4" />, shortcut: "##" },
+    h3: { icon: <Heading3 className="size-4" />, shortcut: "###" },
+    quote: { icon: <Quote className="size-4" />, shortcut: "\"" },
+    divider: { icon: <Minus className="size-4" />, shortcut: "---" },
+    list: { icon: <List className="size-4" />, shortcut: "-" },
+    ordered: { icon: <ListOrdered className="size-4" />, shortcut: "1." },
+    checklist: { icon: <ListTodo className="size-4" />, shortcut: "[]" },
+    code: { icon: <SquareCode className="size-4" />, shortcut: "```" },
+    image: { icon: <Image className="size-4" /> },
+    table: { icon: <Grid2X2 className="size-4" /> },
+    page: { icon: <File className="size-4" /> },
+    link: { icon: <Link2 className="size-4" /> },
+    duplicate: { icon: <CopyPlus className="size-4" /> },
+  }
+  const blockMenuGroups = useMemo(() => {
+    const byKey = new Map(filteredBlockCommands.map((cmd) => [cmd.key, cmd]))
+    const pick = (keys: string[]) => keys.map((k) => byKey.get(k)).filter(Boolean) as typeof filteredBlockCommands
+    return [
+      {
+        title: "텍스트",
+        items: pick([
+          "text",
+          "h1",
+          "h2",
+          "h3",
+          "quote",
+          "divider",
+          "code",
+          "list",
+          "ordered",
+          "checklist",
+          "link",
+          "page",
+          "duplicate",
+        ]),
+      },
+      { title: "미디어", items: pick(["image"]) },
+      { title: "표", items: pick(["table"]) },
+    ]
+  }, [filteredBlockCommands])
 
   return (
     <div className="w-full">
@@ -1737,6 +1904,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
       {blockMenuOpen && blockMenuAnchor ? (
         <DropdownMenu          
           open={blockMenuOpen}
+          modal={false}
           onOpenChange={(open) => {
             if (!open) closeBlockMenu()
           }}
@@ -1763,80 +1931,51 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
             sideOffset={6}
             // block inserter rail uses z-60; keep menu above it
             className="w-[320px] p-0 z-[70]"
+            onFocusOutside={(e) => {
+              const target = e.target as Node | null
+              const editorDom = viewRef.current?.dom || null
+              if (target && editorDom && editorDom.contains(target)) {
+                // Keep menu open when we refocus the editor for selection.
+                e.preventDefault()
+              }
+            }}
             onCloseAutoFocus={(e) => {
               // Keep selection stable; the plugin will close the menu and keep the rail visible.
               e.preventDefault()
             }}
           >
-            <DropdownMenuLabel className="px-2 py-2">Insert Block</DropdownMenuLabel>
-            <div className="px-2 pb-2">
-              <input
-                ref={blockMenuInputRef}
-                className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm outline-none"
-                placeholder="Search blocks..."
-                value={blockMenuQuery}
-                onChange={(e) => setBlockMenuQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  // Let Esc close the Radix menu.
-                  e.stopPropagation()
-                }}
-              />
-            </div>
-            <DropdownMenuSeparator />
             <div className="max-h-[320px] overflow-auto p-1">
-              {filteredBlockCommands.length === 0 ? (
+              {blockMenuGroups.every((g) => g.items.length === 0) ? (
                 <div className="px-2 py-2 text-sm text-muted-foreground">No items</div>
               ) : (
-                filteredBlockCommands.map((it) => (
-                  <DropdownMenuItem
-                    key={it.key}
-                    className="flex items-center justify-between gap-2"
-                    onSelect={(e) => {
-                      // We'll handle clicks ourselves to avoid double-trigger when clicking nested buttons.
-                      e.preventDefault()
-                    }}
-                  >
-                    <button
-                      type="button"
-                      className="flex flex-1 flex-col text-left"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        runBlockMenuCommand(it.key, "after")
-                      }}
-                    >
-                      <div className="text-sm">{it.title}</div>
-                      <div className="text-xs text-muted-foreground">/{it.key}</div>
-                    </button>
-                    <div className="flex items-center gap-1">
-                      <button
-                        type="button"                        
-                        className="rounded-sm border border-border size-6 text-xs hover:bg-background flex items-center justify-center"
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          runBlockMenuCommand(it.key, "before")
-                        }}
-                      >
-                        <ArrowUp className="size-4" />
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-sm border border-border size-6 text-xs hover:bg-background flex items-center justify-center"
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          runBlockMenuCommand(it.key, "after")
-                        }}
-                      >
-                        <ArrowDown className="size-4" />
-                      </button>
+                blockMenuGroups
+                  .filter((g) => g.items.length > 0)
+                  .map((group, idx, arr) => (
+                    <div key={group.title} className="py-1">
+                      <DropdownMenuLabel className="px-2 py-1 text-[11px] font-semibold text-muted-foreground">
+                        {group.title}
+                      </DropdownMenuLabel>
+                      {group.items.map((it) => (
+                        <DropdownMenuItem
+                          key={it.key}
+                          className="flex items-center justify-between gap-2"
+                          onSelect={(e) => {
+                            e.preventDefault()
+                            runBlockMenuCommand(it.key, "after")
+                          }}
+                        >
+                          <span className="flex items-center gap-2">
+                            {blockMenuMeta[it.key]?.icon || <SquareDashed className="size-4" />}
+                            <span className="text-sm">{it.title}</span>
+                          </span>
+                          {blockMenuMeta[it.key]?.shortcut ? (
+                            <DropdownMenuShortcut>{blockMenuMeta[it.key]?.shortcut}</DropdownMenuShortcut>
+                          ) : null}
+                        </DropdownMenuItem>
+                      ))}
+                      {idx < arr.length - 1 ? <DropdownMenuSeparator /> : null}
                     </div>
-                  </DropdownMenuItem>
-                ))
+                  ))
               )}
             </div>
           </DropdownMenuContent>
@@ -2081,7 +2220,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
           <div className="flex flex-wrap items-center gap-2 p-1">
           {/* 텍스트 형식 */}
           <ButtonGroup>
-            <ToolbarTooltip label="Bold">
+            <ToolbarTooltip label="Bold" shortcut={modBoldShortcutLabel}>
               <ButtonGroupItem                     
                 variant="outline"
                 size="sm"
@@ -2090,7 +2229,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                 <Bold />
               </ButtonGroupItem>
             </ToolbarTooltip>
-            <ToolbarTooltip label="Italic">
+            <ToolbarTooltip label="Italic" shortcut={modItalicShortcutLabel}>
               <ButtonGroupItem                
                 variant="outline"
                 size="sm"
@@ -2099,7 +2238,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                 <Italic />
               </ButtonGroupItem>
             </ToolbarTooltip>            
-            <ToolbarTooltip label="Underline">
+            <ToolbarTooltip label="Underline" shortcut={modUnderlineShortcutLabel}>
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2108,7 +2247,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                 <Underline />
               </ButtonGroupItem>
             </ToolbarTooltip>
-            <ToolbarTooltip label="Strikethrough">
+            <ToolbarTooltip label="Strikethrough" shortcut={modStrikethroughShortcutLabel}>
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2121,7 +2260,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
-                onMouseDown={(e) => runFromToolbar(e, cmdToggleCodeMark(editorSchema))}
+                onMouseDown={applyInlineCodeWithSpace}
               >
                 <CodeXml />
               </ButtonGroupItem>
@@ -2482,7 +2621,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                 </PopoverContent>
               </Popover>
             </ToolbarTooltip>
-            <ToolbarTooltip label="Select Cell">
+            <ToolbarTooltip label="Select Cell" shortcut="F5">
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2595,7 +2734,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                <RulerDimensionLine />
               </ButtonGroupItem>
             </ToolbarTooltip> */}
-            <ToolbarTooltip label="Row+">
+            <ToolbarTooltip label="Row+" shortcut={modRowPlusShortcutLabel}>
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2605,7 +2744,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                <BetweenHorizontalStart />
               </ButtonGroupItem>
             </ToolbarTooltip>
-            <ToolbarTooltip label="Col+">
+            <ToolbarTooltip label="Col+" shortcut={modColPlusShortcutLabel}>
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2615,7 +2754,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                <BetweenVerticalStart />
               </ButtonGroupItem>
             </ToolbarTooltip>
-            <ToolbarTooltip label="Row-">
+            <ToolbarTooltip label="Row-" shortcut={modRowMinusShortcutLabel}>
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2625,7 +2764,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                <FoldVertical />
               </ButtonGroupItem>
             </ToolbarTooltip>
-            <ToolbarTooltip label="Col-">
+            <ToolbarTooltip label="Col-" shortcut={modColMinusShortcutLabel}>
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2820,13 +2959,16 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                 </div>
               ) : (
               <ButtonGroup>
+              <ToolbarTooltip label="Align Left">
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
                 onMouseDown={(e) => runFromToolbar(e, cmdSetTableCellAlign(editorSchema, "left"))}
               >
-                <TextAlignStart />
+              <TextAlignStart />
               </ButtonGroupItem>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Align Center">
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2834,6 +2976,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
               >
                 <TextAlignCenter />
               </ButtonGroupItem>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Align Right">
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2841,6 +2985,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
               >
                 <TextAlignEnd />
               </ButtonGroupItem>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Align Top">
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2848,6 +2994,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
               >
                 <ArrowUpToLine />
               </ButtonGroupItem>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Align Middle">
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2855,6 +3003,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
               >
                 <ChevronsDownUp />
               </ButtonGroupItem>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Align Bottom">
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2862,6 +3012,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
               >
                 <ArrowDownToLine />
               </ButtonGroupItem>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Toggle Border">
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2869,6 +3021,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
               >
                 <SquareDashed />
               </ButtonGroupItem>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Toggle Rounded">
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2876,6 +3030,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
               >
                 <SquareRoundCorner />
               </ButtonGroupItem>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Merge Cells">
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2883,6 +3039,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
               >
                 <TableCellsMerge />
               </ButtonGroupItem>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Split Cell">
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2891,6 +3049,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
               >
                 <TableCellsSplit />
               </ButtonGroupItem>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Cell Background Color">
               <ButtonGroupItem
                 type="button"
                 variant="outline"
@@ -2902,6 +3062,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
               >
                 <PaintBucket />
               </ButtonGroupItem>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Delete Table">
               <ButtonGroupItem
                 variant="outline"
                 size="sm"
@@ -2909,6 +3071,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
               >
                 <Grid2X2X />
               </ButtonGroupItem>
+              </ToolbarTooltip>
               </ButtonGroup>
               )}
             </PopoverContent>
@@ -3232,28 +3395,28 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
             ) : (
               // Normal Toolbar Mode
               <ButtonGroup>
-                <ToolbarTooltip label="Bold">
+                <ToolbarTooltip label="Bold" shortcut={modBoldShortcutLabel}>
                   <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdToggleBold(editorSchema))}>
                     <Bold />
                   </ButtonGroupItem>
                 </ToolbarTooltip>
-                <ToolbarTooltip label="Italic">
+                <ToolbarTooltip label="Italic" shortcut={modItalicShortcutLabel}>
                   <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdToggleItalic(editorSchema))}>
                     <Italic />
                   </ButtonGroupItem>
                 </ToolbarTooltip>
-                <ToolbarTooltip label="Underline">
+                <ToolbarTooltip label="Underline" shortcut={modUnderlineShortcutLabel}>
                   <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdToggleUnderline(editorSchema))}>
                     <Underline />
                   </ButtonGroupItem>
                 </ToolbarTooltip>
-                <ToolbarTooltip label="Strikethrough">
+                <ToolbarTooltip label="Strikethrough" shortcut={modStrikethroughShortcutLabel}>
                   <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdToggleStrikethrough(editorSchema))}>
                     <Strikethrough />
                   </ButtonGroupItem>
                 </ToolbarTooltip>
                 <ToolbarTooltip label="Code">
-                  <ButtonGroupItem variant="outline" size="sm" onMouseDown={(e) => runFromToolbar(e, cmdToggleCodeMark(editorSchema))}>
+                  <ButtonGroupItem variant="outline" size="sm" onMouseDown={applyInlineCodeWithSpace}>
                     <CodeXml />
                   </ButtonGroupItem>
                 </ToolbarTooltip>

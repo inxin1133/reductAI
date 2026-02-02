@@ -180,6 +180,32 @@ function exitCodeMarkOnArrowRight(schema: Schema) {
   }
 }
 
+function exitCodeMarkOnSpace(schema: Schema) {
+  const code = schema.marks.code
+  if (!code) return () => false
+  return (state: any, dispatch: any) => {
+    const sel = state.selection
+    if (!sel?.empty) return false
+    const $from = sel.$from
+
+    const stored = state.storedMarks || $from.marks()
+    const codeActive = !!stored && code.isInSet(stored)
+    if (!codeActive) return false
+
+    const after = $from.nodeAfter
+    const afterHasCode = !!after && after.isText && code.isInSet(after.marks)
+    if (afterHasCode) return false
+
+    if (!dispatch) return true
+    const nextStored = Array.isArray(stored) ? stored.filter((m: any) => m.type !== code) : null
+    let tr = state.tr.setStoredMarks(nextStored && nextStored.length ? nextStored : [])
+    tr = tr.insertText(" ", $from.pos)
+    tr = tr.removeMark($from.pos, $from.pos + 1, code).scrollIntoView()
+    dispatch(tr)
+    return true
+  }
+}
+
 function moveCellSelection(axis: "horiz" | "vert", dir: -1 | 1) {
   return (state: any, dispatch: any) => {
     if (!(state.selection instanceof CellSelection)) return false
@@ -231,11 +257,20 @@ function removeCodeMarkOnBackspace(schema: Schema) {
       toOff = toOff + next.node.nodeSize
     }
 
+    const codeText = parent.textBetween(fromOff, toOff, "\0", "\0")
+    if (codeText.length > 1) return false
+
     if (!dispatch) return true
     const fromPos = parentStart + fromOff
     const toPos = parentStart + toOff
-    const tr = state.tr.removeMark(fromPos, toPos, code)
-    tr.setStoredMarks(null)
+    let tr = state.tr
+    // Delete the last character, then remove the mark and clear stored marks.
+    if ($from.pos > fromPos) {
+      tr = tr.delete($from.pos - 1, $from.pos)
+    } else {
+      tr = tr.delete(fromPos, toPos)
+    }
+    tr = tr.removeMark(fromPos, toPos, code).setStoredMarks(null)
     dispatch(tr.scrollIntoView())
     return true
   }
@@ -301,7 +336,8 @@ export function buildEditorKeymap(schema: Schema) {
   }
 
   // Code mark UX (inline `code`):
-  keys["ArrowRight"] = chainCommands(moveCellSelection("horiz", 1), exitCodeMarkOnArrowRight(schema), arrowRightBase)
+    keys["ArrowRight"] = chainCommands(moveCellSelection("horiz", 1), exitCodeMarkOnArrowRight(schema), arrowRightBase)
+    keys["Space"] = exitCodeMarkOnSpace(schema)
   keys["ArrowLeft"] = chainCommands(moveCellSelection("horiz", -1), arrowLeftBase)
   keys["ArrowDown"] = chainCommands(moveCellSelection("vert", 1), arrowDownBase)
   keys["ArrowUp"] = chainCommands(moveCellSelection("vert", -1), arrowUpBase)

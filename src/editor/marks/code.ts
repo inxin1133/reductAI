@@ -9,7 +9,7 @@ export const codeMarkSpec: MarkSpec = {
       "code",
       {
         class:
-          "rounded-md bg-muted px-1 py-0.5 font-mono text-[0.9em] text-foreground ring-1 ring-inset ring-border/60",
+          "rounded-sm bg-muted px-1 py-1 font-mono text-[0.9em] text-foreground ring-1 ring-inset ring-border/60 text-red-500",
       },
       0,
     ],
