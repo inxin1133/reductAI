@@ -14,6 +14,7 @@ import { trailingParagraphPlugin } from "./trailingParagraphPlugin"
 import { blockInserterPlugin } from "./blockInserterPlugin"
 import { blockIdPlugin } from "./blockIdPlugin"
 import { tableCellSelectionKeysPlugin } from "./tableCellSelectionKeysPlugin"
+import { codeBlockPastePlugin } from "./codeBlockPastePlugin"
 
 export function buildEditorPlugins(schema: Schema, opts?: { mention?: { enabled?: boolean } }) {
   const plugins: any[] = []
@@ -24,6 +25,9 @@ export function buildEditorPlugins(schema: Schema, opts?: { mention?: { enabled?
   plugins.push(gapCursor())
 
   plugins.push(inputRules({ rules: buildInputRules(schema) }))
+
+  // Paste handling for external code blocks (language inference + attrs)
+  plugins.push(codeBlockPastePlugin(schema))
 
   // Ensure stable blockId on every top-level block (needed for block drag/drop).
   plugins.push(blockIdPlugin(schema))
