@@ -191,6 +191,40 @@ function decorateImagesWithDownload(root: HTMLElement) {
       p.querySelector("img,video,audio,table,pre,code,blockquote,ul,ol,h1,h2,h3") !== null
     return !hasMediaOrBlocks
   }
+  const attachBrokenFallback = (img: HTMLImageElement, wrap: HTMLElement, src: string) => {
+    if ((img as any)._pmFallbackAttached) return
+    ;(img as any)._pmFallbackAttached = true
+
+    const ensureFallback = () => {
+      if (wrap.querySelector(".pm-img-fallback")) return
+      const fallback = document.createElement("div")
+      fallback.className = "pm-img-fallback"
+      fallback.setAttribute("data-src", src)
+      fallback.innerHTML = '<span>이미지를 불러올 수 없습니다.</span>'
+      wrap.appendChild(fallback)
+    }
+
+    const onError = () => {
+      if (img.dataset.pmBroken === "1") return
+      img.dataset.pmBroken = "1"
+      img.style.display = "none"
+      wrap.classList.add("pm-img-broken")
+      ensureFallback()
+    }
+
+    const onLoad = () => {
+      if (img.dataset.pmBroken !== "1") return
+      img.dataset.pmBroken = "0"
+      img.style.display = ""
+      wrap.classList.remove("pm-img-broken")
+      const fallback = wrap.querySelector(".pm-img-fallback")
+      if (fallback) fallback.remove()
+    }
+
+    img.addEventListener("error", onError)
+    img.addEventListener("load", onLoad)
+  }
+
   for (const img of imgs) {
     if (!img || !img.parentElement) continue
     // Avoid duplicating wrappers.
@@ -229,6 +263,78 @@ function decorateImagesWithDownload(root: HTMLElement) {
     })
 
     wrap.appendChild(btn)
+
+    attachBrokenFallback(img, wrap, src)
+  }
+}
+
+function decorateMediaWithFallback(root: HTMLElement) {
+  const mediaNodes = Array.from(root.querySelectorAll("video, audio")) as Array<HTMLVideoElement | HTMLAudioElement>
+  const isEmptyParagraph = (el: Element) => {
+    if (el.tagName !== "P") return false
+    const p = el as HTMLParagraphElement
+    const text = (p.textContent || "").replace(/\u00a0/g, " ").trim()
+    if (text) return false
+    const hasMediaOrBlocks =
+      p.querySelector("img,video,audio,table,pre,code,blockquote,ul,ol,h1,h2,h3") !== null
+    return !hasMediaOrBlocks
+  }
+
+  const attachFallback = (el: HTMLVideoElement | HTMLAudioElement, wrap: HTMLElement, src: string, label: string) => {
+    if ((el as any)._pmFallbackAttached) return
+    ;(el as any)._pmFallbackAttached = true
+
+    const ensureFallback = () => {
+      if (wrap.querySelector(".pm-media-fallback")) return
+      const fallback = document.createElement("div")
+      fallback.className = "pm-media-fallback"
+      fallback.setAttribute("data-src", src)
+      fallback.innerHTML = `<span>${label}</span>`
+      wrap.appendChild(fallback)
+    }
+
+    const onError = () => {
+      if (el.dataset.pmBroken === "1") return
+      el.dataset.pmBroken = "1"
+      el.style.display = "none"
+      wrap.classList.add("pm-media-broken")
+      ensureFallback()
+    }
+
+    const onLoad = () => {
+      if (el.dataset.pmBroken !== "1") return
+      el.dataset.pmBroken = "0"
+      el.style.display = ""
+      wrap.classList.remove("pm-media-broken")
+      const fallback = wrap.querySelector(".pm-media-fallback")
+      if (fallback) fallback.remove()
+    }
+
+    el.addEventListener("error", onError)
+    el.addEventListener("loadedmetadata", onLoad)
+  }
+
+  for (const el of mediaNodes) {
+    if (!el || !el.parentElement) continue
+    if (el.closest?.("[data-pm-media-wrap='1']")) continue
+    const src = String(el.getAttribute("src") || "").trim()
+    if (!src) continue
+
+    const wrap = document.createElement("span")
+    wrap.setAttribute("data-pm-media-wrap", "1")
+    wrap.className = `pm-media-wrap pm-media-wrap--${el.tagName.toLowerCase()}`
+
+    const parent = el.parentElement
+    parent.insertBefore(wrap, el)
+    wrap.appendChild(el)
+
+    const prev = wrap.previousSibling
+    if (prev instanceof Element && isEmptyParagraph(prev)) prev.remove()
+    const next = wrap.nextSibling
+    if (next instanceof Element && isEmptyParagraph(next)) next.remove()
+
+    const label = el.tagName.toLowerCase() === "audio" ? "오디오를 불러올 수 없습니다." : "비디오를 불러올 수 없습니다."
+    attachFallback(el, wrap, src, label)
   }
 }
 
@@ -321,7 +427,10 @@ export function ProseMirrorViewer({ docJson, className, viewerKey }: Props) {
     viewRef.current.updateState(state)
     // After ProseMirror updates DOM, attach download buttons to images (best-effort).
     window.requestAnimationFrame(() => {
-      if (mountRef.current) decorateImagesWithDownload(mountRef.current)
+      if (mountRef.current) {
+        decorateImagesWithDownload(mountRef.current)
+        decorateMediaWithFallback(mountRef.current)
+      }
     })
   }, [docJson])
 

@@ -11,6 +11,7 @@ import { PageLinkNodeView } from "../../editor/nodes/page_link_nodeview"
 import { CodeBlockNodeView } from "../../editor/nodes/code_block_nodeview"
 import { ListItemNodeView } from "../../editor/nodes/list_item_nodeview"
 import { TableNodeView } from "../../editor/nodes/table_nodeview"
+import { createMediaNodeView } from "../../editor/nodes/media_nodeview"
 import { blockInserterKey, type BlockInserterState } from "../../editor/plugins/blockInserterPlugin"
 import { selectionModeInitState, selectionModePluginKey } from "../../editor/plugins/tableCellSelectionKeysPlugin"
 import { getBlockCommandRegistry } from "../../editor/commands/blockCommandRegistry"
@@ -721,6 +722,9 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
         code_block: (node, view, getPos) => new CodeBlockNodeView(node, view, getPos as () => number),
         list_item: (node, view, getPos) => new ListItemNodeView(node, view, getPos as () => number),
         table: (node, view, getPos) => new TableNodeView(node, view, getPos as () => number),
+        image: createMediaNodeView("image"),
+        video: createMediaNodeView("video"),
+        audio: createMediaNodeView("audio"),
       },
       handleDOMEvents: {
         copy: (v, event) => {

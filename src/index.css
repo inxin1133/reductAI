@@ -167,16 +167,64 @@ body {
 /* =========================
    ProseMirror image download overlay
    ========================= */
-.pm-viewer .pm-img-wrap {
+.pm-viewer .pm-img-wrap,
+.pm-viewer .pm-media-wrap,
+.pm-editor .pm-media-wrap {
   position: relative;
   display: inline-block;
   max-width: 100%;  
+}
+.pm-editor .pm-media-wrap {
+  width: 100%;
 }
 .pm-viewer .pm-img-wrap > img {
   display: block;
   max-width: 100%;
   height: auto;
   border-radius: 12px;
+}
+.pm-viewer .pm-img-wrap.pm-img-broken > img {
+  display: none;
+}
+.pm-viewer .pm-media-wrap.pm-media-broken > img,
+.pm-viewer .pm-media-wrap.pm-media-broken > video,
+.pm-viewer .pm-media-wrap.pm-media-broken > audio,
+.pm-editor .pm-media-wrap.pm-media-broken > img,
+.pm-editor .pm-media-wrap.pm-media-broken > video,
+.pm-editor .pm-media-wrap.pm-media-broken > audio {
+  display: none;
+}
+.pm-viewer .pm-img-fallback,
+.pm-viewer .pm-media-fallback,
+.pm-editor .pm-media-fallback,
+.md-img-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 100%;
+  min-height: 160px;
+  padding: 0.75rem 1rem;
+  border-radius: 12px;
+  border: 1px dashed oklch(0.85 0 0);
+  background: color-mix(in oklch, oklch(0.98 0 0) 85%, transparent);
+  color: oklch(0.45 0 0);
+  font-size: 0.875rem;
+  text-align: center;
+}
+.dark .pm-viewer .pm-img-fallback,
+.dark .pm-viewer .pm-media-fallback,
+.dark .pm-editor .pm-media-fallback,
+.dark .md-img-fallback {
+  border-color: oklch(1 0 0 / 20%);
+  background: color-mix(in oklch, oklch(0.2 0 0) 70%, transparent);
+  color: oklch(0.8 0 0);
+}
+.pm-viewer .pm-img-fallback span,
+.pm-viewer .pm-media-fallback span,
+.pm-editor .pm-media-fallback span,
+.md-img-fallback span {
+  line-height: 1.4;
 }
 .pm-viewer .pm-img-download {
   position: absolute;

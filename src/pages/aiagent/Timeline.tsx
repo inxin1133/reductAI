@@ -425,7 +425,10 @@ function normalizeContentJson(content: unknown): Record<string, unknown> | null 
     const obj = content as Record<string, unknown>
     const outText = typeof obj.output_text === "string" ? obj.output_text : ""
     const parsed = outText ? parseJsonLikeString(outText) : null
-    const base = parsed ?? obj
+    let base = (parsed ?? obj) as Record<string, unknown>
+    if (isRecord(obj.options) && !isRecord(base.options)) {
+      base = { ...base, options: obj.options }
+    }
     if (base && typeof base === "object" && !Array.isArray(base)) {
       const text = typeof (base as { text?: unknown }).text === "string" ? String((base as { text?: unknown }).text) : ""
       const reply = typeof (base as { reply?: unknown }).reply === "string" ? String((base as { reply?: unknown }).reply) : ""

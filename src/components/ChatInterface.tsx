@@ -689,6 +689,7 @@ export function ChatInterface({
 
   // (8) capabilities.options/defaults 기반 옵션 상태
   const [runtimeOptions, setRuntimeOptions] = React.useState<Record<string, unknown>>({})
+  const runtimeOptionsRef = React.useRef<Record<string, unknown>>({})
   const [isOptionExpanded, setIsOptionExpanded] = React.useState(true)
 
   const promptInputRef = React.useRef<HTMLTextAreaElement>(null)
@@ -1487,13 +1488,18 @@ export function ChatInterface({
     window.requestAnimationFrame(() => resizePromptTextarea(el))
   }, [compactPromptMode, isCompact, prompt, resizePromptTextarea])
 
+  const setRuntimeOptionsSafe = React.useCallback((next: Record<string, unknown>) => {
+    runtimeOptionsRef.current = next
+    setRuntimeOptions(next)
+  }, [])
+
   const applyRuntimeOptions = React.useCallback(
     (next: Record<string, unknown>) => {
-      setRuntimeOptions(next)
+      setRuntimeOptionsSafe(next)
       if (!selectedModelDbId) return
       setRuntimeOptionsByModel((prev) => ({ ...prev, [selectedModelDbId]: next }))
     },
-    [selectedModelDbId]
+    [selectedModelDbId, setRuntimeOptionsSafe]
   )
 
   // In Timeline, the parent passes "last used model" as initial props.
@@ -1733,13 +1739,13 @@ export function ChatInterface({
     if (!selectedModelDbId) return
     const saved = runtimeOptionsByModel[selectedModelDbId]
     if (saved && typeof saved === "object") {
-      setRuntimeOptions(saved)
+      setRuntimeOptionsSafe(saved)
       return
     }
     const cap = selectedCapabilities
     const defaults = cap && isRecord(cap.defaults) ? (cap.defaults as Record<string, unknown>) : {}
-    setRuntimeOptions(defaults)
-  }, [runtimeOptionsByModel, selectedCapabilities, selectedModelDbId])
+    setRuntimeOptionsSafe(defaults)
+  }, [runtimeOptionsByModel, selectedCapabilities, selectedModelDbId, setRuntimeOptionsSafe])
 
   React.useEffect(() => {
     const controller = new AbortController()
@@ -1918,7 +1924,8 @@ export function ChatInterface({
       handleSendInFlightRef.current.add(sendKey)
 
       const capDefaults = selectedCapabilities && isRecord(selectedCapabilities.defaults) ? (selectedCapabilities.defaults as Record<string, unknown>) : {}
-      const baseOptions = overrideOptions ?? { ...capDefaults, ...(runtimeOptions || {}) }
+      const runtimeSnapshot = runtimeOptionsRef.current || {}
+      const baseOptions = overrideOptions ?? { ...capDefaults, ...runtimeSnapshot }
       const validation =
         overrideOptions == null ? validateAndNormalizeOptions(baseOptions, selectedCapabilities) : { correctedOptions: baseOptions, corrections: [] }
       if (!overrideOptions && validation.corrections.length > 0) {
@@ -2057,8 +2064,15 @@ export function ChatInterface({
         const parsed = normalizeAiContent(outText, isRecord(json.content) ? json.content : null)
         // If parsing failed (often because the model returned JSON-ish text that isn't strict JSON),
         // keep it under `output_text` so Timeline can still normalize/parse it for ProseMirrorViewer.
-        const normalizedContent =
+        const normalizedContentBase =
           parsed.parsed && isRecord(parsed.parsed) ? normalizeBlockJson(parsed.parsed) : ({ output_text: outText } as Record<string, unknown>)
+        const contentOptions =
+          isRecord(json.content) && isRecord((json.content as Record<string, unknown>).options)
+            ? ((json.content as Record<string, unknown>).options as Record<string, unknown>)
+            : null
+        const normalizedContent = contentOptions
+          ? { ...normalizedContentBase, options: contentOptions }
+          : normalizedContentBase
         onMessage?.({
           role: "assistant",
           content: parsed.displayText,
@@ -2175,7 +2189,9 @@ export function ChatInterface({
 
     if (autoSentRef.current === p) return
     autoSentRef.current = p
-    void handleSend(p, desiredModelApiId || undefined, autoSendAttachments || undefined)
+    const overrideOpts =
+      initialOptions && typeof initialOptions === "object" ? (initialOptions as Record<string, unknown>) : undefined
+    void handleSend(p, desiredModelApiId || undefined, autoSendAttachments || undefined, overrideOpts)
   }, [
     autoSendPrompt,
     autoSendAttachments,
@@ -2207,7 +2223,7 @@ export function ChatInterface({
               setSelectedType(t)
               setSelectedProviderId("")
               setSelectedSubModel("")
-              setRuntimeOptions({})
+              setRuntimeOptionsSafe({})
               const groups = (uiConfig?.providers_by_type?.[t] || []) as UiProviderGroup[]
               const firstGroup = groups[0]
               const firstModel = firstGroup?.models?.find((m) => m.is_available)?.model_api_id || ""
@@ -2803,7 +2819,7 @@ export function ChatInterface({
                             const pending = invalidOptionsDialog
                             if (!pending) return
                             setInvalidOptionsDialog(null)
-                            setRuntimeOptions(pending.correctedOptions)
+                            setRuntimeOptionsSafe(pending.correctedOptions)
                             void handleSend(pending.overrideInput, pending.overrideModelApiId, pending.overrideApiAttachments, pending.correctedOptions)
                           }}
                         >

@@ -31,21 +31,32 @@ export function Markdown({ markdown, className }: MarkdownProps) {
     }
   }, [])
 
+  const MarkdownImage = ({ src, alt, ...props }: { src?: string; alt?: string }) => {
+    const [failed, setFailed] = React.useState(false)
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null
+    const s = typeof src === "string" ? src : ""
+    const nextSrc =
+      token && s.startsWith("/api/ai/media/assets/") ? `${s}${s.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}` : s
+
+    if (!nextSrc || failed) {
+      return (
+        <div className="md-img-fallback" data-src={nextSrc || ""}>
+          <span>{alt || "이미지를 불러올 수 없습니다."}</span>
+        </div>
+      )
+    }
+
+    // eslint-disable-next-line jsx-a11y/alt-text
+    return <img src={nextSrc} alt={alt || "image"} onError={() => setFailed(true)} {...props} />
+  }
+
   return (
     <div className={className}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[[rehypeSanitize, sanitizeSchema]]}
         components={{
-          img: ({ src, alt, ...props }) => {
-            const token = typeof window !== "undefined" ? localStorage.getItem("token") : null
-            const s = typeof src === "string" ? src : ""
-            // For private media assets served from our API, attach token as query param (mediaRoutes supports it).
-            const nextSrc =
-              token && s.startsWith("/api/ai/media/assets/") ? `${s}${s.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}` : s
-            // eslint-disable-next-line jsx-a11y/alt-text
-            return <img src={nextSrc} alt={alt || "image"} {...props} />
-          },
+          img: ({ src, alt, ...props }) => <MarkdownImage src={typeof src === "string" ? src : ""} alt={alt || ""} {...props} />,
         }}
       >
         {markdown || ""}
