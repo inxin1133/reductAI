@@ -361,49 +361,7 @@ COMMENT ON COLUMN post_tag_mappings.tag_id IS '태그 ID (post_tags 테이블 �
 COMMENT ON COLUMN post_tag_mappings.created_at IS '매핑 생성 시각';
 
 -- ============================================
--- 6. POST ATTACHMENTS (첨부 파일)
--- ============================================
-
-CREATE TABLE post_attachments (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    post_id UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
-    block_id UUID REFERENCES post_blocks(id) ON DELETE SET NULL, -- 특정 블록에 첨부된 경우
-    file_name VARCHAR(255) NOT NULL,
-    file_path VARCHAR(500) NOT NULL,
-    file_url VARCHAR(500) NOT NULL,
-    file_type VARCHAR(100), -- MIME type
-    file_size BIGINT, -- 파일 크기 (bytes)
-    mime_type VARCHAR(100),
-    width INTEGER, -- 이미지/비디오의 경우
-    height INTEGER, -- 이미지/비디오의 경우
-    duration INTEGER, -- 비디오/오디오의 경우 (초)
-    metadata JSONB DEFAULT '{}',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX idx_post_attachments_post_id ON post_attachments(post_id);
-CREATE INDEX idx_post_attachments_block_id ON post_attachments(block_id);
-CREATE INDEX idx_post_attachments_file_type ON post_attachments(file_type);
-
-COMMENT ON TABLE post_attachments IS '게시글에 첨부된 파일 정보를 관리하는 테이블. 플랜별 저장 공간 제한(max_storage_gb)을 subscription_plans.features에서 확인하고, 사용량을 usage_tracking 테이블에 추적해야 합니다.';
-COMMENT ON COLUMN post_attachments.id IS '첨부 파일의 고유 식별자 (UUID)';
-COMMENT ON COLUMN post_attachments.post_id IS '첨부 파일이 속한 게시글 ID (posts 테이블 참조)';
-COMMENT ON COLUMN post_attachments.file_size IS '파일 크기 (바이트 단위). 플랜별 저장 공간 제한을 초과하지 않는지 확인해야 합니다.';
-COMMENT ON COLUMN post_attachments.block_id IS '첨부 파일이 연결된 블록 ID (post_blocks 테이블 참조, NULL이면 게시글 전체 첨부)';
-COMMENT ON COLUMN post_attachments.file_name IS '원본 파일 이름';
-COMMENT ON COLUMN post_attachments.file_path IS '서버 내부 파일 경로';
-COMMENT ON COLUMN post_attachments.file_url IS '파일에 접근할 수 있는 공개 URL';
-COMMENT ON COLUMN post_attachments.file_type IS '파일 타입 (예: image, video, document, audio)';
-COMMENT ON COLUMN post_attachments.file_size IS '파일 크기 (바이트 단위)';
-COMMENT ON COLUMN post_attachments.mime_type IS 'MIME 타입 (예: image/jpeg, video/mp4)';
-COMMENT ON COLUMN post_attachments.width IS '이미지/비디오의 너비 (픽셀)';
-COMMENT ON COLUMN post_attachments.height IS '이미지/비디오의 높이 (픽셀)';
-COMMENT ON COLUMN post_attachments.duration IS '비디오/오디오의 재생 시간 (초 단위)';
-COMMENT ON COLUMN post_attachments.metadata IS '파일의 추가 메타데이터 (JSON 형식)';
-COMMENT ON COLUMN post_attachments.created_at IS '첨부 파일 업로드 시각';
-
--- ============================================
--- 7. POST COMMENTS (댓글)
+-- 6. POST COMMENTS (댓글)
 -- ============================================
 
 CREATE TABLE post_comments (

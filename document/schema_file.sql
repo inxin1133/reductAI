@@ -7,7 +7,7 @@
 -- 1. Execute schema.sql and schema_tenant_membership.sql first.
 -- 2. file_assets stores both AI-generated files and user attachments.
 -- 3. Attachments should use TTL policies (expires_at).
--- 4. message_media_assets is included for reference/compatibility.
+-- 4. message_media_assets has been merged into file_assets.
 --
 -- ============================================
 
@@ -58,9 +58,10 @@ CREATE TABLE IF NOT EXISTS file_assets (
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     user_id UUID REFERENCES users(id) ON DELETE SET NULL,
 
-    source_type VARCHAR(30) NOT NULL CHECK (source_type IN ('ai_generated', 'attachment')),
-    reference_type VARCHAR(50), -- e.g. message, post, profile
+    source_type VARCHAR(30) NOT NULL CHECK (source_type IN ('ai_generated', 'attachment', 'post_upload', 'external_link', 'profile_image')),
+    reference_type VARCHAR(50), -- e.g. message, post, user_profile
     reference_id UUID,
+    reference_block_id UUID, -- optional: post_blocks or other sub-entities
 
     kind VARCHAR(30) NOT NULL CHECK (kind IN ('image', 'audio', 'video', 'document', 'file')),
     mime VARCHAR(120),
@@ -68,6 +69,9 @@ CREATE TABLE IF NOT EXISTS file_assets (
     original_filename TEXT,
     file_extension VARCHAR(20),
     sha256 VARCHAR(64),
+    width INTEGER,
+    height INTEGER,
+    duration_ms INTEGER,
 
     status VARCHAR(30) NOT NULL DEFAULT 'stored' CHECK (status IN ('pending', 'stored', 'failed', 'deleted')),
 
@@ -94,21 +98,27 @@ CREATE INDEX IF NOT EXISTS idx_file_assets_source_type ON file_assets(source_typ
 CREATE INDEX IF NOT EXISTS idx_file_assets_kind ON file_assets(kind);
 CREATE INDEX IF NOT EXISTS idx_file_assets_sha256 ON file_assets(sha256);
 CREATE INDEX IF NOT EXISTS idx_file_assets_storage_key ON file_assets(storage_key);
+CREATE INDEX IF NOT EXISTS idx_file_assets_reference ON file_assets(reference_type, reference_id);
+CREATE INDEX IF NOT EXISTS idx_file_assets_reference_block ON file_assets(reference_block_id);
 CREATE INDEX IF NOT EXISTS idx_file_assets_expires_at ON file_assets(expires_at) WHERE expires_at IS NOT NULL;
 
 COMMENT ON TABLE file_assets IS 'S3에 저장되며, 선택적으로 CDN 배포 및 메타데이터를 포함하는 파일 자산 테이블입니다.';
 COMMENT ON COLUMN file_assets.id IS '파일 자산의 고유 ID (UUID).';
 COMMENT ON COLUMN file_assets.tenant_id IS '테넌트 ID (tenants 테이블 참조).';
 COMMENT ON COLUMN file_assets.user_id IS '소유자 또는 업로더 사용자 ID (users 테이블 참조).';
-COMMENT ON COLUMN file_assets.source_type IS '소스 유형: ai_generated(모델 생성) 또는 attachment(첨부파일).';
-COMMENT ON COLUMN file_assets.reference_type IS '다른 도메인 엔티티와 연결되는 참조 타입.';
+COMMENT ON COLUMN file_assets.source_type IS '소스 유형: ai_generated, attachment, post_upload, external_link, profile_image.';
+COMMENT ON COLUMN file_assets.reference_type IS '다른 도메인 엔티티와 연결되는 참조 타입 (message, post, user_profile 등).';
 COMMENT ON COLUMN file_assets.reference_id IS '다른 도메인 엔티티에 대한 참조 ID.';
+COMMENT ON COLUMN file_assets.reference_block_id IS '참조 엔티티 내 블록/하위 객체 ID (선택).';
 COMMENT ON COLUMN file_assets.kind IS '미디어 종류: image, audio, video, document, file.';
 COMMENT ON COLUMN file_assets.mime IS 'MIME 타입 (예: image/png).';
 COMMENT ON COLUMN file_assets.bytes IS '파일 크기(바이트 단위).';
 COMMENT ON COLUMN file_assets.original_filename IS '원본 파일명 (제공된 경우).';
 COMMENT ON COLUMN file_assets.file_extension IS '파일 확장자.';
 COMMENT ON COLUMN file_assets.sha256 IS '중복 방지 및 무결성 확인을 위한 콘텐츠 해시값.';
+COMMENT ON COLUMN file_assets.width IS '이미지/비디오의 가로(px).';
+COMMENT ON COLUMN file_assets.height IS '이미지/비디오의 세로(px).';
+COMMENT ON COLUMN file_assets.duration_ms IS '오디오/비디오 재생 길이(ms).';
 COMMENT ON COLUMN file_assets.status IS '저장 상태: pending, stored, failed, deleted.';
 COMMENT ON COLUMN file_assets.storage_provider IS '저장소 제공자: s3, gcs, r2, local_fs, http.';
 COMMENT ON COLUMN file_assets.storage_region IS '저장소 리전(해당되는 경우).';
@@ -170,72 +180,7 @@ COMMENT ON COLUMN file_asset_thumbnails.created_at IS '생성 일시';
 COMMENT ON COLUMN file_asset_thumbnails.updated_at IS '수정 일시';
 
 -- ============================================
--- 4. MESSAGE MEDIA ASSETS (OPTIONAL REFERENCE)
--- ============================================
--- This table mirrors schema_models.sql for message attachments.
-
-CREATE TABLE IF NOT EXISTS message_media_assets (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    conversation_id UUID NOT NULL REFERENCES model_conversations(id) ON DELETE CASCADE,
-    message_id UUID NOT NULL REFERENCES model_messages(id) ON DELETE CASCADE,
-
-    kind VARCHAR(30) NOT NULL CHECK (kind IN ('image','audio','video','file')),
-    mime VARCHAR(120),
-    bytes BIGINT,
-    sha256 VARCHAR(64), -- content hash (dedupe/verify)
-
-    status VARCHAR(30) NOT NULL DEFAULT 'stored' CHECK (status IN ('pending','stored','failed')),
-
-    storage_provider VARCHAR(30) NOT NULL DEFAULT 'db_proxy' CHECK (storage_provider IN ('db_proxy','local_fs','s3','gcs','r2','http')),
-    storage_bucket VARCHAR(255),
-    storage_key VARCHAR(1000),
-    public_url TEXT, -- public or signed URL (when using external storage)
-    is_private BOOLEAN NOT NULL DEFAULT TRUE,
-    expires_at TIMESTAMP WITH TIME ZONE,
-
-    width INTEGER,
-    height INTEGER,
-    duration_ms INTEGER,
-
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_message_media_assets_tenant ON message_media_assets(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_message_media_assets_message ON message_media_assets(message_id);
-CREATE INDEX IF NOT EXISTS idx_message_media_assets_conversation ON message_media_assets(conversation_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_message_media_assets_kind ON message_media_assets(kind);
-CREATE INDEX IF NOT EXISTS idx_message_media_assets_sha256 ON message_media_assets(sha256);
-
-COMMENT ON TABLE message_media_assets IS 'AI 대화(message)와 연결된 첨부 미디어(이미지/오디오/비디오/파일 등)의 메타데이터 및 저장 위치를 관리하는 테이블';
-COMMENT ON COLUMN message_media_assets.id IS '미디어 자산의 고유 식별자 (UUID)';
-COMMENT ON COLUMN message_media_assets.tenant_id IS '테넌트 ID (tenants 테이블 참조)';
-COMMENT ON COLUMN message_media_assets.user_id IS '첨부 파일 업로드/생성한 유저 ID (NULL일 수 있음)';
-COMMENT ON COLUMN message_media_assets.conversation_id IS '연결된 대화 세션 ID (model_conversations 테이블 참조)';
-COMMENT ON COLUMN message_media_assets.message_id IS '연결된 메시지 ID (model_messages 테이블 참조)';
-COMMENT ON COLUMN message_media_assets.kind IS '미디어 종류(image, audio, video, file)';
-COMMENT ON COLUMN message_media_assets.mime IS 'MIME 타입(ex: image/png, audio/mpeg 등)';
-COMMENT ON COLUMN message_media_assets.bytes IS '파일 용량(byte 단위)';
-COMMENT ON COLUMN message_media_assets.sha256 IS '콘텐츠 해시(SHA256, 중복 방지 및 검증)';
-COMMENT ON COLUMN message_media_assets.status IS '미디어 데이터 저장 상태(pending, stored, failed)';
-COMMENT ON COLUMN message_media_assets.storage_provider IS '저장소 유형(db_proxy, local_fs, s3, gcs, r2, http 등)';
-COMMENT ON COLUMN message_media_assets.storage_bucket IS '스토리지 버킷 명(ex: S3/Google Cloud Storage 등)';
-COMMENT ON COLUMN message_media_assets.storage_key IS '스토리지 내 고유 키/경로';
-COMMENT ON COLUMN message_media_assets.public_url IS '공개 접근 URL(외부 스토리지/S3 presign 등)';
-COMMENT ON COLUMN message_media_assets.is_private IS '비공개 여부(공개 URL이 없는 경우 TRUE)';
-COMMENT ON COLUMN message_media_assets.expires_at IS '만료 시각(외부 인증/임시 URL의 경우)';
-COMMENT ON COLUMN message_media_assets.width IS '이미지/비디오의 폭(px), 해당되는 경우';
-COMMENT ON COLUMN message_media_assets.height IS '이미지/비디오의 높이(px), 해당되는 경우';
-COMMENT ON COLUMN message_media_assets.duration_ms IS '오디오/비디오의 재생 길이(ms), 해당되는 경우';
-COMMENT ON COLUMN message_media_assets.metadata IS '추가 메타데이터(JSONB, 모델/생성 파라미터 등)';
-COMMENT ON COLUMN message_media_assets.created_at IS '자산 레코드 생성 시각';
-COMMENT ON COLUMN message_media_assets.updated_at IS '자산 레코드 수정 시각';
-
--- ============================================
--- 5. TRIGGERS FOR UPDATED_AT
+-- 4. TRIGGERS FOR UPDATED_AT
 -- ============================================
 
 DO $$
@@ -275,10 +220,3 @@ BEGIN
     END IF;
 END $$;
 
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_message_media_assets_updated_at') THEN
-        EXECUTE 'CREATE TRIGGER update_message_media_assets_updated_at BEFORE UPDATE ON message_media_assets
-                 FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()';
-    END IF;
-END $$;

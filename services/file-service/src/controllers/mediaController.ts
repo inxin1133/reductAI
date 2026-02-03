@@ -7,6 +7,7 @@ import path from 'path';
 import fs from 'fs/promises';
 
 type MediaKind = 'image' | 'audio' | 'video' | 'file';
+type FileSourceType = 'ai_generated' | 'attachment' | 'post_upload' | 'external_link' | 'profile_image';
 
 function mediaRootDir() {
   const root = process.env.MEDIA_STORAGE_ROOT;
@@ -32,6 +33,16 @@ export async function createMediaAsset(req: Request, res: Response) {
     const conversationId = String(body.conversation_id || body.conversationId || '').trim();
     const messageId = String(body.message_id || body.messageId || '').trim();
     const dataUrl = String(body.data_url || body.dataUrl || '').trim();
+    const sourceTypeRaw = String(body.source_type || body.sourceType || '').trim();
+    const sourceType: FileSourceType = ([
+      'ai_generated',
+      'attachment',
+      'post_upload',
+      'external_link',
+      'profile_image',
+    ] as FileSourceType[]).includes(sourceTypeRaw as FileSourceType)
+      ? (sourceTypeRaw as FileSourceType)
+      : 'attachment';
     const kindRaw = typeof body.kind === 'string' ? body.kind.trim().toLowerCase() : '';
     const kind = (['image', 'audio', 'video', 'file'] as MediaKind[]).includes(kindRaw as MediaKind)
       ? (kindRaw as MediaKind)
@@ -55,6 +66,7 @@ export async function createMediaAsset(req: Request, res: Response) {
       dataUrl,
       index,
       kind,
+      sourceType,
     });
 
     return res.status(201).json(stored);
@@ -81,20 +93,25 @@ export async function getMediaAsset(req: Request, res: Response) {
         a.id,
         a.tenant_id,
         a.user_id,
-        a.conversation_id,
-        a.message_id,
+        a.reference_type,
+        a.reference_id,
         a.kind,
         a.mime,
         a.bytes,
         a.storage_provider,
         a.storage_bucket,
         a.storage_key,
-        a.public_url,
+        a.storage_url,
+        a.cdn_url,
         a.is_private,
         c.user_id AS conversation_user_id
-      FROM message_media_assets a
-      JOIN model_conversations c ON c.id = a.conversation_id
-      WHERE a.id = $1 AND a.tenant_id = $2
+      FROM file_assets a
+      LEFT JOIN model_messages mm
+        ON a.reference_type = 'message'
+        AND a.reference_id = mm.id
+      LEFT JOIN model_conversations c
+        ON c.id = mm.conversation_id
+      WHERE a.id = $1 AND a.tenant_id = $2 AND a.status <> 'deleted'
       LIMIT 1
       `,
       [id, tenantId]
@@ -103,13 +120,20 @@ export async function getMediaAsset(req: Request, res: Response) {
     const row = r.rows[0] as any;
 
     if (row.is_private) {
-      const owner = row.conversation_user_id ? String(row.conversation_user_id) : '';
+      const refType = String(row.reference_type || '');
+      const owner =
+        refType === 'message' && row.conversation_user_id ? String(row.conversation_user_id) : row.user_id ? String(row.user_id) : '';
       if (!owner || owner !== String(userId)) return res.status(404).json({ message: 'Not found' });
     }
 
     const provider = String(row.storage_provider || '');
     if (provider === 'http') {
-      const url = typeof row.public_url === 'string' ? row.public_url : '';
+      const url =
+        typeof row.storage_url === 'string'
+          ? row.storage_url
+          : typeof row.cdn_url === 'string'
+            ? row.cdn_url
+            : '';
       if (!url) return res.status(404).json({ message: 'No url' });
       return res.redirect(302, url);
     }

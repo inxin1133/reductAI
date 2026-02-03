@@ -1440,6 +1440,7 @@ export async function chatRun(req: Request, res: Response) {
     const cap = isRecord(row.capabilities) ? (row.capabilities as Record<string, unknown>) : {}
     const capDefaults = cap && isRecord(cap.defaults) ? (cap.defaults as Record<string, unknown>) : {}
     const mergedOptions = { ...capDefaults, ...(options || {}) }
+    let optionsForAssistant: Record<string, unknown> | null = null
 
     // Incoming attachments (used for image-to-image in image mode)
     const incomingAttachments = Array.isArray(attachments) ? attachments : []
@@ -1661,6 +1662,7 @@ export async function chatRun(req: Request, res: Response) {
               dataUrl: slot.dataUrl,
               index: i,
               kind: slot.kind === "image" || slot.kind === "file" ? slot.kind : undefined,
+              sourceType: "attachment",
               authHeader,
             })
             safeAttachments.push({ ...base, url: stored.url, asset_id: stored.assetId, bytes: stored.bytes })
@@ -2113,6 +2115,14 @@ export async function chatRun(req: Request, res: Response) {
               background,
               signal: abortSignal,
             })
+      const appliedOptions = Object.fromEntries(
+        Object.entries(
+          incomingImageDataUrls.length > 0
+            ? { n, size }
+            : { n, size, quality, style, background }
+        ).filter(([, v]) => v !== undefined)
+      ) as Record<string, unknown>
+      optionsForAssistant = appliedOptions
       // Prefer real URLs; if API returns base64 only, fall back to data URLs.
       const sourceUrls: string[] = (r.urls && r.urls.length ? r.urls : r.data_urls) || []
       const blocks = sourceUrls.length
@@ -2122,6 +2132,7 @@ export async function chatRun(req: Request, res: Response) {
         title: "이미지 생성",
         summary: incomingImageDataUrls.length > 0 ? "첨부 이미지(참조)를 기반으로 편집한 결과입니다." : "요청한 이미지 생성 결과입니다.",
         blocks,
+        options: appliedOptions,
       }
       out = {
         output_text: JSON.stringify(blockJson),
@@ -2184,6 +2195,13 @@ export async function chatRun(req: Request, res: Response) {
       }
     }
 
+    if (!optionsForAssistant && mergedOptions && Object.keys(mergedOptions).length > 0) {
+      optionsForAssistant = mergedOptions
+    }
+    if (optionsForAssistant && isRecord(out.content)) {
+      out = { ...out, content: { ...(out.content as Record<string, unknown>), options: optionsForAssistant } }
+    }
+
     // Assetize media fields (image/audio/video data URLs) before persisting assistant message.
     const rewritten = rewriteContentWithAssetUrls(out.content)
     const assistantContentInput: Record<string, unknown> = isRecord(rewritten.content) ? { ...rewritten.content } : {}
@@ -2192,8 +2210,8 @@ export async function chatRun(req: Request, res: Response) {
       assistantContentInput.output_text = out.output_text
     }
     let normalizedAssistantContent = normalizeAiContent(assistantContentInput)
-    if (mergedOptions && Object.keys(mergedOptions).length > 0) {
-      normalizedAssistantContent = { ...normalizedAssistantContent, options: mergedOptions }
+    if (optionsForAssistant && Object.keys(optionsForAssistant).length > 0) {
+      normalizedAssistantContent = { ...normalizedAssistantContent, options: optionsForAssistant }
     }
     const normalizedBlocks = Array.isArray(normalizedAssistantContent.blocks) ? (normalizedAssistantContent.blocks as unknown[]) : []
     if (normalizedBlocks.length === 0 && typeof out.output_text === "string" && out.output_text.trim()) {
@@ -2242,6 +2260,7 @@ export async function chatRun(req: Request, res: Response) {
           dataUrl: a.dataUrl,
           index: a.index,
           kind: a.kind,
+          sourceType: "ai_generated",
           authHeader,
         })
       }

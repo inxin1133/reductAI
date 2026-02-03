@@ -72,7 +72,7 @@
       "type": "enum",
       "label": "size",
       "values": ["auto", "1024x1024", "1536x1024", "1024x1536"],
-      "description": "Image size (GPT Image models). Image edit supports size only."
+      "description": "Image size (GPT Image models)"
     },
     "quality": {
       "type": "enum",
@@ -85,22 +85,67 @@
       "label": "background",
       "values": ["auto", "transparent", "opaque"],
       "description": "Background mode (transparent requires png/webp)"
-    }
+    },
+    "moderation": {
+      "type": "enum",
+      "label": "moderation",
+      "values": ["auto", "low"],
+      "description": "Moderation level for GPT Image models"
+    },
+    "output_format": {
+      "type": "enum",
+      "label": "output_format",
+      "values": ["png", "jpeg", "webp"],
+      "description": "Output image format"
+    },
+    "output_compression": {
+      "max": 100,
+      "min": 0,
+      "type": "int",
+      "label": "output_compression",
+      "description": "Compression level (0-100) for jpeg/webp; ignored for png"
+    },
+
+    "stream": {
+      "type": "bool",
+      "label": "stream",
+      "description": "If true, stream image generation events as they become available"
+    },
+    "partial_images": {
+      "max": 3,
+      "min": 0,
+      "type": "int",
+      "label": "partial_images",
+      "description": "Number of partial images to stream (0-3). Only relevant when stream=true"
+    }    
   },
   "defaults": {
     "n": 1,
     "size": "auto",
     "quality": "auto",
-    "background": "auto"
+    "background": "auto",
+    "moderation": "auto",
+    "output_format": "png",
+    "output_compression": 100,
+
+    "stream": false,
+    "partial_images": 0    
   },
   "supports": {
     "n": true,
     "size": true,
     "quality": true,
-    "background": true
+    "background": true,
+    "moderation": true,
+    "output_format": true,
+    "output_compression": true,
+    "stream": true,
+    "partial_images": true    
   },
   "validation_hints": [
-    "Image edit (with reference image) currently applies size only; quality/background are ignored."
+    "If background=transparent, output_format should be png or webp.",
+    "output_compression applies only when output_format is jpeg or webp.",
+    "partial_images is only meaningful when stream=true."
   ]
 }
 ```

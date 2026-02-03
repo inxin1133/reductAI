@@ -4,6 +4,7 @@ import fs from 'fs/promises';
 import { query } from '../config/db';
 
 type MediaKind = 'image' | 'audio' | 'video' | 'file';
+type FileSourceType = 'ai_generated' | 'attachment' | 'post_upload' | 'external_link' | 'profile_image';
 
 function isUuid(v: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
@@ -47,7 +48,8 @@ function ttlDays() {
   return Number.isFinite(raw) && raw > 0 ? raw : 15;
 }
 
-function computeExpiresAt() {
+function computeExpiresAt(applyTtl: boolean) {
+  if (!applyTtl) return null;
   const days = ttlDays();
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
 }
@@ -65,6 +67,7 @@ export async function storeImageDataUrlAsAsset(args: {
   dataUrl: string;
   index: number;
   kind?: MediaKind;
+  sourceType?: FileSourceType;
 }): Promise<{ assetId: string; url: string; mime: string; bytes: number; sha256: string; storageKey: string }> {
   const parsed = parseDataUrl(args.dataUrl);
   if (!parsed) throw new Error('INVALID_DATA_URL');
@@ -96,20 +99,22 @@ export async function storeImageDataUrlAsAsset(args: {
   await fs.mkdir(path.dirname(absPath), { recursive: true });
   await fs.writeFile(absPath, bytesBuf);
 
-  const expiresAt = computeExpiresAt();
+  const sourceType: FileSourceType = args.sourceType || 'attachment';
+  const expiresAt = computeExpiresAt(sourceType === 'attachment');
 
   await query(
     `
-    INSERT INTO message_media_assets
-      (id, tenant_id, user_id, conversation_id, message_id, kind, mime, bytes, sha256, status, storage_provider, storage_key, is_private, expires_at, metadata)
+    INSERT INTO file_assets
+      (id, tenant_id, user_id, source_type, reference_type, reference_id, kind, mime, bytes, sha256, status, storage_provider, storage_key, storage_url, is_private, expires_at, metadata)
     VALUES
-      ($1,$2,$3,$4,$5,$6,$7,$8,$9,'stored','local_fs',$10,TRUE,$11,$12::jsonb)
+      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'stored','local_fs',$11,NULL,TRUE,$12,$13::jsonb)
     `,
     [
       args.assetId,
       args.tenantId,
       args.userId,
-      args.conversationId,
+      sourceType,
+      'message',
       args.messageId,
       kind,
       parsed.mime,
@@ -117,7 +122,12 @@ export async function storeImageDataUrlAsAsset(args: {
       sha256,
       relPath,
       expiresAt,
-      JSON.stringify({ source: 'data_url', ttl_days: ttlDays() }),
+      JSON.stringify({
+        source: 'data_url',
+        conversation_id: args.conversationId,
+        message_id: args.messageId,
+        ttl_days: sourceType === 'attachment' ? ttlDays() : null,
+      }),
     ]
   );
 

@@ -5,6 +5,8 @@ import type { AuthedRequest } from "../middleware/requireAuth"
 import { ensureSystemTenantId } from "../services/systemTenantService"
 import { randomUUID } from "crypto"
 
+const MEDIA_ASSET_URL_RE = /(?:https?:\/\/[^/]+)?\/api\/ai\/media\/assets\/([0-9a-f-]{36})/gi
+
 function parseIntOrNull(v: unknown): number | null {
   const n = typeof v === "number" ? v : typeof v === "string" ? parseInt(v, 10) : NaN
   return Number.isFinite(n) ? n : null
@@ -64,6 +66,29 @@ async function getPostMetaVersion(postId: string): Promise<number> {
   ])
   if (r.rows.length === 0) return 0
   return Number(r.rows[0]?.v || 0)
+}
+
+function extractMediaAssetIdsFromDocJson(docJson: unknown): string[] {
+  const found = new Set<string>()
+  const visit = (val: unknown) => {
+    if (val == null) return
+    if (typeof val === "string") {
+      for (const m of val.matchAll(MEDIA_ASSET_URL_RE)) {
+        const id = m[1]
+        if (id) found.add(id)
+      }
+      return
+    }
+    if (Array.isArray(val)) {
+      for (const item of val) visit(item)
+      return
+    }
+    if (typeof val === "object") {
+      for (const v of Object.values(val as Record<string, unknown>)) visit(v)
+    }
+  }
+  visit(docJson)
+  return Array.from(found)
 }
 
 export async function getPostContent(req: Request, res: Response) {
@@ -164,6 +189,19 @@ export async function savePostContent(req: Request, res: Response) {
     await client.query(`DELETE FROM post_blocks WHERE post_id = $1`, [id])
 
     const blocks = docJsonToBlocks({ postId: id, docJson: body.docJson, pmSchemaVersion })
+
+    const assetIds = extractMediaAssetIdsFromDocJson(body.docJson)
+    if (assetIds.length) {
+      await client.query(
+        `
+        UPDATE file_assets
+        SET expires_at = NULL,
+            metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{pinned_by_post}', 'true'::jsonb, true)
+        WHERE id = ANY($1::uuid[])
+        `,
+        [assetIds]
+      )
+    }
 
     // Guard against invalid page_link refs (missing posts) to avoid FK errors.
     const refIds = Array.from(

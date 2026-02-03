@@ -1,6 +1,7 @@
 import crypto from "crypto"
 
 type MediaKind = "image" | "audio" | "video" | "file"
+type FileSourceType = "ai_generated" | "attachment" | "post_upload" | "external_link" | "profile_image"
 
 const FILE_SERVICE_URL = process.env.FILE_SERVICE_URL || "http://localhost:3008"
 
@@ -15,6 +16,7 @@ export async function storeImageDataUrlAsAsset(args: {
   dataUrl: string
   index: number
   kind?: MediaKind
+  sourceType?: FileSourceType
   authHeader?: string
 }): Promise<{ assetId: string; url: string; mime: string; bytes: number; sha256: string; storageKey: string }> {
   const headers: Record<string, string> = { "Content-Type": "application/json" }
@@ -31,6 +33,7 @@ export async function storeImageDataUrlAsAsset(args: {
       data_url: args.dataUrl,
       index: args.index,
       kind: args.kind,
+      source_type: args.sourceType,
     }),
   })
 

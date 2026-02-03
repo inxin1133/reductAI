@@ -27,7 +27,7 @@ async function deleteExpiredBatch(limit = 200) {
   const res = await query(
     `
     SELECT id, storage_key
-    FROM message_media_assets
+    FROM file_assets
     WHERE storage_provider = 'local_fs'
       AND expires_at IS NOT NULL
       AND expires_at <= NOW()
@@ -51,7 +51,7 @@ async function deleteExpiredBatch(limit = 200) {
         console.warn('TTL cleanup invalid storage_key:', key, e);
       }
     }
-    await query(`DELETE FROM message_media_assets WHERE id = $1`, [id]);
+    await query(`DELETE FROM file_assets WHERE id = $1`, [id]);
   }
 }
 
