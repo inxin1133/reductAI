@@ -845,6 +845,80 @@ COMMENT ON COLUMN model_messages.updated_at IS '메시지 최종 수정 시각';
 
 
 -- ============================================
+-- 6.3 MESSAGE MEDIA ASSETS (메시지 첨부 미디어 자산)
+-- ============================================
+-- 목적:
+-- - 이미지/오디오/비디오 등의 "대용량 결과"를 model_messages.content(JSONB)에 base64로 직접 저장하지 않고,
+--   별도 자산 테이블 + 외부 스토리지(S3/GCS/R2 등)로 분리하여 성능/확장성을 확보합니다.
+--
+-- 설계 원칙:
+-- - message_media_assets는 메시지와 1:N 관계(한 메시지에서 여러 이미지 가능)
+-- - 저장 위치는 storage_provider + storage_key + (optional) public_url로 추상화
+-- - 향후 저장 서버 분리(media-service) 시에도 URL/키 규약을 유지하기 쉬움
+
+CREATE TABLE IF NOT EXISTS message_media_assets (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    conversation_id UUID NOT NULL REFERENCES model_conversations(id) ON DELETE CASCADE,
+    message_id UUID NOT NULL REFERENCES model_messages(id) ON DELETE CASCADE,
+
+    kind VARCHAR(30) NOT NULL CHECK (kind IN ('image','audio','video','file')),
+    mime VARCHAR(120),
+    bytes BIGINT,
+    sha256 VARCHAR(64), -- content hash (dedupe/verify)
+
+    status VARCHAR(30) NOT NULL DEFAULT 'stored' CHECK (status IN ('pending','stored','failed')),
+
+    storage_provider VARCHAR(30) NOT NULL DEFAULT 'db_proxy' CHECK (storage_provider IN ('db_proxy','local_fs','s3','gcs','r2','http')),
+    storage_bucket VARCHAR(255),
+    storage_key VARCHAR(1000),
+    public_url TEXT, -- public or signed URL (when using external storage)
+    is_private BOOLEAN NOT NULL DEFAULT TRUE,
+    expires_at TIMESTAMP WITH TIME ZONE,
+
+    width INTEGER,
+    height INTEGER,
+    duration_ms INTEGER,
+
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_media_assets_tenant ON message_media_assets(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_message_media_assets_message ON message_media_assets(message_id);
+CREATE INDEX IF NOT EXISTS idx_message_media_assets_conversation ON message_media_assets(conversation_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_message_media_assets_kind ON message_media_assets(kind);
+CREATE INDEX IF NOT EXISTS idx_message_media_assets_sha256 ON message_media_assets(sha256);
+
+-- COMMENTs for message_media_assets
+COMMENT ON TABLE message_media_assets IS 'AI 대화(message)와 연결된 첨부 미디어(이미지/오디오/비디오/파일 등)의 메타데이터 및 저장 위치를 관리하는 테이블';
+COMMENT ON COLUMN message_media_assets.id IS '미디어 자산의 고유 식별자 (UUID)';
+COMMENT ON COLUMN message_media_assets.tenant_id IS '테넌트 ID (tenants 테이블 참조)';
+COMMENT ON COLUMN message_media_assets.user_id IS '첨부 파일 업로드/생성한 유저 ID (NULL일 수 있음)';
+COMMENT ON COLUMN message_media_assets.conversation_id IS '연결된 대화 세션 ID (model_conversations 테이블 참조)';
+COMMENT ON COLUMN message_media_assets.message_id IS '연결된 메시지 ID (model_messages 테이블 참조)';
+COMMENT ON COLUMN message_media_assets.kind IS '미디어 종류(image, audio, video, file)';
+COMMENT ON COLUMN message_media_assets.mime IS 'MIME 타입(ex: image/png, audio/mpeg 등)';
+COMMENT ON COLUMN message_media_assets.bytes IS '파일 용량(byte 단위)';
+COMMENT ON COLUMN message_media_assets.sha256 IS '콘텐츠 해시(SHA256, 중복 방지 및 검증)';
+COMMENT ON COLUMN message_media_assets.status IS '미디어 데이터 저장 상태(pending, stored, failed)';
+COMMENT ON COLUMN message_media_assets.storage_provider IS '저장소 유형(db_proxy, local_fs, s3, gcs, r2, http 등)';
+COMMENT ON COLUMN message_media_assets.storage_bucket IS '스토리지 버킷 명(ex: S3/Google Cloud Storage 등)';
+COMMENT ON COLUMN message_media_assets.storage_key IS '스토리지 내 고유 키/경로';
+COMMENT ON COLUMN message_media_assets.public_url IS '공개 접근 URL(외부 스토리지/S3 presign 등)';
+COMMENT ON COLUMN message_media_assets.is_private IS '비공개 여부(공개 URL이 없는 경우 TRUE)';
+COMMENT ON COLUMN message_media_assets.expires_at IS '만료 시각(외부 인증/임시 URL의 경우)';
+COMMENT ON COLUMN message_media_assets.width IS '이미지/비디오의 폭(px), 해당되는 경우';
+COMMENT ON COLUMN message_media_assets.height IS '이미지/비디오의 높이(px), 해당되는 경우';
+COMMENT ON COLUMN message_media_assets.duration_ms IS '오디오/비디오의 재생 길이(ms), 해당되는 경우';
+COMMENT ON COLUMN message_media_assets.metadata IS '추가 메타데이터(JSONB, 모델/생성 파라미터 등)';
+COMMENT ON COLUMN message_media_assets.created_at IS '자산 레코드 생성 시각';
+COMMENT ON COLUMN message_media_assets.updated_at IS '자산 레코드 수정 시각';
+
+
+-- ============================================
 -- 10. TRIGGERS FOR UPDATED_AT
 -- ============================================
 

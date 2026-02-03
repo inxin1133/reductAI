@@ -398,6 +398,10 @@ function parseJsonLikeString(input: string): Record<string, unknown> | null {
   return null
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return Boolean(v) && typeof v === "object" && !Array.isArray(v)
+}
+
 function normalizeContentJson(content: unknown): Record<string, unknown> | null {
   if (!content) return null
   if (typeof content === "string") {
@@ -437,6 +441,20 @@ function normalizeContentJson(content: unknown): Record<string, unknown> | null 
     return base
   }
   return null
+}
+
+function getAppliedOptionsSummary(content: unknown): string | null {
+  const normalized = normalizeContentJson(content)
+  if (!normalized) return null
+  const raw = (normalized as { options?: unknown }).options
+  if (!isRecord(raw)) return null
+  const entries = Object.entries(raw)
+    .filter(([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean")
+    .map(([k, v]) => ({ key: k, value: String(v) }))
+  if (!entries.length) return null
+  entries.sort((a, b) => a.key.localeCompare(b.key))
+  const text = entries.map((e) => `${e.key}: ${e.value}`).join(", ")
+  return text || null
 }
 
 function looksLikeMarkdown(input: string): boolean {
@@ -2168,6 +2186,15 @@ export default function Timeline() {
                        <div className="flex flex-col gap-4 max-w-[720px] ">
                         <div className="text-base text-primary whitespace-pre-wrap space-y-3">
                           {(() => {
+                            const optionsSummary = getAppliedOptionsSummary(m.contentJson)
+                            if (!optionsSummary) return null
+                            return (
+                              <div className="text-xs text-muted-foreground bg-muted/40 border border-border rounded-md px-2 py-1 inline-block">
+                                옵션: {optionsSummary}
+                              </div>
+                            )
+                          })()}
+                          {(() => {
                             // "답변중" 상태 표시 + 타입라이터 표시
                             if (m.isPending || m.status === "in_progress") {
                               const step = GENERATING_STEPS[genPhase] || "답변 생성 중"
@@ -2203,7 +2230,7 @@ export default function Timeline() {
                               if (pmDoc) {
                                 return (
                                   <div className="space-y-3">
-                                    <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" />
+                                    <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" viewerKey={m.id ? String(m.id) : undefined} />
                                   </div>
                                 )
                               }
@@ -2215,7 +2242,7 @@ export default function Timeline() {
                                 if (pmDoc) {
                                   return (
                                     <div className="space-y-3">
-                                      <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" />
+                                      <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" viewerKey={m.id ? String(m.id) : undefined} />
                                     </div>
                                   )
                                 }
@@ -2225,7 +2252,7 @@ export default function Timeline() {
                                   if (pmDocFromExtracted) {
                                     return (
                                       <div className="space-y-3">
-                                        <ProseMirrorViewer docJson={pmDocFromExtracted} className="pm-viewer--timeline" />
+                                        <ProseMirrorViewer docJson={pmDocFromExtracted} className="pm-viewer--timeline" viewerKey={m.id ? String(m.id) : undefined} />
                                       </div>
                                     )
                                   }
@@ -2241,7 +2268,7 @@ export default function Timeline() {
                                 if (pmDoc) {
                                   return (
                                     <div className="space-y-3">
-                                      <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" />
+                                      <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" viewerKey={m.id ? String(m.id) : undefined} />
                                     </div>
                                   )
                                 }
@@ -2252,7 +2279,7 @@ export default function Timeline() {
                               if (pmDoc) {
                                 return (
                                   <div className="space-y-3">
-                                    <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" />
+                                    <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" viewerKey={m.id ? String(m.id) : undefined} />
                                   </div>
                                 )
                               }

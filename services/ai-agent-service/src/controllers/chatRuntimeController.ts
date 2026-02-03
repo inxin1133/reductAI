@@ -13,7 +13,7 @@ import {
   googleSimulateChat,
 } from "../services/providerClients"
 import { resolveAuthForModelApiProfile } from "../services/authProfilesService"
-import { newAssetId, storeImageDataUrlAsAsset } from "../services/mediaAssetsService"
+import { newAssetId, storeImageDataUrlAsAsset } from "../services/fileServiceClient"
 import { normalizeAiContent } from "../utils/normalizeAiContent"
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
@@ -980,6 +980,7 @@ async function updateMessageContent(args: {
 export async function cancelChatRun(req: Request, res: Response) {
   try {
     const userId = (req as AuthedRequest).userId
+    const authHeader = String(req.headers.authorization || "")
     const tenantId = await ensureSystemTenantId()
     const body = (req.body || {}) as { conversation_id?: string; request_id?: string }
     const conversationId = String(body.conversation_id || "").trim()
@@ -1071,6 +1072,16 @@ function stripRawForDb(content: Record<string, unknown>) {
 }
 
 type PendingAsset = { assetId: string; kind: "image" | "audio" | "video"; dataUrl: string; index: number }
+type PendingAttachmentSlot = {
+  kind: "image" | "file" | "link"
+  name?: string
+  mime?: string
+  size?: number
+  url?: string
+  title?: string
+  dataUrl?: string
+  assetId?: string
+}
 
 function rewriteContentWithAssetUrls(content: Record<string, unknown>): { content: Record<string, unknown>; assets: PendingAsset[] } {
   const out = { ...content }
@@ -1183,6 +1194,7 @@ async function loadHistory(args: { conversationId: string }) {
 export async function getConversationContext(req: Request, res: Response) {
   try {
     const userId = (req as AuthedRequest).userId
+    const authHeader = String(req.headers.authorization || "")
     const tenantId = await ensureSystemTenantId()
     const params = (req.params || {}) as Record<string, string | undefined>
     const conversationId = String(params.id || "").trim()
@@ -1294,6 +1306,7 @@ export async function chatRun(req: Request, res: Response) {
   let clientRequestId = ""
   try {
     const userId = (req as AuthedRequest).userId
+    const authHeader = String(req.headers.authorization || "")
     const tenantId = await ensureSystemTenantId()
 
     const {
@@ -1581,7 +1594,7 @@ export async function chatRun(req: Request, res: Response) {
 
     // Attachments (from client): assetize any data_url so DB isn't bloated.
     // Client sends: [{kind:"image"|"file"|"link", ... , data_url? }]
-    const safeAttachments: Record<string, unknown>[] = []
+    const attachmentSlots: PendingAttachmentSlot[] = []
     const incoming = Array.isArray(attachments) ? attachments : []
     for (const a of incoming) {
       if (!a || typeof a !== "object") continue
@@ -1590,7 +1603,7 @@ export async function chatRun(req: Request, res: Response) {
       if (kind === "link") {
         const url = typeof ao.url === "string" ? ao.url : ""
         const title = typeof ao.title === "string" ? ao.title : ""
-        if (url) safeAttachments.push({ kind: "link", url, title })
+        if (url) attachmentSlots.push({ kind: "link", url, title })
         continue
       }
       if (kind === "image" || kind === "file") {
@@ -1598,33 +1611,19 @@ export async function chatRun(req: Request, res: Response) {
         const mime = typeof ao.mime === "string" ? ao.mime : ""
         const size = typeof ao.size === "number" ? ao.size : Number(ao.size || 0)
         const dataUrl = typeof ao.data_url === "string" ? ao.data_url : ""
-        const base: Record<string, unknown> = { kind, name, mime, size }
+        const base: PendingAttachmentSlot = { kind, name, mime, size }
         if (dataUrl && dataUrl.startsWith("data:")) {
-          try {
-            const assetId = newAssetId()
-            const stored = await storeImageDataUrlAsAsset({
-              tenantId,
-              userId: userId || null,
-              conversationId: convId,
-              messageId: userMessageId,
-              assetId,
-              dataUrl,
-              index: safeAttachments.length,
-            })
-            safeAttachments.push({ ...base, url: stored.url, asset_id: stored.assetId, bytes: stored.bytes })
-          } catch (e) {
-            console.warn("[attachments] failed to store data_url; keeping metadata only", e)
-            safeAttachments.push(base)
-          }
+          attachmentSlots.push({ ...base, dataUrl, assetId: newAssetId() })
         } else {
           const url = typeof ao.url === "string" ? ao.url : ""
-          if (url) safeAttachments.push({ ...base, url })
-          else safeAttachments.push(base)
+          if (url) attachmentSlots.push({ ...base, url })
+          else attachmentSlots.push(base)
         }
       }
     }
 
-    const normalizedUserContent = normalizeAiContent({ text: prompt, options: mergedOptions, attachments: safeAttachments })
+    const initialAttachments = attachmentSlots.map(({ dataUrl, assetId, ...rest }) => rest)
+    const normalizedUserContent = normalizeAiContent({ text: prompt, options: mergedOptions, attachments: initialAttachments })
     await appendMessage({
       id: userMessageId,
       conversationId: convId,
@@ -1638,6 +1637,55 @@ export async function chatRun(req: Request, res: Response) {
       providerKey: providerKey,
       providerLogoKey,
     })
+
+    if (attachmentSlots.some((a) => a.dataUrl)) {
+      const safeAttachments: Record<string, unknown>[] = []
+      for (let i = 0; i < attachmentSlots.length; i += 1) {
+        const slot = attachmentSlots[i]
+        if (slot.kind === "link") {
+          if (slot.url) safeAttachments.push({ kind: "link", url: slot.url, title: slot.title || "" })
+          continue
+        }
+        const base: Record<string, unknown> = {
+          kind: slot.kind,
+          name: slot.name || "",
+          mime: slot.mime || "",
+          size: typeof slot.size === "number" ? slot.size : 0,
+        }
+        if (slot.dataUrl) {
+          try {
+            const stored = await storeImageDataUrlAsAsset({
+              conversationId: convId,
+              messageId: userMessageId,
+              assetId: slot.assetId || newAssetId(),
+              dataUrl: slot.dataUrl,
+              index: i,
+              kind: slot.kind === "image" || slot.kind === "file" ? slot.kind : undefined,
+              authHeader,
+            })
+            safeAttachments.push({ ...base, url: stored.url, asset_id: stored.assetId, bytes: stored.bytes })
+          } catch (e) {
+            console.warn("[attachments] failed to store data_url; keeping metadata only", e)
+            safeAttachments.push(base)
+          }
+        } else if (slot.url) {
+          safeAttachments.push({ ...base, url: slot.url })
+        } else {
+          safeAttachments.push(base)
+        }
+      }
+
+      const normalizedUserContentWithUrls = normalizeAiContent({ text: prompt, options: mergedOptions, attachments: safeAttachments })
+      await query(
+        `
+        UPDATE model_messages
+        SET content = $2::jsonb,
+            content_text = $3
+        WHERE id = $1
+        `,
+        [userMessageId, JSON.stringify(normalizedUserContentWithUrls), extractTextFromJsonContent(normalizedUserContentWithUrls) || prompt]
+      )
+    }
 
     const normalizedAssistantPlaceholder = normalizeAiContent({ output_text: "" })
     await appendMessage({
@@ -2144,6 +2192,9 @@ export async function chatRun(req: Request, res: Response) {
       assistantContentInput.output_text = out.output_text
     }
     let normalizedAssistantContent = normalizeAiContent(assistantContentInput)
+    if (mergedOptions && Object.keys(mergedOptions).length > 0) {
+      normalizedAssistantContent = { ...normalizedAssistantContent, options: mergedOptions }
+    }
     const normalizedBlocks = Array.isArray(normalizedAssistantContent.blocks) ? (normalizedAssistantContent.blocks as unknown[]) : []
     if (normalizedBlocks.length === 0 && typeof out.output_text === "string" && out.output_text.trim()) {
       normalizedAssistantContent = normalizeAiContent({ output_text: out.output_text })
@@ -2185,14 +2236,13 @@ export async function chatRun(req: Request, res: Response) {
     if (didUpdateAssistant) {
       for (const a of rewritten.assets) {
         await storeImageDataUrlAsAsset({
-          tenantId,
-          userId: userId || null,
           conversationId: convId,
           messageId: assistantMessageId,
           assetId: a.assetId,
           dataUrl: a.dataUrl,
           index: a.index,
           kind: a.kind,
+          authHeader,
         })
       }
     }

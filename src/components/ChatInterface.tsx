@@ -195,6 +195,113 @@ function safeString(v: unknown): string | null {
   return typeof v === "string" ? v : null
 }
 
+type OptionSpec =
+  | { type: "enum"; values: string[] }
+  | { type: "int"; min?: number; max?: number }
+  | { type: "number"; min?: number; max?: number }
+  | { type: "string" }
+  | { type: "bool" }
+
+type OptionCorrection = { key: string; from: string; to: string; reason: string }
+
+function normalizeOptionSpecs(capabilities: unknown): Record<string, OptionSpec> {
+  if (!isRecord(capabilities)) return {}
+  const raw = isRecord(capabilities.options) ? capabilities.options : {}
+  const out: Record<string, OptionSpec> = {}
+  for (const [k, v] of Object.entries(raw)) {
+    if (!isRecord(v)) continue
+    const t = typeof v.type === "string" ? v.type : ""
+    if (t === "enum") {
+      const values = Array.isArray(v.values) ? v.values.map((x) => String(x)) : []
+      if (values.length) out[k] = { type: "enum", values }
+      continue
+    }
+    if (t === "int") {
+      out[k] = { type: "int", min: typeof v.min === "number" ? v.min : undefined, max: typeof v.max === "number" ? v.max : undefined }
+      continue
+    }
+    if (t === "number") {
+      out[k] = { type: "number", min: typeof v.min === "number" ? v.min : undefined, max: typeof v.max === "number" ? v.max : undefined }
+      continue
+    }
+    if (t === "string") {
+      out[k] = { type: "string" }
+      continue
+    }
+    if (t === "bool") {
+      out[k] = { type: "bool" }
+    }
+  }
+  return out
+}
+
+function normalizeOptionDefaults(capabilities: unknown): Record<string, unknown> {
+  if (!isRecord(capabilities)) return {}
+  return isRecord(capabilities.defaults) ? capabilities.defaults : {}
+}
+
+function normalizeOptionSupports(capabilities: unknown): Record<string, boolean> {
+  if (!isRecord(capabilities)) return {}
+  const raw = isRecord(capabilities.supports) ? capabilities.supports : {}
+  const out: Record<string, boolean> = {}
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === "boolean") out[k] = v
+  }
+  return out
+}
+
+function validateAndNormalizeOptions(
+  options: Record<string, unknown>,
+  capabilities: unknown
+): { correctedOptions: Record<string, unknown>; corrections: OptionCorrection[] } {
+  const specs = normalizeOptionSpecs(capabilities)
+  const defaults = normalizeOptionDefaults(capabilities)
+  const supports = normalizeOptionSupports(capabilities)
+  const corrected: Record<string, unknown> = { ...options }
+  const corrections: OptionCorrection[] = []
+
+  for (const [key, spec] of Object.entries(specs)) {
+    if (supports[key] === false) continue
+    const original = corrected[key]
+    let next = original
+
+    if (spec.type === "enum") {
+      const raw = typeof original === "string" ? original : ""
+      if (!raw || !spec.values.includes(raw)) {
+        const fallback =
+          spec.values.includes("auto")
+            ? "auto"
+            : typeof defaults[key] === "string" && spec.values.includes(String(defaults[key]))
+              ? String(defaults[key])
+              : spec.values[0]
+        next = fallback
+        corrections.push({ key, from: String(original ?? ""), to: String(next ?? ""), reason: "invalid enum" })
+      }
+    } else if (spec.type === "bool") {
+      if (typeof original !== "boolean") {
+        next = typeof defaults[key] === "boolean" ? defaults[key] : false
+      }
+    } else if (spec.type === "int" || spec.type === "number") {
+      let n = typeof original === "number" && Number.isFinite(original) ? original : Number(original)
+      if (!Number.isFinite(n)) {
+        n = typeof defaults[key] === "number" ? defaults[key] : typeof spec.min === "number" ? spec.min : 0
+      }
+      if (spec.type === "int") n = Math.floor(n)
+      if (typeof spec.min === "number") n = Math.max(spec.min, n)
+      if (typeof spec.max === "number") n = Math.min(spec.max, n)
+      next = n
+    } else if (spec.type === "string") {
+      if (typeof original !== "string") {
+        next = typeof defaults[key] === "string" ? defaults[key] : String(original ?? "")
+      }
+    }
+
+    if (next !== original) corrected[key] = next
+  }
+
+  return { correctedOptions: corrected, corrections }
+}
+
 function buildMarkdownFromLooseObject(obj: Record<string, unknown>): string {
   const parts: string[] = []
   const title = safeString(obj.title)
@@ -644,6 +751,13 @@ export function ChatInterface({
   const [isLinkDialogOpen, setIsLinkDialogOpen] = React.useState(false)
   const [linkUrl, setLinkUrl] = React.useState("")
   const [linkTitle, setLinkTitle] = React.useState("")
+  const [invalidOptionsDialog, setInvalidOptionsDialog] = React.useState<{
+    correctedOptions: Record<string, unknown>
+    corrections: OptionCorrection[]
+    overrideInput?: string
+    overrideModelApiId?: string
+    overrideApiAttachments?: Array<Record<string, unknown>>
+  } | null>(null)
 
 
 
@@ -1735,7 +1849,12 @@ export function ChatInterface({
   const lastSendMetaRef = React.useRef<{ providerSlug?: string; model?: string } | null>(null)
 
   const handleSend = React.useCallback(
-    async (overrideInput?: string, overrideModelApiId?: string, overrideApiAttachments?: Array<Record<string, unknown>>) => {
+    async (
+      overrideInput?: string,
+      overrideModelApiId?: string,
+      overrideApiAttachments?: Array<Record<string, unknown>>,
+      overrideOptions?: Record<string, unknown>
+    ) => {
       if (isWaitingForResponse) return
       if (isPreparingAttachments || hasPendingAttachments) {
         alert("첨부파일 업로드가 완료되지 않았습니다. 완료 후 다시 시도해 주세요")
@@ -1799,7 +1918,20 @@ export function ChatInterface({
       handleSendInFlightRef.current.add(sendKey)
 
       const capDefaults = selectedCapabilities && isRecord(selectedCapabilities.defaults) ? (selectedCapabilities.defaults as Record<string, unknown>) : {}
-      const finalOptions = { ...capDefaults, ...(runtimeOptions || {}) }
+      const baseOptions = overrideOptions ?? { ...capDefaults, ...(runtimeOptions || {}) }
+      const validation =
+        overrideOptions == null ? validateAndNormalizeOptions(baseOptions, selectedCapabilities) : { correctedOptions: baseOptions, corrections: [] }
+      if (!overrideOptions && validation.corrections.length > 0) {
+        setInvalidOptionsDialog({
+          correctedOptions: validation.correctedOptions,
+          corrections: validation.corrections,
+          overrideInput,
+          overrideModelApiId,
+          overrideApiAttachments,
+        })
+        return
+      }
+      const finalOptions = validation.correctedOptions
 
       const requestedModelApiId = String(overrideModelApiId || (useSelectionOverride ? uiSelectedModelApiId : effectiveModelApiId) || "").trim()
       const providerGroup = resolveProviderGroupByModelApiId(requestedModelApiId) || (useSelectionOverride ? uiProviderGroup : currentProviderGroup)
@@ -2637,6 +2769,45 @@ export function ChatInterface({
                           }}
                         >
                           추가
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+
+                  {/* Invalid options dialog */}
+                  <Dialog open={Boolean(invalidOptionsDialog)} onOpenChange={(open) => !open && setInvalidOptionsDialog(null)}>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>옵션 확인</DialogTitle>
+                      </DialogHeader>
+                      <div className="space-y-3">
+                        <p className="text-sm text-muted-foreground">
+                          잘못된 값에 대해서는 auto로 적용됩니다. 확인을 누르면 질문 요청이 진행됩니다.
+                        </p>
+                        {invalidOptionsDialog?.corrections?.length ? (
+                          <div className="space-y-1 text-xs text-muted-foreground">
+                            {invalidOptionsDialog.corrections.map((c, idx) => (
+                              <div key={`${c.key}_${idx}`}>
+                                {c.key}: {c.from || "-"} → {c.to || "-"}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                      <DialogFooter>
+                        <Button variant="outline" onClick={() => setInvalidOptionsDialog(null)}>
+                          취소
+                        </Button>
+                        <Button
+                          onClick={() => {
+                            const pending = invalidOptionsDialog
+                            if (!pending) return
+                            setInvalidOptionsDialog(null)
+                            setRuntimeOptions(pending.correctedOptions)
+                            void handleSend(pending.overrideInput, pending.overrideModelApiId, pending.overrideApiAttachments, pending.correctedOptions)
+                          }}
+                        >
+                          확인
                         </Button>
                       </DialogFooter>
                     </DialogContent>

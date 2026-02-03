@@ -12,9 +12,42 @@ import { TableNodeView } from "@/editor/nodes/table_nodeview"
 type Props = {
   docJson?: unknown
   className?: string
+  viewerKey?: string
 }
 
 type CodeBlockOverride = { wrap?: boolean; lineNumbers?: boolean }
+
+const VIEWER_CODE_BLOCK_KEY_PREFIX = "reductai:viewer-code-block-overrides:"
+
+function readViewerOverrides(viewerKey: string | undefined) {
+  if (!viewerKey || typeof window === "undefined") return new Map<string, CodeBlockOverride>()
+  try {
+    const raw = window.localStorage.getItem(`${VIEWER_CODE_BLOCK_KEY_PREFIX}${viewerKey}`)
+    if (!raw) return new Map<string, CodeBlockOverride>()
+    const parsed = JSON.parse(raw) as Record<string, CodeBlockOverride>
+    const map = new Map<string, CodeBlockOverride>()
+    for (const [k, v] of Object.entries(parsed)) {
+      if (!v || typeof v !== "object") continue
+      map.set(k, v)
+    }
+    return map
+  } catch {
+    return new Map<string, CodeBlockOverride>()
+  }
+}
+
+function writeViewerOverrides(viewerKey: string | undefined, overrides: Map<string, CodeBlockOverride>) {
+  if (!viewerKey || typeof window === "undefined") return
+  try {
+    const obj: Record<string, CodeBlockOverride> = {}
+    overrides.forEach((v, k) => {
+      obj[k] = v
+    })
+    window.localStorage.setItem(`${VIEWER_CODE_BLOCK_KEY_PREFIX}${viewerKey}`, JSON.stringify(obj))
+  } catch {
+    // ignore
+  }
+}
 
 function hashString(input: string) {
   let hash = 0
@@ -27,7 +60,9 @@ function hashString(input: string) {
 
 function applyViewerCodeBlockDefaults(
   doc: ReturnType<typeof editorSchema.nodeFromJSON>,
-  overrides: Map<string, CodeBlockOverride>
+  overridesById: Map<string, CodeBlockOverride>,
+  overridesByFingerprint: Map<string, CodeBlockOverride>,
+  fingerprintById: Map<string, string>
 ) {
   const codeBlock = editorSchema.nodes.code_block
   if (!codeBlock) return doc
@@ -48,14 +83,15 @@ function applyViewerCodeBlockDefaults(
     const text = node.textContent || ""
     let blockId = attrs.blockId ? String(attrs.blockId) : ""
 
+    const base = `${lang}:${hashString(text)}`
     if (!blockId) {
-      const base = `${lang}:${hashString(text)}`
       const count = (seen.get(base) || 0) + 1
       seen.set(base, count)
       blockId = `viewer-${base}-${count}`
       attrs.blockId = blockId
       changed = true
     }
+    fingerprintById.set(blockId, base)
 
     if (attrs.wrap !== false) {
       attrs.wrap = false
@@ -66,7 +102,7 @@ function applyViewerCodeBlockDefaults(
       changed = true
     }
 
-    const override = overrides.get(blockId)
+    const override = overridesById.get(blockId) || overridesByFingerprint.get(base)
     if (override) {
       if (typeof override.wrap === "boolean" && override.wrap !== attrs.wrap) {
         attrs.wrap = override.wrap
@@ -202,16 +238,30 @@ function getEmptyDoc() {
   return PMDOMParser.fromSchema(editorSchema).parse(wrap)
 }
 
-export function ProseMirrorViewer({ docJson, className }: Props) {
+export function ProseMirrorViewer({ docJson, className, viewerKey }: Props) {
   const mountRef = React.useRef<HTMLDivElement | null>(null)
   const viewRef = React.useRef<EditorView | null>(null)
   const codeBlockOverridesRef = React.useRef<Map<string, CodeBlockOverride>>(new Map())
+  const codeBlockOverridesByFingerprintRef = React.useRef<Map<string, CodeBlockOverride>>(new Map())
+  const codeBlockFingerprintsRef = React.useRef<Map<string, string>>(new Map())
+
+  React.useEffect(() => {
+    codeBlockOverridesRef.current.clear()
+    codeBlockOverridesByFingerprintRef.current = readViewerOverrides(viewerKey)
+    codeBlockFingerprintsRef.current.clear()
+  }, [viewerKey])
 
   const handleCodeBlockAttrsChange = React.useCallback((blockId: string | null, attrs: CodeBlockOverride) => {
     if (!blockId) return
     const prev = codeBlockOverridesRef.current.get(blockId) || {}
     codeBlockOverridesRef.current.set(blockId, { ...prev, ...attrs })
-  }, [])
+    const fingerprint = codeBlockFingerprintsRef.current.get(blockId)
+    if (fingerprint) {
+      const prevFp = codeBlockOverridesByFingerprintRef.current.get(fingerprint) || {}
+      codeBlockOverridesByFingerprintRef.current.set(fingerprint, { ...prevFp, ...attrs })
+    }
+    writeViewerOverrides(viewerKey, codeBlockOverridesByFingerprintRef.current)
+  }, [viewerKey])
 
   React.useEffect(() => {
     if (!mountRef.current || viewRef.current) return
@@ -256,7 +306,13 @@ export function ProseMirrorViewer({ docJson, className }: Props) {
         doc = getEmptyDoc()
       }
     }
-    doc = applyViewerCodeBlockDefaults(doc, codeBlockOverridesRef.current)
+    codeBlockFingerprintsRef.current.clear()
+    doc = applyViewerCodeBlockDefaults(
+      doc,
+      codeBlockOverridesRef.current,
+      codeBlockOverridesByFingerprintRef.current,
+      codeBlockFingerprintsRef.current
+    )
     const state = EditorState.create({
       schema: editorSchema,
       doc,

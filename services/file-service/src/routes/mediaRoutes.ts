@@ -1,0 +1,32 @@
+import express from 'express';
+import { requireAuth, verifyJwtToken } from '../middleware/requireAuth';
+import { createMediaAsset, getMediaAsset } from '../controllers/mediaController';
+
+const router = express.Router();
+
+router.use((req: any, res: any, next: any) => {
+  const header = String(req.headers.authorization || '');
+  const m = header.match(/^Bearer\s+(.+)$/i);
+  const headerToken = m?.[1];
+  if (headerToken) return requireAuth(req, res, next);
+
+  const q = req.query as Record<string, unknown>;
+  const token = typeof q.token === 'string' ? q.token : '';
+  if (!token) return res.status(401).json({ message: 'Missing Authorization token' });
+  try {
+    const decoded = verifyJwtToken(token);
+    const userId = decoded?.userId;
+    if (!userId) return res.status(401).json({ message: 'Invalid token payload (missing userId)' });
+    (req as any).userId = String(userId);
+    if (decoded?.email) (req as any).email = String(decoded.email);
+    return next();
+  } catch (e) {
+    console.error('media auth error:', e);
+    return res.status(401).json({ message: 'Invalid or expired token' });
+  }
+});
+
+router.post('/assets', createMediaAsset);
+router.get('/assets/:id', getMediaAsset);
+
+export default router;

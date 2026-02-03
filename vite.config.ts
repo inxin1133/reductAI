@@ -11,6 +11,7 @@ export default defineConfig(() => {
   const tenantTarget = process.env.TENANT_SERVICE_URL || 'http://localhost:3003';
   const i18nTarget = process.env.I18N_SERVICE_URL || 'http://localhost:3006';
   const aiAgentTarget = process.env.AI_AGENT_SERVICE_URL || 'http://localhost:3007';
+  const fileTarget = process.env.FILE_SERVICE_URL || 'http://localhost:3008';
   const postTarget = process.env.POST_SERVICE_URL || 'http://localhost:3005';
 
   return {
@@ -44,6 +45,10 @@ export default defineConfig(() => {
         },
         '/api/i18n': {
           target: i18nTarget,
+          changeOrigin: true,
+        },
+        '/api/ai/media': {
+          target: fileTarget,
           changeOrigin: true,
         },
         '/api/ai': {

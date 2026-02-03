@@ -23,6 +23,7 @@ services:
       - I18N_SERVICE_URL=http://i18n-service:3006
       - AI_AGENT_SERVICE_URL=http://ai-agent-service:3007
       - POST_SERVICE_URL=http://post-service:3005
+      - FILE_SERVICE_URL=http://file-service:3008
     depends_on:
       - auth-service
       - i18n-service
@@ -147,6 +148,7 @@ services:
       - POSTGRES_PORT=${POSTGRES_PORT}
       - JWT_SECRET=${JWT_SECRET}
       - SERPER_API_KEY=${SERPER_API_KEY}
+      - FILE_SERVICE_URL=http://file-service:3008
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -171,6 +173,22 @@ services:
       - POSTGRES_HOST=${POSTGRES_HOST}
       - POSTGRES_PORT=${POSTGRES_PORT}
       - JWT_SECRET=${JWT_SECRET}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - reduct-network
+
+  # File Asset Service
+  file-service:
+    build:
+      context: ./services/file-service
+      dockerfile: Dockerfile
+    ports:
+      - "3008:3008"
+    volumes:
+      - ./services/file-service/src:/app/src
+    env_file:
+      - ./services/file-service/.env
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

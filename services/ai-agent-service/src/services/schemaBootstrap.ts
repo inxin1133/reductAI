@@ -590,54 +590,6 @@ export async function ensureTimelineSchema() {
 }
 
 /**
- * 메시지 첨부 미디어 자산(message_media_assets)
- * - base64(data URL) 직접 저장을 피하고, 외부 스토리지로 분리하기 위한 메타 테이블
- * - v1 단계에서는 "db_proxy" 전략(서버가 DB에서 원본을 읽어 proxy 서빙)을 지원하고,
- *   이후 media-service + object storage(S3/GCS/R2)로 자연스럽게 확장 가능
- */
-export async function ensureMessageMediaAssetsSchema() {
-  await query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`)
-
-  await query(`
-    CREATE TABLE IF NOT EXISTS message_media_assets (
-      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      user_id UUID REFERENCES users(id) ON DELETE SET NULL,
-      conversation_id UUID NOT NULL REFERENCES model_conversations(id) ON DELETE CASCADE,
-      message_id UUID NOT NULL REFERENCES model_messages(id) ON DELETE CASCADE,
-
-      kind VARCHAR(30) NOT NULL CHECK (kind IN ('image','audio','video','file')),
-      mime VARCHAR(120),
-      bytes BIGINT,
-      sha256 VARCHAR(64),
-
-      status VARCHAR(30) NOT NULL DEFAULT 'stored' CHECK (status IN ('pending','stored','failed')),
-
-      storage_provider VARCHAR(30) NOT NULL DEFAULT 'db_proxy' CHECK (storage_provider IN ('db_proxy','local_fs','s3','gcs','r2','http')),
-      storage_bucket VARCHAR(255),
-      storage_key VARCHAR(1000),
-      public_url TEXT,
-      is_private BOOLEAN NOT NULL DEFAULT TRUE,
-      expires_at TIMESTAMP WITH TIME ZONE,
-
-      width INTEGER,
-      height INTEGER,
-      duration_ms INTEGER,
-
-      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-    );
-  `)
-
-  await query(`CREATE INDEX IF NOT EXISTS idx_message_media_assets_tenant ON message_media_assets(tenant_id);`)
-  await query(`CREATE INDEX IF NOT EXISTS idx_message_media_assets_message ON message_media_assets(message_id);`)
-  await query(`CREATE INDEX IF NOT EXISTS idx_message_media_assets_conversation ON message_media_assets(conversation_id, created_at DESC);`)
-  await query(`CREATE INDEX IF NOT EXISTS idx_message_media_assets_kind ON message_media_assets(kind);`)
-  await query(`CREATE INDEX IF NOT EXISTS idx_message_media_assets_sha256 ON message_media_assets(sha256);`)
-}
-
-/**
  * Model usage logs schema
  * - Admin "모델 사용 로그"에서 조회하는 테이블을 서비스 부팅 시 보장합니다.
  * - 본 프로젝트의 공식 스키마(document/schema_models.sql)의 일부를 필요한 최소 형태로 반영합니다.
