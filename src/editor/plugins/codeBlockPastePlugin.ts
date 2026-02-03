@@ -35,7 +35,7 @@ function getCodeBlockDefaultAttrs() {
   return {
     language: normalizeLang(String(prefs.language || "plain")),
     wrap: prefs.wrap ?? true,
-    lineNumbers: prefs.lineNumbers !== false,
+    lineNumbers: prefs.lineNumbers === true,
   }
 }
 
@@ -169,7 +169,7 @@ export function codeBlockPastePlugin(schema: Schema) {
               changed = true
             }
             if (!pre.getAttribute("data-line-numbers")) {
-              pre.setAttribute("data-line-numbers", String(prefs.lineNumbers !== false))
+              pre.setAttribute("data-line-numbers", String(prefs.lineNumbers === true))
               changed = true
             }
           }

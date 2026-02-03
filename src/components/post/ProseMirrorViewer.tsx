@@ -14,6 +14,78 @@ type Props = {
   className?: string
 }
 
+type CodeBlockOverride = { wrap?: boolean; lineNumbers?: boolean }
+
+function hashString(input: string) {
+  let hash = 0
+  for (let i = 0; i < input.length; i += 1) {
+    hash = (hash << 5) - hash + input.charCodeAt(i)
+    hash |= 0
+  }
+  return Math.abs(hash).toString(36)
+}
+
+function applyViewerCodeBlockDefaults(
+  doc: ReturnType<typeof editorSchema.nodeFromJSON>,
+  overrides: Map<string, CodeBlockOverride>
+) {
+  const codeBlock = editorSchema.nodes.code_block
+  if (!codeBlock) return doc
+  const state = EditorState.create({ schema: editorSchema, doc })
+  let tr = state.tr
+  const seen = new Map<string, number>()
+
+  doc.descendants((node, pos) => {
+    if (node.type !== codeBlock) return
+    const attrs = { ...(node.attrs || {}) } as {
+      language?: string
+      wrap?: boolean
+      lineNumbers?: boolean
+      blockId?: string | null
+    }
+    let changed = false
+    const lang = String(attrs.language || "plain")
+    const text = node.textContent || ""
+    let blockId = attrs.blockId ? String(attrs.blockId) : ""
+
+    if (!blockId) {
+      const base = `${lang}:${hashString(text)}`
+      const count = (seen.get(base) || 0) + 1
+      seen.set(base, count)
+      blockId = `viewer-${base}-${count}`
+      attrs.blockId = blockId
+      changed = true
+    }
+
+    if (attrs.wrap !== false) {
+      attrs.wrap = false
+      changed = true
+    }
+    if (attrs.lineNumbers !== false) {
+      attrs.lineNumbers = false
+      changed = true
+    }
+
+    const override = overrides.get(blockId)
+    if (override) {
+      if (typeof override.wrap === "boolean" && override.wrap !== attrs.wrap) {
+        attrs.wrap = override.wrap
+        changed = true
+      }
+      if (typeof override.lineNumbers === "boolean" && override.lineNumbers !== attrs.lineNumbers) {
+        attrs.lineNumbers = override.lineNumbers
+        changed = true
+      }
+    }
+
+    if (changed) {
+      tr = tr.setNodeMarkup(pos, undefined, attrs)
+    }
+  })
+
+  return tr.docChanged ? tr.doc : doc
+}
+
 function inferImageFilename(src: string) {
   const s = String(src || "")
   if (!s) return "image.png"
@@ -133,6 +205,13 @@ function getEmptyDoc() {
 export function ProseMirrorViewer({ docJson, className }: Props) {
   const mountRef = React.useRef<HTMLDivElement | null>(null)
   const viewRef = React.useRef<EditorView | null>(null)
+  const codeBlockOverridesRef = React.useRef<Map<string, CodeBlockOverride>>(new Map())
+
+  const handleCodeBlockAttrsChange = React.useCallback((blockId: string | null, attrs: CodeBlockOverride) => {
+    if (!blockId) return
+    const prev = codeBlockOverridesRef.current.get(blockId) || {}
+    codeBlockOverridesRef.current.set(blockId, { ...prev, ...attrs })
+  }, [])
 
   React.useEffect(() => {
     if (!mountRef.current || viewRef.current) return
@@ -149,7 +228,12 @@ export function ProseMirrorViewer({ docJson, className }: Props) {
       editable: () => false,
       nodeViews: {
         page_link: (node, view, getPos) => new PageLinkNodeView(node, view, getPos as () => number),
-        code_block: (node, view, getPos) => new CodeBlockNodeView(node, view, getPos as () => number),
+        code_block: (node, view, getPos) =>
+          new CodeBlockNodeView(node, view, getPos as () => number, {
+            allowLanguageChange: false,
+            persistPrefs: false,
+            onAttrsChange: handleCodeBlockAttrsChange,
+          }),
         list_item: (node, view, getPos) => new ListItemNodeView(node, view, getPos as () => number),
         table: (node, view, getPos) => new TableNodeView(node, view, getPos as () => number),
       },
@@ -160,7 +244,7 @@ export function ProseMirrorViewer({ docJson, className }: Props) {
       view.destroy()
       viewRef.current = null
     }
-  }, [])
+  }, [handleCodeBlockAttrsChange])
 
   React.useEffect(() => {
     if (!viewRef.current) return
@@ -172,6 +256,7 @@ export function ProseMirrorViewer({ docJson, className }: Props) {
         doc = getEmptyDoc()
       }
     }
+    doc = applyViewerCodeBlockDefaults(doc, codeBlockOverridesRef.current)
     const state = EditorState.create({
       schema: editorSchema,
       doc,

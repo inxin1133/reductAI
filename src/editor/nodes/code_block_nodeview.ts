@@ -3,7 +3,7 @@ import type { EditorView, NodeView } from "prosemirror-view"
 import hljs from "highlight.js"
 import "highlight.js/styles/github.css"
 
-type CodeBlockAttrs = { language?: string; wrap?: boolean; lineNumbers?: boolean }
+type CodeBlockAttrs = { language?: string; wrap?: boolean; lineNumbers?: boolean; blockId?: string | null }
 
 type LangOption = { value: string; label: string }
 
@@ -85,6 +85,12 @@ function createIcon(iconNode: IconNode) {
   return svg
 }
 
+type CodeBlockNodeViewOptions = {
+  allowLanguageChange?: boolean
+  persistPrefs?: boolean
+  onAttrsChange?: (blockId: string | null, attrs: Partial<CodeBlockAttrs>) => void
+}
+
 // Editing-friendly approach:
 // - contentDOM remains plain text inside <code>
 // - a separate overlay <pre><code> is highlighted and layered under the editable text
@@ -102,7 +108,9 @@ export class CodeBlockNodeView implements NodeView {
   private lineNumbersButton: HTMLButtonElement
   private latestText: string
 
-  constructor(node: PMNode, view: EditorView, getPos: () => number) {
+  constructor(node: PMNode, view: EditorView, getPos: () => number, options?: CodeBlockNodeViewOptions) {
+    const allowLanguageChange = options?.allowLanguageChange !== false
+    const persistPrefs = options?.persistPrefs !== false
     const wrap = document.createElement("div")
     wrap.className = "pm-code-block-wrap"
 
@@ -193,6 +201,7 @@ export class CodeBlockNodeView implements NodeView {
       const pos = getPos()
       const curNode = view.state.doc.nodeAt(pos)
       const curAttrs = (curNode?.attrs || {}) as CodeBlockAttrs
+      const blockId = (curAttrs.blockId ? String(curAttrs.blockId) : null) || null
       try {
         const tr = view.state.tr.setNodeMarkup(pos, undefined, { ...(curAttrs as CodeBlockAttrs), ...next })
         view.dispatch(tr)
@@ -201,20 +210,28 @@ export class CodeBlockNodeView implements NodeView {
         // ignore
       }
       const merged = { ...curAttrs, ...next }
-      writeCodeBlockPrefs({
-        language: normalizeLang(String(merged.language || "plain")),
-        wrap: merged.wrap ?? true,
-        lineNumbers: merged.lineNumbers !== false,
-      })
+      if (persistPrefs) {
+        writeCodeBlockPrefs({
+          language: normalizeLang(String(merged.language || "plain")),
+          wrap: merged.wrap ?? true,
+          lineNumbers: merged.lineNumbers === true,
+        })
+      }
+      options?.onAttrsChange?.(blockId, next)
     }
 
     // Change language via dropdown
-    select.addEventListener("change", (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      const lang = normalizeLang(select.value)
-      updateAttrs({ language: lang })
-    })
+    if (allowLanguageChange) {
+      select.addEventListener("change", (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        const lang = normalizeLang(select.value)
+        updateAttrs({ language: lang })
+      })
+    } else {
+      select.disabled = true
+      select.classList.add("is-disabled")
+    }
 
     copyButton.addEventListener("click", (e) => {
       e.preventDefault()

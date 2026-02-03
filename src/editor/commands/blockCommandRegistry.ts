@@ -104,7 +104,7 @@ function getCodeBlockDefaultAttrs() {
   return {
     language: String(prefs.language || "plain"),
     wrap: prefs.wrap ?? true,
-    lineNumbers: prefs.lineNumbers !== false,
+    lineNumbers: prefs.lineNumbers === true,
   }
 }
 
