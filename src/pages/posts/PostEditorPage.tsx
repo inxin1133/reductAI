@@ -3542,6 +3542,7 @@ export default function PostEditorPage() {
                 <ProseMirrorEditor
                   initialDocJson={initialDocJson}
                   toolbarOpen={pmToolbarOpen}
+                  postId={postId || undefined}
                   onChange={(j) => {
                     // Keep draftRef in sync immediately so "save-before-navigate" never misses the latest embed link.
                     draftRef.current = j

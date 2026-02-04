@@ -168,6 +168,7 @@ body {
    ProseMirror image download overlay
    ========================= */
 .pm-viewer .pm-img-wrap,
+.pm-editor .pm-img-wrap,
 .pm-viewer .pm-media-wrap,
 .pm-editor .pm-media-wrap {
   position: relative;
@@ -177,11 +178,78 @@ body {
 .pm-editor .pm-media-wrap {
   width: 100%;
 }
-.pm-viewer .pm-img-wrap > img {
+.pm-viewer .pm-img-wrap > img,
+.pm-editor .pm-img-wrap > img {
   display: block;
   max-width: 100%;
   height: auto;
   border-radius: 12px;
+}
+.pm-editor .pm-img-wrap > img {
+  border: 1px solid transparent;
+}
+.pm-editor .pm-img-wrap:hover > img {
+  border-color: oklch(0.88 0 0);
+}
+.pm-editor .pm-img-resize-handle {
+  position: absolute;
+  top: 12%;
+  bottom: 12%;
+  width: 12px;
+  opacity: 0;
+  pointer-events: none;
+  cursor: ew-resize;
+  z-index: 5;
+}
+.pm-editor .pm-img-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 32px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: oklch(0.7 0 0 / 70%);
+  box-shadow: 0 2px 6px oklch(0 0 0 / 15%);
+}
+.pm-editor .pm-img-resize-handle--left {
+  left: -4px;
+}
+.pm-editor .pm-img-resize-handle--right {
+  right: -4px;
+}
+.pm-editor .pm-img-wrap:hover .pm-img-resize-handle,
+.pm-editor .pm-img-wrap.pm-img-resizing .pm-img-resize-handle {
+  opacity: 1;
+  pointer-events: auto;
+}
+.pm-editor .pm-img-resize-tooltip {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid oklch(0.88 0 0 / 70%);
+  background: color-mix(in oklch, oklch(1 0 0) 90%, transparent);
+  color: oklch(0.25 0 0);
+  font-size: 11px;
+  line-height: 1.2;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.pm-editor .pm-img-wrap.pm-img-resizing .pm-img-resize-tooltip {
+  opacity: 1;
+}
+.dark .pm-editor .pm-img-resize-handle::after {
+  background: oklch(0.9 0 0 / 55%);
+  box-shadow: 0 2px 6px oklch(0 0 0 / 45%);
+}
+.dark .pm-editor .pm-img-resize-tooltip {
+  border-color: oklch(1 0 0 / 20%);
+  background: color-mix(in oklch, oklch(0.2 0 0) 75%, transparent);
+  color: oklch(0.9 0 0);
 }
 .pm-viewer .pm-img-wrap.pm-img-broken > img {
   display: none;
@@ -226,7 +294,8 @@ body {
 .md-img-fallback span {
   line-height: 1.4;
 }
-.pm-viewer .pm-img-download {
+.pm-viewer .pm-img-download,
+.pm-editor .pm-img-download {
   position: absolute;
   left: 44px;
   bottom: 8px;
@@ -243,7 +312,8 @@ body {
   pointer-events: none;
   transition: opacity 120ms ease, transform 120ms ease, background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
-.pm-viewer .pm-img-copy {
+.pm-viewer .pm-img-copy,
+.pm-editor .pm-img-copy {
   position: absolute;
   left: 8px;
   bottom: 8px;
@@ -260,46 +330,58 @@ body {
   pointer-events: none;
   transition: opacity 120ms ease, transform 120ms ease, background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
-.pm-viewer .pm-img-download svg {
+.pm-viewer .pm-img-download svg,
+.pm-editor .pm-img-download svg {
   width: 18px;
   height: 18px;
 }
-.pm-viewer .pm-img-copy svg {
+.pm-viewer .pm-img-copy svg,
+.pm-editor .pm-img-copy svg {
   width: 18px;
   height: 18px;
 }
-.pm-viewer .pm-img-wrap:hover .pm-img-download {
+.pm-viewer .pm-img-wrap:hover .pm-img-download,
+.pm-editor .pm-img-wrap:hover .pm-img-download {
   opacity: 1;
   pointer-events: auto;
 }
 .pm-viewer .pm-img-download:hover,
-.pm-viewer .pm-img-copy:hover {
+.pm-viewer .pm-img-copy:hover,
+.pm-editor .pm-img-download:hover,
+.pm-editor .pm-img-copy:hover {
   background: color-mix(in oklch, oklch(1 0 0) 90%, transparent);
   border-color: oklch(0.88 0 0);
   transform: translateY(-1px);
   box-shadow: 0 4px 10px oklch(0 0 0 / 8%);
 }
 .pm-viewer .pm-img-download:active,
-.pm-viewer .pm-img-copy:active {
+.pm-viewer .pm-img-copy:active,
+.pm-editor .pm-img-download:active,
+.pm-editor .pm-img-copy:active {
   transform: translateY(0);
   box-shadow: 0 2px 6px oklch(0 0 0 / 12%);
 }
-.pm-viewer .pm-img-wrap:hover .pm-img-copy {
+.pm-viewer .pm-img-wrap:hover .pm-img-copy,
+.pm-editor .pm-img-wrap:hover .pm-img-copy {
   opacity: 1;
   pointer-events: auto;
 }
-.dark .pm-viewer .pm-img-download {
+.dark .pm-viewer .pm-img-download,
+.dark .pm-editor .pm-img-download {
   border-color: oklch(1 0 0 / 10%);
   background: color-mix(in oklch, oklch(0.16 0 0) 70%, transparent);
   color: oklch(0.985 0 0);
 }
-.dark .pm-viewer .pm-img-copy {
+.dark .pm-viewer .pm-img-copy,
+.dark .pm-editor .pm-img-copy {
   border-color: oklch(1 0 0 / 10%);
   background: color-mix(in oklch, oklch(0.16 0 0) 70%, transparent);
   color: oklch(0.985 0 0);
 }
 .dark .pm-viewer .pm-img-download:hover,
-.dark .pm-viewer .pm-img-copy:hover {
+.dark .pm-viewer .pm-img-copy:hover,
+.dark .pm-editor .pm-img-download:hover,
+.dark .pm-editor .pm-img-copy:hover {
   background: color-mix(in oklch, oklch(0.24 0 0) 70%, transparent);
   border-color: oklch(1 0 0 / 20%);
   box-shadow: 0 4px 10px oklch(0 0 0 / 35%);

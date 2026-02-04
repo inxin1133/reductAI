@@ -21,6 +21,22 @@ export type BlockCommand = {
   applyInsert: (view: EditorView, args: { blockFrom: number; blockTo: number; side: BlockInsertSide }) => void
 }
 
+async function requestImageSrc() {
+  if (typeof window !== "undefined") {
+    const picker = (window as unknown as { __reductaiPickImageSrc?: () => Promise<string> }).__reductaiPickImageSrc
+    if (typeof picker === "function") {
+      try {
+        const src = await picker()
+        if (src && src.trim()) return src.trim()
+      } catch {
+        // ignore and fallback to prompt
+      }
+    }
+  }
+  const src = typeof window !== "undefined" ? window.prompt("Image URL?", "https://") || "" : ""
+  return src.trim()
+}
+
 function findNearestBlockRange(view: EditorView) {
   const { $from } = view.state.selection
   let depth = $from.depth
@@ -328,16 +344,20 @@ export function getBlockCommandRegistry(schema: Schema): BlockCommand[] {
       applyReplace: (view) => {
         const img = schema.nodes.image
         if (!img) return
-        const src = window.prompt("Image URL?", "https://") || ""
-        if (!src.trim()) return
-        replaceCurrentBlock(view, img.create({ src: src.trim() }))
+        void (async () => {
+          const src = await requestImageSrc()
+          if (!src) return
+          replaceCurrentBlock(view, img.create({ src }))
+        })()
       },
       applyInsert: (view, args) => {
         const img = schema.nodes.image
         if (!img) return
-        const src = window.prompt("Image URL?", "https://") || ""
-        if (!src.trim()) return
-        insertBlockRelative(view, { ...args, node: img.create({ src: src.trim() }) })
+        void (async () => {
+          const src = await requestImageSrc()
+          if (!src) return
+          insertBlockRelative(view, { ...args, node: img.create({ src }) })
+        })()
       },
     },
     {

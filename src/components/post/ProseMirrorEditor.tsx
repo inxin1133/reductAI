@@ -128,6 +128,7 @@ import {
   FolderOpen,
   Users,
 } from "lucide-react"
+import { toast } from "sonner"
 
 type PmDocJson = unknown
 type PmCommand = (state: EditorState, dispatch?: (tr: Transaction) => void, view?: EditorView) => boolean
@@ -137,6 +138,7 @@ type Props = {
   initialDocJson?: PmDocJson
   onChange?: (docJson: PmDocJson) => void
   toolbarOpen: boolean
+  postId?: string
 }
 
 function topLevelIndexAtPos(doc: PMNode, pos: number): number | null {
@@ -243,10 +245,11 @@ function getEmptyDoc() {
   return PMDOMParser.fromSchema(editorSchema).parse(wrap)
 }
 
-export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Props) {
+export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postId }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null)
   const surfaceRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
+  const imageInputRef = useRef<HTMLInputElement | null>(null)
   const embedIdsRef = useRef<Set<string>>(new Set())
   const embedDetectTimerRef = useRef<number | null>(null)
 
@@ -354,6 +357,96 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
   const [blockBgOpen, setBlockBgOpen] = useState(false)
   const [tableCellBgOpen, setTableCellBgOpen] = useState(false)
   const [selectionTableCellBgOpen, setSelectionTableCellBgOpen] = useState(false)
+
+  const isUuid = useCallback((v: string) => {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v)
+  }, [])
+
+  const readFileAsDataUrl = useCallback((file: File) => {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result || ""))
+      reader.onerror = () => reject(reader.error || new Error("FILE_READ_FAILED"))
+      reader.readAsDataURL(file)
+    })
+  }, [])
+
+  const pickImageFile = useCallback(() => {
+    return new Promise<File | null>((resolve) => {
+      const input = imageInputRef.current
+      if (!input) return resolve(null)
+      input.value = ""
+      const onChange = () => {
+        const file = input.files && input.files.length ? input.files[0] : null
+        resolve(file || null)
+      }
+      input.addEventListener("change", onChange, { once: true })
+      input.click()
+    })
+  }, [])
+
+  const uploadImageToFileService = useCallback(async () => {
+    const file = await pickImageFile()
+    if (!file) return ""
+    if (!file.type.startsWith("image/")) {
+      toast("이미지 파일만 업로드할 수 있습니다.")
+      return ""
+    }
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null
+    if (!token) {
+      toast("로그인이 필요합니다.")
+      return ""
+    }
+    try {
+      const dataUrl = await readFileAsDataUrl(file)
+      if (!dataUrl.startsWith("data:")) throw new Error("INVALID_DATA_URL")
+      const refId =
+        typeof postId === "string" && isUuid(postId)
+          ? postId
+          : typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? crypto.randomUUID()
+            : `${Date.now()}_${Math.random().toString(16).slice(2)}`
+      const assetId =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `${Date.now()}_${Math.random().toString(16).slice(2)}`
+      const res = await fetch("/api/ai/media/assets", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          conversation_id: refId,
+          message_id: refId,
+          asset_id: assetId,
+          data_url: dataUrl,
+          index: 0,
+          kind: "image",
+          source_type: "post_upload",
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        const msg = typeof (json as any)?.message === "string" ? String((json as any).message) : "이미지 업로드에 실패했습니다."
+        toast(msg)
+        return ""
+      }
+      const url = String((json as any)?.url || "")
+      if (!url) {
+        toast("이미지 업로드에 실패했습니다.")
+        return ""
+      }
+      return url
+    } catch {
+      toast("이미지 업로드에 실패했습니다.")
+      return ""
+    }
+  }, [isUuid, pickImageFile, postId, readFileAsDataUrl])
+
+  const pickImageSrc = useCallback(async () => {
+    return await uploadImageToFileService()
+  }, [uploadImageToFileService])
 
   const [blockMenuOpen, setBlockMenuOpen] = useState(false)
   const [blockMenuAnchor, setBlockMenuAnchor] = useState<MenuAnchor | null>(null)
@@ -699,6 +792,17 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
       (c) => c.key.startsWith(q) || c.keywords.some((k) => String(k || "").toLowerCase().startsWith(q))
     )
   }, [blockCommands, blockMenuQuery])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    ;(window as unknown as { __reductaiPickImageSrc?: () => Promise<string> }).__reductaiPickImageSrc = pickImageSrc
+    return () => {
+      const win = window as unknown as { __reductaiPickImageSrc?: () => Promise<string> }
+      if (win.__reductaiPickImageSrc === pickImageSrc) {
+        delete win.__reductaiPickImageSrc
+      }
+    }
+  }, [pickImageSrc])
 
   useEffect(() => {
     if (!mountRef.current) return
@@ -1903,6 +2007,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
 
   return (
     <div className="w-full">
+      <input ref={imageInputRef} type="file" accept="image/*" className="hidden" />
 
       {/* Block inserter menu - 블럭 삽입 메뉴 */}
       {blockMenuOpen && blockMenuAnchor ? (
@@ -2468,9 +2573,11 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen }: Pro
                 size="sm"
                 onMouseDown={(e) => {
                   e.preventDefault()
-                  const src = window.prompt("Image URL?", "https://")
-                  if (!src) return
-                  run(cmdInsertImage(editorSchema, { src }))
+                  void (async () => {
+                    const src = await pickImageSrc()
+                    if (!src) return
+                    run(cmdInsertImage(editorSchema, { src }))
+                  })()
                 }}
               >
                 <Image />
