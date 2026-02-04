@@ -1,6 +1,6 @@
 import express from 'express';
 import { requireAuth, verifyJwtToken } from '../middleware/requireAuth';
-import { createMediaAsset, getMediaAsset } from '../controllers/mediaController';
+import { createMediaAsset, createMediaAssetUpload, getMediaAsset } from '../controllers/mediaController';
 
 const router = express.Router();
 
@@ -26,6 +26,7 @@ router.use((req: any, res: any, next: any) => {
   }
 });
 
+router.post('/assets/upload', express.raw({ type: '*/*', limit: '25mb' }), createMediaAssetUpload);
 router.post('/assets', createMediaAsset);
 router.get('/assets/:id', getMediaAsset);
 

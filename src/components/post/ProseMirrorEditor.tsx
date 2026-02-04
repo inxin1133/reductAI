@@ -88,7 +88,7 @@ import {
   CopyPlus,
   SquareCode,
   AtSign,
-  Image,
+  Image as ImageIcon,
   TextAlignStart,
   TextAlignCenter,
   TextAlignEnd,
@@ -129,6 +129,13 @@ import {
   Users,
 } from "lucide-react"
 import { toast } from "sonner"
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 
 type PmDocJson = unknown
 type PmCommand = (state: EditorState, dispatch?: (tr: Transaction) => void, view?: EditorView) => boolean
@@ -250,6 +257,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
   const surfaceRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
   const imageInputRef = useRef<HTMLInputElement | null>(null)
+  const [isUploadingImage, setIsUploadingImage] = useState(false)
+  const [uploadErrorDialog, setUploadErrorDialog] = useState<string | null>(null)
   const embedIdsRef = useRef<Set<string>>(new Set())
   const embedDetectTimerRef = useRef<number | null>(null)
 
@@ -362,14 +371,76 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v)
   }, [])
 
-  const readFileAsDataUrl = useCallback((file: File) => {
-    return new Promise<string>((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(String(reader.result || ""))
-      reader.onerror = () => reject(reader.error || new Error("FILE_READ_FAILED"))
-      reader.readAsDataURL(file)
-    })
-  }, [])
+  const MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+  const MAX_IMAGE_DIMENSION = 2048
+
+  const compressImageBeforeUpload = useCallback(
+    async (file: File): Promise<{ blob: Blob; bytes: number }> => {
+      const sourceUrl = URL.createObjectURL(file)
+      try {
+        const img = new window.Image()
+        img.src = sourceUrl
+        await new Promise<void>((resolve, reject) => {
+          img.onload = () => resolve()
+          img.onerror = () => reject(new Error("IMAGE_LOAD_FAILED"))
+        })
+
+        let targetW = img.width
+        let targetH = img.height
+        const maxDim = Math.max(targetW, targetH)
+        if (maxDim > MAX_IMAGE_DIMENSION) {
+          const scale = MAX_IMAGE_DIMENSION / maxDim
+          targetW = Math.max(1, Math.round(targetW * scale))
+          targetH = Math.max(1, Math.round(targetH * scale))
+        }
+
+        const canvas = document.createElement("canvas")
+        canvas.width = targetW
+        canvas.height = targetH
+        const ctx = canvas.getContext("2d")
+        if (!ctx) throw new Error("CANVAS_CTX_FAILED")
+        ctx.drawImage(img, 0, 0, targetW, targetH)
+
+        const originalType = file.type || "image/png"
+        const preferType =
+          originalType === "image/jpeg" || originalType === "image/webp" || originalType === "image/png"
+            ? originalType
+            : "image/jpeg"
+
+        const encode = async (mime: string, quality?: number) => {
+          return new Promise<Blob>((resolve, reject) => {
+            canvas.toBlob(
+              (blob) => {
+                if (!blob) return reject(new Error("BLOB_FAILED"))
+                resolve(blob)
+              },
+              mime,
+              quality
+            )
+          })
+        }
+
+        const qualitySteps = [0.9, 0.85, 0.8, 0.75, 0.7]
+        const tryMime = async (mime: string) => {
+          for (const q of qualitySteps) {
+            const blob = await encode(mime, mime === "image/png" ? undefined : q)
+            if (blob.size <= MAX_UPLOAD_BYTES) return blob
+          }
+          return await encode(mime, mime === "image/png" ? undefined : 0.65)
+        }
+
+        let blob = await tryMime(preferType)
+        if (blob.size > MAX_UPLOAD_BYTES && preferType === "image/png") {
+          blob = await tryMime("image/jpeg")
+        }
+
+        return { blob, bytes: blob.size }
+      } finally {
+        URL.revokeObjectURL(sourceUrl)
+      }
+    },
+    []
+  )
 
   const pickImageFile = useCallback(() => {
     return new Promise<File | null>((resolve) => {
@@ -392,14 +463,83 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
       toast("이미지 파일만 업로드할 수 있습니다.")
       return ""
     }
+    const mimeLower = String(file.type || "").toLowerCase()
+    const nameLower = String(file.name || "").toLowerCase()
+    if (mimeLower === "image/heic" || mimeLower === "image/heif" || nameLower.endsWith(".heic") || nameLower.endsWith(".heif")) {
+      toast("HEIC/HEIF 이미지는 현재 지원하지 않습니다. JPG/PNG/WebP로 변환 후 업로드해 주세요.")
+      return ""
+    }
     const token = typeof window !== "undefined" ? localStorage.getItem("token") : null
     if (!token) {
       toast("로그인이 필요합니다.")
       return ""
     }
-    try {
-      const dataUrl = await readFileAsDataUrl(file)
+
+    const blobToDataUrl = async (blob: Blob) => {
+      return await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result || ""))
+        reader.onerror = () => reject(reader.error || new Error("FILE_READ_FAILED"))
+        reader.readAsDataURL(blob)
+      })
+    }
+
+    const parseJsonIfPossible = async (res: Response) => {
+      const contentType = String(res.headers.get("content-type") || "").toLowerCase()
+      if (contentType.includes("application/json")) {
+        return await res.json().catch(() => null)
+      }
+      return null
+    }
+
+    const fallbackUploadWithDataUrl = async (blob: Blob, fallbackRefId: string, fallbackAssetId: string) => {
+      const dataUrl = await blobToDataUrl(blob)
       if (!dataUrl.startsWith("data:")) throw new Error("INVALID_DATA_URL")
+      const res = await fetch("/api/ai/media/assets", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          conversation_id: fallbackRefId,
+          message_id: fallbackRefId,
+          asset_id: fallbackAssetId,
+          data_url: dataUrl,
+          index: 0,
+          kind: "image",
+          source_type: "post_upload",
+        }),
+      })
+      const json = (await parseJsonIfPossible(res)) || {}
+      if (res.status === 413) {
+        setUploadErrorDialog("이미지를 압축해도 업로드 제한 용량인 20MB를 초과합니다.")
+        return ""
+      }
+      if (!res.ok) {
+        const msg =
+          typeof (json as any)?.message === "string"
+            ? String((json as any).message)
+            : `이미지 업로드에 실패했습니다. (HTTP ${res.status})`
+        toast(msg)
+        return ""
+      }
+      const url = String((json as any)?.url || "")
+      if (!url) {
+        toast("이미지 업로드에 실패했습니다.")
+        return ""
+      }
+      console.warn("[uploadImageToFileService] raw upload failed; data_url fallback succeeded")
+      return url
+    }
+
+    try {
+      setIsUploadingImage(true)
+      const { blob, bytes } = await compressImageBeforeUpload(file)
+      if (bytes > MAX_UPLOAD_BYTES) {
+        setUploadErrorDialog("이미지를 압축해도 업로드 제한 용량인 20MB를 초과합니다.")
+        return ""
+      }
       const refId =
         typeof postId === "string" && isUuid(postId)
           ? postId
@@ -410,39 +550,57 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
         typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
           ? crypto.randomUUID()
           : `${Date.now()}_${Math.random().toString(16).slice(2)}`
-      const res = await fetch("/api/ai/media/assets", {
+      const params = new URLSearchParams({
+        conversation_id: refId,
+        message_id: refId,
+        asset_id: assetId,
+        index: "0",
+        kind: "image",
+        source_type: "post_upload",
+        filename: file.name || "image",
+      })
+      const res = await fetch(`/api/ai/media/assets/upload?${params.toString()}`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
+          "Content-Type": blob.type || file.type || "application/octet-stream",
         },
-        body: JSON.stringify({
-          conversation_id: refId,
-          message_id: refId,
-          asset_id: assetId,
-          data_url: dataUrl,
-          index: 0,
-          kind: "image",
-          source_type: "post_upload",
-        }),
+        body: blob,
       })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        const msg = typeof (json as any)?.message === "string" ? String((json as any).message) : "이미지 업로드에 실패했습니다."
-        toast(msg)
+      const json = (await parseJsonIfPossible(res)) || {}
+      if (res.status === 413) {
+        setUploadErrorDialog("이미지를 압축해도 업로드 제한 용량인 20MB를 초과합니다.")
         return ""
+      }
+      if (!res.ok) {
+        console.warn("[uploadImageToFileService] raw upload failed:", res.status, json)
+        return await fallbackUploadWithDataUrl(blob, refId, assetId)
       }
       const url = String((json as any)?.url || "")
       if (!url) {
-        toast("이미지 업로드에 실패했습니다.")
-        return ""
+        console.warn("[uploadImageToFileService] raw upload missing url:", json)
+        return await fallbackUploadWithDataUrl(blob, refId, assetId)
       }
       return url
-    } catch {
-      toast("이미지 업로드에 실패했습니다.")
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg === "IMAGE_LOAD_FAILED") {
+        toast("이미지를 읽을 수 없습니다. 지원하지 않는 이미지 형식일 수 있습니다.")
+      } else if (msg === "CANVAS_CTX_FAILED" || msg === "BLOB_FAILED") {
+        toast("이미지 변환에 실패했습니다.")
+      } else if (msg.toLowerCase().includes("failed to fetch")) {
+        toast("파일 서비스에 연결할 수 없습니다.")
+      } else if (msg === "INVALID_DATA_URL") {
+        toast("이미지 변환에 실패했습니다.")
+      } else {
+        toast("이미지 업로드에 실패했습니다.")
+      }
+      console.error("[uploadImageToFileService] failed:", e)
       return ""
+    } finally {
+      setIsUploadingImage(false)
     }
-  }, [isUuid, pickImageFile, postId, readFileAsDataUrl])
+  }, [compressImageBeforeUpload, isUuid, pickImageFile, postId])
 
   const pickImageSrc = useCallback(async () => {
     return await uploadImageToFileService()
@@ -1972,7 +2130,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
     ordered: { icon: <ListOrdered className="size-4" />, shortcut: "1." },
     checklist: { icon: <ListTodo className="size-4" />, shortcut: "[]" },
     code: { icon: <SquareCode className="size-4" />, shortcut: "```" },
-    image: { icon: <Image className="size-4" /> },
+    image: { icon: <ImageIcon className="size-4" /> },
     table: { icon: <Grid2X2 className="size-4" /> },
     page: { icon: <File className="size-4" /> },
     link: { icon: <Link2 className="size-4" /> },
@@ -2008,6 +2166,21 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
   return (
     <div className="w-full">
       <input ref={imageInputRef} type="file" accept="image/*" className="hidden" />
+      <Dialog open={Boolean(uploadErrorDialog)} onOpenChange={(open) => !open && setUploadErrorDialog(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>업로드 제한</DialogTitle>
+          </DialogHeader>
+          <div className="text-sm text-muted-foreground">
+            {uploadErrorDialog || "업로드 제한을 초과했습니다."}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUploadErrorDialog(null)}>
+              확인
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Block inserter menu - 블럭 삽입 메뉴 */}
       {blockMenuOpen && blockMenuAnchor ? (
@@ -2579,10 +2752,17 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
                     run(cmdInsertImage(editorSchema, { src }))
                   })()
                 }}
+                disabled={isUploadingImage}
               >
-                <Image />
+                <ImageIcon />
               </ButtonGroupItem>
             </ToolbarTooltip>
+            {isUploadingImage && (
+              <div className="ml-2 text-xs text-muted-foreground flex items-center gap-1">
+                <span className="inline-block size-2 rounded-full bg-primary animate-pulse" />
+                업로드 중...
+              </div>
+            )}
             <ToolbarTooltip label="Mention">
               <ButtonGroupItem
                 variant="outline"

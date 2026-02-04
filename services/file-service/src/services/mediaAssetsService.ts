@@ -48,6 +48,11 @@ function ttlDays() {
   return Number.isFinite(raw) && raw > 0 ? raw : 15;
 }
 
+function maxBytes() {
+  const raw = Number.parseInt(process.env.FILE_ASSET_MAX_BYTES || '20971520', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 20 * 1024 * 1024;
+}
+
 function computeExpiresAt(applyTtl: boolean) {
   if (!applyTtl) return null;
   const days = ttlDays();
@@ -83,6 +88,9 @@ export async function storeImageDataUrlAsAsset(args: {
           : 'file');
 
   const bytesBuf = Buffer.from(parsed.base64, 'base64');
+  if (bytesBuf.length > maxBytes()) {
+    throw new Error('FILE_TOO_LARGE');
+  }
   const sha256 = crypto.createHash('sha256').update(bytesBuf).digest('hex');
   const ext = extFromMime(parsed.mime);
 
@@ -135,6 +143,98 @@ export async function storeImageDataUrlAsAsset(args: {
     assetId: args.assetId,
     url: `/api/ai/media/assets/${args.assetId}`,
     mime: parsed.mime,
+    bytes: bytesBuf.length,
+    sha256,
+    storageKey: relPath,
+  };
+}
+
+export async function storeBytesAsAsset(args: {
+  tenantId: string;
+  userId: string | null;
+  conversationId: string;
+  messageId: string;
+  assetId: string;
+  bytesBuf: Buffer;
+  mime: string;
+  index: number;
+  kind?: MediaKind;
+  sourceType?: FileSourceType;
+  originalFilename?: string | null;
+}): Promise<{ assetId: string; url: string; mime: string; bytes: number; sha256: string; storageKey: string }> {
+  const mime = String(args.mime || '').trim() || 'application/octet-stream';
+  const kind: MediaKind =
+    args.kind ||
+    (mime.toLowerCase().startsWith('image/')
+      ? 'image'
+      : mime.toLowerCase().startsWith('audio/')
+        ? 'audio'
+        : mime.toLowerCase().startsWith('video/')
+          ? 'video'
+          : 'file');
+
+  const bytesBuf = args.bytesBuf;
+  if (!Buffer.isBuffer(bytesBuf) || bytesBuf.length === 0) throw new Error('INVALID_BYTES');
+  if (bytesBuf.length > maxBytes()) {
+    throw new Error('FILE_TOO_LARGE');
+  }
+
+  const sha256 = crypto.createHash('sha256').update(bytesBuf).digest('hex');
+  const ext = extFromMime(mime);
+
+  const root = mediaRootDir();
+  const safeTenant = isUuid(args.tenantId) ? args.tenantId : 'tenant';
+  const safeConv = isUuid(args.conversationId) ? args.conversationId : 'conversation';
+  const safeMsg = isUuid(args.messageId) ? args.messageId : 'message';
+
+  const relDir = path.join(safeTenant, safeConv, safeMsg);
+  const fileName = `${String(args.index)}_${sha256.slice(0, 16)}.${ext}`;
+  const relPath = path.join(relDir, fileName);
+  const absPath = path.join(root, relPath);
+
+  await fs.mkdir(path.dirname(absPath), { recursive: true });
+  await fs.writeFile(absPath, bytesBuf);
+
+  const sourceType: FileSourceType = args.sourceType || 'attachment';
+  const expiresAt = computeExpiresAt(sourceType === 'attachment');
+  const originalFilename =
+    typeof args.originalFilename === 'string' && args.originalFilename.trim() ? args.originalFilename.trim() : null;
+
+  await query(
+    `
+    INSERT INTO file_assets
+      (id, tenant_id, user_id, source_type, reference_type, reference_id, kind, mime, bytes, original_filename, file_extension, sha256, status, storage_provider, storage_key, storage_url, is_private, expires_at, metadata)
+    VALUES
+      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'stored','local_fs',$13,NULL,TRUE,$14,$15::jsonb)
+    `,
+    [
+      args.assetId,
+      args.tenantId,
+      args.userId,
+      sourceType,
+      'message',
+      args.messageId,
+      kind,
+      mime,
+      bytesBuf.length,
+      originalFilename,
+      ext,
+      sha256,
+      relPath,
+      expiresAt,
+      JSON.stringify({
+        source: 'raw_upload',
+        conversation_id: args.conversationId,
+        message_id: args.messageId,
+        ttl_days: sourceType === 'attachment' ? ttlDays() : null,
+      }),
+    ]
+  );
+
+  return {
+    assetId: args.assetId,
+    url: `/api/ai/media/assets/${args.assetId}`,
+    mime,
     bytes: bytesBuf.length,
     sha256,
     storageKey: relPath,

@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { query } from '../config/db';
 import { AuthedRequest } from '../middleware/requireAuth';
 import { ensureSystemTenantId } from '../services/systemTenantService';
-import { newAssetId, storeImageDataUrlAsAsset } from '../services/mediaAssetsService';
+import { newAssetId, storeBytesAsAsset, storeImageDataUrlAsAsset } from '../services/mediaAssetsService';
 import path from 'path';
 import fs from 'fs/promises';
 
@@ -72,10 +72,82 @@ export async function createMediaAsset(req: Request, res: Response) {
     return res.status(201).json(stored);
   } catch (e: any) {
     const msg = String(e?.message || e);
+      if (msg === 'FILE_TOO_LARGE') {
+        return res.status(413).json({ message: 'File too large' });
+      }
     if (msg === 'INVALID_DATA_URL') {
       return res.status(400).json({ message: 'Invalid data_url' });
     }
     console.error('createMediaAsset error:', e);
+    return res.status(500).json({ message: 'Failed to create media asset', details: msg });
+  }
+}
+
+export async function createMediaAssetUpload(req: Request, res: Response) {
+  try {
+    const tenantId = await ensureSystemTenantId();
+    const userId = (req as AuthedRequest).userId || null;
+
+    const q = (req.query || {}) as Record<string, unknown>;
+    const conversationId = String(q.conversation_id || q.conversationId || req.headers['x-conversation-id'] || '').trim();
+    const messageId = String(q.message_id || q.messageId || req.headers['x-message-id'] || '').trim();
+    const sourceTypeRaw = String(q.source_type || q.sourceType || req.headers['x-source-type'] || '').trim();
+    const sourceType: FileSourceType = ([
+      'ai_generated',
+      'attachment',
+      'post_upload',
+      'external_link',
+      'profile_image',
+    ] as FileSourceType[]).includes(sourceTypeRaw as FileSourceType)
+      ? (sourceTypeRaw as FileSourceType)
+      : 'attachment';
+    const kindRaw = typeof q.kind === 'string' ? q.kind.trim().toLowerCase() : '';
+    const kind = (['image', 'audio', 'video', 'file'] as MediaKind[]).includes(kindRaw as MediaKind)
+      ? (kindRaw as MediaKind)
+      : undefined;
+    const index = Number(q.index ?? req.headers['x-index'] ?? 0);
+    const assetId = String(q.asset_id || q.assetId || req.headers['x-asset-id'] || '').trim() || newAssetId();
+    const originalFilename = String(q.filename || q.original_filename || req.headers['x-filename'] || '').trim() || null;
+    const mime = String(req.headers['content-type'] || 'application/octet-stream')
+      .split(';')[0]
+      .trim();
+
+    const bytesBuf = Buffer.isBuffer(req.body) ? (req.body as Buffer) : Buffer.from(String(req.body || ''), 'utf8');
+
+    if (!conversationId || !messageId) {
+      return res.status(400).json({ message: 'conversation_id and message_id are required' });
+    }
+    if (!Number.isFinite(index) || index < 0) {
+      return res.status(400).json({ message: 'index must be a non-negative number' });
+    }
+    if (!bytesBuf || bytesBuf.length === 0) {
+      return res.status(400).json({ message: 'file bytes are required' });
+    }
+
+    const stored = await storeBytesAsAsset({
+      tenantId,
+      userId,
+      conversationId,
+      messageId,
+      assetId,
+      bytesBuf,
+      mime,
+      index,
+      kind,
+      sourceType,
+      originalFilename,
+    });
+
+    return res.status(201).json(stored);
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    if (msg === 'FILE_TOO_LARGE') {
+      return res.status(413).json({ message: 'File too large' });
+    }
+    if (msg === 'INVALID_BYTES') {
+      return res.status(400).json({ message: 'Invalid file bytes' });
+    }
+    console.error('createMediaAssetUpload error:', e);
     return res.status(500).json({ message: 'Failed to create media asset', details: msg });
   }
 }

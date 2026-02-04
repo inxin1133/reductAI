@@ -27,9 +27,9 @@ async function requestImageSrc() {
     if (typeof picker === "function") {
       try {
         const src = await picker()
-        if (src && src.trim()) return src.trim()
+        return src.trim()
       } catch {
-        // ignore and fallback to prompt
+        return ""
       }
     }
   }
