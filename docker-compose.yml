@@ -187,6 +187,7 @@ services:
       - "3008:3008"
     volumes:
       - ./services/file-service/src:/app/src
+      - ./services/file-service/storage/media:/app/storage/media
     env_file:
       - ./services/file-service/.env
     extra_hosts:
@@ -197,3 +198,4 @@ services:
 networks:
   reduct-network:
     driver: bridge
+

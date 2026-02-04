@@ -425,6 +425,7 @@ export function Sidebar({ className }: SidebarProps) {
   const isTimelineActive = location.pathname.startsWith("/timeline")
   const isPostsActive = location.pathname.startsWith("/posts")
   const isTrashActive = location.pathname.startsWith("/trash")
+  const isFilesActive = location.pathname.startsWith("/files")
   const activeCategoryId = (() => {
     try {
       const qs = new URLSearchParams(location.search || "")
@@ -1203,10 +1204,19 @@ export function Sidebar({ className }: SidebarProps) {
                <div className="size-5 flex items-center justify-center"><Clock className="size-full" /></div>
                <span className="text-base text-foreground">타임라인</span>
              </div>
-             <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
-               <div className="size-5 flex items-center justify-center"><Save className="size-full" /></div>
-               <span className="text-base text-foreground">생성 파일</span>
-             </div>
+            <div
+              className={cn(
+                "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                isFilesActive ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10" : "hover:bg-neutral-200"
+              )}
+              onClick={() => {
+                setIsMobileMenuOpen(false)
+                navigate("/files")
+              }}
+            >
+              <div className="size-5 flex items-center justify-center"><Save className="size-full" /></div>
+              <span className="text-base text-foreground">생성 파일</span>
+            </div>
            </div>
 
            {/* 개인 페이지 */}
@@ -1466,12 +1476,19 @@ export function Sidebar({ className }: SidebarProps) {
            </div>
            {isOpen && <span className="text-sm text-sidebar-foreground">타임라인</span>}
          </div>
-         <div className={cn("flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-accent/50", !isOpen && "justify-center")}>
-           <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-             <Save className="size-full" />
-           </div>
-           {isOpen && <span className="text-sm text-sidebar-foreground">생성 파일</span>}
-         </div>
+        <div
+          className={cn(
+            "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+            !isOpen && "justify-center",
+            isFilesActive ? "bg-neutral-200" : "hover:bg-accent/50"
+          )}
+          onClick={() => navigate("/files")}
+        >
+          <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
+            <Save className="size-full" />
+          </div>
+          {isOpen && <span className="text-sm text-sidebar-foreground">생성 파일</span>}
+        </div>
       </div>
 
       {isOpen ? (

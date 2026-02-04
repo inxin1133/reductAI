@@ -1625,20 +1625,92 @@ export default function Timeline() {
     const validMsgs = msgs.filter((m) => !m.isPending)
     console.log("[Timeline] buildPmDocFromMessages: msgs count =", validMsgs.length, "includeQuestions =", includeQuestions)
 
-    for (const m of validMsgs) {
+    const hasMoreUserAfter = (fromIndex: number) => {
+      for (let i = fromIndex + 1; i < validMsgs.length; i += 1) {
+        if (validMsgs[i]?.role === "user") return true
+      }
+      return false
+    }
+
+    for (let idx = 0; idx < validMsgs.length; idx += 1) {
+      const m = validMsgs[idx]
       if (m.role === "user" && !includeQuestions) continue
 
       if (m.role === "user") {
-        // Add user question as a heading
+        // Preserve the user's original formatting as paragraph blocks.
         const questionText = String(m.content || "").trim()
         if (questionText) {
-          content.push({
-            type: "heading",
-            attrs: { level: 3 },
-            content: [{ type: "text", text: `💬 ${questionText}` }],
-          })
-          content.push({ type: "horizontal_rule" })
+          const lines = questionText.split(/\r?\n/)
+          let paragraphLines: string[] = []
+          let listItems: string[] = []
+          let inAttachmentSection = false
+          let emojiInserted = false
+
+          const flushParagraph = () => {
+            if (!paragraphLines.length) return
+            const inline: Array<Record<string, unknown>> = []
+            paragraphLines.forEach((line, i) => {
+              inline.push({ type: "text", text: line })
+              if (i < paragraphLines.length - 1) inline.push({ type: "hard_break" })
+            })
+            content.push({ type: "paragraph", content: inline })
+            paragraphLines = []
+          }
+
+          const flushList = () => {
+            if (!listItems.length) return
+            content.push({
+              type: "bullet_list",
+              content: listItems.map((item) => ({
+                type: "list_item",
+                content: [{ type: "paragraph", content: [{ type: "text", text: item }] }],
+              })),
+            })
+            listItems = []
+          }
+
+          for (const raw of lines) {
+            const line = raw.replace(/\s+$/g, "")
+            const trimmed = line.trim()
+            if (trimmed === "### 첨부") {
+              flushParagraph()
+              flushList()
+              content.push({
+                type: "heading",
+                attrs: { level: 3 },
+                content: [{ type: "text", text: "첨부" }],
+              })
+              inAttachmentSection = true
+              continue
+            }
+            if (inAttachmentSection && trimmed.startsWith("- ")) {
+              listItems.push(trimmed.slice(2).trim())
+              continue
+            }
+            if (trimmed === "") {
+              flushParagraph()
+              if (inAttachmentSection) {
+                flushList()
+                inAttachmentSection = false
+              }
+              continue
+            }
+            if (inAttachmentSection && !trimmed.startsWith("- ")) {
+              flushList()
+              inAttachmentSection = false
+            }
+            if (!emojiInserted) {
+              paragraphLines.push(`💬 ${line}`)
+              emojiInserted = true
+            } else {
+              paragraphLines.push(line)
+            }
+          }
+          flushParagraph()
+          flushList()
         }
+        // Add separator between question and answer
+        content.push({ type: "horizontal_rule" })
         continue
       }
 
@@ -1693,6 +1765,12 @@ export default function Timeline() {
 
         if (!added) {
           console.warn("[Timeline] Could not extract content from assistant message")
+        }
+        // Add separator between Q/A pairs (only when another user message exists)
+        if (hasMoreUserAfter(idx)) {
+          content.push({ type: "paragraph" })
+          content.push({ type: "horizontal_rule" })
+          content.push({ type: "paragraph" })
         }
         continue
       }

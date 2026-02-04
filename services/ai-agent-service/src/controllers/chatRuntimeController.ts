@@ -19,6 +19,7 @@ import { normalizeAiContent } from "../utils/normalizeAiContent"
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 
 const MODEL_TYPES: ModelType[] = ["text", "image", "audio", "music", "video", "multimodal", "embedding", "code"]
+const FILE_SERVICE_URL = process.env.FILE_SERVICE_URL || "http://localhost:3008"
 
 type AudioFormat = "mp3" | "wav" | "opus" | "aac" | "flac"
 
@@ -70,6 +71,36 @@ function isAudioFormat(v: unknown): v is AudioFormat {
 function isUuid(v: unknown): v is string {
   if (typeof v !== "string") return false
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v)
+}
+
+function parseOpenAiImageError(raw: string): {
+  status: number | null
+  apiRoot: string | null
+  error: Record<string, unknown> | null
+  requestId: string | null
+} | null {
+  if (!raw || !raw.includes("OPENAI_IMAGE")) return null
+  const jsonIdx = raw.indexOf(":{")
+  if (jsonIdx < 0) return null
+  const prefix = raw.slice(0, jsonIdx)
+  const jsonStr = raw.slice(jsonIdx + 1)
+  const metaMatch = prefix.match(/OPENAI_IMAGE(?:_EDIT)?_FAILED_(\d+)@(.+)/)
+  const status = metaMatch ? Number(metaMatch[1]) : null
+  const apiRoot = metaMatch ? String(metaMatch[2]) : null
+  let errorObj: Record<string, unknown> | null = null
+  try {
+    const parsed = JSON.parse(jsonStr) as Record<string, unknown>
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const err = parsed.error && typeof parsed.error === "object" ? (parsed.error as Record<string, unknown>) : null
+      if (err) errorObj = err
+    }
+  } catch {
+    errorObj = null
+  }
+  const msg = typeof errorObj?.message === "string" ? String(errorObj.message) : ""
+  const reqMatch = msg.match(/req_[a-zA-Z0-9]+/)
+  const requestId = reqMatch ? reqMatch[0] : null
+  return { status, apiRoot, error: errorObj, requestId }
 }
 
 function extractTextFromJsonContent(content: unknown): string {
@@ -1156,9 +1187,13 @@ function inferImageMimeFromUrl(url: string): string | null {
   return null
 }
 
-async function fetchImageAsDataUrl(url: string, signal?: AbortSignal): Promise<string | null> {
+async function fetchImageAsDataUrl(
+  url: string,
+  signal?: AbortSignal,
+  headers?: Record<string, string>
+): Promise<string | null> {
   try {
-    const res = await fetch(url, { signal })
+    const res = await fetch(url, { signal, headers })
     if (!res.ok) return null
     const ctRaw = String(res.headers.get("content-type") || "")
     const ct = ctRaw.split(";")[0].trim().toLowerCase()
@@ -1508,13 +1543,27 @@ export async function chatRun(req: Request, res: Response) {
     // Incoming attachments (used for image-to-image in image mode)
     const incomingAttachments = Array.isArray(attachments) ? attachments : []
     const incomingImageDataUrls: string[] = []
+    const incomingImageUrls: string[] = []
     for (const a of incomingAttachments) {
       if (!a || typeof a !== "object") continue
       const ao = a as Record<string, unknown>
       const kind = typeof ao.kind === "string" ? ao.kind : ""
       if (kind !== "image") continue
       const du = typeof ao.data_url === "string" ? ao.data_url : ""
-      if (du && du.startsWith("data:image/")) incomingImageDataUrls.push(du)
+      if (du && du.startsWith("data:image/")) {
+        incomingImageDataUrls.push(du)
+        continue
+      }
+      const url = typeof ao.url === "string" ? ao.url : ""
+      if (url) incomingImageUrls.push(url)
+    }
+    if (incomingImageUrls.length > 0) {
+      const headers = authHeader ? { Authorization: authHeader } : undefined
+      for (const raw of incomingImageUrls) {
+        const absUrl = raw.startsWith("/api/ai/media/assets/") ? `${FILE_SERVICE_URL}${raw}` : raw
+        const dataUrl = await fetchImageAsDataUrl(absUrl, undefined, headers)
+        if (dataUrl && dataUrl.startsWith("data:image/")) incomingImageDataUrls.push(dataUrl)
+      }
     }
 
     // conversation ownership / creation
@@ -1675,9 +1724,15 @@ export async function chatRun(req: Request, res: Response) {
         const mime = typeof ao.mime === "string" ? ao.mime : ""
         const size = typeof ao.size === "number" ? ao.size : Number(ao.size || 0)
         const dataUrl = typeof ao.data_url === "string" ? ao.data_url : ""
-        const base: PendingAttachmentSlot = { kind, name, mime, size }
+        const assetIdRaw =
+          typeof (ao as Record<string, unknown>).asset_id === "string"
+            ? String((ao as Record<string, unknown>).asset_id)
+            : typeof (ao as Record<string, unknown>).assetId === "string"
+              ? String((ao as Record<string, unknown>).assetId)
+              : ""
+        const base: PendingAttachmentSlot = { kind, name, mime, size, assetId: assetIdRaw || undefined }
         if (dataUrl && dataUrl.startsWith("data:")) {
-          attachmentSlots.push({ ...base, dataUrl, assetId: newAssetId() })
+          attachmentSlots.push({ ...base, dataUrl, assetId: base.assetId || newAssetId() })
         } else {
           const url = typeof ao.url === "string" ? ao.url : ""
           if (url) attachmentSlots.push({ ...base, url })
@@ -1686,7 +1741,7 @@ export async function chatRun(req: Request, res: Response) {
       }
     }
 
-    const initialAttachments = attachmentSlots.map(({ dataUrl, assetId, ...rest }) => rest)
+    const initialAttachments = attachmentSlots.map(({ dataUrl, ...rest }) => rest)
     const normalizedUserContent = normalizeAiContent({ text: prompt, options: mergedOptions, attachments: initialAttachments })
     await appendMessage({
       id: userMessageId,
@@ -1734,7 +1789,7 @@ export async function chatRun(req: Request, res: Response) {
             safeAttachments.push(base)
           }
         } else if (slot.url) {
-          safeAttachments.push({ ...base, url: slot.url })
+          safeAttachments.push({ ...base, url: slot.url, asset_id: slot.assetId })
         } else {
           safeAttachments.push(base)
         }
@@ -2154,30 +2209,62 @@ export async function chatRun(req: Request, res: Response) {
       const promptFromTemplate = tmpl && typeof tmpl.prompt === "string" && tmpl.prompt.trim() ? tmpl.prompt.trim() : ""
       const promptForImage = promptFromTemplate || prompt
 
-      const r =
-        incomingImageDataUrls.length > 0
-          ? await openaiEditImage({
-              apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-              apiKey: auth.apiKey,
-              model: modelApiId,
-              prompt: promptForImage,
-              image_data_url: incomingImageDataUrls[0],
-              n,
-              size,
-              signal: abortSignal,
-            })
-          : await openaiGenerateImage({
-              apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-              apiKey: auth.apiKey,
-              model: modelApiId,
-              prompt: promptForImage,
-              n,
-              size,
-              quality,
-              style,
-              background,
-              signal: abortSignal,
-            })
+      let r: { output_text: string; urls?: string[]; data_urls?: string[] }
+      try {
+        r =
+          incomingImageDataUrls.length > 0
+            ? await openaiEditImage({
+                apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                apiKey: auth.apiKey,
+                model: modelApiId,
+                prompt: promptForImage,
+                image_data_url: incomingImageDataUrls[0],
+                n,
+                size,
+                signal: abortSignal,
+              })
+            : await openaiGenerateImage({
+                apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                apiKey: auth.apiKey,
+                model: modelApiId,
+                prompt: promptForImage,
+                n,
+                size,
+                quality,
+                style,
+                background,
+                signal: abortSignal,
+              })
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        const parsed = parseOpenAiImageError(msg)
+        const err = parsed?.error || null
+        const code = typeof err?.code === "string" ? String(err.code) : ""
+        const type = typeof err?.type === "string" ? String(err.type) : ""
+        const isModeration = code === "moderation_blocked" || type === "image_generation_user_error"
+        if (isModeration) {
+          const attachmentInfo = {
+            received_attachments: Array.isArray(attachments) ? attachments.length : 0,
+            received_image_data_urls: incomingImageDataUrls.length,
+          }
+          return await failAndRespond(400, {
+            message:
+              incomingImageDataUrls.length > 0
+                ? "첨부 이미지는 정상 수신되었으나 안전 정책에 의해 차단되었습니다. 다른 이미지/프롬프트로 다시 시도해 주세요."
+                : "요청이 안전 정책에 의해 차단되었습니다. 다른 이미지/프롬프트로 다시 시도해 주세요.",
+            details: {
+              code,
+              type,
+              request_id: parsed?.requestId || null,
+              ...attachmentInfo,
+            },
+          })
+        }
+        return await failAndRespond(500, {
+          message: "OpenAI 이미지 요청에 실패했습니다.",
+          details: msg,
+        })
+      }
       const appliedOptions = Object.fromEntries(
         Object.entries(
           incomingImageDataUrls.length > 0

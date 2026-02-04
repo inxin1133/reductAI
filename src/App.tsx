@@ -13,6 +13,7 @@ import TranslationHistoryPage from "./pages/admin/i18n/TranslationHistory";
 import PostEditorPage from "./pages/posts/PostEditorPage";
 import PostEntryPage from "./pages/posts/PostEntryPage";
 import TrashPage from "./pages/trash/Trash";
+import FileAssetsPage from "./pages/files/FileAssetsPage";
 
 import UserManager from "./pages/admin/users/UserManager";
 import RoleManager from "./pages/admin/users/RoleManager";
@@ -89,6 +90,10 @@ const router = createBrowserRouter([
       {
         path: "/trash",
         element: <TrashPage />,
+      },
+      {
+        path: "/files",
+        element: <FileAssetsPage />,
       },
       {
         path: "/posts",

@@ -9,6 +9,16 @@ import fs from 'fs/promises';
 type MediaKind = 'image' | 'audio' | 'video' | 'file';
 type FileSourceType = 'ai_generated' | 'attachment' | 'post_upload' | 'external_link' | 'profile_image';
 
+const VALID_SOURCE_TYPES = new Set<FileSourceType>([
+  'ai_generated',
+  'attachment',
+  'post_upload',
+  'external_link',
+  'profile_image',
+]);
+
+const VALID_KINDS = new Set<MediaKind>(['image', 'audio', 'video', 'file']);
+
 function mediaRootDir() {
   const root = process.env.MEDIA_STORAGE_ROOT;
   if (root && root.trim()) return root.trim();
@@ -22,6 +32,20 @@ function safeResolveUnderRoot(root: string, rel: string) {
     throw new Error('INVALID_STORAGE_KEY');
   }
   return abs;
+}
+
+function parseList(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map((v) => String(v).trim()).filter(Boolean);
+  if (typeof raw !== 'string') return [];
+  return raw
+    .split(',')
+    .map((v) => String(v).trim())
+    .filter(Boolean);
+}
+
+function ttlDays() {
+  const raw = Number.parseInt(process.env.FILE_ASSET_TTL_DAYS || '15', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 15;
 }
 
 export async function createMediaAsset(req: Request, res: Response) {
@@ -149,6 +173,267 @@ export async function createMediaAssetUpload(req: Request, res: Response) {
     }
     console.error('createMediaAssetUpload error:', e);
     return res.status(500).json({ message: 'Failed to create media asset', details: msg });
+  }
+}
+
+export async function listMediaAssets(req: Request, res: Response) {
+  try {
+    const tenantId = await ensureSystemTenantId();
+    const userId = (req as AuthedRequest).userId;
+    const q = (req.query || {}) as Record<string, unknown>;
+
+    const sourceRaw = q.source_type || q.sourceType || '';
+    const kindRaw = q.kind || '';
+    const searchRaw = String(q.q || q.search || '').trim();
+    const includeExpired = String(q.include_expired || q.includeExpired || '').toLowerCase() === 'true';
+    const limit = Math.max(1, Math.min(200, Number(q.limit ?? 100)));
+    const offset = Math.max(0, Number(q.offset ?? 0));
+
+    const sourceTypes = parseList(sourceRaw).filter((s) => VALID_SOURCE_TYPES.has(s as FileSourceType));
+    const kinds = parseList(kindRaw).filter((s) => VALID_KINDS.has(s as MediaKind));
+
+    const where: string[] = ['a.tenant_id = $1', 'a.user_id = $2', "a.status <> 'deleted'"];
+    const params: any[] = [tenantId, userId];
+    if (!includeExpired) where.push('(a.expires_at IS NULL OR a.expires_at > NOW())');
+
+    if (sourceTypes.length > 0) {
+      params.push(sourceTypes);
+      where.push(`a.source_type = ANY($${params.length}::text[])`);
+    }
+    if (kinds.length > 0) {
+      params.push(kinds);
+      where.push(`a.kind = ANY($${params.length}::text[])`);
+    }
+    if (searchRaw) {
+      params.push(`%${searchRaw}%`);
+      where.push(`(a.original_filename ILIKE $${params.length} OR a.storage_key ILIKE $${params.length})`);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    const totalRes = await query(
+      `
+      SELECT COALESCE(SUM(a.bytes),0)::bigint AS total_bytes,
+             COUNT(*)::int AS total_count
+      FROM file_assets a
+      ${whereSql}
+      `,
+      params
+    );
+    const totalBytes = Number(totalRes.rows[0]?.total_bytes || 0);
+    const totalCount = Number(totalRes.rows[0]?.total_count || 0);
+
+    const itemParams = [...params, limit, offset];
+    const itemRes = await query(
+      `
+      SELECT
+        a.id,
+        a.source_type,
+        a.kind,
+        a.mime,
+        a.bytes,
+        a.original_filename,
+        a.storage_provider,
+        a.storage_key,
+        a.storage_url,
+        a.cdn_url,
+        a.is_private,
+        a.expires_at,
+        a.created_at,
+        a.updated_at,
+        a.metadata,
+        a.status,
+        mm.metadata->>'model' AS model_api_id,
+        mm.metadata->>'provider_slug' AS provider_slug,
+        mm.metadata->>'provider_key' AS provider_key,
+        am.display_name AS model_display_name,
+        ap.name AS provider_name,
+        ap.product_name AS provider_product_name,
+        ap.logo_key AS provider_logo_key
+      FROM file_assets a
+      LEFT JOIN model_messages mm
+        ON a.reference_type = 'message'
+        AND a.reference_id = mm.id
+      LEFT JOIN ai_models am
+        ON am.model_id = (mm.metadata->>'model')
+      LEFT JOIN ai_providers ap
+        ON ap.slug = (mm.metadata->>'provider_slug')
+      ${whereSql}
+      ORDER BY a.created_at DESC
+      LIMIT $${params.length + 1}
+      OFFSET $${params.length + 2}
+      `,
+      itemParams
+    );
+
+    const items = itemRes.rows.map((row: any) => {
+      const metadata = row.metadata && typeof row.metadata === 'object' ? row.metadata : {};
+      return {
+        id: String(row.id),
+        url: `/api/ai/media/assets/${row.id}`,
+        source_type: row.source_type,
+        kind: row.kind,
+        mime: row.mime,
+        bytes: Number(row.bytes || 0),
+        original_filename: row.original_filename,
+        storage_provider: row.storage_provider,
+        storage_key: row.storage_key,
+        storage_url: row.storage_url,
+        cdn_url: row.cdn_url,
+        is_private: Boolean(row.is_private),
+        expires_at: row.expires_at,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        status: row.status,
+        metadata,
+        is_favorite: Boolean((metadata as any)?.favorite),
+        is_pinned:
+          row.source_type === 'attachment' && (row.expires_at === null || typeof row.expires_at === 'undefined'),
+        model_api_id: row.model_api_id,
+        model_display_name: row.model_display_name,
+        provider_slug: row.provider_slug,
+        provider_key: row.provider_key,
+        provider_name: row.provider_name,
+        provider_product_name: row.provider_product_name,
+        provider_logo_key: row.provider_logo_key,
+      };
+    });
+
+    return res.json({ items, total_bytes: totalBytes, total_count: totalCount });
+  } catch (e: any) {
+    console.error('listMediaAssets error:', e);
+    return res.status(500).json({ message: 'Failed to list media assets' });
+  }
+}
+
+export async function deleteMediaAsset(req: Request, res: Response) {
+  try {
+    const tenantId = await ensureSystemTenantId();
+    const userId = (req as AuthedRequest).userId;
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ message: 'id is required' });
+
+    const r = await query(
+      `
+      SELECT id, storage_provider, storage_key
+      FROM file_assets
+      WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status <> 'deleted'
+      LIMIT 1
+      `,
+      [id, tenantId, userId]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ message: 'Not found' });
+    const row = r.rows[0] as any;
+
+    if (String(row.storage_provider || '') === 'local_fs') {
+      const key = typeof row.storage_key === 'string' ? row.storage_key : '';
+      if (key) {
+        const root = mediaRootDir();
+        const abs = safeResolveUnderRoot(root, key);
+        try {
+          await fs.unlink(abs);
+        } catch (err: any) {
+          if (err?.code !== 'ENOENT') console.warn('deleteMediaAsset unlink error:', err);
+        }
+      }
+    }
+
+    await query(
+      `
+      UPDATE file_assets
+      SET status = 'deleted', updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1 AND tenant_id = $2 AND user_id = $3
+      `,
+      [id, tenantId, userId]
+    );
+
+    return res.json({ ok: true });
+  } catch (e: any) {
+    console.error('deleteMediaAsset error:', e);
+    return res.status(500).json({ message: 'Failed to delete media asset' });
+  }
+}
+
+export async function updateMediaAssetPin(req: Request, res: Response) {
+  try {
+    const tenantId = await ensureSystemTenantId();
+    const userId = (req as AuthedRequest).userId;
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ message: 'id is required' });
+    const body = (req.body || {}) as Record<string, unknown>;
+    const pinned = Boolean(body.pinned);
+
+    const current = await query(
+      `
+      SELECT id, source_type, expires_at, metadata
+      FROM file_assets
+      WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status <> 'deleted'
+      LIMIT 1
+      `,
+      [id, tenantId, userId]
+    );
+    if (current.rows.length === 0) return res.status(404).json({ message: 'Not found' });
+    const row = current.rows[0] as any;
+    if (String(row.source_type) !== 'attachment') {
+      return res.status(400).json({ message: 'Only attachment assets can be pinned' });
+    }
+
+    const meta = row.metadata && typeof row.metadata === 'object' ? row.metadata : {};
+    const pinnedByPost = Boolean((meta as any)?.pinned_by_post);
+    if (!pinned && pinnedByPost) {
+      return res.status(400).json({ message: 'Pinned by post; cannot unpin' });
+    }
+
+    const expiresAt = pinned ? null : new Date(Date.now() + ttlDays() * 24 * 60 * 60 * 1000);
+    const r = await query(
+      `
+      UPDATE file_assets
+      SET expires_at = $4,
+          metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{pinned_by_user}', to_jsonb($5::boolean), true),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1 AND tenant_id = $2 AND user_id = $3
+      RETURNING id, expires_at, metadata
+      `,
+      [id, tenantId, userId, expiresAt, pinned]
+    );
+    const next = r.rows[0] as any;
+    return res.json({
+      ok: true,
+      id,
+      pinned,
+      expires_at: next?.expires_at ?? null,
+      metadata: next?.metadata ?? {},
+    });
+  } catch (e: any) {
+    console.error('updateMediaAssetPin error:', e);
+    return res.status(500).json({ message: 'Failed to update pin state' });
+  }
+}
+
+export async function updateMediaAssetFavorite(req: Request, res: Response) {
+  try {
+    const tenantId = await ensureSystemTenantId();
+    const userId = (req as AuthedRequest).userId;
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ message: 'id is required' });
+    const body = (req.body || {}) as Record<string, unknown>;
+    const favorite = Boolean(body.favorite);
+
+    const r = await query(
+      `
+      UPDATE file_assets
+      SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{favorite}', to_jsonb($4::boolean), true),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status <> 'deleted'
+      RETURNING id, metadata
+      `,
+      [id, tenantId, userId, favorite]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ message: 'Not found' });
+    return res.json({ ok: true, id, favorite });
+  } catch (e: any) {
+    console.error('updateMediaAssetFavorite error:', e);
+    return res.status(500).json({ message: 'Failed to update favorite state' });
   }
 }
 

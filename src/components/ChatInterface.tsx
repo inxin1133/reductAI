@@ -620,6 +620,17 @@ export function ChatInterface({
     const token = localStorage.getItem("token")
     return token ? { Authorization: `Bearer ${token}` } : {}
   }, [])
+  const getAuthToken = React.useCallback(() => String(localStorage.getItem("token") || ""), [])
+  const withAuthToken = React.useCallback(
+    (url: string) => {
+      if (!url || !url.startsWith("/api/ai/media/assets/")) return url
+      const token = getAuthToken()
+      if (!token) return url
+      const sep = url.includes("?") ? "&" : "?"
+      return `${url}${sep}token=${encodeURIComponent(token)}`
+    },
+    [getAuthToken]
+  )
 
   const [uiLoading, setUiLoading] = React.useState(false)
   const [uiConfig, setUiConfig] = React.useState<ChatUiConfig | null>(null)
@@ -726,8 +737,31 @@ export function ChatInterface({
   const pendingSelectionRef = React.useRef<{ start: number; end: number } | null>(null)
 
   type ChatAttachment =
-    | { id: string; kind: "file"; name: string; size: number; mime: string; file?: File; dataUrl?: string }
-    | { id: string; kind: "image"; name: string; size: number; mime: string; file?: File; previewUrl: string; dataUrl?: string }
+    | {
+        id: string
+        kind: "file"
+        name: string
+        size: number
+        mime: string
+        file?: File
+        url?: string
+        assetId?: string
+        dataUrl?: string
+        uploading?: boolean
+      }
+    | {
+        id: string
+        kind: "image"
+        name: string
+        size: number
+        mime: string
+        file?: File
+        previewUrl: string
+        url?: string
+        assetId?: string
+        dataUrl?: string
+        uploading?: boolean
+      }
     | { id: string; kind: "link"; url: string; title?: string }
 
   const [attachments, setAttachments] = React.useState<ChatAttachment[]>([])
@@ -748,6 +782,7 @@ export function ChatInterface({
   const createdObjectUrlsRef = React.useRef<Set<string>>(new Set())
   const fileInputRef = React.useRef<HTMLInputElement | null>(null)
   const imageInputRef = React.useRef<HTMLInputElement | null>(null)
+  const tempConversationIdRef = React.useRef<string | null>(null)
 
   const [isLinkDialogOpen, setIsLinkDialogOpen] = React.useState(false)
   const [linkUrl, setLinkUrl] = React.useState("")
@@ -765,7 +800,7 @@ export function ChatInterface({
 
   const [isPreparingAttachments, setIsPreparingAttachments] = React.useState(false)
   const hasPendingAttachments = React.useMemo(
-    () => attachments.some((a) => a.kind !== "link" && !a.dataUrl),
+    () => attachments.some((a) => a.kind !== "link" && (a.uploading || (!a.url && !a.dataUrl))),
     [attachments]
   )
   React.useEffect(() => {
@@ -774,70 +809,143 @@ export function ChatInterface({
 
   const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024 // 10MB
   const MAX_ATTACHMENTS_COUNT = 6
+  const MAX_IMAGE_DIM = 2048
 
-  const fileToDataUrl = React.useCallback(async (file: File): Promise<string> => {
-    return await new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "")
-      reader.onerror = () => reject(new Error("FILE_READ_FAILED"))
-      reader.readAsDataURL(file)
-    })
-  }, [])
-
-  const compressImageToDataUrl = React.useCallback(
-    async (file: File, maxBytes: number): Promise<{ dataUrl: string; compressed: boolean; failed: boolean }> => {
-      // Best-effort: downscale + JPEG encode until within limit.
-      // Canvas toBlob automatically strips EXIF metadata.
-      // If anything fails, return with failed=true for alert handling.
-      const original = await fileToDataUrl(file)
-      if (file.size <= maxBytes) return { dataUrl: original, compressed: false, failed: false }
+  const compressImageToBlob = React.useCallback(
+    async (file: File, maxBytes: number): Promise<{ blob: Blob; mime: string; compressed: boolean; failed: boolean }> => {
+      if (file.size <= maxBytes) return { blob: file, mime: file.type || "application/octet-stream", compressed: false, failed: false }
       if (!String(file.type || "").startsWith("image/")) {
-        // Non-image file exceeds limit - cannot compress
-        return { dataUrl: original, compressed: false, failed: true }
+        return { blob: file, mime: file.type || "application/octet-stream", compressed: false, failed: true }
       }
-
+      const srcUrl = URL.createObjectURL(file)
       try {
-        async function toBlobFromDataUrl(dataUrl: string): Promise<Blob> {
-          const resp = await fetch(dataUrl)
-          return await resp.blob()
-        }
+        const img = new window.Image()
+        img.decoding = "async"
+        const loaded = new Promise<void>((resolve, reject) => {
+          img.onload = () => resolve()
+          img.onerror = () => reject(new Error("IMAGE_LOAD_FAILED"))
+        })
+        img.src = srcUrl
+        await loaded
 
-        const imgBlob = await toBlobFromDataUrl(original)
-        const bitmap = await createImageBitmap(imgBlob)
-
-        // Downscale to max 2048px on the longest side
-        const maxDim = 2048
-        const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height))
-        const w = Math.max(1, Math.round(bitmap.width * scale))
-        const h = Math.max(1, Math.round(bitmap.height * scale))
+        const scale = Math.min(1, MAX_IMAGE_DIM / Math.max(img.width || 1, img.height || 1))
+        const w = Math.max(1, Math.round((img.width || 1) * scale))
+        const h = Math.max(1, Math.round((img.height || 1) * scale))
 
         const canvas = document.createElement("canvas")
         canvas.width = w
         canvas.height = h
         const ctx = canvas.getContext("2d")
-        if (!ctx) return { dataUrl: original, compressed: false, failed: true }
-        ctx.drawImage(bitmap, 0, 0, w, h)
+        if (!ctx) return { blob: file, mime: file.type || "application/octet-stream", compressed: false, failed: true }
+        ctx.drawImage(img, 0, 0, w, h)
 
-        // Try qualities from high (90) to lower (60)
-        const qualities = [0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60]
+        const preferType =
+          file.type === "image/png" ? "image/png" : file.type === "image/webp" ? "image/webp" : "image/jpeg"
+        const qualities = [0.92, 0.86, 0.8, 0.74, 0.68, 0.6]
+        const toBlob = (type: string, quality: number) =>
+          new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, type, quality))
+
         for (const q of qualities) {
-          const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", q))
+          const blob = await toBlob(preferType, q)
           if (!blob) continue
-          if (blob.size > maxBytes) continue
-          const asFile = new File([blob], file.name || "image.jpg", { type: "image/jpeg" })
-          const dataUrl = await fileToDataUrl(asFile)
-          return { dataUrl, compressed: true, failed: false }
+          if (blob.size <= maxBytes) return { blob, mime: blob.type || preferType, compressed: true, failed: false }
         }
-
-        // Even lowest quality exceeds limit
-        return { dataUrl: original, compressed: false, failed: true }
+        if (preferType !== "image/jpeg") {
+          for (const q of qualities) {
+            const blob = await toBlob("image/jpeg", q)
+            if (!blob) continue
+            if (blob.size <= maxBytes) return { blob, mime: blob.type || "image/jpeg", compressed: true, failed: false }
+          }
+        }
+        return { blob: file, mime: file.type || "application/octet-stream", compressed: false, failed: true }
       } catch (err) {
-        console.warn("[compressImageToDataUrl] compression failed:", err)
-        return { dataUrl: original, compressed: false, failed: true }
+        console.warn("[compressImageToBlob] compression failed:", err)
+        return { blob: file, mime: file.type || "application/octet-stream", compressed: false, failed: true }
+      } finally {
+        try {
+          URL.revokeObjectURL(srcUrl)
+        } catch {
+          // ignore
+        }
       }
     },
-    [fileToDataUrl]
+    []
   )
+
+  const uploadAttachmentToFileService = React.useCallback(
+    async (args: { blob: Blob; mime: string; name: string; kind: "image" | "file"; index: number }) => {
+      const token = getAuthToken()
+      if (!token) throw new Error("AUTH_REQUIRED")
+
+      const conversationIdForUpload =
+        conversationId ||
+        tempConversationIdRef.current ||
+        (() => {
+          const id = crypto.randomUUID()
+          tempConversationIdRef.current = id
+          return id
+        })()
+      const messageIdForUpload = crypto.randomUUID()
+      const assetIdForUpload = crypto.randomUUID()
+
+      const params = new URLSearchParams({
+        conversation_id: conversationIdForUpload,
+        message_id: messageIdForUpload,
+        asset_id: assetIdForUpload,
+        index: String(args.index),
+        kind: args.kind,
+        source_type: "attachment",
+        filename: args.name || "",
+      })
+      const res = await fetch(`/api/ai/media/assets/upload?${params.toString()}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": args.mime || "application/octet-stream",
+        },
+        body: args.blob,
+      })
+      const raw = await res.text()
+      let json: Record<string, unknown> = {}
+      try {
+        json = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
+      } catch {
+        json = {}
+      }
+      if (!res.ok) {
+        const msg = typeof json.message === "string" ? String(json.message) : raw || "UPLOAD_FAILED"
+        const err = new Error(msg) as Error & { status?: number }
+        err.status = res.status
+        throw err
+      }
+      const url = typeof json.url === "string" ? json.url : ""
+      const assetId = typeof json.assetId === "string" ? json.assetId : typeof json.asset_id === "string" ? json.asset_id : assetIdForUpload
+      if (!url) throw new Error("UPLOAD_FAILED")
+      return { url, assetId }
+    },
+    [conversationId, getAuthToken]
+  )
+
+  const updateAttachment = React.useCallback((id: string, patch: Partial<ChatAttachment>) => {
+    attachmentsRef.current = attachmentsRef.current.map((it) => (it.id === id ? { ...it, ...patch } : it))
+    setAttachments((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)))
+  }, [])
+
+  const removeAttachment = React.useCallback((id: string) => {
+    const prev = attachmentsRef.current
+    const target = prev.find((a) => a.id === id)
+    if (target && target.kind === "image" && target.previewUrl) {
+      try {
+        URL.revokeObjectURL(target.previewUrl)
+        createdObjectUrlsRef.current.delete(target.previewUrl)
+      } catch {
+        // ignore
+      }
+    }
+    const next = prev.filter((a) => a.id !== id)
+    attachmentsRef.current = next
+    setAttachments(next)
+  }, [])
 
   const addFiles = React.useCallback((files: FileList | null, mode: "mixed" | "image_only") => {
     console.log("[addFiles] called with", files?.length, "files, mode:", mode)
@@ -872,6 +980,7 @@ export function ChatInterface({
           mime,
           file: f,
           previewUrl,
+          uploading: true,
         })
       } else {
         // Non-image file: check size limit directly
@@ -886,6 +995,7 @@ export function ChatInterface({
           size: Number(f.size || 0),
           mime,
           file: f,
+          uploading: true,
         })
       }
     }
@@ -895,31 +1005,82 @@ export function ChatInterface({
     setAttachments(merged)
     console.log("[addFiles] merged attachments:", merged.length, "attachmentsRef.current:", attachmentsRef.current.length)
 
-    // Prepare data URLs in the background so send can be blocked until ready.
-    for (const a of next) {
-      if (a.kind === "link") continue
+    // Upload attachments as binary to file-service.
+    const startIndex = currentCount
+    next.forEach((a, idx) => {
+      if (a.kind === "link") return
       void (async () => {
-        if (a.kind === "image") {
-          const result = await compressImageToDataUrl(a.file!, MAX_ATTACHMENT_BYTES)
-          if (result.failed) {
-            // Compression failed or still exceeds limit - remove and alert
-            alert(`이미지 "${a.name}"은(는) 압축 후에도 ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB를 초과하여 첨부할 수 없습니다.\n더 작은 이미지를 사용하거나 직접 리사이즈해주세요.`)
-            attachmentsRef.current = attachmentsRef.current.filter((it) => it.id !== a.id)
-            setAttachments((prev) => prev.filter((it) => it.id !== a.id))
+        try {
+          const index = startIndex + idx
+          if (!a.file) throw new Error("FILE_MISSING")
+          if (a.kind === "image") {
+            const nameLower = String(a.name || "").toLowerCase()
+            const mimeLower = String(a.mime || "").toLowerCase()
+            if (nameLower.endsWith(".heic") || nameLower.endsWith(".heif") || mimeLower === "image/heic" || mimeLower === "image/heif") {
+              alert("HEIC/HEIF 이미지는 아직 지원하지 않습니다. 다른 형식으로 변환해 주세요.")
+              removeAttachment(a.id)
+              return
+            }
+            const result = await compressImageToBlob(a.file, MAX_ATTACHMENT_BYTES)
+            if (result.failed) {
+              alert(
+                `이미지 "${a.name}"은(는) 압축 후에도 ${Math.round(
+                  MAX_ATTACHMENT_BYTES / 1024 / 1024
+                )}MB를 초과하여 첨부할 수 없습니다.\n더 작은 이미지를 사용하거나 직접 리사이즈해주세요.`
+              )
+              removeAttachment(a.id)
+              return
+            }
+            const stored = await uploadAttachmentToFileService({
+              blob: result.blob,
+              mime: result.mime,
+              name: a.name,
+              kind: "image",
+              index,
+            })
+            updateAttachment(a.id, {
+              url: stored.url,
+              assetId: stored.assetId,
+              uploading: false,
+              size: result.blob.size,
+              mime: result.mime,
+            })
             return
           }
-          console.log("[addFiles] dataUrl ready for", a.id, "len:", result.dataUrl?.length, "compressed:", result.compressed)
-          attachmentsRef.current = attachmentsRef.current.map((it) => (it.id === a.id ? { ...it, dataUrl: result.dataUrl } : it))
-          setAttachments((prev) => prev.map((it) => (it.id === a.id ? { ...it, dataUrl: result.dataUrl } : it)))
-        } else {
-          const dataUrl = await fileToDataUrl(a.file!)
-          console.log("[addFiles] dataUrl ready for", a.id, "len:", dataUrl?.length)
-          attachmentsRef.current = attachmentsRef.current.map((it) => (it.id === a.id ? { ...it, dataUrl } : it))
-          setAttachments((prev) => prev.map((it) => (it.id === a.id ? { ...it, dataUrl } : it)))
+
+          if (a.file.size > MAX_ATTACHMENT_BYTES) {
+            alert(`파일 "${a.name}"은(는) ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB를 초과하여 첨부할 수 없습니다.`)
+            removeAttachment(a.id)
+            return
+          }
+          const stored = await uploadAttachmentToFileService({
+            blob: a.file,
+            mime: a.mime || a.file.type || "application/octet-stream",
+            name: a.name,
+            kind: "file",
+            index,
+          })
+          updateAttachment(a.id, {
+            url: stored.url,
+            assetId: stored.assetId,
+            uploading: false,
+            size: a.file.size,
+            mime: a.mime || a.file.type || "application/octet-stream",
+          })
+        } catch (err: any) {
+          console.warn("[addFiles] upload failed:", err)
+          if (err?.status === 413 || String(err?.message || "").includes("too large")) {
+            alert(`파일 "${a.name}"은(는) ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB를 초과하여 첨부할 수 없습니다.`)
+          } else if (String(err?.message || "").includes("AUTH_REQUIRED")) {
+            alert("로그인이 필요합니다. 다시 로그인 후 시도해 주세요.")
+          } else {
+            alert("첨부파일 업로드에 실패했습니다. 다시 시도해 주세요.")
+          }
+          removeAttachment(a.id)
         }
       })()
-    }
-  }, [compressImageToDataUrl, fileToDataUrl])
+    })
+  }, [compressImageToBlob, removeAttachment, updateAttachment, uploadAttachmentToFileService])
 
   const handleDropAttachments = React.useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
@@ -1014,22 +1175,6 @@ export function ChatInterface({
     },
     [addFiles]
   )
-
-  const removeAttachment = React.useCallback((id: string) => {
-    const prev = attachmentsRef.current
-    const target = prev.find((a) => a.id === id)
-    if (target && target.kind === "image" && target.previewUrl) {
-      try {
-        URL.revokeObjectURL(target.previewUrl)
-        createdObjectUrlsRef.current.delete(target.previewUrl)
-      } catch {
-        // ignore
-      }
-    }
-    const next = prev.filter((a) => a.id !== id)
-    attachmentsRef.current = next
-    setAttachments(next)
-  }, [])
 
   const clearAttachments = React.useCallback(() => {
     // IMPORTANT: do NOT revoke previewUrl here.
@@ -1885,27 +2030,36 @@ export function ChatInterface({
             }
             if (kind === "image") {
               const dataUrl = String((r as any).data_url || "").trim()
-              if (!dataUrl) return null
+              const url = String((r as any).url || "").trim()
+              const assetId = String((r as any).asset_id || (r as any).assetId || "").trim()
+              const previewUrl = dataUrl || (url ? withAuthToken(url) : "")
+              if (!previewUrl) return null
               return {
                 id: `nav_img_${idx}_${Date.now()}`,
                 kind: "image",
                 name: String((r as any).name || "image").trim() || "image",
                 mime: String((r as any).mime || "image/*").trim() || "image/*",
                 size: Number((r as any).size || 0),
-                previewUrl: dataUrl,
-                dataUrl,
+                previewUrl,
+                dataUrl: dataUrl || undefined,
+                url: url || undefined,
+                assetId: assetId || undefined,
               }
             }
             if (kind === "file") {
               const dataUrl = String((r as any).data_url || "").trim()
-              if (!dataUrl) return null
+              const url = String((r as any).url || "").trim()
+              const assetId = String((r as any).asset_id || (r as any).assetId || "").trim()
+              if (!dataUrl && !url) return null
               return {
                 id: `nav_file_${idx}_${Date.now()}`,
                 kind: "file",
                 name: String((r as any).name || "file").trim() || "file",
                 mime: String((r as any).mime || "application/octet-stream").trim() || "application/octet-stream",
                 size: Number((r as any).size || 0),
-                dataUrl,
+                dataUrl: dataUrl || undefined,
+                url: url || undefined,
+                assetId: assetId || undefined,
               }
             }
             return null
@@ -1968,8 +2122,16 @@ export function ChatInterface({
             a.kind === "link"
               ? { kind: "link", url: a.url, title: a.title || "" }
               : a.kind === "image"
-                ? { kind: "image", name: a.name, mime: a.mime, size: a.size, preview_url: a.previewUrl }
-                : { kind: a.kind, name: a.name, mime: a.mime, size: a.size }
+                ? {
+                    kind: "image",
+                    name: a.name,
+                    mime: a.mime,
+                    size: a.size,
+                    preview_url: a.previewUrl,
+                    url: a.url,
+                    asset_id: a.assetId,
+                  }
+                : { kind: a.kind, name: a.name, mime: a.mime, size: a.size, url: a.url, asset_id: a.assetId }
           ),
         },
         summary: userSummary(baseInput),
@@ -1978,7 +2140,7 @@ export function ChatInterface({
       })
       setPrompt("")
 
-      // Serialize attachments for API (File -> data_url). Limit size to avoid huge payloads.
+      // Serialize attachments for API (uploaded -> url). Limit size to avoid huge payloads.
       const maxAttachments = 6
       const apiAttachments: Array<Record<string, unknown>> = []
       for (const a of attachmentsSnapshot.slice(0, maxAttachments)) {
@@ -1986,12 +2148,24 @@ export function ChatInterface({
           apiAttachments.push({ kind: "link", url: a.url, title: a.title || "" })
           continue
         }
+        if (a.url) {
+          apiAttachments.push({
+            kind: a.kind,
+            name: a.name,
+            mime: a.mime,
+            size: a.size,
+            url: a.url,
+            asset_id: a.assetId,
+          })
+          continue
+        }
         if (!a.dataUrl) continue
         apiAttachments.push({ kind: a.kind, name: a.name, mime: a.mime, size: a.size, data_url: a.dataUrl })
       }
 
       if (submitMode === "emit") {
-        onSubmit?.({ input, providerSlug, model: modelApiId, modelType: sendModelType, options: finalOptions, attachments: apiAttachments })
+        // For FrontAI -> Timeline auto-send, avoid duplicating attachment context in the prompt.
+        onSubmit?.({ input: baseInput, providerSlug, model: modelApiId, modelType: sendModelType, options: finalOptions, attachments: apiAttachments })
         clearAttachments()
         return
       }
@@ -2030,7 +2204,7 @@ export function ChatInterface({
               attachments_ref_len: refSnapshot.length,
               attachments_snapshot: attachmentsSnapshot.length,
               api_attachments: apiAttachments.length,
-              pending_attachments: attachmentsSnapshot.filter((a) => a.kind !== "link" && !a.dataUrl).length,
+              pending_attachments: attachmentsSnapshot.filter((a) => a.kind !== "link" && !a.url && !a.dataUrl).length,
             },
             client_request_id: clientRequestId || undefined,
             web_allowed: webAllowedForRequest,
