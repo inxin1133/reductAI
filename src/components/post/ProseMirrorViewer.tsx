@@ -2,6 +2,7 @@ import * as React from "react"
 import { EditorState } from "prosemirror-state"
 import { EditorView } from "prosemirror-view"
 import { DOMParser as PMDOMParser } from "prosemirror-model"
+import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import { editorSchema } from "@/editor/schema"
 import { PageLinkNodeView } from "@/editor/nodes/page_link_nodeview"
@@ -178,6 +179,41 @@ async function downloadImage(src: string) {
   }
 }
 
+async function copyImageToClipboard(src: string): Promise<boolean> {
+  const href = String(src || "").trim()
+  if (!href) return false
+
+  try {
+    const canWriteImage =
+      typeof navigator !== "undefined" &&
+      !!navigator.clipboard &&
+      typeof (navigator.clipboard as unknown as { write?: unknown }).write === "function" &&
+      typeof (globalThis as unknown as { ClipboardItem?: unknown }).ClipboardItem !== "undefined"
+    if (!canWriteImage) throw new Error("CLIPBOARD_IMAGE_UNSUPPORTED")
+
+    const res = await fetch(href, { mode: "cors" })
+    if (!res.ok) throw new Error("FETCH_FAILED")
+    const blob = await res.blob()
+    const mime = blob.type || "image/png"
+
+    const ClipboardItemCtor = (globalThis as unknown as { ClipboardItem: typeof ClipboardItem }).ClipboardItem
+    const item = new ClipboardItemCtor({ [mime]: blob })
+    await (navigator.clipboard as unknown as { write: (items: ClipboardItem[]) => Promise<void> }).write([item])
+    return true
+  } catch {
+    // Fallback: copy the image URL as text (best-effort).
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        await navigator.clipboard.writeText(href)
+        return true
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return false
+}
+
 function decorateImagesWithDownload(root: HTMLElement) {
   const imgs = Array.from(root.querySelectorAll("img")) as HTMLImageElement[]
   const isEmptyParagraph = (el: Element) => {
@@ -249,6 +285,25 @@ function decorateImagesWithDownload(root: HTMLElement) {
     const next = wrap.nextSibling
     if (next instanceof Element && isEmptyParagraph(next)) next.remove()
 
+    const copyBtn = document.createElement("button")
+    copyBtn.type = "button"
+    copyBtn.className = "pm-img-copy"
+    copyBtn.setAttribute("aria-label", "이미지 복사")
+    copyBtn.setAttribute("title", "이미지 복사")
+    copyBtn.innerHTML =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'
+    copyBtn.addEventListener("click", (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      void copyImageToClipboard(src).then((ok) => {
+        if (ok) {
+          toast("복사되었습니다.")
+        } else {
+          toast("복사에 실패했습니다.")
+        }
+      })
+    })
+
     const btn = document.createElement("button")
     btn.type = "button"
     btn.className = "pm-img-download"
@@ -262,6 +317,7 @@ function decorateImagesWithDownload(root: HTMLElement) {
       void downloadImage(src)
     })
 
+    wrap.appendChild(copyBtn)
     wrap.appendChild(btn)
 
     attachBrokenFallback(img, wrap, src)

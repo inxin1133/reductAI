@@ -3178,7 +3178,7 @@ export default function PostEditorPage() {
                     </div>
                     <Separator />
                     <ScrollArea className="h-[calc(100%-48px)]">
-                      <div className="p-2">
+                      <div className="p-2 pb-6">
                         {roots.length === 0 ? (
                           <div className="text-sm opacity-70 px-2 py-2">아직 페이지가 없습니다.</div>
                         ) : (
@@ -3225,7 +3225,7 @@ export default function PostEditorPage() {
                 <Separator />
 
                 <ScrollArea className="h-[calc(100%-48px)]">
-                  <div className="p-1 w-full">
+                  <div className="p-1 pb-6 w-full">
                     {roots.length === 0 ? <div className="text-sm opacity-70 px-2 py-2">아직 페이지가 없습니다.</div> : null}
                      <div className="flex min-w-0 flex-col gap-1">{roots.map((p) => renderTreeNode(p, 0))}</div>
                   </div>

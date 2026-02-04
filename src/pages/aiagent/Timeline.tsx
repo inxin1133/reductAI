@@ -460,6 +460,40 @@ function getAppliedOptionsSummary(content: unknown): string | null {
   return text || null
 }
 
+function TimelineAttachmentThumb({ src, alt }: { src: string; alt: string }) {
+  const [failed, setFailed] = React.useState(false)
+  const raw = String(src || "")
+
+  const token = typeof window !== "undefined" ? window.localStorage.getItem("token") : null
+  const nextSrc =
+    token && raw.startsWith("/api/ai/media/assets/")
+      ? `${raw}${raw.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`
+      : raw
+
+  React.useEffect(() => {
+    setFailed(false)
+  }, [nextSrc])
+
+  if (!nextSrc || failed) {
+    return (
+      <div className="h-20 w-20 rounded-md border border-dashed bg-muted/20 text-muted-foreground flex items-center justify-center text-[10px] leading-tight text-center px-1">
+        이미지를 불러올 수 없습니다. <br /> (원본 삭제됨)
+      </div>
+    )
+  }
+
+  return (
+    // eslint-disable-next-line jsx-a11y/alt-text
+    <img
+      src={nextSrc}
+      alt={alt || "attachment"}
+      className="h-20 w-20 object-cover rounded-md border"
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
+  )
+}
+
 function looksLikeMarkdown(input: string): boolean {
   const s = String(input || "")
   if (!s.trim()) return false
@@ -2125,14 +2159,6 @@ export default function Timeline() {
                                 if (!Array.isArray(raw)) return [] as UserAttachment[]
                                 return raw as UserAttachment[]
                               })()
-                              const token = typeof localStorage !== "undefined" ? localStorage.getItem("token") : null
-                              const withToken = (u: string) => {
-                                const url = String(u || "")
-                                if (!url) return ""
-                                if (!token) return url
-                                if (!url.startsWith("/api/ai/media/assets/")) return url
-                                return `${url}?token=${encodeURIComponent(String(token))}`
-                              }
                               const images = atts.filter(
                                 (a) =>
                                   a &&
@@ -2143,12 +2169,10 @@ export default function Timeline() {
                               return (
                                 <div className="mb-2 flex flex-wrap gap-2 justify-end">
                                   {images.slice(0, 4).map((a, i) => (
-                                    <img
+                                    <TimelineAttachmentThumb
                                       key={`${m.id || idx}_att_${i}`}
-                                      src={withToken(String(a.url || a.preview_url || ""))}
+                                      src={String(a.url || a.preview_url || "")}
                                       alt={typeof a.name === "string" ? a.name : "attachment"}
-                                      className="h-20 w-20 object-cover rounded-md border"
-                                      loading="lazy"
                                     />
                                   ))}
                                 </div>

@@ -1137,6 +1137,69 @@ function rewriteContentWithAssetUrls(content: Record<string, unknown>): { conten
   return { content: out, assets }
 }
 
+const MAX_REMOTE_IMAGE_BYTES = 15 * 1024 * 1024
+
+function isHttpUrl(raw: string) {
+  return /^https?:\/\//i.test(raw)
+}
+
+function inferImageMimeFromUrl(url: string): string | null {
+  const m = String(url || "").match(/\.(png|jpe?g|webp|gif|bmp|svg)(?:[?#].*)?$/i)
+  if (!m) return null
+  const ext = m[1]?.toLowerCase()
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg"
+  if (ext === "png") return "image/png"
+  if (ext === "webp") return "image/webp"
+  if (ext === "gif") return "image/gif"
+  if (ext === "bmp") return "image/bmp"
+  if (ext === "svg") return "image/svg+xml"
+  return null
+}
+
+async function fetchImageAsDataUrl(url: string, signal?: AbortSignal): Promise<string | null> {
+  try {
+    const res = await fetch(url, { signal })
+    if (!res.ok) return null
+    const ctRaw = String(res.headers.get("content-type") || "")
+    const ct = ctRaw.split(";")[0].trim().toLowerCase()
+    const buf = Buffer.from(await res.arrayBuffer())
+    if (!buf.length) return null
+    if (buf.length > MAX_REMOTE_IMAGE_BYTES) return null
+    const mime = ct.startsWith("image/") ? ct : inferImageMimeFromUrl(url)
+    if (!mime || !mime.startsWith("image/")) return null
+    return `data:${mime};base64,${buf.toString("base64")}`
+  } catch {
+    return null
+  }
+}
+
+async function materializeImageUrlsToDataUrls(urls: string[], signal?: AbortSignal): Promise<string[]> {
+  const out: string[] = []
+  for (const u of urls) {
+    const raw = String(u || "").trim()
+    if (!raw) continue
+    if (raw.startsWith("data:image/")) {
+      out.push(raw)
+      continue
+    }
+    if (raw.startsWith("/api/ai/media/assets/")) {
+      out.push(raw)
+      continue
+    }
+    if (isHttpUrl(raw)) {
+      const dataUrl = await fetchImageAsDataUrl(raw, signal)
+      if (dataUrl) {
+        out.push(dataUrl)
+      } else {
+        out.push(raw)
+      }
+      continue
+    }
+    out.push(raw)
+  }
+  return out
+}
+
 async function loadHistory(args: { conversationId: string }) {
   const conv = await query(
     `SELECT conversation_summary, conversation_summary_updated_at, conversation_summary_tokens
@@ -2123,10 +2186,11 @@ export async function chatRun(req: Request, res: Response) {
         ).filter(([, v]) => v !== undefined)
       ) as Record<string, unknown>
       optionsForAssistant = appliedOptions
-      // Prefer real URLs; if API returns base64 only, fall back to data URLs.
-      const sourceUrls: string[] = (r.urls && r.urls.length ? r.urls : r.data_urls) || []
-      const blocks = sourceUrls.length
-        ? sourceUrls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
+      // Prefer data URLs when available; otherwise download URLs to keep assets permanent.
+      const sourceUrls: string[] = (r.data_urls && r.data_urls.length ? r.data_urls : r.urls) || []
+      const resolvedUrls = await materializeImageUrlsToDataUrls(sourceUrls, abortSignal)
+      const blocks = resolvedUrls.length
+        ? resolvedUrls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
         : [{ type: "markdown", markdown: "이미지 생성 결과를 받지 못했습니다." }]
       const blockJson = {
         title: "이미지 생성",
@@ -2138,7 +2202,7 @@ export async function chatRun(req: Request, res: Response) {
         output_text: JSON.stringify(blockJson),
         // NOTE: keep a safe(raw) payload from provider client for debugging (it omits huge base64 strings).
         raw: isRecord(r.raw) ? { ...(r.raw as Record<string, unknown>), _debug: { used_edit: incomingImageDataUrls.length > 0 } } : r.raw,
-        content: { ...blockJson, images: sourceUrls.map((u) => ({ url: u })), raw: r.raw },
+        content: { ...blockJson, images: resolvedUrls.map((u) => ({ url: u })), raw: r.raw },
       }
       } else if (mt === "audio" || mt === "music") {
       if (providerKey !== "openai") {

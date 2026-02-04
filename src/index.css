@@ -228,6 +228,23 @@ body {
 }
 .pm-viewer .pm-img-download {
   position: absolute;
+  left: 44px;
+  bottom: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid oklch(0.922 0 0);
+  background: color-mix(in oklch, oklch(1 0 0) 75%, transparent);
+  color: oklch(0.205 0 0);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease, transform 120ms ease, background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+.pm-viewer .pm-img-copy {
+  position: absolute;
   left: 8px;
   bottom: 8px;
   width: 32px;
@@ -241,9 +258,13 @@ body {
   justify-content: center;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 120ms ease;
+  transition: opacity 120ms ease, transform 120ms ease, background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
 .pm-viewer .pm-img-download svg {
+  width: 18px;
+  height: 18px;
+}
+.pm-viewer .pm-img-copy svg {
   width: 18px;
   height: 18px;
 }
@@ -251,10 +272,37 @@ body {
   opacity: 1;
   pointer-events: auto;
 }
+.pm-viewer .pm-img-download:hover,
+.pm-viewer .pm-img-copy:hover {
+  background: color-mix(in oklch, oklch(1 0 0) 90%, transparent);
+  border-color: oklch(0.88 0 0);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px oklch(0 0 0 / 8%);
+}
+.pm-viewer .pm-img-download:active,
+.pm-viewer .pm-img-copy:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 6px oklch(0 0 0 / 12%);
+}
+.pm-viewer .pm-img-wrap:hover .pm-img-copy {
+  opacity: 1;
+  pointer-events: auto;
+}
 .dark .pm-viewer .pm-img-download {
   border-color: oklch(1 0 0 / 10%);
   background: color-mix(in oklch, oklch(0.16 0 0) 70%, transparent);
   color: oklch(0.985 0 0);
+}
+.dark .pm-viewer .pm-img-copy {
+  border-color: oklch(1 0 0 / 10%);
+  background: color-mix(in oklch, oklch(0.16 0 0) 70%, transparent);
+  color: oklch(0.985 0 0);
+}
+.dark .pm-viewer .pm-img-download:hover,
+.dark .pm-viewer .pm-img-copy:hover {
+  background: color-mix(in oklch, oklch(0.24 0 0) 70%, transparent);
+  border-color: oklch(1 0 0 / 20%);
+  box-shadow: 0 4px 10px oklch(0 0 0 / 35%);
 }
 /* UNUSED (migrated to Tailwind classes in node/mark toDOM for dark-mode correctness)
 .pm-mention { ... }
