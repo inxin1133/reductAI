@@ -4,6 +4,7 @@ import {
   createMediaAsset,
   createMediaAssetUpload,
   deleteMediaAsset,
+  downloadMediaAssetsZip,
   getMediaAsset,
   listMediaAssets,
   updateMediaAssetFavorite,
@@ -36,6 +37,7 @@ router.use((req: any, res: any, next: any) => {
 
 router.post('/assets/upload', express.raw({ type: '*/*', limit: '25mb' }), createMediaAssetUpload);
 router.post('/assets', createMediaAsset);
+router.post('/assets/zip', downloadMediaAssetsZip);
 router.get('/assets', listMediaAssets);
 router.get('/assets/:id', getMediaAsset);
 router.delete('/assets/:id', deleteMediaAsset);

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
-import { Download, Trash2, Copy, Star, Pin, Video, Music, FileText } from "lucide-react"
+import { Download, Trash2, Copy, Star, Pin, Video, Music, FileText, ChevronLeft, ChevronRight, X } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -118,6 +118,7 @@ type AssetCardProps = {
   onRequestDelete: (asset: FileAsset) => void
   onToggleFavorite: (asset: FileAsset) => void
   onTogglePin: (asset: FileAsset) => void
+  onPreviewImage?: (asset: FileAsset) => void
 }
 
 function AssetCard({
@@ -129,6 +130,7 @@ function AssetCard({
   onRequestDelete,
   onToggleFavorite,
   onTogglePin,
+  onPreviewImage,
 }: AssetCardProps) {
   const [previewError, setPreviewError] = React.useState(false)
   const category = getAssetCategory(asset)
@@ -139,8 +141,9 @@ function AssetCard({
         <img
           alt={getFileName(asset)}
           src={withAuthToken(asset.url)}
-          className="absolute inset-0 size-full object-cover rounded-md"
+          className="absolute inset-0 size-full object-cover rounded-md cursor-zoom-in"
           onError={() => setPreviewError(true)}
+          onClick={() => onPreviewImage?.(asset)}
         />
       )
     }
@@ -277,6 +280,9 @@ export default function FileAssetsPage() {
   const [bulkBusy, setBulkBusy] = React.useState(false)
   const [singleDeleteOpen, setSingleDeleteOpen] = React.useState(false)
   const [singleDeleteTarget, setSingleDeleteTarget] = React.useState<FileAsset | null>(null)
+  const [viewerOpen, setViewerOpen] = React.useState(false)
+  const [viewerItems, setViewerItems] = React.useState<FileAsset[]>([])
+  const [viewerIndex, setViewerIndex] = React.useState(0)
 
   React.useEffect(() => {
     const token = localStorage.getItem("token")
@@ -514,6 +520,68 @@ export default function FileAssetsPage() {
     setSingleDeleteOpen(true)
   }
 
+  const openImageViewer = React.useCallback(
+    (asset: FileAsset) => {
+      if (getAssetCategory(asset) !== "image") return
+      const sourceList = tab === "attachment" ? attachmentFiltered : aiFiltered
+      const images = sourceList.filter((item) => getAssetCategory(item) === "image")
+      if (!images.length) return
+      const idx = images.findIndex((item) => item.id === asset.id)
+      setViewerItems(images)
+      setViewerIndex(idx >= 0 ? idx : 0)
+      setViewerOpen(true)
+    },
+    [aiFiltered, attachmentFiltered, tab]
+  )
+
+  const closeImageViewer = React.useCallback(() => {
+    setViewerOpen(false)
+  }, [])
+
+  const showPrevImage = React.useCallback(() => {
+    setViewerIndex((prev) => {
+      if (viewerItems.length <= 1) return prev
+      return (prev - 1 + viewerItems.length) % viewerItems.length
+    })
+  }, [viewerItems.length])
+
+  const showNextImage = React.useCallback(() => {
+    setViewerIndex((prev) => {
+      if (viewerItems.length <= 1) return prev
+      return (prev + 1) % viewerItems.length
+    })
+  }, [viewerItems.length])
+
+  React.useEffect(() => {
+    if (!viewerItems.length) {
+      if (viewerIndex !== 0) setViewerIndex(0)
+      return
+    }
+    if (viewerIndex >= viewerItems.length) setViewerIndex(0)
+  }, [viewerIndex, viewerItems.length])
+
+  React.useEffect(() => {
+    if (!viewerOpen) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault()
+        closeImageViewer()
+        return
+      }
+      if (e.key === "ArrowLeft") {
+        e.preventDefault()
+        showPrevImage()
+        return
+      }
+      if (e.key === "ArrowRight") {
+        e.preventDefault()
+        showNextImage()
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [closeImageViewer, showNextImage, showPrevImage, viewerOpen])
+
   const confirmSingleDelete = async () => {
     if (!singleDeleteTarget) return
     setBulkBusy(true)
@@ -581,15 +649,33 @@ export default function FileAssetsPage() {
   const bulkDownload = async () => {
     if (!activeSelected.size) return
     setBulkBusy(true)
-    let ok = 0
-    for (const id of activeSelected) {
-      const asset = activeList.find((a) => a.id === id)
-      if (!asset) continue
-      const success = await downloadAsset(asset)
-      if (success) ok += 1
+    try {
+      const ids = Array.from(activeSelected)
+      const res = await fetch(`${FILES_API_BASE}/zip`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ ids }),
+      })
+      if (!res.ok) {
+        toast("선택한 파일 다운로드에 실패했습니다.")
+        return
+      }
+      const blob = await res.blob()
+      const cd = String(res.headers.get("content-disposition") || "")
+      const match = cd.match(/filename="([^"]+)"/i)
+      const filename = match?.[1] || `files_${new Date().toISOString().slice(0, 10)}.zip`
+      const objUrl = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = objUrl
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(objUrl)
+      toast(`선택한 ${ids.length}개 파일을 다운로드했습니다.`)
+    } finally {
+      setBulkBusy(false)
     }
-    setBulkBusy(false)
-    toast(`선택한 ${ok}개 파일을 다운로드했습니다.`)
   }
 
   const bulkDelete = async () => {
@@ -633,6 +719,8 @@ export default function FileAssetsPage() {
       <TabsTrigger value="attachment">첨부 파일</TabsTrigger>
     </TabsList>
   )
+
+  const viewerAsset = viewerItems[viewerIndex]
 
   return (
     <Tabs value={tab} onValueChange={(v) => setTab(v === "attachment" ? "attachment" : "ai")}>
@@ -695,6 +783,7 @@ export default function FileAssetsPage() {
                         onRequestDelete={requestSingleDelete}
                         onToggleFavorite={updateFavorite}
                         onTogglePin={updatePin}
+                        onPreviewImage={openImageViewer}
                       />
                     ))}
                   </div>
@@ -768,6 +857,7 @@ export default function FileAssetsPage() {
                         onRequestDelete={requestSingleDelete}
                         onToggleFavorite={updateFavorite}
                         onTogglePin={updatePin}
+                        onPreviewImage={openImageViewer}
                       />
                     ))}
                   </div>
@@ -810,6 +900,52 @@ export default function FileAssetsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {viewerOpen && viewerAsset ? (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-black/70" onClick={closeImageViewer} />
+          <div className="absolute inset-0 flex items-center justify-center p-6 pointer-events-none">
+            <img
+              src={withAuthToken(viewerAsset.url)}
+              alt={getFileName(viewerAsset)}
+              className="max-h-[85vh] max-w-[85vw] object-contain rounded-lg shadow-2xl pointer-events-auto"
+            />
+          </div>
+          <button
+            type="button"
+            className="absolute top-6 right-6 size-10 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80 pointer-events-auto"
+            onClick={closeImageViewer}
+            aria-label="닫기"
+          >
+            <X className="size-5" />
+          </button>
+          {viewerItems.length > 1 ? (
+            <button
+              type="button"
+              className="absolute left-6 top-1/2 -translate-y-1/2 size-11 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80 pointer-events-auto"
+              onClick={showPrevImage}
+              aria-label="이전 이미지"
+            >
+              <ChevronLeft className="size-6" />
+            </button>
+          ) : null}
+          {viewerItems.length > 1 ? (
+            <button
+              type="button"
+              className="absolute right-6 top-1/2 -translate-y-1/2 size-11 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80 pointer-events-auto"
+              onClick={showNextImage}
+              aria-label="다음 이미지"
+            >
+              <ChevronRight className="size-6" />
+            </button>
+          ) : null}
+          {viewerItems.length > 1 ? (
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-black/60 text-white text-sm pointer-events-none">
+              {viewerIndex + 1}/{viewerItems.length}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       </AppShell>
     </Tabs>
   )

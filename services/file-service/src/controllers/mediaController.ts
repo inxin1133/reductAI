@@ -5,6 +5,8 @@ import { ensureSystemTenantId } from '../services/systemTenantService';
 import { newAssetId, storeBytesAsAsset, storeImageDataUrlAsAsset } from '../services/mediaAssetsService';
 import path from 'path';
 import fs from 'fs/promises';
+import { createReadStream } from 'fs';
+import archiver from 'archiver';
 
 type MediaKind = 'image' | 'audio' | 'video' | 'file';
 type FileSourceType = 'ai_generated' | 'attachment' | 'post_upload' | 'external_link' | 'profile_image';
@@ -46,6 +48,48 @@ function parseList(raw: unknown): string[] {
 function ttlDays() {
   const raw = Number.parseInt(process.env.FILE_ASSET_TTL_DAYS || '15', 10);
   return Number.isFinite(raw) && raw > 0 ? raw : 15;
+}
+
+function isUuid(v: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+}
+
+function sanitizeFileName(raw: string) {
+  const trimmed = String(raw || '').trim();
+  const noSlashes = trimmed.replace(/[\\/]/g, '_');
+  const safe = noSlashes.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return safe || 'file';
+}
+
+function buildFileName(row: any) {
+  const original = sanitizeFileName(String(row.original_filename || ''));
+  const id = String(row.id || '').trim();
+  const mime = String(row.mime || '').trim();
+  const extFromMime = mime.includes('/') ? mime.split('/')[1] : '';
+  let name = original || (id ? `file_${id}` : 'file');
+  const ext = path.extname(name);
+  if (!ext && extFromMime) {
+    name = `${name}.${extFromMime}`;
+  }
+  return name;
+}
+
+function ensureUniqueName(name: string, used: Set<string>) {
+  const base = name;
+  if (!used.has(base.toLowerCase())) {
+    used.add(base.toLowerCase());
+    return base;
+  }
+  const ext = path.extname(base);
+  const stem = ext ? base.slice(0, -ext.length) : base;
+  let i = 1;
+  let candidate = `${stem} (${i})${ext}`;
+  while (used.has(candidate.toLowerCase())) {
+    i += 1;
+    candidate = `${stem} (${i})${ext}`;
+  }
+  used.add(candidate.toLowerCase());
+  return candidate;
 }
 
 export async function createMediaAsset(req: Request, res: Response) {
@@ -511,5 +555,110 @@ export async function getMediaAsset(req: Request, res: Response) {
   } catch (e: any) {
     console.error('getMediaAsset error:', e);
     return res.status(500).json({ message: 'Failed to get media asset', details: String(e?.message || e) });
+  }
+}
+
+export async function downloadMediaAssetsZip(req: Request, res: Response) {
+  try {
+    const tenantId = await ensureSystemTenantId();
+    const userId = (req as AuthedRequest).userId;
+    const body = (req.body || {}) as Record<string, unknown>;
+    const rawIds = Array.isArray(body.ids)
+      ? body.ids
+      : Array.isArray(body.asset_ids)
+        ? body.asset_ids
+        : Array.isArray(body.assetIds)
+          ? body.assetIds
+          : [];
+    const ids = rawIds.map((v) => String(v)).filter((v) => isUuid(v));
+    if (!ids.length) return res.status(400).json({ message: 'ids are required' });
+    const limitedIds = ids.slice(0, 200);
+
+    const r = await query(
+      `
+      SELECT id, original_filename, mime, storage_provider, storage_key, storage_url, cdn_url
+      FROM file_assets
+      WHERE tenant_id = $1
+        AND user_id = $2
+        AND status <> 'deleted'
+        AND id = ANY($3::uuid[])
+      `,
+      [tenantId, userId, limitedIds]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ message: 'No files found' });
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="files_${stamp}.zip"`);
+
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    archive.on('error', (err) => {
+      console.error('downloadMediaAssetsZip error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ message: 'Failed to build zip' });
+      } else {
+        res.end();
+      }
+    });
+    archive.pipe(res);
+
+    const root = mediaRootDir();
+    const usedNames = new Set<string>();
+    const missing: string[] = [];
+
+    for (const row of r.rows as any[]) {
+      const fileName = ensureUniqueName(buildFileName(row), usedNames);
+      const provider = String(row.storage_provider || '');
+      if (provider === 'local_fs') {
+        const key = typeof row.storage_key === 'string' ? row.storage_key : '';
+        if (!key) {
+          missing.push(`${fileName} (missing storage_key)`);
+          continue;
+        }
+        try {
+          const abs = safeResolveUnderRoot(root, key);
+          await fs.stat(abs);
+          archive.append(createReadStream(abs), { name: fileName });
+        } catch (e) {
+          missing.push(`${fileName} (missing file)`);
+        }
+        continue;
+      }
+
+      const url =
+        typeof row.storage_url === 'string'
+          ? row.storage_url
+          : typeof row.cdn_url === 'string'
+            ? row.cdn_url
+            : '';
+      if (!url) {
+        missing.push(`${fileName} (no url)`);
+        continue;
+      }
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) {
+          missing.push(`${fileName} (fetch failed: ${resp.status})`);
+          continue;
+        }
+        const buf = Buffer.from(await resp.arrayBuffer());
+        archive.append(buf, { name: fileName });
+      } catch {
+        missing.push(`${fileName} (fetch error)`);
+      }
+    }
+
+    if (missing.length) {
+      archive.append(missing.join('\n'), { name: '__missing_files__.txt' });
+    }
+
+    await archive.finalize();
+    return;
+  } catch (e: any) {
+    console.error('downloadMediaAssetsZip error:', e);
+    if (!res.headersSent) {
+      return res.status(500).json({ message: 'Failed to download zip', details: String(e?.message || e) });
+    }
+    return;
   }
 }

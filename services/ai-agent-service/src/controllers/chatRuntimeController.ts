@@ -2209,7 +2209,7 @@ export async function chatRun(req: Request, res: Response) {
       const promptFromTemplate = tmpl && typeof tmpl.prompt === "string" && tmpl.prompt.trim() ? tmpl.prompt.trim() : ""
       const promptForImage = promptFromTemplate || prompt
 
-      let r: { output_text: string; urls?: string[]; data_urls?: string[] }
+      let r: { raw?: unknown; urls?: string[]; data_urls?: string[]; b64?: string[] }
       try {
         r =
           incomingImageDataUrls.length > 0
