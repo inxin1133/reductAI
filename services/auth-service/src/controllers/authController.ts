@@ -7,6 +7,38 @@ import { sendVerificationEmail } from '../services/emailService';
 // Temporary storage for OTPs (In production, use Redis)
 const otpStore: Record<string, { code: string; expiresAt: number }> = {};
 
+const getPrimaryTenantId = async (userId: string) => {
+  const result = await db.query(
+    `
+      SELECT tenant_id
+      FROM user_tenant_roles
+      WHERE user_id = $1
+        AND (membership_status IS NULL OR membership_status = 'active')
+      ORDER BY is_primary_tenant DESC, joined_at ASC, granted_at ASC
+      LIMIT 1
+    `,
+    [userId]
+  );
+  return result.rows[0]?.tenant_id || null;
+};
+
+const getPlatformRoleSlug = async (userId: string) => {
+  const result = await db.query(
+    `
+      SELECT r.slug
+      FROM user_roles ur
+      JOIN roles r ON r.id = ur.role_id
+      WHERE ur.user_id = $1
+        AND r.scope = 'platform'
+        AND (ur.expires_at IS NULL OR ur.expires_at > NOW())
+      ORDER BY ur.granted_at DESC NULLS LAST
+      LIMIT 1
+    `,
+    [userId]
+  );
+  return result.rows[0]?.slug || null;
+};
+
 export const sendVerificationCode = async (req: Request, res: Response) => {
   const { email } = req.body;
 
@@ -156,9 +188,14 @@ export const register = async (req: Request, res: Response) => {
 
     const user = result.rows[0];
     
+    const [tenantId, platformRole] = await Promise.all([
+      getPrimaryTenantId(user.id),
+      getPlatformRoleSlug(user.id),
+    ]);
+
     // Generate JWT
     const token = jwt.sign(
-      { userId: user.id, email: user.email },
+      { userId: user.id, email: user.email, tenantId, platformRole },
       process.env.JWT_SECRET || 'secret',
       { expiresIn: '24h' }
     );
@@ -167,7 +204,9 @@ export const register = async (req: Request, res: Response) => {
       success: true,
       message: 'User registered successfully', 
       user,
-      token
+      token,
+      tenantId,
+      platformRole
     });
   } catch (error) {
     console.error('Registration error:', error);
@@ -199,8 +238,13 @@ export const login = async (req: Request, res: Response) => {
     // Update last login
     await db.query('UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = $1', [user.id]);
 
+    const [tenantId, platformRole] = await Promise.all([
+      getPrimaryTenantId(user.id),
+      getPlatformRoleSlug(user.id),
+    ]);
+
     const token = jwt.sign(
-      { userId: user.id, email: user.email },
+      { userId: user.id, email: user.email, tenantId, platformRole },
       process.env.JWT_SECRET || 'secret',
       { expiresIn: '24h' }
     );
@@ -208,7 +252,9 @@ export const login = async (req: Request, res: Response) => {
     res.json({
       success: true,
       user: { id: user.id, email: user.email, full_name: user.full_name },
-      token
+      token,
+      tenantId,
+      platformRole
     });
   } catch (error) {
     console.error('Login error:', error);

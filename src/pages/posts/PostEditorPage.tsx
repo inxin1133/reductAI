@@ -448,20 +448,62 @@ export default function PostEditorPage() {
   const editorScrollRef = useRef<HTMLDivElement | null>(null)
 
   const tocItems = useMemo(() => extractHeadings(draftDocJson), [draftDocJson])
+  const [activeTocId, setActiveTocId] = useState<string>("")
+  const findHeadingElement = useCallback((item: TocItem) => {
+    const root = editorScrollRef.current
+    if (!root) return null
+    if (item.blockId) {
+      const byBlock = root.querySelector(`[data-block-id="${safeCssAttrValue(item.blockId)}"]`) as HTMLElement | null
+      if (byBlock) return byBlock
+    }
+    const candidates = root.querySelectorAll("h1, h2, h3")
+    return (candidates.item(item.index) as HTMLElement | null) || null
+  }, [])
   const scrollToHeading = useCallback((item: TocItem) => {
     const root = editorScrollRef.current
     if (!root) return
-    let target: HTMLElement | null = null
-    if (item.blockId) {
-      target = root.querySelector(`[data-block-id="${safeCssAttrValue(item.blockId)}"]`) as HTMLElement | null
-    }
-    if (!target) {
-      const candidates = root.querySelectorAll("h1, h2, h3")
-      target = candidates.item(item.index) as HTMLElement | null
-    }
+    const target = findHeadingElement(item)
     if (!target) return
+    setActiveTocId(item.id)
     target.scrollIntoView({ behavior: "smooth", block: "start" })
-  }, [])
+  }, [findHeadingElement])
+
+  const updateActiveToc = useCallback(() => {
+    const root = editorScrollRef.current
+    if (!root || tocItems.length === 0) {
+      if (activeTocId) setActiveTocId("")
+      return
+    }
+    const rootRect = root.getBoundingClientRect()
+    const currentTop = root.scrollTop + 72
+    let active: TocItem | null = null
+    for (const item of tocItems) {
+      const el = findHeadingElement(item)
+      if (!el) continue
+      const top = el.getBoundingClientRect().top - rootRect.top + root.scrollTop
+      if (top <= currentTop) active = item
+      else break
+    }
+    const fallback = active || tocItems[0]
+    if (fallback && fallback.id !== activeTocId) setActiveTocId(fallback.id)
+  }, [activeTocId, findHeadingElement, tocItems])
+
+  useEffect(() => {
+    const root = editorScrollRef.current
+    if (!root) return
+    const onScroll = () => updateActiveToc()
+    root.addEventListener("scroll", onScroll)
+    return () => root.removeEventListener("scroll", onScroll)
+  }, [updateActiveToc])
+
+  useEffect(() => {
+    if (!tocItems.length) {
+      if (activeTocId) setActiveTocId("")
+      return
+    }
+    const id = window.requestAnimationFrame(() => updateActiveToc())
+    return () => window.cancelAnimationFrame(id)
+  }, [activeTocId, tocItems, updateActiveToc])
 
   const NAV_OPEN_KEY = "reductai:postEditor:navOpen"
   const NAV_WIDTH_KEY = "reductai:postEditor:navWidth"
@@ -3336,263 +3378,251 @@ export default function PostEditorPage() {
       {/* Editor (Main Body slot) */}
       <div className="flex h-full w-full">
         <div ref={editorScrollRef} className="flex-1 h-full overflow-auto pt-[60px]">
-          <div className={[isWideLayout ? "w-full" : "max-w-4xl", "mx-auto px-12"].join(" ")}>
-          <div className="mb-4">
+          <div className={[isWideLayout ? "w-full" : "max-w-4xl", "mx-auto px-12 xl:pr-[96px]", "relative"].join(" ")}>
+            <div className="mb-4">
+              {/* 페이지 상단 부분 숨기기  - 페이지명, 페이지아이디, 저장버전 */}
+              <div className="text-xl font-semibold hidden h-0">Post Editor</div>
+              <div className="text-sm text-muted-foreground hidden h-0">
+                postId: <span className="font-mono">{postId}</span> · version: {serverVersion}
+              </div>
 
-            {/* 페이지 상단 부분 숨기기  - 페이지명, 페이지아이디, 저장버전 */}
-            <div className="text-xl font-semibold hidden h-0">Post Editor</div>
-            <div className="text-sm text-muted-foreground hidden h-0">
-              postId: <span className="font-mono">{postId}</span> · version: {serverVersion}
-            </div>
-
-            {isEmptyPagePlaceholder ? (
-              <div className="mt-3">
-                <div className="relative flex items-center gap-2 select-none">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-muted/30 opacity-70">
-                    <File className="size-5 text-muted-foreground" />
-                  </div>
-                  <div
-                    className="w-full text-3xl font-bold text-muted-foreground truncate"
-                    aria-label="빈 페이지 제목"
-                  >
-                    New page
+              {isEmptyPagePlaceholder ? (
+                <div className="mt-3">
+                  <div className="relative flex items-center gap-2 select-none">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-muted/30 opacity-70">
+                      <File className="size-5 text-muted-foreground" />
+                    </div>
+                    <div className="w-full text-3xl font-bold text-muted-foreground truncate" aria-label="빈 페이지 제목">
+                      New page
+                    </div>
                   </div>
                 </div>
-              </div>
-            ) : (
-              <div className="mt-3">
-                {isDeletedPage ? (
-                  <div className="mb-2 text-sm font-semibold text-red-600">Deleted Page</div>
-                ) : null}
-                {(() => {
-                  const chosen = decodePageIcon(pageIconRaw)
-                  const hasCustom = Boolean(chosen)
-                  const hasTitleContent = docJsonHasMeaningfulContent(draftDocJson)
-                  const InsertIcon = hasTitleContent ? FileText : File
-                  const iconEl = (() => {
-                    if (!chosen) return null
-                    if (chosen.kind === "emoji") return <span className="text-[28px] leading-none">{chosen.value}</span>
-                    const Preset = LUCIDE_PRESET_MAP[chosen.value]
-                    const Dyn = Preset || lucideAll?.[chosen.value]
-                    if (!Dyn) return <span className="text-[18px] leading-none opacity-60">□</span>
-                    return <Dyn className="size-7" />
-                  })()
+              ) : (
+                <div className="mt-3">
+                  {isDeletedPage ? <div className="mb-2 text-sm font-semibold text-red-600">Deleted Page</div> : null}
+                  {(() => {
+                    const chosen = decodePageIcon(pageIconRaw)
+                    const hasCustom = Boolean(chosen)
+                    const hasTitleContent = docJsonHasMeaningfulContent(draftDocJson)
+                    const InsertIcon = hasTitleContent ? FileText : File
+                    const iconEl = (() => {
+                      if (!chosen) return null
+                      if (chosen.kind === "emoji") return <span className="text-[28px] leading-none">{chosen.value}</span>
+                      const Preset = LUCIDE_PRESET_MAP[chosen.value]
+                      const Dyn = Preset || lucideAll?.[chosen.value]
+                      if (!Dyn) return <span className="text-[18px] leading-none opacity-60">□</span>
+                      return <Dyn className="size-7" />
+                    })()
 
-                  return (
-                    <Popover open={titleIconOpen} onOpenChange={setTitleIconOpen}>
-                      <div className="relative group/title flex items-center gap-2">
-                        {hasCustom ? (
-                          <PopoverTrigger asChild>
-                            <button
-                              type="button"
-                              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md hover:bg-accent"
-                              title="아이콘 변경"
-                              onPointerDown={(e) => e.stopPropagation()}
-                            >
-                              {iconEl}
-                            </button>
-                          </PopoverTrigger>
-                        ) : (
-                          <PopoverTrigger asChild>
-                            <button
-                              type="button"
-                              className={[
-                                // Keep inside the title container so it won't be covered by the sticky header,
-                                // and so hover doesn't drop when moving the mouse to the button.
-                                // Float OUTSIDE the title (no title indent), but keep hover stable via an invisible bridge.
-                                "absolute top-1 -left-10",
-                                "h-8 w-8",
-                                "rounded-md border border-border bg-background shadow-sm flex items-center justify-center",
-                                "z-[100]",
-                                "opacity-0 invisible pointer-events-none",
-                                "group-hover/title:opacity-100 group-hover/title:visible group-hover/title:pointer-events-auto",
-                                "transition-opacity",
-                              ].join(" ")}
-                              onPointerDown={(e) => e.stopPropagation()}
-                            >
-                              <InsertIcon className="size-4" />
-                            </button>
-                          </PopoverTrigger>
-                        )}
+                    return (
+                      <Popover open={titleIconOpen} onOpenChange={setTitleIconOpen}>
+                        <div className="relative group/title flex items-center gap-2">
+                          {hasCustom ? (
+                            <PopoverTrigger asChild>
+                              <button
+                                type="button"
+                                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md hover:bg-accent"
+                                title="아이콘 변경"
+                                onPointerDown={(e) => e.stopPropagation()}
+                              >
+                                {iconEl}
+                              </button>
+                            </PopoverTrigger>
+                          ) : (
+                            <PopoverTrigger asChild>
+                              <button
+                                type="button"
+                                className={[
+                                  "absolute top-1 -left-10",
+                                  "h-8 w-8",
+                                  "rounded-md border border-border bg-background shadow-sm flex items-center justify-center",
+                                  "z-[100]",
+                                  "opacity-0 invisible pointer-events-none",
+                                  "group-hover/title:opacity-100 group-hover/title:visible group-hover/title:pointer-events-auto",
+                                  "transition-opacity",
+                                ].join(" ")}
+                                onPointerDown={(e) => e.stopPropagation()}
+                              >
+                                <InsertIcon className="size-4" />
+                              </button>
+                            </PopoverTrigger>
+                          )}
 
-                        {/* Hover bridge: extends the group's hover hitbox to the floating button area so it doesn't disappear while moving the mouse. */}
-                        {!hasCustom ? (
-                          <span
-                            aria-hidden
-                            className={[
-                              "absolute top-0 -left-10 h-full w-10",
-                              "bg-transparent",
-                            ].join(" ")}
+                          {/* Hover bridge: extends the group's hover hitbox to the floating button area so it doesn't disappear while moving the mouse. */}
+                          {!hasCustom ? (
+                            <span
+                              aria-hidden
+                              className={["absolute top-0 -left-10 h-full w-10", "bg-transparent"].join(" ")}
+                            />
+                          ) : null}
+
+                          <input
+                            ref={titleInputRef}
+                            className="w-full text-3xl font-bold outline-none placeholder:text-muted-foreground truncate"
+                            title={pageTitle}
+                            value={pageTitle}
+                            placeholder="New page"
+                            onChange={(e) => setPageTitle(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key !== "Enter") return
+                              // Enter: move focus into the ProseMirror editor.
+                              e.preventDefault()
+                              e.stopPropagation()
+                              try {
+                                window.dispatchEvent(new CustomEvent("reductai:pm-editor:focus"))
+                              } catch {
+                                // ignore
+                              }
+                            }}
                           />
-                        ) : null}
+                        </div>
 
-                        <input
-                          ref={titleInputRef}
-                          className="w-full text-3xl font-bold outline-none placeholder:text-muted-foreground truncate"
-                          title={pageTitle}
-                          value={pageTitle}
-                          placeholder="New page"
-                          onChange={(e) => setPageTitle(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key !== "Enter") return
-                            // Enter: move focus into the ProseMirror editor.
-                            e.preventDefault()
-                            e.stopPropagation()
-                            try {
-                              window.dispatchEvent(new CustomEvent("reductai:pm-editor:focus"))
-                            } catch {
-                              // ignore
-                            }
-                          }}
-                        />
-                      </div>
+                        <PopoverContent align="start" sideOffset={8} className="w-[370px] p-3 z-[90]">
+                          <Tabs value={iconPickerTab} onValueChange={(v) => setIconPickerTab(v === "icon" ? "icon" : "emoji")}>
+                            <TabsList>
+                              <TabsTrigger value="emoji">이모지</TabsTrigger>
+                              <TabsTrigger value="icon">아이콘</TabsTrigger>
+                            </TabsList>
+                            <TabsContent value="emoji">
+                              <div className="max-h-[360px] overflow-auto pr-1">
+                                <EmojiPicker
+                                  theme={document.documentElement.classList.contains("dark") ? Theme.DARK : Theme.LIGHT}
+                                  previewConfig={{ showPreview: false }}
+                                  onEmojiClick={(emoji: EmojiClickData) => {
+                                    const native = emoji?.emoji ? String(emoji.emoji) : ""
+                                    if (!native || !postId) return
+                                    void savePageIcon(postId, { kind: "emoji", value: native })
+                                    setTitleIconOpen(false)
+                                  }}
+                                />
+                              </div>
+                              <div className="mt-2 flex justify-end">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => {
+                                    if (!postId) return
+                                    void savePageIcon(postId, null)
+                                    setTitleIconOpen(false)
+                                  }}
+                                >
+                                  Reset
+                                </Button>
+                              </div>
+                            </TabsContent>
+                            <TabsContent value="icon">
+                              <div className="mb-2">
+                                <Input
+                                  value={lucideQuery}
+                                  onChange={(e) => setLucideQuery(e.target.value)}
+                                  placeholder="Search icons (e.g. calendar, bot, file...)"
+                                  className="h-8 text-sm"
+                                />
+                              </div>
 
-                      <PopoverContent align="start" sideOffset={8} className="w-[370px] p-3 z-[90]">
-                        <Tabs value={iconPickerTab} onValueChange={(v) => setIconPickerTab(v === "icon" ? "icon" : "emoji")}>
-                          <TabsList>
-                            <TabsTrigger value="emoji">이모지</TabsTrigger>
-                            <TabsTrigger value="icon">아이콘</TabsTrigger>
-                          </TabsList>
-                          <TabsContent value="emoji">
-                            <div className="max-h-[360px] overflow-auto pr-1">
-                              <EmojiPicker
-                                theme={document.documentElement.classList.contains("dark") ? Theme.DARK : Theme.LIGHT}
-                                previewConfig={{ showPreview: false }}
-                                onEmojiClick={(emoji: EmojiClickData) => {
-                                  const native = emoji?.emoji ? String(emoji.emoji) : ""
-                                  if (!native || !postId) return
-                                  void savePageIcon(postId, { kind: "emoji", value: native })
-                                  setTitleIconOpen(false)
-                                }}
-                              />
-                            </div>
-                            <div className="mt-2 flex justify-end">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => {
-                                  if (!postId) return
-                                  void savePageIcon(postId, null)
-                                  setTitleIconOpen(false)
-                                }}
-                              >
-                                Reset
-                              </Button>
-                            </div>
-                          </TabsContent>
-                          <TabsContent value="icon">
-                            <div className="mb-2">
-                              <Input
-                                value={lucideQuery}
-                                onChange={(e) => setLucideQuery(e.target.value)}
-                                placeholder="Search icons (e.g. calendar, bot, file...)"
-                                className="h-8 text-sm"
-                              />
-                            </div>
-
-                            {lucideQuery.trim() ? (
-                              <>
-                                {lucideLoading && !lucideAll ? (
-                                  <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
-                                ) : null}
-                                <div className="max-h-[300px] overflow-auto pr-1">
-                                  <div className="grid grid-cols-7 gap-1">
-                                    {(() => {
-                                      const q = lucideQuery.trim().toLowerCase()
-                                      const map = lucideAll || {}
-                                      const keys = Object.keys(map)
-                                        .filter((k) => k.toLowerCase().includes(q))
-                                        .slice(0, 98)
-                                      if (!lucideLoading && lucideAll && keys.length === 0) {
-                                        return (
-                                          <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
-                                            No matches. Try a different keyword.
-                                          </div>
-                                        )
-                                      }
-                                      return keys.map((k) => {
-                                        const Cmp = map[k]
-                                        return (
-                                          <button
-                                            key={k}
-                                            type="button"
-                                            className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
-                                            onClick={() => {
-                                              if (!postId) return
-                                              void savePageIcon(postId, { kind: "lucide", value: k })
-                                              setTitleIconOpen(false)
-                                            }}
-                                            title={k}
-                                            aria-label={k}
-                                          >
-                                            <Cmp className="size-4" />
-                                          </button>
-                                        )
-                                      })
-                                    })()}
+                              {lucideQuery.trim() ? (
+                                <>
+                                  {lucideLoading && !lucideAll ? (
+                                    <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
+                                  ) : null}
+                                  <div className="max-h-[300px] overflow-auto pr-1">
+                                    <div className="grid grid-cols-7 gap-1">
+                                      {(() => {
+                                        const q = lucideQuery.trim().toLowerCase()
+                                        const map = lucideAll || {}
+                                        const keys = Object.keys(map)
+                                          .filter((k) => k.toLowerCase().includes(q))
+                                          .slice(0, 98)
+                                        if (!lucideLoading && lucideAll && keys.length === 0) {
+                                          return (
+                                            <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
+                                              No matches. Try a different keyword.
+                                            </div>
+                                          )
+                                        }
+                                        return keys.map((k) => {
+                                          const Cmp = map[k]
+                                          return (
+                                            <button
+                                              key={k}
+                                              type="button"
+                                              className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                              onClick={() => {
+                                                if (!postId) return
+                                                void savePageIcon(postId, { kind: "lucide", value: k })
+                                                setTitleIconOpen(false)
+                                              }}
+                                              title={k}
+                                              aria-label={k}
+                                            >
+                                              <Cmp className="size-4" />
+                                            </button>
+                                          )
+                                        })
+                                      })()}
+                                    </div>
                                   </div>
-                                </div>
-                              </>
-                            ) : (
-                              <>
-                                <div className="grid grid-cols-7 gap-1">
-                                  {LUCIDE_PRESETS.map((it) => (
-                                    <button
-                                      key={it.key}
-                                      type="button"
-                                      className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
-                                      onClick={() => {
-                                        if (!postId) return
-                                        void savePageIcon(postId, { kind: "lucide", value: it.key })
-                                        setTitleIconOpen(false)
-                                      }}
-                                      title={it.label}
-                                      aria-label={it.label}
-                                    >
-                                      <it.Icon className="size-4" />
-                                    </button>
-                                  ))}
-                                </div>
-                                <div className="mt-2 text-[11px] text-muted-foreground px-0.5">
-                                  검색어를 입력하면 전체 아이콘 목록을 불러옵니다.
-                                </div>
-                              </>
-                            )}
-                            <div className="mt-2 flex justify-end">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => {
-                                  if (!postId) return
-                                  void savePageIcon(postId, null)
-                                  setTitleIconOpen(false)
-                                }}
-                              >
-                                Reset
-                              </Button>
-                            </div>
-                          </TabsContent>
-                        </Tabs>
-                      </PopoverContent>
-                    </Popover>
-                  )
-                })()}
-              </div>
-            )}
-          </div>
-
-          {error ? (
-            <Card className="mb-4 p-3 border-destructive/30 bg-destructive/5">
-              <div className="text-sm text-destructive whitespace-pre-wrap">{error}</div>
-            </Card>
-          ) : null}
-          {error?.includes("로그인이 필요") ? (
-            <div className="mb-4">
-              <Button variant="outline" onClick={() => navigate("/")}>
-                로그인하러 가기
-              </Button>
+                                </>
+                              ) : (
+                                <>
+                                  <div className="grid grid-cols-7 gap-1">
+                                    {LUCIDE_PRESETS.map((it) => (
+                                      <button
+                                        key={it.key}
+                                        type="button"
+                                        className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                        onClick={() => {
+                                          if (!postId) return
+                                          void savePageIcon(postId, { kind: "lucide", value: it.key })
+                                          setTitleIconOpen(false)
+                                        }}
+                                        title={it.label}
+                                        aria-label={it.label}
+                                      >
+                                        <it.Icon className="size-4" />
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <div className="mt-2 text-[11px] text-muted-foreground px-0.5">
+                                    검색어를 입력하면 전체 아이콘 목록을 불러옵니다.
+                                  </div>
+                                </>
+                              )}
+                              <div className="mt-2 flex justify-end">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => {
+                                    if (!postId) return
+                                    void savePageIcon(postId, null)
+                                    setTitleIconOpen(false)
+                                  }}
+                                >
+                                  Reset
+                                </Button>
+                              </div>
+                            </TabsContent>
+                          </Tabs>
+                        </PopoverContent>
+                      </Popover>
+                    )
+                  })()}
+                </div>
+              )}
             </div>
-          ) : null}
+
+            {error ? (
+              <Card className="mb-4 p-3 border-destructive/30 bg-destructive/5">
+                <div className="text-sm text-destructive whitespace-pre-wrap">{error}</div>
+              </Card>
+            ) : null}
+            {error?.includes("로그인이 필요") ? (
+              <div className="mb-4">
+                <Button variant="outline" onClick={() => navigate("/")}>
+                  로그인하러 가기
+                </Button>
+              </div>
+            ) : null}
             {loading ? (
               <div className="space-y-3">
                 <Skeleton className="h-8 w-48" />
@@ -3638,49 +3668,60 @@ export default function PostEditorPage() {
                 )}
               </div>
             )}
+
+            {tocItems.length > 0 ? (
+              <div className="hidden xl:block absolute top-0 right-0 h-full">
+                <div className="sticky top-[84px] pr-4">
+                  <HoverCard openDelay={0} closeDelay={120}>
+                    <HoverCardTrigger asChild>
+                      <div className="h-[calc(100vh-180px)] w-4 flex items-start justify-center">
+                        <div className="relative w-3 h-full flex items-start justify-center">
+                          <div className="relative mt-1 flex flex-col items-center gap-2">
+                            {tocItems.map((item) => {
+                              const isActive = activeTocId === item.id
+                              return (
+                                <span
+                                  key={item.id}
+                                  className={cn(
+                                    "rounded-full transition-colors",
+                                    isActive ? "bg-primary" : "bg-muted-foreground/60",
+                                    item.level === 1 ? "size-2" : item.level === 2 ? "size-1.5" : "size-1"
+                                  )}
+                                />
+                              )
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    </HoverCardTrigger>
+                    <HoverCardContent side="left" align="start" sideOffset={-6} className="w-[260px] p-2 -mr-3">
+                      <div className="px-2 py-1 text-xs font-semibold text-muted-foreground">목차</div>
+                      <div className="max-h-[360px] overflow-auto">
+                        {tocItems.map((item) => {
+                          const isActive = activeTocId === item.id
+                          return (
+                            <button
+                              key={item.id}
+                              type="button"
+                              className={cn(
+                                "w-full text-left text-sm px-2 py-1 rounded-md transition-colors",
+                                isActive ? "bg-accent text-foreground" : "hover:bg-accent"
+                              )}
+                              style={{ paddingLeft: `${8 + (item.level - 1) * 12}px` }}
+                              onClick={() => scrollToHeading(item)}
+                            >
+                              <span className="truncate block">{item.text}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </HoverCardContent>
+                  </HoverCard>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
-
-        {tocItems.length > 0 ? (
-          <div className="hidden xl:flex h-full w-[52px] shrink-0 items-start justify-center pt-[84px] pr-4">
-            <HoverCard openDelay={0} closeDelay={120}>
-              <HoverCardTrigger asChild>
-                <div className="h-[calc(100vh-180px)] w-4 flex items-start justify-center">
-                  <div className="relative w-3 h-full flex items-start justify-center">
-                    <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-border/70" />
-                    <div className="relative mt-1 flex flex-col items-center gap-2">
-                      {tocItems.map((item) => (
-                        <span
-                          key={item.id}
-                          className={cn(
-                            "rounded-full bg-muted-foreground/60",
-                            item.level === 1 ? "size-2" : item.level === 2 ? "size-1.5" : "size-1"
-                          )}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </HoverCardTrigger>
-              <HoverCardContent side="left" align="center" className="w-[260px] p-2">
-                <div className="px-2 py-1 text-xs font-semibold text-muted-foreground">목차</div>
-                <div className="max-h-[360px] overflow-auto">
-                  {tocItems.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className="w-full text-left text-sm px-2 py-1 rounded-md hover:bg-accent transition-colors"
-                      style={{ paddingLeft: `${8 + (item.level - 1) * 12}px` }}
-                      onClick={() => scrollToHeading(item)}
-                    >
-                      <span className="truncate block">{item.text}</span>
-                    </button>
-                  ))}
-                </div>
-              </HoverCardContent>
-            </HoverCard>
-          </div>
-        ) : null}
       </div>
     </AppShell>
 

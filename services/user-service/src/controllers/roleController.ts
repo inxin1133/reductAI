@@ -3,18 +3,28 @@ import pool from '../config/db';
 
 export const getRoles = async (req: Request, res: Response) => {
   try {
-    const { tenant_id } = req.query;
-    let query = `SELECT * FROM roles WHERE 1=1`; // roles table usually doesn't have deleted_at based on schema
+    const tenantId = typeof req.query.tenant_id === "string" ? req.query.tenant_id : undefined;
+    const scope = typeof req.query.scope === "string" ? req.query.scope : undefined;
+    const allowedScopes = new Set(["platform", "tenant_base", "tenant_custom"]);
+
+    if (scope && !allowedScopes.has(scope)) {
+      return res.status(400).json({ message: "Invalid scope filter" });
+    }
+    let query = `SELECT * FROM roles WHERE 1=1`;
     const params: any[] = [];
 
-    // If tenant_id is provided, filter by it OR global roles. 
-    // If not provided (super admin), maybe show all or just global?
-    // For simplicity, let's show all for now if no filter, or handle as per requirement.
-    // Assuming super admin view shows everything.
-    
-    if (tenant_id) {
-      query += ` AND (tenant_id = $1 OR is_global = TRUE)`;
-      params.push(tenant_id);
+    if (tenantId && !scope) {
+      params.push(tenantId);
+      query += ` AND (scope = 'tenant_base' OR (scope = 'tenant_custom' AND tenant_id = $${params.length}))`;
+    } else {
+      if (scope) {
+        params.push(scope);
+        query += ` AND scope = $${params.length}`;
+      }
+      if (tenantId) {
+        params.push(tenantId);
+        query += ` AND tenant_id = $${params.length}`;
+      }
     }
 
     query += ` ORDER BY created_at DESC`;
@@ -59,23 +69,44 @@ export const createRole = async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { name, slug, description, is_global, permissions, tenant_id } = req.body; // permissions is array of IDs
+    const { name, slug, description, permissions, tenant_id, scope: rawScope, is_global } = req.body; // permissions is array of IDs
+    const scope =
+      rawScope ??
+      (typeof is_global === "boolean" ? (is_global ? "platform" : "tenant_custom") : undefined);
 
-    // Validation: if not global, tenant_id is required
-    if (!is_global && !tenant_id) {
+    const allowedScopes = new Set(["platform", "tenant_base", "tenant_custom"]);
+    if (!scope || !allowedScopes.has(scope)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        message: 'Invalid role scope. Use platform, tenant_base, or tenant_custom.',
+        code: 'INVALID_ROLE_SCOPE'
+      });
+    }
+
+    // Validation: tenant_custom requires tenant_id
+    if (scope === "tenant_custom" && !tenant_id) {
       await client.query('ROLLBACK');
       return res.status(400).json({ 
-        message: 'Tenant ID is required for non-global roles.',
+        message: 'Tenant ID is required for tenant_custom roles.',
         code: 'MISSING_TENANT_ID'
       });
     }
 
     const insertRoleQuery = `
-      INSERT INTO roles (name, slug, description, is_global, tenant_id)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO roles (name, slug, description, scope, tenant_id, is_system_role)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING *
     `;
-    const roleResult = await client.query(insertRoleQuery, [name, slug, description, is_global || false, tenant_id || null]);
+    const resolvedTenantId = scope === "tenant_custom" ? tenant_id : null;
+    const isSystemRole = scope === "platform" || scope === "tenant_base";
+    const roleResult = await client.query(insertRoleQuery, [
+      name,
+      slug,
+      description,
+      scope,
+      resolvedTenantId,
+      isSystemRole,
+    ]);
     const role = roleResult.rows[0];
 
     if (permissions && Array.isArray(permissions)) {
@@ -108,19 +139,59 @@ export const updateRole = async (req: Request, res: Response) => {
   try {
     await client.query('BEGIN');
     const { id } = req.params;
-    const { name, slug, description, is_global, permissions } = req.body;
+    const { name, slug, description, permissions, tenant_id, scope: rawScope, is_global } = req.body;
+    const scope =
+      rawScope ??
+      (typeof is_global === "boolean" ? (is_global ? "platform" : "tenant_custom") : undefined);
+
+    const existingRoleResult = await client.query(`SELECT scope, tenant_id FROM roles WHERE id = $1`, [id]);
+    if (existingRoleResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Role not found' });
+    }
+    const existingRole = existingRoleResult.rows[0];
+
+    const nextScope = scope ?? existingRole.scope;
+    const nextTenantId = nextScope === "tenant_custom"
+      ? (tenant_id ?? existingRole.tenant_id)
+      : null;
+
+    const allowedScopes = new Set(["platform", "tenant_base", "tenant_custom"]);
+    if (!allowedScopes.has(nextScope)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        message: 'Invalid role scope. Use platform, tenant_base, or tenant_custom.',
+        code: 'INVALID_ROLE_SCOPE'
+      });
+    }
+
+    if (nextScope === "tenant_custom" && !nextTenantId) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Tenant ID is required for tenant_custom roles.' });
+    }
 
     const updateRoleQuery = `
       UPDATE roles 
       SET name = COALESCE($1, name),
           slug = COALESCE($2, slug),
           description = COALESCE($3, description),
-          is_global = COALESCE($4, is_global),
+          scope = $4,
+          tenant_id = $5,
+          is_system_role = $6,
           updated_at = CURRENT_TIMESTAMP
-      WHERE id = $5
+      WHERE id = $7
       RETURNING *
     `;
-    const roleResult = await client.query(updateRoleQuery, [name, slug, description, is_global, id]);
+    const isSystemRole = nextScope === "platform" || nextScope === "tenant_base";
+    const roleResult = await client.query(updateRoleQuery, [
+      name,
+      slug,
+      description,
+      nextScope,
+      nextTenantId,
+      isSystemRole,
+      id,
+    ]);
     
     if (roleResult.rows.length === 0) {
       await client.query('ROLLBACK');

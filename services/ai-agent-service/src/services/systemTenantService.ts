@@ -17,10 +17,10 @@ export async function ensureSystemTenantId(): Promise<string> {
   if (existing.rows.length > 0) return existing.rows[0].id
 
   // 2) 없으면 생성 (owner_id는 NULL 허용)
-  // tenant_type은 스키마 제약상 personal/team/enterprise 중 선택해야 함
+  // tenant_type은 스키마 제약상 personal/team/group 중 선택해야 함
   const inserted = await query(
     `INSERT INTO tenants (owner_id, name, slug, tenant_type, status, metadata)
-     VALUES (NULL, $1, $2, 'enterprise', 'active', $3::jsonb)
+     VALUES (NULL, $1, $2, 'group', 'active', $3::jsonb)
      RETURNING id`,
     [SYSTEM_TENANT_NAME, SYSTEM_TENANT_SLUG, JSON.stringify({ system: true })]
   )

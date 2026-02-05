@@ -189,7 +189,7 @@ export function Sidebar({ className }: SidebarProps) {
     }
   })
   const [teamCatsLoading, setTeamCatsLoading] = useState(false)
-  const [tenantType, setTenantType] = useState<string>("") // personal | team | enterprise (or empty while loading)
+  const [tenantType, setTenantType] = useState<string>("") // personal | team | group (or empty while loading)
 
   const [editingCat, setEditingCat] = useState<{ type: "personal" | "team"; id: string; name: string } | null>(null)
   const [draggingCat, setDraggingCat] = useState<{ type: "personal" | "team"; id: string } | null>(null)
@@ -2416,7 +2416,7 @@ export function Sidebar({ className }: SidebarProps) {
                     onClick={(e) => {
                       e.preventDefault()
                       e.stopPropagation()
-                    // Shared categories are allowed for team + enterprise (exclude personal).
+                    // Shared categories are allowed for team + group (exclude personal).
                     if (tenantType === "personal") return
                     openCreateCategoryDialog("team")
                     }}

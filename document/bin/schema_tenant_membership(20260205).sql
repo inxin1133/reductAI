@@ -10,7 +10,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- ============================================
 -- 1. TENANT TYPE AND PLAN MANAGEMENT
 -- ============================================
-
+-- 사용 중이지만 삭제해도 되는 테이블
 CREATE TABLE subscription_plans (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name VARCHAR(255) NOT NULL,
@@ -68,7 +68,7 @@ COMMENT ON COLUMN subscription_plans.updated_at IS '플랜 정보 최종 수정 
 -- ============================================
 -- 3. TENANT MEMBERSHIPS (사용자-테넌트 멤버십)
 -- ============================================
-
+-- 사용중 테넌트의 역할을 연결함
 CREATE TABLE tenant_memberships (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,

@@ -2,12 +2,12 @@ import { Request, Response } from "express"
 import pool, { query } from "../config/db"
 import { ensureSystemTenantId } from "../services/systemTenantService"
 
-type TenantType = "personal" | "team" | "enterprise"
+type TenantType = "personal" | "team" | "group"
 type AccessStatus = "active" | "inactive" | "suspended"
 type AccessLevel = "standard" | "premium" | "enterprise"
 
 function isTenantType(x: any): x is TenantType {
-  return x === "personal" || x === "team" || x === "enterprise"
+  return x === "personal" || x === "team" || x === "group"
 }
 
 // 목록 조회 (tenant_type 필수)
@@ -15,7 +15,7 @@ export async function getTypeModelAccess(req: Request, res: Response) {
   try {
     const tenant_type = req.query.tenant_type as string | undefined
     if (!tenant_type || !isTenantType(tenant_type)) {
-      return res.status(400).json({ message: "tenant_type is required (personal|team|enterprise)" })
+      return res.status(400).json({ message: "tenant_type is required (personal|team|group)" })
     }
 
     const result = await query(

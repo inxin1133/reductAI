@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
+import type { AuthedRequest } from '../middleware/requireAuth';
 
 export const getUsers = async (req: Request, res: Response) => {
   try {
@@ -15,8 +16,8 @@ export const getUsers = async (req: Request, res: Response) => {
         r.slug as role_slug,
         r.id as role_id
       FROM users u
-      LEFT JOIN user_tenant_roles utr ON u.id = utr.user_id
-      LEFT JOIN roles r ON utr.role_id = r.id AND r.is_global = TRUE
+      LEFT JOIN user_roles ur ON u.id = ur.user_id
+      LEFT JOIN roles r ON ur.role_id = r.id AND r.scope = 'platform'
       WHERE u.deleted_at IS NULL
     `;
     
@@ -27,7 +28,7 @@ export const getUsers = async (req: Request, res: Response) => {
       params.push(`%${search}%`);
     }
 
-    query += ` ORDER BY u.id, u.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    query += ` ORDER BY u.id, ur.granted_at DESC NULLS LAST, u.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(limit, offset);
 
     const { rows } = await pool.query(query, params);
@@ -85,6 +86,7 @@ export const updateUser = async (req: Request, res: Response) => {
     await client.query('BEGIN');
     const { id } = req.params;
     const { full_name, status, email_verified, role_id } = req.body;
+    const authedReq = req as AuthedRequest;
 
     // 1. Update basic user info
     const updateUserQuery = `
@@ -104,45 +106,30 @@ export const updateUser = async (req: Request, res: Response) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // 2. Update Role if provided (role_id)
-    // We only assign a role when role_id is provided and is a valid global role.
-    // If role_id is omitted or empty, we leave role assignments as-is.
-    if (role_id) {
-      // Validate role_id as a global role
-      const roleCheck = await client.query(`SELECT id FROM roles WHERE id = $1 AND is_global = TRUE`, [role_id]);
-      if (roleCheck.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ message: 'Invalid role_id or not a global role' });
+    // 2. Update Platform Role if provided (role_id)
+    // role_id provided -> assign platform role (single role).
+    // role_id is empty/null -> remove platform roles.
+    if (role_id !== undefined) {
+      if (!role_id) {
+        await client.query(`DELETE FROM user_roles WHERE user_id = $1`, [id]);
+      } else {
+        const roleCheck = await client.query(`SELECT id FROM roles WHERE id = $1 AND scope = 'platform'`, [role_id]);
+        if (roleCheck.rows.length === 0) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ message: 'Invalid role_id or not a platform role' });
+        }
+
+        // Ensure single platform role per user
+        await client.query(`DELETE FROM user_roles WHERE user_id = $1`, [id]);
+        await client.query(
+          `
+            INSERT INTO user_roles (user_id, role_id, granted_by)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (user_id, role_id) DO NOTHING
+          `,
+          [id, role_id, authedReq.userId || null]
+        );
       }
-
-      // Find a tenant context to assign the global role (primary tenant preferred)
-      const tenantResult = await client.query(`
-        SELECT tenant_id FROM tenant_memberships 
-        WHERE user_id = $1 
-        ORDER BY is_primary_tenant DESC, joined_at ASC 
-        LIMIT 1
-      `, [id]);
-
-      if (tenantResult.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ message: 'User has no tenant to assign the role' });
-      }
-
-      const tenantId = tenantResult.rows[0].tenant_id;
-
-      // Remove existing global roles for this user in any tenant (ensure single global role assignment)
-      await client.query(`
-        DELETE FROM user_tenant_roles
-        WHERE user_id = $1 
-        AND role_id IN (SELECT id FROM roles WHERE is_global = TRUE)
-      `, [id]);
-
-      // Insert new role assignment
-      await client.query(`
-        INSERT INTO user_tenant_roles (user_id, tenant_id, role_id)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (user_id, tenant_id, role_id) DO NOTHING
-      `, [id, tenantId, role_id]);
     }
 
     await client.query('COMMIT');

@@ -66,13 +66,54 @@ export const createTenant = async (req: Request, res: Response) => {
     const tenantResult = await client.query(insertTenantQuery, [name, slug, domain, tenant_type, owner_id]);
     const tenant = tenantResult.rows[0];
 
-    // Add owner as a member with 'owner' role in tenant_memberships
-    // Check if membership already exists (unlikely for new tenant but good practice)
-    await client.query(`
-      INSERT INTO tenant_memberships (tenant_id, user_id, membership_role, is_primary_tenant)
-      VALUES ($1, $2, 'owner', true)
-      ON CONFLICT (tenant_id, user_id) DO UPDATE SET membership_role = 'owner'
-    `, [tenant.id, owner_id]);
+    if (owner_id) {
+      const roleResult = await client.query(
+        `
+        SELECT id
+        FROM roles
+        WHERE scope = 'tenant_base' AND slug = 'owner'
+        LIMIT 1
+        `
+      );
+      const roleId =
+        roleResult.rows[0]?.id ||
+        (
+          await client.query(
+            `
+            INSERT INTO roles (name, slug, description, scope, tenant_id, is_system_role)
+            VALUES ($1, $2, $3, 'tenant_base', NULL, TRUE)
+            RETURNING id
+            `,
+            ['소유자', 'owner', 'Tenant base role: owner']
+          )
+        ).rows[0]?.id;
+
+      if (!roleId) {
+        await client.query('ROLLBACK');
+        return res.status(500).json({ message: 'Failed to resolve tenant base owner role' });
+      }
+
+      await client.query(
+        `
+        INSERT INTO user_tenant_roles (
+          user_id,
+          tenant_id,
+          role_id,
+          granted_by,
+          membership_status,
+          joined_at,
+          is_primary_tenant
+        )
+        VALUES ($1, $2, $3, $4, 'active', CURRENT_TIMESTAMP, TRUE)
+        ON CONFLICT (user_id, tenant_id, role_id)
+        DO UPDATE SET
+          membership_status = 'active',
+          left_at = NULL,
+          is_primary_tenant = TRUE
+        `,
+        [owner_id, tenant.id, roleId, owner_id]
+      );
+    }
 
     await client.query('COMMIT');
     res.status(201).json(tenant);

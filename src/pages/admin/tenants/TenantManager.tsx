@@ -35,7 +35,7 @@ interface Tenant {
   name: string
   slug: string
   domain: string | null
-  tenant_type: 'personal' | 'team' | 'enterprise'
+  tenant_type: 'personal' | 'team' | 'group'
   status: 'active' | 'inactive' | 'suspended'
   owner_id: string
   owner_name?: string
@@ -74,7 +74,7 @@ export default function TenantManager() {
     name: string
     slug: string
     domain: string
-    tenant_type: 'personal' | 'team' | 'enterprise'
+    tenant_type: 'personal' | 'team' | 'group'
     status: 'active' | 'inactive' | 'suspended'
     owner_id: string
   }>({
@@ -413,7 +413,7 @@ export default function TenantManager() {
                 <SelectContent>
                   <SelectItem value="personal">Personal</SelectItem>
                   <SelectItem value="team">Team</SelectItem>
-                  <SelectItem value="enterprise">Enterprise</SelectItem>
+                  <SelectItem value="group">Group</SelectItem>
                 </SelectContent>
               </Select>
             </div>

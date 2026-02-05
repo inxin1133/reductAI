@@ -2,7 +2,7 @@ import { Request, Response } from "express"
 import { query } from "../config/db"
 import { ensureSystemTenantId } from "../services/systemTenantService"
 
-type Status = "success" | "failure" | "error" | "timeout" | "rate_limited"
+type Status = "success" | "failure" | "error" | "timeout" | "rate_limited" | "partial" | "failed"
 
 function toInt(v: unknown, fallback: number) {
   const n = Number(v)
@@ -47,7 +47,7 @@ export async function listUsageLogs(req: Request, res: Response) {
       params.push(providerSlug)
     }
     if (modelApiId) {
-      where.push(`m.model_id = $${params.length + 1}`)
+      where.push(`COALESCE(l.resolved_model, m.model_id) = $${params.length + 1}`)
       params.push(modelApiId)
     }
     if (from) {
@@ -64,7 +64,7 @@ export async function listUsageLogs(req: Request, res: Response) {
           l.request_id ILIKE $${params.length + 1}
           OR l.error_message ILIKE $${params.length + 1}
           OR m.display_name ILIKE $${params.length + 1}
-          OR m.model_id ILIKE $${params.length + 1}
+          OR COALESCE(l.resolved_model, m.model_id) ILIKE $${params.length + 1}
           OR p.slug ILIKE $${params.length + 1}
         )`
       )
@@ -76,9 +76,9 @@ export async function listUsageLogs(req: Request, res: Response) {
     const countRes = await query(
       `
       SELECT COUNT(*)::int AS total
-      FROM model_usage_logs l
-      JOIN ai_models m ON m.id = l.model_id
-      JOIN ai_providers p ON p.id = m.provider_id
+      FROM llm_usage_logs l
+      LEFT JOIN ai_models m ON m.id = l.model_id
+      LEFT JOIN ai_providers p ON p.id = l.provider_id
       ${whereSql}
       `,
       params
@@ -97,18 +97,18 @@ export async function listUsageLogs(req: Request, res: Response) {
         l.total_tokens,
         l.total_cost,
         l.currency,
-        l.response_time_ms,
+        COALESCE(l.response_time_ms, l.latency_ms) AS response_time_ms,
         l.error_code,
         l.error_message,
         l.user_id,
         u.email AS user_email,
         m.id AS ai_model_id,
         m.display_name AS model_display_name,
-        m.model_id AS model_api_id,
+        COALESCE(l.resolved_model, m.model_id) AS model_api_id,
         p.slug AS provider_slug
-      FROM model_usage_logs l
-      JOIN ai_models m ON m.id = l.model_id
-      JOIN ai_providers p ON p.id = m.provider_id
+      FROM llm_usage_logs l
+      LEFT JOIN ai_models m ON m.id = l.model_id
+      LEFT JOIN ai_providers p ON p.id = l.provider_id
       LEFT JOIN users u ON u.id = l.user_id
       ${whereSql}
       ORDER BY l.created_at DESC
@@ -142,11 +142,11 @@ export async function getUsageLog(req: Request, res: Response) {
         l.*,
         u.email AS user_email,
         m.display_name AS model_display_name,
-        m.model_id AS model_api_id,
+        COALESCE(l.resolved_model, m.model_id) AS model_api_id,
         p.slug AS provider_slug
-      FROM model_usage_logs l
-      JOIN ai_models m ON m.id = l.model_id
-      JOIN ai_providers p ON p.id = m.provider_id
+      FROM llm_usage_logs l
+      LEFT JOIN ai_models m ON m.id = l.model_id
+      LEFT JOIN ai_providers p ON p.id = l.provider_id
       LEFT JOIN users u ON u.id = l.user_id
       WHERE l.tenant_id = $1 AND l.id = $2
       LIMIT 1

@@ -212,36 +212,47 @@ export async function chatCompletion(req: Request, res: Response) {
         if (modelRow) {
           const usage = extractUsageFromProviderRaw(out.raw)
           const inputCost = (usage.input_tokens / 1000) * modelRow.input_cost_per_1k
+          const cachedInputCost = 0
           const outputCost = (usage.output_tokens / 1000) * modelRow.output_cost_per_1k
           const totalCost = inputCost + outputCost
           const responseTimeMs = Date.now() - started
-          await query(
+          const logRes = await query(
             `
-            INSERT INTO model_usage_logs (
-              tenant_id, user_id, model_id, credential_id, feature_name, request_id,
-              input_tokens, output_tokens, total_tokens,
-              input_cost, output_cost, total_cost, currency,
+            INSERT INTO llm_usage_logs (
+              tenant_id, user_id, provider_id, model_id, credential_id, service_id,
+              requested_model, resolved_model, modality, feature_name, request_id,
+              input_tokens, cached_input_tokens, output_tokens, total_tokens,
+              input_cost, cached_input_cost, output_cost, total_cost, currency,
               response_time_ms, status, request_data, response_data, model_parameters,
               ip_address, user_agent, metadata
             ) VALUES (
-              $1, $2, $3, $4, 'chat', $5,
-              $6, $7, $8,
-              $9, $10, $11, $12,
-              $13, 'success', $14::jsonb, $15::jsonb, $16::jsonb,
-              $17::inet, $18, $19::jsonb
+              $1, $2, $3, $4, $5, $6,
+              $7, $8, $9, 'chat', $10,
+              $11, $12, $13, $14,
+              $15, $16, $17, $18, $19,
+              $20, 'success', $21::jsonb, $22::jsonb, $23::jsonb,
+              $24::inet, $25, $26::jsonb
             )
-            ON CONFLICT (request_id) DO NOTHING
+            ON CONFLICT (tenant_id, request_id) DO UPDATE SET request_id = EXCLUDED.request_id
+            RETURNING id
             `,
             [
               tenantId,
               userId,
+              providerId,
               modelRow.id,
               auth.credentialId || null,
+              null,
+              model,
+              model,
+              "text",
               requestId,
               usage.input_tokens,
+              usage.cached_input_tokens,
               usage.output_tokens,
               usage.total_tokens,
               inputCost,
+              cachedInputCost,
               outputCost,
               totalCost,
               modelRow.currency,
@@ -270,6 +281,21 @@ export async function chatCompletion(req: Request, res: Response) {
               }),
             ]
           )
+          const usageLogId = logRes.rows[0]?.id as string | undefined
+          if (usageLogId) {
+            await query(
+              `
+              INSERT INTO llm_token_usages (
+                usage_log_id, input_tokens, cached_input_tokens, output_tokens, unit
+              )
+              SELECT $1, $2, $3, $4, 'tokens'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM llm_token_usages WHERE usage_log_id = $1
+              )
+              `,
+              [usageLogId, usage.input_tokens, usage.cached_input_tokens, usage.output_tokens]
+            )
+          }
         }
       } catch (e) {
         console.warn("[usage-log] insert failed:", e)
@@ -301,28 +327,36 @@ export async function chatCompletion(req: Request, res: Response) {
           const outputCost = (usage.output_tokens / 1000) * modelRow.output_cost_per_1k
           const totalCost = inputCost + outputCost
           const responseTimeMs = Date.now() - started
-          await query(
+          const logRes = await query(
             `
-            INSERT INTO model_usage_logs (
-              tenant_id, user_id, model_id, credential_id, feature_name, request_id,
+            INSERT INTO llm_usage_logs (
+              tenant_id, user_id, provider_id, model_id, credential_id, service_id,
+              requested_model, resolved_model, modality, feature_name, request_id,
               input_tokens, cached_input_tokens, output_tokens, total_tokens,
               input_cost, cached_input_cost, output_cost, total_cost, currency,
               response_time_ms, status, request_data, response_data, model_parameters,
               ip_address, user_agent, metadata
             ) VALUES (
-              $1, $2, $3, $4, 'chat', $5,
-              $6, $7, $8, $9,
-              $10, $11, $12, $13, $14,
-              $15, 'success', $16::jsonb, $17::jsonb, $18::jsonb,
-              $19::inet, $20, $21::jsonb
+              $1, $2, $3, $4, $5, $6,
+              $7, $8, $9, 'chat', $10,
+              $11, $12, $13, $14,
+              $15, $16, $17, $18, $19,
+              $20, 'success', $21::jsonb, $22::jsonb, $23::jsonb,
+              $24::inet, $25, $26::jsonb
             )
-            ON CONFLICT (request_id) DO NOTHING
+            ON CONFLICT (tenant_id, request_id) DO UPDATE SET request_id = EXCLUDED.request_id
+            RETURNING id
             `,
             [
               tenantId,
               userId,
+              providerId,
               modelRow.id,
               auth.credentialId || null,
+              null,
+              model,
+              model,
+              "text",
               requestId,
               usage.input_tokens,
               usage.cached_input_tokens,
@@ -350,6 +384,21 @@ export async function chatCompletion(req: Request, res: Response) {
               JSON.stringify({ api: "ai-agent-service", endpoint: "/api/ai/chat" }),
             ]
           )
+          const usageLogId = logRes.rows[0]?.id as string | undefined
+          if (usageLogId) {
+            await query(
+              `
+              INSERT INTO llm_token_usages (
+                usage_log_id, input_tokens, cached_input_tokens, output_tokens, unit
+              )
+              SELECT $1, $2, $3, $4, 'tokens'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM llm_token_usages WHERE usage_log_id = $1
+              )
+              `,
+              [usageLogId, usage.input_tokens, usage.cached_input_tokens, usage.output_tokens]
+            )
+          }
         }
       } catch (e) {
         console.warn("[usage-log] insert failed:", e)
@@ -380,23 +429,31 @@ export async function chatCompletion(req: Request, res: Response) {
         if (modelRow) {
           await query(
             `
-            INSERT INTO model_usage_logs (
-              tenant_id, user_id, model_id, feature_name, request_id,
-              input_tokens, output_tokens, total_tokens,
-              total_cost, currency,
+            INSERT INTO llm_usage_logs (
+              tenant_id, user_id, provider_id, model_id, credential_id, service_id,
+              requested_model, resolved_model, modality, feature_name, request_id,
+              input_tokens, cached_input_tokens, output_tokens, total_tokens,
+              input_cost, cached_input_cost, output_cost, total_cost, currency,
               response_time_ms, status, error_code, error_message, request_data, metadata
             ) VALUES (
-              $1, $2, $3, 'chat', $4,
-              0, 0, 0,
-              0, $5,
-              NULL, 'error', NULL, $6, $7::jsonb, $8::jsonb
+              $1, $2, $3, $4, $5, $6,
+              $7, $8, $9, 'chat', $10,
+              0, 0, 0, 0,
+              0, 0, 0, 0, $11,
+              NULL, 'error', NULL, $12, $13::jsonb, $14::jsonb
             )
-            ON CONFLICT (request_id) DO NOTHING
+            ON CONFLICT (tenant_id, request_id) DO UPDATE SET request_id = EXCLUDED.request_id
             `,
             [
               tenantId,
               userId,
+              providerId,
               modelRow.id,
+              null,
+              null,
+              String(model),
+              String(model),
+              "text",
               requestId,
               modelRow.currency,
               String(e?.message || e),

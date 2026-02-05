@@ -32,7 +32,7 @@ import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext
 import { useEffect as useEffectReact } from "react"
 import { Loader2, Pencil, Plus, Search, Trash2, Link2 } from "lucide-react"
 
-type TenantType = "personal" | "team" | "enterprise"
+type TenantType = "personal" | "team" | "group"
 type AccessStatus = "active" | "inactive" | "suspended"
 type AccessLevel = "standard" | "premium" | "enterprise"
 
@@ -351,7 +351,7 @@ export default function TenantTypeModelAccess() {
       <div className="flex items-center justify-between">
         <div>
           <p className="text-muted-foreground">
-            테넌트 개별이 아니라, <b>테넌트 유형(personal/team/enterprise)</b> 별로 제공할 AI 모델 접근 권한을 관리합니다.
+            테넌트 개별이 아니라, <b>테넌트 유형(personal/team/group)</b> 별로 제공할 AI 모델 접근 권한을 관리합니다.
           </p>
         </div>
       </div>
@@ -365,7 +365,7 @@ export default function TenantTypeModelAccess() {
             <SelectContent>
               <SelectItem value="personal">personal</SelectItem>
               <SelectItem value="team">team</SelectItem>
-              <SelectItem value="enterprise">enterprise</SelectItem>
+              <SelectItem value="group">group</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -547,7 +547,7 @@ export default function TenantTypeModelAccess() {
                 <SelectContent>
                   <SelectItem value="standard">standard</SelectItem>
                   <SelectItem value="premium">premium</SelectItem>
-                  <SelectItem value="enterprise">enterprise</SelectItem>
+                  <SelectItem value="group">group</SelectItem>
                 </SelectContent>
               </Select>
             </div>

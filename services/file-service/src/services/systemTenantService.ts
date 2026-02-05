@@ -12,7 +12,7 @@ export async function ensureSystemTenantId(): Promise<string> {
 
   const inserted = await query(
     `INSERT INTO tenants (owner_id, name, slug, tenant_type, status, metadata)
-     VALUES (NULL, $1, $2, 'enterprise', 'active', $3::jsonb)
+     VALUES (NULL, $1, $2, 'group', 'active', $3::jsonb)
      RETURNING id`,
     [SYSTEM_TENANT_NAME, SYSTEM_TENANT_SLUG, JSON.stringify({ system: true })]
   );

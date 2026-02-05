@@ -10,7 +10,7 @@ import {
   ensureModelApiProfilesSchema,
   ensureProviderAuthProfilesSchema,
   ensureModelRoutingRulesSchema,
-  ensureModelUsageLogsSchema,
+  ensureLlmUsageLogsSchema,
   ensurePromptTemplatesSchema,
   ensurePromptSuggestionsSchema,
   ensureResponseSchemasSchema,
@@ -65,7 +65,7 @@ app.listen(PORT, async () => {
   try {
     await ensureAiAccessSchema()
     await ensureTimelineSchema()
-    await ensureModelUsageLogsSchema()
+    await ensureLlmUsageLogsSchema()
     await ensureModelRoutingRulesSchema()
     await ensurePromptTemplatesSchema()
     await ensureResponseSchemasSchema()

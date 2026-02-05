@@ -18,9 +18,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
-import { Switch } from "@/components/ui/switch"
 import { Pencil, Trash2, Loader2, Plus, Shield } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
@@ -35,23 +41,34 @@ interface Permission {
   description: string
 }
 
+type RoleScope = "platform" | "tenant_base" | "tenant_custom"
+
 interface Role {
   id: string
   name: string
   slug: string
   description: string
-  is_global: boolean
+  scope: RoleScope
+  tenant_id?: string | null
   is_system_role: boolean
   created_at: string
   permissions?: Permission[]
 }
 
+interface Tenant {
+  id: string
+  name: string
+  slug: string
+}
+
 const API_URL = "http://localhost:3002/api"
+const TENANTS_API_URL = "http://localhost:3003/api/tenants"
 
 export default function RoleManager() {
   const { setAction } = useAdminHeaderActionContext()
   const [roles, setRoles] = useState<Role[]>([])
   const [permissions, setPermissions] = useState<Permission[]>([])
+  const [tenants, setTenants] = useState<Tenant[]>([])
   const [isLoading, setIsLoading] = useState(true)
   
   // Dialog state
@@ -61,13 +78,15 @@ export default function RoleManager() {
     name: string
     slug: string
     description: string
-    is_global: boolean
+    scope: RoleScope
+    tenant_id: string
     permissionIds: string[]
   }>({
     name: "",
     slug: "",
     description: "",
-    is_global: true, // Default to global for admin page
+    scope: "platform",
+    tenant_id: "",
     permissionIds: [],
   })
 
@@ -81,6 +100,8 @@ export default function RoleManager() {
   useEffect(() => {
     fetchRoles()
     fetchPermissions()
+    fetchTenants()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const fetchRoles = async () => {
@@ -110,13 +131,26 @@ export default function RoleManager() {
     }
   }
 
+  const fetchTenants = async () => {
+    try {
+      const response = await fetch(`${TENANTS_API_URL}?limit=200`, { headers: { ...authHeaders() } })
+      if (response.ok) {
+        const data = await response.json()
+        setTenants(data.tenants || [])
+      }
+    } catch (error) {
+      console.error("Failed to fetch tenants", error)
+    }
+  }
+
   const handleCreate = () => {
     setEditingRole(null)
     setFormData({
       name: "",
       slug: "",
       description: "",
-      is_global: true, // Default to global
+      scope: "platform",
+      tenant_id: "",
       permissionIds: [],
     })
     setIsDialogOpen(true)
@@ -143,7 +177,8 @@ export default function RoleManager() {
           name: detailedRole.name,
           slug: detailedRole.slug,
           description: detailedRole.description || "",
-          is_global: detailedRole.is_global,
+          scope: detailedRole.scope,
+          tenant_id: detailedRole.tenant_id || "",
           permissionIds: detailedRole.permissions?.map((p: Permission) => p.id) || [],
         })
         setIsDialogOpen(true)
@@ -178,13 +213,9 @@ export default function RoleManager() {
       const method = editingRole ? "PUT" : "POST"
       const url = editingRole ? `${API_URL}/roles/${editingRole.id}` : `${API_URL}/roles`
       
-      // Validation for Global Role
-      if (!formData.is_global) {
-        // Since we don't have tenant selection in this UI yet, we can't create non-global roles easily.
-        // Alert the user.
-        if (!confirm("현재 관리자 페이지에서는 '글로벌 역할' 생성을 권장합니다.\n'글로벌 역할' 체크를 해제하면 테넌트 ID가 필요하여 생성이 실패할 수 있습니다.\n계속 하시겠습니까?")) {
-            return;
-        }
+      if (formData.scope === "tenant_custom" && !formData.tenant_id) {
+        alert("테넌트 커스텀 역할은 테넌트 선택이 필요합니다.")
+        return
       }
 
       const response = await fetch(url, {
@@ -197,7 +228,8 @@ export default function RoleManager() {
           name: formData.name,
           slug: formData.slug,
           description: formData.description,
-          is_global: formData.is_global,
+          scope: formData.scope,
+          tenant_id: formData.scope === "tenant_custom" ? formData.tenant_id : null,
           permissions: formData.permissionIds,
         }),
       })
@@ -222,6 +254,12 @@ export default function RoleManager() {
         : [...prev.permissionIds, permId]
       return { ...prev, permissionIds: newIds }
     })
+  }
+
+  const getTenantLabel = (tenantId?: string | null) => {
+    if (!tenantId) return null
+    const found = tenants.find(t => t.id === tenantId)
+    return found ? `${found.name} (${found.slug})` : tenantId
   }
 
   // Group permissions by resource
@@ -249,6 +287,7 @@ export default function RoleManager() {
               <TableHead>식별자(Slug)</TableHead>
               <TableHead>설명</TableHead>
               <TableHead>유형</TableHead>
+              <TableHead>System</TableHead>
               <TableHead>생성일</TableHead>
               <TableHead className="text-right">관리</TableHead>
             </TableRow>
@@ -256,13 +295,13 @@ export default function RoleManager() {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={6} className="h-24 text-center">
+                <TableCell colSpan={7} className="h-24 text-center">
                   <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                 </TableCell>
               </TableRow>
             ) : roles.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="h-24 text-center">
+                <TableCell colSpan={7} className="h-24 text-center">
                   등록된 역할이 없습니다.
                 </TableCell>
               </TableRow>
@@ -284,13 +323,23 @@ export default function RoleManager() {
                     {role.description}
                   </TableCell>
                   <TableCell>
-                    {role.is_system_role ? (
-                      <Badge variant="secondary">System</Badge>
-                    ) : role.is_global ? (
-                      <Badge variant="default" className="bg-purple-100 text-purple-800 hover:bg-purple-200">Global</Badge>
-                    ) : (
-                      <Badge variant="outline">Tenant</Badge>
-                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {role.scope === "platform" ? (
+                        <Badge variant="default" className="bg-purple-100 text-purple-800 hover:bg-purple-200">Platform</Badge>
+                      ) : role.scope === "tenant_base" ? (
+                        <Badge variant="outline">Tenant Base</Badge>
+                      ) : (
+                        <Badge variant="outline">Tenant Custom</Badge>
+                      )}
+                    </div>
+                    {role.scope === "tenant_custom" && role.tenant_id ? (
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {getTenantLabel(role.tenant_id)}
+                      </div>
+                    ) : null}
+                  </TableCell>
+                  <TableCell>
+                    {role.is_system_role ? <Badge variant="secondary">System</Badge> : "-"}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {new Date(role.created_at).toLocaleDateString()}
@@ -359,20 +408,58 @@ export default function RoleManager() {
               />
             </div>
             <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="is_global" className="text-right">
-                글로벌 역할
+              <Label htmlFor="scope" className="text-right">
+                범위
               </Label>
-              <div className="flex items-center space-x-2 col-span-3">
-                <Switch
-                  id="is_global"
-                  checked={formData.is_global}
-                  onCheckedChange={(checked) => setFormData({ ...formData, is_global: checked })}
-                />
-                <span className="text-xs text-muted-foreground">
-                  모든 테넌트에서 공통으로 사용할 수 있는 역할입니다. (체크 해제 시 테넌트 ID 필요)
-                </span>
-              </div>
+              <Select
+                value={formData.scope}
+                onValueChange={(value) =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    scope: value as RoleScope,
+                    tenant_id: value === "tenant_custom" ? prev.tenant_id : "",
+                  }))
+                }
+                disabled={!!editingRole?.is_system_role}
+              >
+                <SelectTrigger className="col-span-3">
+                  <SelectValue placeholder="Select scope" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="platform">Platform</SelectItem>
+                  <SelectItem value="tenant_base">Tenant Base</SelectItem>
+                  <SelectItem value="tenant_custom">Tenant Custom</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
+            {formData.scope === "tenant_custom" && (
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="tenant_id" className="text-right">
+                  테넌트
+                </Label>
+                <Select
+                  value={formData.tenant_id}
+                  onValueChange={(value) => setFormData({ ...formData, tenant_id: value })}
+                >
+                  <SelectTrigger className="col-span-3">
+                    <SelectValue placeholder="Select tenant" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {tenants.length === 0 ? (
+                      <div className="px-2 py-1 text-xs text-muted-foreground">
+                        테넌트가 없습니다.
+                      </div>
+                    ) : (
+                      tenants.map((tenant) => (
+                        <SelectItem key={tenant.id} value={tenant.id}>
+                          {tenant.name} ({tenant.slug})
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
             <div className="border-t pt-4 mt-2">
               <Label className="mb-4 block text-base">권한 할당</Label>

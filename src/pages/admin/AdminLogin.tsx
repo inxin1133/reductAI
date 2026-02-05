@@ -31,14 +31,10 @@ export default function AdminLogin() {
     () => import.meta.env.VITE_API_BASE_URL || "http://localhost:3001",
     []
   )
-  const USER_API_BASE = "http://localhost:3002/api/users"
-
-  // 관리자 여부를 확인하는 헬퍼 (role_name/slug에 admin 포함 여부)
-  const isAdminRole = (roleName?: string | null, roleSlug?: string | null) => {
-    const toLower = (v?: string | null) => (v || "").toLowerCase()
-    const name = toLower(roleName)
-    const slug = toLower(roleSlug)
-    return name === "admin" || slug === "admin" || name.includes("admin") || slug.includes("admin")
+  // 관리자 여부를 확인하는 헬퍼 (platformRole slug 기준)
+  const isAdminRole = (roleSlug?: string | null) => {
+    const slug = (roleSlug || "").toLowerCase()
+    return slug === "admin" || slug === "super-admin" || slug === "owner"
   }
 
   const handleLogin = async () => {
@@ -71,27 +67,8 @@ export default function AdminLogin() {
         return
       }
 
-      // 2) 사용자 역할 조회 (user-service)
-      //    검색 조건으로 email을 사용해 1명만 조회 -> role 정보를 확인
-      const roleRes = await fetch(`${USER_API_BASE}?limit=1&search=${encodeURIComponent(email)}`, {
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-      })
-
-      if (!roleRes.ok) {
-        const err = await roleRes.json().catch(() => ({}))
-        alert(err.message || "역할 정보를 불러오지 못했습니다.")
-        return
-      }
-
-      const roleData = await roleRes.json()
-      const foundUser = roleData.users?.[0]
-      const roleName = foundUser?.role_name
-      const roleSlug = foundUser?.role_slug
-
-      if (!isAdminRole(roleName, roleSlug)) {
+      const platformRole = loginData.platformRole
+      if (!isAdminRole(platformRole)) {
         alert("관리자 권한이 없습니다. 관리자 계정으로 로그인하세요.")
         return
       }

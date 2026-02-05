@@ -56,7 +56,7 @@ async function resolveTenantId(req: AuthedRequest): Promise<string> {
 async function tenantAllowsSharedPages(tenantId: string): Promise<boolean> {
   const r = await query(`SELECT tenant_type FROM tenants WHERE id = $1 AND deleted_at IS NULL LIMIT 1`, [tenantId])
   const tt = String(r.rows[0]?.tenant_type || "")
-  // User request: Team + Enterprise both should show "팀 페이지" section (exclude Personal)
+  // User request: Team + Group both should show "팀 페이지" section (exclude Personal)
   return tt !== "personal"
 }
 
@@ -439,7 +439,7 @@ export async function listMyPageCategories(req: Request, res: Response) {
     const type = typeof req.query.type === "string" ? String(req.query.type) : "personal_page"
     const categoryType = type === "team_page" ? "team_page" : "personal_page"
 
-    // Shared/Team categories exist when the current tenant is NOT personal (team + enterprise).
+    // Shared/Team categories exist when the current tenant is NOT personal (team + group).
     if (categoryType === "team_page") {
       const ok = await tenantAllowsSharedPages(tenantId)
       if (!ok) return res.json([])

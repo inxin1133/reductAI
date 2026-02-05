@@ -68,6 +68,7 @@ error_retryable -- true/false (선택: 재시도 전략 자동화에 유용)
 
 👉 이 테이블은 **“영수증 헤더”** 역할
 
+
 # 토큰
 
 ### Text / Read Image / Audio (토큰 기반)

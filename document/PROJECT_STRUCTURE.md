@@ -86,7 +86,8 @@ reductai/
 - `ai_models`: AI 모델 정보
 - `provider_api_credentials`: API 인증 정보
 - `tenant_model_access`: 테넌트별 모델 접근 권한
-- `model_usage_logs`: 모델 사용 로그
+- `llm_usage_logs`: LLM 사용 로그(요약 토큰/비용 포함)
+- `llm_token_usages`: 토큰 사용량(정밀 과금 단위)
 - `model_performance_metrics`: 성능 지표
 - `model_routing_rules`: 모델 라우팅 규칙
 - `model_conversations`: 대화 세션

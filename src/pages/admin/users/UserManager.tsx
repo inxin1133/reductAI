@@ -45,7 +45,8 @@ interface User {
 interface Role {
   id: string
   name: string
-  is_global: boolean
+  slug?: string
+  scope: 'platform' | 'tenant_base' | 'tenant_custom'
 }
 
 interface Pagination {
@@ -55,8 +56,8 @@ interface Pagination {
   totalPages: number
 }
 
-const API_URL = "http://localhost:3002/api/users"
-const ROLES_API_URL = "http://localhost:3002/api/roles"
+const API_URL = "/api/users"
+const ROLES_API_URL = "/api/roles"
 
 export default function UserManager() {
   const [users, setUsers] = useState<User[]>([])
@@ -64,6 +65,7 @@ export default function UserManager() {
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 10, total: 0, totalPages: 0 })
   const [isLoading, setIsLoading] = useState(true)
   const [search, setSearch] = useState("")
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   
   // Dialog state
   const [isDialogOpen, setIsDialogOpen] = useState(false)
@@ -97,10 +99,13 @@ export default function UserManager() {
       // Fetch global roles or all roles?
       // Since we are likely assigning global roles to system users, let's filter or just fetch all.
       // Backend getRoles supports tenant_id filtering, but without it returns all?
-      const response = await fetch(ROLES_API_URL, { headers: authHeaders() })
+      const response = await fetch(`${ROLES_API_URL}?scope=platform`, { headers: authHeaders() })
       if (response.ok) {
         const data = await response.json()
         setRoles(data)
+      } else {
+        const msg = await response.text().catch(() => "")
+        console.error("Failed to fetch roles", msg)
       }
     } catch (error) {
       console.error("Failed to fetch roles", error)
@@ -109,6 +114,7 @@ export default function UserManager() {
 
   const fetchUsers = async () => {
     setIsLoading(true)
+    setErrorMessage(null)
     try {
       const queryParams = new URLSearchParams({
         page: pagination.page.toString(),
@@ -120,9 +126,15 @@ export default function UserManager() {
         const data = await response.json()
         setUsers(data.users)
         setPagination(data.pagination)
+      } else {
+        const msg = await response.text().catch(() => "")
+        setUsers([])
+        setErrorMessage(msg || "사용자 목록을 불러오지 못했습니다.")
       }
     } catch (error) {
       console.error("Failed to fetch users", error)
+      setUsers([])
+      setErrorMessage("서버 통신 중 오류가 발생했습니다.")
     } finally {
       setIsLoading(false)
     }
@@ -134,10 +146,14 @@ export default function UserManager() {
   }
 
   const getDefaultRoleId = () => {
-    const lower = roles.map(r => ({ ...r, ln: r.name.toLowerCase() }))
+    const lower = roles.map(r => ({
+      ...r,
+      ln: r.name.toLowerCase(),
+      sl: (r.slug || "").toLowerCase(),
+    }))
     return (
-      lower.find(r => r.ln === "user")?.id ||
-      lower.find(r => r.ln.includes("user"))?.id ||
+      lower.find(r => r.sl === "user" || r.ln === "user")?.id ||
+      lower.find(r => r.sl.includes("user") || r.ln.includes("user"))?.id ||
       roles[0]?.id ||
       ""
     )
@@ -250,6 +266,12 @@ export default function UserManager() {
               <TableRow>
                 <TableCell colSpan={8} className="h-24 text-center">
                   <Loader2 className="h-6 w-6 animate-spin mx-auto" />
+                </TableCell>
+              </TableRow>
+            ) : errorMessage ? (
+              <TableRow>
+                <TableCell colSpan={8} className="h-24 text-center text-destructive">
+                  {errorMessage}
                 </TableCell>
               </TableRow>
             ) : users.length === 0 ? (
@@ -368,7 +390,7 @@ export default function UserManager() {
                 <SelectContent>
                   {roles.map((role) => (
                     <SelectItem key={role.id} value={role.id}>
-                      {role.name}
+                      {role.name} {role.slug ? `(${role.slug})` : ""}
                     </SelectItem>
                   ))}
                 </SelectContent>

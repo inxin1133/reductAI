@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/select"
 import { Loader2, RefreshCcw, Search } from "lucide-react"
 
-type UsageStatus = "success" | "failure" | "error" | "timeout" | "rate_limited"
+type UsageStatus = "success" | "failure" | "error" | "timeout" | "rate_limited" | "partial" | "failed"
 
 type UsageLogRow = {
   id: string
@@ -74,7 +74,7 @@ function fmtDt(iso: string) {
 
 function statusBadgeVariant(s: UsageStatus) {
   if (s === "success") return "default"
-  if (s === "rate_limited") return "secondary"
+  if (s === "rate_limited" || s === "partial") return "secondary"
   return "destructive"
 }
 
@@ -195,6 +195,8 @@ export default function ModelUsageLogs() {
           <SelectContent>
             <SelectItem value="all">상태(전체)</SelectItem>
             <SelectItem value="success">success</SelectItem>
+            <SelectItem value="partial">partial</SelectItem>
+            <SelectItem value="failed">failed</SelectItem>
             <SelectItem value="failure">failure</SelectItem>
             <SelectItem value="error">error</SelectItem>
             <SelectItem value="timeout">timeout</SelectItem>
