@@ -60,7 +60,7 @@ function TimelineSidebarList({
   ellipsis: string
   showCreatingThread: boolean
   onSelect: (id: string) => void
-  onRename: (c: TimelineConversation) => void
+  onRename: (id: string, title: string) => void | Promise<void>
   onDelete: (c: TimelineConversation) => void
   onReorder: (orderedIds: string[]) => void
 }) {
@@ -77,6 +77,49 @@ function TimelineSidebarList({
   const [draggingId, setDraggingId] = React.useState<string | null>(null)
   const [dropIndicator, setDropIndicator] = React.useState<{ id: string; position: "before" | "after" } | null>(null)
   const dragBlockClickUntilRef = React.useRef<number>(0)
+
+  // Inline rename state (same UX as page/category trees)
+  const [renameTargetId, setRenameTargetId] = React.useState<string>("")
+  const [renameValue, setRenameValue] = React.useState("")
+  const renameInputRef = React.useRef<HTMLInputElement | null>(null)
+  const renameFocusUntilRef = React.useRef<number>(0)
+  const suppressMenuAutoFocusRef = React.useRef(false)
+
+  const startRename = (c: TimelineConversation) => {
+    setRenameTargetId(c.id)
+    setRenameValue(c.title || "")
+    renameFocusUntilRef.current = Date.now() + 400
+    suppressMenuAutoFocusRef.current = true
+    window.setTimeout(() => {
+      const input = renameInputRef.current
+      if (!input) return
+      input.focus()
+      const len = input.value.length
+      input.setSelectionRange(len, len)
+    }, 0)
+  }
+
+  const cancelRename = () => {
+    setRenameTargetId("")
+    setRenameValue("")
+  }
+
+  const commitRename = async () => {
+    const id = String(renameTargetId || "").trim()
+    const next = String(renameValue || "").trim()
+    if (!id) return
+    if (!next) {
+      cancelRename()
+      return
+    }
+    try {
+      await onRename(id, next)
+    } catch (e) {
+      console.warn("[Timeline] inline rename failed:", e)
+    } finally {
+      cancelRename()
+    }
+  }
 
   const startDrag = (id: string, e: React.DragEvent<HTMLElement>) => {
     dragBlockClickUntilRef.current = Date.now() + 250
@@ -139,7 +182,7 @@ function TimelineSidebarList({
             return (
               <div
                 key={c.id}
-                draggable
+                draggable={renameTargetId !== c.id}
                 onDragStart={(e) => startDrag(c.id, e)}
                 onDragEnd={endDrag}
                 onDragOver={(e) => {
@@ -177,6 +220,7 @@ function TimelineSidebarList({
                 )}
                 style={{ position: "absolute", top: index * ITEM_PITCH, left: 0, right: 0 }}
                 onClick={() => {
+                  if (renameTargetId === c.id) return
                   if (Date.now() < dragBlockClickUntilRef.current) return
                   onSelect(c.id)
                 }}
@@ -193,9 +237,39 @@ function TimelineSidebarList({
                   {!c.isGenerating && c.hasUnread ? (
                     <span className="inline-block size-2 rounded-full bg-red-500 shrink-0" />
                   ) : null}
-                  <p className="text-sm text-foreground truncate w-full" title={c.title || ""}>
-                    {c.isGenerating ? `답변 작성중${ellipsis}` : c.title}
-                  </p>
+                  {renameTargetId === c.id ? (
+                    <input
+                      ref={renameInputRef}
+                      className="min-w-0 w-full flex-1 bg-background outline-none rounded-sm px-1 py-0.5 text-sm border border-border"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        e.stopPropagation()
+                        if (e.key === "Enter") {
+                          e.preventDefault()
+                          void commitRename()
+                        } else if (e.key === "Escape") {
+                          e.preventDefault()
+                          cancelRename()
+                        }
+                      }}
+                      onBlur={() => {
+                        if (Date.now() < renameFocusUntilRef.current) {
+                          window.setTimeout(() => {
+                            renameInputRef.current?.focus()
+                          }, 0)
+                          return
+                        }
+                        void commitRename()
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => e.stopPropagation()}
+                    />
+                  ) : (
+                    <p className="text-sm text-foreground truncate w-full" title={c.title || ""}>
+                      {c.isGenerating ? `답변 작성중${ellipsis}` : c.title}
+                    </p>
+                  )}
                 </div>
                 <div className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                   <DropdownMenu>
@@ -211,11 +285,22 @@ function TimelineSidebarList({
                         <MoreHorizontal className="size-4" />
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                    <DropdownMenuContent
+                      align="end"
+                      onClick={(e) => e.stopPropagation()}
+                      onCloseAutoFocus={(e) => {
+                        if (suppressMenuAutoFocusRef.current) {
+                          e.preventDefault()
+                          suppressMenuAutoFocusRef.current = false
+                          window.setTimeout(() => {
+                            renameInputRef.current?.focus()
+                          }, 0)
+                        }
+                      }}
+                    >
                       <DropdownMenuItem
                         onSelect={(e) => {
-                          e.preventDefault()
-                          onRename(c)
+                          startRename(c)
                         }}
                       >
                         이름 바꾸기
@@ -834,8 +919,6 @@ export default function Timeline() {
     [buildStopMessage]
   )
 
-  const [renameTarget, setRenameTarget] = React.useState<TimelineConversation | null>(null)
-  const [renameValue, setRenameValue] = React.useState("")
   // delete confirm UI removed (toast+undo only)
 
   // Save to Post modal state
@@ -1963,10 +2046,7 @@ export default function Timeline() {
                     setActiveConversationId(id)
                     setIsSidebarOpen(true)
                   }}
-                  onRename={(c) => {
-                    setRenameTarget(c)
-                    setRenameValue(c.title || "")
-                  }}
+                  onRename={(id, title) => void renameThread(id, title)}
                   onDelete={(c) => {
                     void trashThreadWithToast(c)
                   }}
@@ -2026,10 +2106,7 @@ export default function Timeline() {
                     setActiveConversationId(id)
                     if (isMobile) setIsSidebarOpen(false)
                   }}
-                  onRename={(c) => {
-                    setRenameTarget(c)
-                    setRenameValue(c.title || "")
-                  }}
+                  onRename={(id, title) => void renameThread(id, title)}
                   onDelete={(c) => {
                     void trashThreadWithToast(c)
                   }}
@@ -2142,57 +2219,6 @@ export default function Timeline() {
               ) : (
                 "페이지 생성"
               )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Rename Dialog */}
-      <Dialog
-        open={Boolean(renameTarget)}
-        onOpenChange={(open) => {
-          if (!open) {
-            setRenameTarget(null)
-            setRenameValue("")
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>이름 바꾸기</DialogTitle>
-          </DialogHeader>
-          <Input
-            value={renameValue}
-            onChange={(e) => setRenameValue(e.target.value)}
-            placeholder="대화 제목"
-            autoFocus
-          />
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setRenameTarget(null)
-                setRenameValue("")
-              }}
-            >
-              취소
-            </Button>
-            <Button
-              onClick={async () => {
-                const t = renameTarget
-                const next = renameValue.trim()
-                if (!t || !next) return
-                try {
-                  await renameThread(t.id, next)
-                  setRenameTarget(null)
-                  setRenameValue("")
-                } catch (e) {
-                  console.warn("[Timeline] rename failed:", e)
-                }
-              }}
-              disabled={!renameValue.trim()}
-            >
-              저장
             </Button>
           </DialogFooter>
         </DialogContent>

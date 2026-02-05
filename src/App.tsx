@@ -14,6 +14,7 @@ import PostEditorPage from "./pages/posts/PostEditorPage";
 import PostEntryPage from "./pages/posts/PostEntryPage";
 import TrashPage from "./pages/trash/Trash";
 import FileAssetsPage from "./pages/files/FileAssetsPage";
+import { PersonalFilesPage, SharedFilesPage } from "./pages/files/PageAttachmentsPage";
 
 import UserManager from "./pages/admin/users/UserManager";
 import RoleManager from "./pages/admin/users/RoleManager";
@@ -94,6 +95,14 @@ const router = createBrowserRouter([
       {
         path: "/files",
         element: <FileAssetsPage />,
+      },
+      {
+        path: "/files/personal",
+        element: <PersonalFilesPage />,
+      },
+      {
+        path: "/files/shared",
+        element: <SharedFilesPage />,
       },
       {
         path: "/posts",

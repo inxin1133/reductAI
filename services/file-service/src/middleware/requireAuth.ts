@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 type AuthPayload = {
   userId?: string;
   email?: string;
+  tenantId?: string;
 };
 
 type Request = any;
@@ -12,6 +13,7 @@ type NextFunction = any;
 export type AuthedRequest = Request & {
   userId: string;
   email?: string;
+  tenantId?: string;
 };
 
 export function verifyJwtToken(token: string): AuthPayload {
@@ -32,6 +34,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 
     (req as AuthedRequest).userId = String(userId);
     if (decoded?.email) (req as AuthedRequest).email = String(decoded.email);
+  if (decoded?.tenantId) (req as AuthedRequest).tenantId = String(decoded.tenantId);
 
     return next();
   } catch (e) {

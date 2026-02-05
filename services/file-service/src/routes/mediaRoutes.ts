@@ -28,6 +28,7 @@ router.use((req: any, res: any, next: any) => {
     if (!userId) return res.status(401).json({ message: 'Invalid token payload (missing userId)' });
     (req as any).userId = String(userId);
     if (decoded?.email) (req as any).email = String(decoded.email);
+    if (decoded?.tenantId) (req as any).tenantId = String(decoded.tenantId);
     return next();
   } catch (e) {
     console.error('media auth error:', e);

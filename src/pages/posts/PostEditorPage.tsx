@@ -62,6 +62,7 @@ import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
 import EmojiPicker, { Theme } from "emoji-picker-react"
 import type { EmojiClickData } from "emoji-picker-react"
+import { cn } from "@/lib/utils"
 
 type CategoryUpdatedDetail = {
   id: string
@@ -172,6 +173,68 @@ function docJsonHasMeaningfulContent(docJson: unknown): boolean {
     return true
   }
   return false
+}
+
+type TocItem = {
+  id: string
+  blockId: string
+  text: string
+  level: number
+  index: number
+}
+
+function extractNodeText(node: Record<string, unknown>): string {
+  const type = String(node.type || "")
+  if (type === "text") {
+    const raw = typeof node.text === "string" ? node.text : ""
+    return raw
+  }
+  if (type === "hard_break") return " "
+  const kids = Array.isArray(node.content) ? (node.content as unknown[]) : []
+  if (!kids.length) return ""
+  return kids
+    .map((child) => (child && typeof child === "object" ? extractNodeText(child as Record<string, unknown>) : ""))
+    .join("")
+}
+
+function extractHeadings(docJson: unknown): TocItem[] {
+  if (!docJson || typeof docJson !== "object") return []
+  const root = docJson as Record<string, unknown>
+  if (String(root.type || "") !== "doc") return []
+  const items: TocItem[] = []
+  let idx = 0
+
+  const walk = (node: Record<string, unknown>) => {
+    const type = String(node.type || "")
+    if (type === "heading") {
+      const attrs = (node.attrs || {}) as Record<string, unknown>
+      const rawLevel = Number(attrs.level || 1)
+      const level = Math.max(1, Math.min(3, Number.isFinite(rawLevel) ? rawLevel : 1))
+      const blockId = typeof attrs.blockId === "string" ? attrs.blockId : ""
+      const text = extractNodeText(node).trim() || "제목 없음"
+      items.push({
+        id: blockId || `heading_${idx}`,
+        blockId,
+        text,
+        level,
+        index: idx,
+      })
+      idx += 1
+    }
+
+    const kids = Array.isArray(node.content) ? (node.content as unknown[]) : []
+    for (const child of kids) {
+      if (!child || typeof child !== "object") continue
+      walk(child as Record<string, unknown>)
+    }
+  }
+
+  walk(root)
+  return items
+}
+
+function safeCssAttrValue(v: string) {
+  return String(v || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')
 }
 
 type PageIconChoice =
@@ -382,6 +445,23 @@ export default function PostEditorPage() {
   const [serverVersion, setServerVersion] = useState<number>(0)
   const [initialDocJson, setInitialDocJson] = useState<DocJson>(null)
   const [draftDocJson, setDraftDocJson] = useState<DocJson>(null)
+  const editorScrollRef = useRef<HTMLDivElement | null>(null)
+
+  const tocItems = useMemo(() => extractHeadings(draftDocJson), [draftDocJson])
+  const scrollToHeading = useCallback((item: TocItem) => {
+    const root = editorScrollRef.current
+    if (!root) return
+    let target: HTMLElement | null = null
+    if (item.blockId) {
+      target = root.querySelector(`[data-block-id="${safeCssAttrValue(item.blockId)}"]`) as HTMLElement | null
+    }
+    if (!target) {
+      const candidates = root.querySelectorAll("h1, h2, h3")
+      target = candidates.item(item.index) as HTMLElement | null
+    }
+    if (!target) return
+    target.scrollIntoView({ behavior: "smooth", block: "start" })
+  }, [])
 
   const NAV_OPEN_KEY = "reductai:postEditor:navOpen"
   const NAV_WIDTH_KEY = "reductai:postEditor:navWidth"
@@ -2678,13 +2758,12 @@ export default function PostEditorPage() {
                 value={renameValue}
                 onChange={(e) => setRenameValue(e.target.value)}
                 onKeyDown={(e) => {
+                  e.stopPropagation()
                   if (e.key === "Enter") {
                     e.preventDefault()
-                    e.stopPropagation()
                     void applyRename()
                   } else if (e.key === "Escape") {
                     e.preventDefault()
-                    e.stopPropagation()
                     cancelRename()
                   }
                 }}
@@ -3255,8 +3334,9 @@ export default function PostEditorPage() {
       }
     >
       {/* Editor (Main Body slot) */}
-      <div className="flex-1 h-full overflow-auto pt-[60px]">
-        <div className={[isWideLayout ? "w-full" : "max-w-4xl", "mx-auto px-12"].join(" ")}>
+      <div className="flex h-full w-full">
+        <div ref={editorScrollRef} className="flex-1 h-full overflow-auto pt-[60px]">
+          <div className={[isWideLayout ? "w-full" : "max-w-4xl", "mx-auto px-12"].join(" ")}>
           <div className="mb-4">
 
             {/* 페이지 상단 부분 숨기기  - 페이지명, 페이지아이디, 저장버전 */}
@@ -3513,52 +3593,94 @@ export default function PostEditorPage() {
               </Button>
             </div>
           ) : null}
-          {loading ? (
-            <div className="space-y-3">
-              <Skeleton className="h-8 w-48" />
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-[420px] w-full" />
-            </div>
-          ) : (
-            <div className="pb-[300px]">
-              {isEmptyPagePlaceholder ? (
-                <div className="space-y-3">
-                  <div className="text-sm text-muted-foreground">
-                    페이지가 없습니다. 왼쪽에서 “+”로 새 페이지를 만들거나, 페이지를 선택하세요.
+            {loading ? (
+              <div className="space-y-3">
+                <Skeleton className="h-8 w-48" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-[420px] w-full" />
+              </div>
+            ) : (
+              <div className="pb-[300px]">
+                {isEmptyPagePlaceholder ? (
+                  <div className="space-y-3">
+                    <div className="text-sm text-muted-foreground">
+                      페이지가 없습니다. 왼쪽에서 “+”로 새 페이지를 만들거나, 페이지를 선택하세요.
+                    </div>
+                    <div className="space-y-3 opacity-60 pointer-events-none select-none">
+                      <Skeleton className="h-8 w-48" />
+                      <Skeleton className="h-10 w-full" />
+                      <Skeleton className="h-[420px] w-full" />
+                    </div>
+                    <div className="pt-2">
+                      <Button onClick={createNewFromNav}>
+                        <Plus className="size-4 mr-2" />
+                        새 페이지 만들기
+                      </Button>
+                    </div>
                   </div>
-                  <div className="space-y-3 opacity-60 pointer-events-none select-none">
-                    <Skeleton className="h-8 w-48" />
-                    <Skeleton className="h-10 w-full" />
-                    <Skeleton className="h-[420px] w-full" />
-                  </div>
-                  <div className="pt-2">
-                    <Button onClick={createNewFromNav}>
-                      <Plus className="size-4 mr-2" />
-                      새 페이지 만들기
-                    </Button>
+                ) : (
+                  <ProseMirrorEditor
+                    initialDocJson={initialDocJson}
+                    toolbarOpen={pmToolbarOpen}
+                    postId={postId || undefined}
+                    onChange={(j) => {
+                      // Keep draftRef in sync immediately so "save-before-navigate" never misses the latest embed link.
+                      draftRef.current = j
+                      // Debounce the state update to avoid triggering expensive useEffects on every keystroke.
+                      // The draftRef.current is always up-to-date for immediate operations like save.
+                      if (draftStateTimerRef.current) window.clearTimeout(draftStateTimerRef.current)
+                      draftStateTimerRef.current = window.setTimeout(() => {
+                        draftStateTimerRef.current = null
+                        setDraftDocJson(j)
+                      }, 100)
+                    }}
+                  />
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {tocItems.length > 0 ? (
+          <div className="hidden xl:flex h-full w-[52px] shrink-0 items-start justify-center pt-[84px] pr-4">
+            <HoverCard openDelay={0} closeDelay={120}>
+              <HoverCardTrigger asChild>
+                <div className="h-[calc(100vh-180px)] w-4 flex items-start justify-center">
+                  <div className="relative w-3 h-full flex items-start justify-center">
+                    <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-border/70" />
+                    <div className="relative mt-1 flex flex-col items-center gap-2">
+                      {tocItems.map((item) => (
+                        <span
+                          key={item.id}
+                          className={cn(
+                            "rounded-full bg-muted-foreground/60",
+                            item.level === 1 ? "size-2" : item.level === 2 ? "size-1.5" : "size-1"
+                          )}
+                        />
+                      ))}
+                    </div>
                   </div>
                 </div>
-              ) : (
-                <ProseMirrorEditor
-                  initialDocJson={initialDocJson}
-                  toolbarOpen={pmToolbarOpen}
-                  postId={postId || undefined}
-                  onChange={(j) => {
-                    // Keep draftRef in sync immediately so "save-before-navigate" never misses the latest embed link.
-                    draftRef.current = j
-                    // Debounce the state update to avoid triggering expensive useEffects on every keystroke.
-                    // The draftRef.current is always up-to-date for immediate operations like save.
-                    if (draftStateTimerRef.current) window.clearTimeout(draftStateTimerRef.current)
-                    draftStateTimerRef.current = window.setTimeout(() => {
-                      draftStateTimerRef.current = null
-                      setDraftDocJson(j)
-                    }, 100)
-                  }}
-                />
-              )}
-            </div>
-          )}
-        </div>
+              </HoverCardTrigger>
+              <HoverCardContent side="left" align="center" className="w-[260px] p-2">
+                <div className="px-2 py-1 text-xs font-semibold text-muted-foreground">목차</div>
+                <div className="max-h-[360px] overflow-auto">
+                  {tocItems.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className="w-full text-left text-sm px-2 py-1 rounded-md hover:bg-accent transition-colors"
+                      style={{ paddingLeft: `${8 + (item.level - 1) * 12}px` }}
+                      onClick={() => scrollToHeading(item)}
+                    >
+                      <span className="truncate block">{item.text}</span>
+                    </button>
+                  ))}
+                </div>
+              </HoverCardContent>
+            </HoverCard>
+          </div>
+        ) : null}
       </div>
     </AppShell>
 

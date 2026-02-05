@@ -10,6 +10,7 @@ import archiver from 'archiver';
 
 type MediaKind = 'image' | 'audio' | 'video' | 'file';
 type FileSourceType = 'ai_generated' | 'attachment' | 'post_upload' | 'external_link' | 'profile_image';
+type AssetScope = 'user' | 'tenant';
 
 const VALID_SOURCE_TYPES = new Set<FileSourceType>([
   'ai_generated',
@@ -43,6 +44,17 @@ function parseList(raw: unknown): string[] {
     .split(',')
     .map((v) => String(v).trim())
     .filter(Boolean);
+}
+
+async function resolveTenantId(req: AuthedRequest): Promise<{ tenantId: string; hasTenantId: boolean }> {
+  if (req.tenantId) return { tenantId: String(req.tenantId), hasTenantId: true };
+  return { tenantId: await ensureSystemTenantId(), hasTenantId: false };
+}
+
+function parseScope(q: Record<string, unknown>, hasTenantId: boolean): AssetScope {
+  if (!hasTenantId) return 'user';
+  const raw = q.scope ?? q.scope_type ?? q.scopeType;
+  return String(raw || '').toLowerCase() === 'tenant' ? 'tenant' : 'user';
 }
 
 function ttlDays() {
@@ -94,7 +106,7 @@ function ensureUniqueName(name: string, used: Set<string>) {
 
 export async function createMediaAsset(req: Request, res: Response) {
   try {
-    const tenantId = await ensureSystemTenantId();
+    const { tenantId } = await resolveTenantId(req as AuthedRequest);
     const userId = (req as AuthedRequest).userId || null;
     const body = (req.body || {}) as Record<string, unknown>;
 
@@ -153,7 +165,7 @@ export async function createMediaAsset(req: Request, res: Response) {
 
 export async function createMediaAssetUpload(req: Request, res: Response) {
   try {
-    const tenantId = await ensureSystemTenantId();
+    const { tenantId } = await resolveTenantId(req as AuthedRequest);
     const userId = (req as AuthedRequest).userId || null;
 
     const q = (req.query || {}) as Record<string, unknown>;
@@ -222,9 +234,10 @@ export async function createMediaAssetUpload(req: Request, res: Response) {
 
 export async function listMediaAssets(req: Request, res: Response) {
   try {
-    const tenantId = await ensureSystemTenantId();
+    const { tenantId, hasTenantId } = await resolveTenantId(req as AuthedRequest);
     const userId = (req as AuthedRequest).userId;
     const q = (req.query || {}) as Record<string, unknown>;
+    const scope = parseScope(q, hasTenantId);
 
     const sourceRaw = q.source_type || q.sourceType || '';
     const kindRaw = q.kind || '';
@@ -236,8 +249,12 @@ export async function listMediaAssets(req: Request, res: Response) {
     const sourceTypes = parseList(sourceRaw).filter((s) => VALID_SOURCE_TYPES.has(s as FileSourceType));
     const kinds = parseList(kindRaw).filter((s) => VALID_KINDS.has(s as MediaKind));
 
-    const where: string[] = ['a.tenant_id = $1', 'a.user_id = $2', "a.status <> 'deleted'"];
-    const params: any[] = [tenantId, userId];
+    const where: string[] = ['a.tenant_id = $1', "a.status <> 'deleted'"];
+    const params: any[] = [tenantId];
+    if (scope !== 'tenant') {
+      params.push(userId);
+      where.push(`a.user_id = $${params.length}`);
+    }
     if (!includeExpired) where.push('(a.expires_at IS NULL OR a.expires_at > NOW())');
 
     if (sourceTypes.length > 0) {
@@ -352,19 +369,29 @@ export async function listMediaAssets(req: Request, res: Response) {
 
 export async function deleteMediaAsset(req: Request, res: Response) {
   try {
-    const tenantId = await ensureSystemTenantId();
+    const { tenantId, hasTenantId } = await resolveTenantId(req as AuthedRequest);
     const userId = (req as AuthedRequest).userId;
+    const q = (req.query || {}) as Record<string, unknown>;
+    const scope = parseScope(q, hasTenantId);
     const id = String(req.params.id || '').trim();
     if (!id) return res.status(400).json({ message: 'id is required' });
 
+    const baseWhere: string[] = ['id = $1', 'tenant_id = $2'];
+    const baseParams: any[] = [id, tenantId];
+    if (scope !== 'tenant') {
+      baseParams.push(userId);
+      baseWhere.push(`user_id = $${baseParams.length}`);
+    }
+
+    const selectWhere = [...baseWhere, "status <> 'deleted'"];
     const r = await query(
       `
       SELECT id, storage_provider, storage_key
       FROM file_assets
-      WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status <> 'deleted'
+      WHERE ${selectWhere.join(' AND ')}
       LIMIT 1
       `,
-      [id, tenantId, userId]
+      baseParams
     );
     if (r.rows.length === 0) return res.status(404).json({ message: 'Not found' });
     const row = r.rows[0] as any;
@@ -386,9 +413,9 @@ export async function deleteMediaAsset(req: Request, res: Response) {
       `
       UPDATE file_assets
       SET status = 'deleted', updated_at = CURRENT_TIMESTAMP
-      WHERE id = $1 AND tenant_id = $2 AND user_id = $3
+      WHERE ${baseWhere.join(' AND ')}
       `,
-      [id, tenantId, userId]
+      baseParams
     );
 
     return res.json({ ok: true });
@@ -400,21 +427,31 @@ export async function deleteMediaAsset(req: Request, res: Response) {
 
 export async function updateMediaAssetPin(req: Request, res: Response) {
   try {
-    const tenantId = await ensureSystemTenantId();
+    const { tenantId, hasTenantId } = await resolveTenantId(req as AuthedRequest);
     const userId = (req as AuthedRequest).userId;
+    const q = (req.query || {}) as Record<string, unknown>;
+    const scope = parseScope(q, hasTenantId);
     const id = String(req.params.id || '').trim();
     if (!id) return res.status(400).json({ message: 'id is required' });
     const body = (req.body || {}) as Record<string, unknown>;
     const pinned = Boolean(body.pinned);
 
+    const baseWhere: string[] = ['id = $1', 'tenant_id = $2'];
+    const baseParams: any[] = [id, tenantId];
+    if (scope !== 'tenant') {
+      baseParams.push(userId);
+      baseWhere.push(`user_id = $${baseParams.length}`);
+    }
+    const selectWhere = [...baseWhere, "status <> 'deleted'"];
+
     const current = await query(
       `
       SELECT id, source_type, expires_at, metadata
       FROM file_assets
-      WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status <> 'deleted'
+      WHERE ${selectWhere.join(' AND ')}
       LIMIT 1
       `,
-      [id, tenantId, userId]
+      baseParams
     );
     if (current.rows.length === 0) return res.status(404).json({ message: 'Not found' });
     const row = current.rows[0] as any;
@@ -429,16 +466,18 @@ export async function updateMediaAssetPin(req: Request, res: Response) {
     }
 
     const expiresAt = pinned ? null : new Date(Date.now() + ttlDays() * 24 * 60 * 60 * 1000);
+    const expiresIdx = baseParams.length + 1;
+    const pinnedIdx = baseParams.length + 2;
     const r = await query(
       `
       UPDATE file_assets
-      SET expires_at = $4,
-          metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{pinned_by_user}', to_jsonb($5::boolean), true),
+      SET expires_at = $${expiresIdx},
+          metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{pinned_by_user}', to_jsonb($${pinnedIdx}::boolean), true),
           updated_at = CURRENT_TIMESTAMP
-      WHERE id = $1 AND tenant_id = $2 AND user_id = $3
+      WHERE ${baseWhere.join(' AND ')}
       RETURNING id, expires_at, metadata
       `,
-      [id, tenantId, userId, expiresAt, pinned]
+      [...baseParams, expiresAt, pinned]
     );
     const next = r.rows[0] as any;
     return res.json({
@@ -456,22 +495,31 @@ export async function updateMediaAssetPin(req: Request, res: Response) {
 
 export async function updateMediaAssetFavorite(req: Request, res: Response) {
   try {
-    const tenantId = await ensureSystemTenantId();
+    const { tenantId, hasTenantId } = await resolveTenantId(req as AuthedRequest);
     const userId = (req as AuthedRequest).userId;
+    const q = (req.query || {}) as Record<string, unknown>;
+    const scope = parseScope(q, hasTenantId);
     const id = String(req.params.id || '').trim();
     if (!id) return res.status(400).json({ message: 'id is required' });
     const body = (req.body || {}) as Record<string, unknown>;
     const favorite = Boolean(body.favorite);
 
+    const where: string[] = ['id = $1', 'tenant_id = $2', "status <> 'deleted'"];
+    const params: any[] = [id, tenantId];
+    if (scope !== 'tenant') {
+      params.push(userId);
+      where.push(`user_id = $${params.length}`);
+    }
+    const favoriteIdx = params.length + 1;
     const r = await query(
       `
       UPDATE file_assets
-      SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{favorite}', to_jsonb($4::boolean), true),
+      SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{favorite}', to_jsonb($${favoriteIdx}::boolean), true),
           updated_at = CURRENT_TIMESTAMP
-      WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status <> 'deleted'
+      WHERE ${where.join(' AND ')}
       RETURNING id, metadata
       `,
-      [id, tenantId, userId, favorite]
+      [...params, favorite]
     );
     if (r.rows.length === 0) return res.status(404).json({ message: 'Not found' });
     return res.json({ ok: true, id, favorite });
@@ -483,8 +531,10 @@ export async function updateMediaAssetFavorite(req: Request, res: Response) {
 
 export async function getMediaAsset(req: Request, res: Response) {
   try {
-    const tenantId = await ensureSystemTenantId();
+    const { tenantId, hasTenantId } = await resolveTenantId(req as AuthedRequest);
     const userId = (req as AuthedRequest).userId;
+    const q = (req.query || {}) as Record<string, unknown>;
+    const scope = parseScope(q, hasTenantId);
     const id = String(req.params.id || '').trim();
     if (!id) return res.status(400).json({ message: 'id is required' });
 
@@ -520,7 +570,7 @@ export async function getMediaAsset(req: Request, res: Response) {
     if (r.rows.length === 0) return res.status(404).json({ message: 'Not found' });
     const row = r.rows[0] as any;
 
-    if (row.is_private) {
+    if (row.is_private && scope !== 'tenant') {
       const refType = String(row.reference_type || '');
       const owner =
         refType === 'message' && row.conversation_user_id ? String(row.conversation_user_id) : row.user_id ? String(row.user_id) : '';
@@ -560,8 +610,10 @@ export async function getMediaAsset(req: Request, res: Response) {
 
 export async function downloadMediaAssetsZip(req: Request, res: Response) {
   try {
-    const tenantId = await ensureSystemTenantId();
+    const { tenantId, hasTenantId } = await resolveTenantId(req as AuthedRequest);
     const userId = (req as AuthedRequest).userId;
+    const q = (req.query || {}) as Record<string, unknown>;
+    const scope = parseScope(q, hasTenantId);
     const body = (req.body || {}) as Record<string, unknown>;
     const rawIds = Array.isArray(body.ids)
       ? body.ids
@@ -574,16 +626,21 @@ export async function downloadMediaAssetsZip(req: Request, res: Response) {
     if (!ids.length) return res.status(400).json({ message: 'ids are required' });
     const limitedIds = ids.slice(0, 200);
 
+    const where: string[] = ['tenant_id = $1', "status <> 'deleted'"];
+    const params: any[] = [tenantId];
+    if (scope !== 'tenant') {
+      params.push(userId);
+      where.push(`user_id = $${params.length}`);
+    }
+    params.push(limitedIds);
+    where.push(`id = ANY($${params.length}::uuid[])`);
     const r = await query(
       `
       SELECT id, original_filename, mime, storage_provider, storage_key, storage_url, cdn_url
       FROM file_assets
-      WHERE tenant_id = $1
-        AND user_id = $2
-        AND status <> 'deleted'
-        AND id = ANY($3::uuid[])
+      WHERE ${where.join(' AND ')}
       `,
-      [tenantId, userId, limitedIds]
+      params
     );
     if (r.rows.length === 0) return res.status(404).json({ message: 'No files found' });
 

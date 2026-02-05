@@ -425,7 +425,9 @@ export function Sidebar({ className }: SidebarProps) {
   const isTimelineActive = location.pathname.startsWith("/timeline")
   const isPostsActive = location.pathname.startsWith("/posts")
   const isTrashActive = location.pathname.startsWith("/trash")
-  const isFilesActive = location.pathname.startsWith("/files")
+  const isGeneratedFilesActive = location.pathname === "/files"
+  const isPersonalFilesActive = location.pathname.startsWith("/files/personal")
+  const isSharedFilesActive = location.pathname.startsWith("/files/shared")
   const activeCategoryId = (() => {
     try {
       const qs = new URLSearchParams(location.search || "")
@@ -1207,7 +1209,9 @@ export function Sidebar({ className }: SidebarProps) {
             <div
               className={cn(
                 "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                isFilesActive ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10" : "hover:bg-neutral-200"
+                isGeneratedFilesActive
+                  ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10"
+                  : "hover:bg-neutral-200"
               )}
               onClick={() => {
                 setIsMobileMenuOpen(false)
@@ -1275,9 +1279,18 @@ export function Sidebar({ className }: SidebarProps) {
                       </div>
                     )
                   })}
-                  <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
-                     <Save className="size-5" />
-                     <span className="text-base text-foreground">개인 파일</span>
+                  <div
+                    className={cn(
+                      "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                      isPersonalFilesActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                    )}
+                    onClick={() => {
+                      setIsMobileMenuOpen(false)
+                      navigate("/files/personal")
+                    }}
+                  >
+                    <Save className="size-5" />
+                    <span className="text-base text-foreground">개인 파일</span>
                   </div>
                 </>
               )}
@@ -1340,9 +1353,18 @@ export function Sidebar({ className }: SidebarProps) {
                       </div>
                     )
                   })}
-                  <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
-                     <Save className="size-5" />
-                     <span className="text-base text-foreground">공유 파일</span>
+                  <div
+                    className={cn(
+                      "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                      isSharedFilesActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                    )}
+                    onClick={() => {
+                      setIsMobileMenuOpen(false)
+                      navigate("/files/shared")
+                    }}
+                  >
+                    <Save className="size-5" />
+                    <span className="text-base text-foreground">공유 파일</span>
                   </div>
                 </>
               )}
@@ -1480,7 +1502,7 @@ export function Sidebar({ className }: SidebarProps) {
           className={cn(
             "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
             !isOpen && "justify-center",
-            isFilesActive ? "bg-neutral-200" : "hover:bg-accent/50"
+            isGeneratedFilesActive ? "bg-neutral-200" : "hover:bg-accent/50"
           )}
           onClick={() => navigate("/files")}
         >
@@ -1859,12 +1881,21 @@ export function Sidebar({ className }: SidebarProps) {
                     </div>
                    )
                  })}
-                 <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
-                   <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-                     <Save className="size-full" />
-                   </div>
-                   <span className="text-sm text-sidebar-foreground">개인 파일</span>
-                 </div>
+                <div
+                  className={cn(
+                    "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                    isPersonalFilesActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                  )}
+                  onClick={() => {
+                    setIsMobileMenuOpen(false)
+                    navigate("/files/personal")
+                  }}
+                >
+                  <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
+                    <Save className="size-full" />
+                  </div>
+                  <span className="text-sm text-sidebar-foreground">개인 파일</span>
+                </div>
                </>
              )}
           </div>
@@ -2235,7 +2266,16 @@ export function Sidebar({ className }: SidebarProps) {
                     )
                   })}
 
-                  <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
+                  <div
+                    className={cn(
+                      "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                      isSharedFilesActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                    )}
+                    onClick={() => {
+                      setIsMobileMenuOpen(false)
+                      navigate("/files/shared")
+                    }}
+                  >
                     <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
                       <Save className="size-full" />
                     </div>
