@@ -121,9 +121,9 @@ export class MediaNodeView implements NodeView {
   private onError: () => void
   private onLoad: () => void
   private view?: EditorView
-  private getPos?: () => number
+  private getPos?: () => number | undefined
 
-  constructor(node: PMNode, type: MediaType, view?: EditorView, getPos?: () => number) {
+  constructor(node: PMNode, type: MediaType, view?: EditorView, getPos?: () => number | undefined) {
     this.type = type
     this.view = view
     this.getPos = getPos
@@ -193,6 +193,7 @@ export class MediaNodeView implements NodeView {
           tooltip.style.display = "none"
           if (!this.view || !this.getPos) return
           const pos = this.getPos()
+          if (pos == null) return
           const nodeAt = this.view.state.doc.nodeAt(pos)
           if (!nodeAt) return
           const nextAttrs = { ...nodeAt.attrs, width: Math.round(latest) }
@@ -325,5 +326,5 @@ export class MediaNodeView implements NodeView {
 }
 
 export function createMediaNodeView(type: MediaType) {
-  return (node: PMNode, view: EditorView, getPos: () => number) => new MediaNodeView(node, type, view, getPos)
+  return (node: PMNode, view: EditorView, getPos: () => number | undefined) => new MediaNodeView(node, type, view, getPos)
 }

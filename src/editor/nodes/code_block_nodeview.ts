@@ -108,7 +108,7 @@ export class CodeBlockNodeView implements NodeView {
   private lineNumbersButton: HTMLButtonElement
   private latestText: string
 
-  constructor(node: PMNode, view: EditorView, getPos: () => number, options?: CodeBlockNodeViewOptions) {
+  constructor(node: PMNode, view: EditorView, getPos: () => number | undefined, options?: CodeBlockNodeViewOptions) {
     const allowLanguageChange = options?.allowLanguageChange !== false
     const persistPrefs = options?.persistPrefs !== false
     const wrap = document.createElement("div")
@@ -199,6 +199,7 @@ export class CodeBlockNodeView implements NodeView {
 
     const updateAttrs = (next: Partial<CodeBlockAttrs>) => {
       const pos = getPos()
+      if (pos == null) return
       const curNode = view.state.doc.nodeAt(pos)
       const curAttrs = (curNode?.attrs || {}) as CodeBlockAttrs
       const blockId = (curAttrs.blockId ? String(curAttrs.blockId) : null) || null
@@ -244,6 +245,7 @@ export class CodeBlockNodeView implements NodeView {
       e.preventDefault()
       e.stopPropagation()
       const pos = getPos()
+      if (pos == null) return
       const curNode = view.state.doc.nodeAt(pos)
       const curAttrs = (curNode?.attrs || {}) as CodeBlockAttrs
       updateAttrs({ wrap: !curAttrs.wrap })
@@ -253,6 +255,7 @@ export class CodeBlockNodeView implements NodeView {
       e.preventDefault()
       e.stopPropagation()
       const pos = getPos()
+      if (pos == null) return
       const curNode = view.state.doc.nodeAt(pos)
       const curAttrs = (curNode?.attrs || {}) as CodeBlockAttrs
       const next = curAttrs.lineNumbers !== false ? false : true

@@ -15,6 +15,7 @@ import { audioNodeSpec } from "../nodes/audio"
 import { videoNodeSpec } from "../nodes/video"
 import { mentionNodeSpec } from "../nodes/mention"
 import { pageLinkNodeSpec } from "../nodes/page_link"
+import { inlineIconNodeSpec } from "../nodes/inline_icon"
 import { tableCellNodeSpec, tableHeaderNodeSpec, tableNodeSpec, tableRowNodeSpec } from "../nodes/table"
 import { horizontalRuleNodeSpec } from "../nodes/horizontal_rule"
 
@@ -65,6 +66,7 @@ export const editorSchema = new Schema({
     .addToEnd("audio", audioNodeSpec)
     .addToEnd("video", videoNodeSpec)
     .addToEnd("page_link", pageLinkNodeSpec)
+    .addToEnd("inline_icon", inlineIconNodeSpec)
     .addToEnd("mention", mentionNodeSpec),
   marks: baseMarks
     .addToEnd("underline", underlineMarkSpec)

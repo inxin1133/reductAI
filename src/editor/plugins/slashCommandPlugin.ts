@@ -25,7 +25,7 @@ const key = new PluginKey<SlashState>("slashCommand")
 const SLASH_GROUPS: Array<{ title: string; keys: string[] }> = [
   {
     title: "텍스트",
-    keys: ["text", "h1", "h2", "h3", "quote", "divider", "code", "list", "ordered", "checklist", "link", "page"],
+    keys: ["text", "h1", "h2", "h3", "quote", "divider", "code", "list", "ordered", "checklist", "link", "page", "emoji"],
   },
   { title: "미디어", keys: ["image"] },
   { title: "표", keys: ["table"] },
@@ -38,7 +38,15 @@ const GROUP_ORDER = new Map(
   SLASH_GROUPS.flatMap((g, i) => g.keys.map((k) => [k, i] as const))
 )
 
-const SHORTCUTS: Record<string, string> = {
+function getModKeyLabel() {
+  if (typeof navigator === "undefined") return "Ctrl"
+  const platform = navigator.platform || ""
+  const ua = navigator.userAgent || ""
+  const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua)
+  return isMac ? "⌘" : "Ctrl"
+}
+
+const SHORTCUTS: Record<string, string | (() => string)> = {
   h1: "#",
   h2: "##",
   h3: "###",
@@ -48,6 +56,7 @@ const SHORTCUTS: Record<string, string> = {
   ordered: "1.",
   checklist: "[]",
   code: "```",
+  emoji: () => `${getModKeyLabel()}+J`,
 }
 
 const ICON_HTML: Record<string, string> = {
@@ -65,6 +74,7 @@ const ICON_HTML: Record<string, string> = {
   table: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>`,
   link: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
   page: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>`,
+  emoji: `<span style="font-size:14px;line-height:1;">😊</span>`,
 }
 
 function escapeHtml(input: string) {
@@ -101,7 +111,7 @@ function deleteSlashQuery(view: EditorView, from: number, to: number) {
 
 function makeCommands(schema: Schema): SlashCmd[] {
   const blocks = getBlockCommandRegistry(schema).filter((b) => b.key !== "duplicate")
-  return blocks.map((b) => ({
+  const base = blocks.map((b) => ({
     key: b.key,
     title: b.title,
     keywords: b.keywords,
@@ -110,6 +120,19 @@ function makeCommands(schema: Schema): SlashCmd[] {
       b.applyReplace(view)
     },
   }))
+  return [
+    ...base,
+    {
+      key: "emoji",
+      title: "이모지",
+      keywords: ["emoji", "이모지", "emote", "emotes"],
+      run: (view, ctx) => {
+        deleteSlashQuery(view, ctx.from, ctx.to)
+        if (typeof window === "undefined") return
+        window.dispatchEvent(new CustomEvent("reductai:open-inline-emoji-picker"))
+      },
+    },
+  ]
 }
 
 function sortByGroups(items: SlashCmd[]) {
@@ -220,6 +243,7 @@ export function slashCommandPlugin(schema: Schema) {
           const active = i === st.index
           const icon = ICON_HTML[it.key] || `<span style="font-weight:700;font-size:11px;">•</span>`
           const shortcut = SHORTCUTS[it.key]
+          const shortcutLabel = typeof shortcut === "function" ? shortcut() : shortcut
           return `<div data-i="${i}" style="padding:8px 10px;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px;${
             active ? "background:rgba(0,0,0,0.06);" : ""
           }">
@@ -227,7 +251,7 @@ export function slashCommandPlugin(schema: Schema) {
               <span style="width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;color:rgba(0,0,0,0.6)">${icon}</span>
               <div style="font-size:13px;font-weight:600">${escapeHtml(it.title)}</div>
             </div>
-            ${shortcut ? `<div style="font-size:11px;color:rgba(0,0,0,0.5);font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">${escapeHtml(shortcut)}</div>` : ""}
+            ${shortcutLabel ? `<div style="font-size:11px;color:rgba(0,0,0,0.5);font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">${escapeHtml(shortcutLabel)}</div>` : ""}
           </div>`
         }
 

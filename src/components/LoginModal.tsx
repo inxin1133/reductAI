@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Switch } from "@/components/ui/switch"
 import { Info, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { LogoGoogle } from "@/components/icons/LogoGoogle"
@@ -35,6 +36,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
   
   // Form State
   const [email, setEmail] = React.useState("")
+  const [rememberEmail, setRememberEmail] = React.useState(false)
   const [otp, setOtp] = React.useState("")
   const [name, setName] = React.useState("")
   const [password, setPassword] = React.useState("")
@@ -46,6 +48,8 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
 
   // Ref for password input
   const passwordInputRef = React.useRef<HTMLInputElement>(null)
+  const REMEMBER_EMAIL_KEY = "reductai:login:rememberEmail"
+  const REMEMBER_EMAIL_ENABLED_KEY = "reductai:login:rememberEmailEnabled"
 
   // Reset state when modal opens/closes
   React.useEffect(() => {
@@ -53,6 +57,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       setTimeout(() => {
         setStep('login')
         setEmail("")
+        setRememberEmail(false)
         setOtp("")
         setName("")
         setPassword("")
@@ -65,6 +70,39 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       }, 300)
     }
   }, [open])
+
+  React.useEffect(() => {
+    if (!open) return
+    try {
+      const enabled = localStorage.getItem(REMEMBER_EMAIL_ENABLED_KEY) === "1"
+      setRememberEmail(enabled)
+      if (enabled) {
+        const saved = localStorage.getItem(REMEMBER_EMAIL_KEY) || ""
+        if (saved) setEmail(saved)
+      }
+    } catch {
+      // ignore
+    }
+  }, [REMEMBER_EMAIL_ENABLED_KEY, REMEMBER_EMAIL_KEY, open])
+
+  React.useEffect(() => {
+    if (!open) return
+    try {
+      if (rememberEmail) {
+        localStorage.setItem(REMEMBER_EMAIL_ENABLED_KEY, "1")
+        if (email) {
+          localStorage.setItem(REMEMBER_EMAIL_KEY, email)
+        } else {
+          localStorage.removeItem(REMEMBER_EMAIL_KEY)
+        }
+      } else {
+        localStorage.setItem(REMEMBER_EMAIL_ENABLED_KEY, "0")
+        localStorage.removeItem(REMEMBER_EMAIL_KEY)
+      }
+    } catch {
+      // ignore
+    }
+  }, [REMEMBER_EMAIL_ENABLED_KEY, REMEMBER_EMAIL_KEY, email, open, rememberEmail])
 
   // Focus password input when step changes to 'password_input'
   React.useEffect(() => {
@@ -763,6 +801,14 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                 }}
                 disabled={isLoading}
               />
+              <label className="flex items-center justify-end gap-2 text-xs text-muted-foreground pb-2 px-2">
+                <span>아이디 기억하기</span>
+                <Switch
+                  checked={rememberEmail}
+                  onCheckedChange={(checked) => setRememberEmail(Boolean(checked))}
+                  disabled={isLoading}
+                />
+              </label>
               <Button className="w-full h-[36px]" onClick={handleLoginContinue} disabled={isLoading}>
                 {isLoading ? <Loader2 className="animate-spin w-4 h-4" /> : "계속"}
               </Button>

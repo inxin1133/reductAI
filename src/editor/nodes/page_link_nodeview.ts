@@ -186,11 +186,11 @@ export class PageLinkNodeView implements NodeView {
   private titleInput: HTMLInputElement
   private currentKey: string = ""
   private view: EditorView
-  private getPos: () => number
+  private getPos: () => number | undefined
   private didAutofocus = false
   private iconUpdateHandler: ((e: Event) => void) | null = null
 
-  constructor(node: PMNode, view: EditorView, getPos: () => number) {
+  constructor(node: PMNode, view: EditorView, getPos: () => number | undefined) {
     const dom = document.createElement("div")
     dom.className = "my-2 py-3 px-4 text-card-foreground hover:bg-muted rounded-xl cursor-pointer"
     // IMPORTANT:
@@ -284,7 +284,9 @@ export class PageLinkNodeView implements NodeView {
     })
 
     const navigateToPage = () => {
-      const curNode = this.view.state.doc.nodeAt(this.getPos())
+      const pos = this.getPos()
+      if (pos == null) return
+      const curNode = this.view.state.doc.nodeAt(pos)
       const pageId = String((curNode?.attrs as any)?.pageId || "")
       const display = String((curNode?.attrs as any)?.display || "link")
       if (!pageId) return
@@ -326,7 +328,9 @@ export class PageLinkNodeView implements NodeView {
     pageIcon.addEventListener("click", (e) => {
       e.preventDefault()
       e.stopPropagation()
-      const curNode = this.view.state.doc.nodeAt(this.getPos())
+      const pos = this.getPos()
+      if (pos == null) return
+      const curNode = this.view.state.doc.nodeAt(pos)
       const curDisplay = String((curNode?.attrs as any)?.display || "link")
       if (curDisplay !== "embed") return
       const pageId = String((curNode?.attrs as any)?.pageId || "")
@@ -359,14 +363,15 @@ export class PageLinkNodeView implements NodeView {
       const ce = e as CustomEvent<{ postId?: string; icon?: string | null }>
       const updatedPageId = ce.detail?.postId
       const updatedIcon = ce.detail?.icon
-      
-      const curNode = this.view.state.doc.nodeAt(this.getPos())
+
+      const pos = this.getPos()
+      if (pos == null) return
+      const curNode = this.view.state.doc.nodeAt(pos)
       if (!curNode) return
       const curPageId = String((curNode.attrs as Record<string, unknown>).pageId || "")
       if (curPageId !== updatedPageId) return
       
       // Update the icon in this node
-      const pos = this.getPos()
       const tr = this.view.state.tr.setNodeMarkup(pos, undefined, {
         ...(curNode.attrs as Record<string, unknown>),
         icon: updatedIcon ?? null,
@@ -393,7 +398,9 @@ export class PageLinkNodeView implements NodeView {
   }
 
   private commitTitle() {
-    const node = this.view.state.doc.nodeAt(this.getPos())
+    const pos = this.getPos()
+    if (pos == null) return
+    const node = this.view.state.doc.nodeAt(pos)
     if (!node) return
     const pageId = String((node.attrs as any).pageId || "")
     const display = String((node.attrs as any).display || "link")
@@ -405,7 +412,6 @@ export class PageLinkNodeView implements NodeView {
     const curTitle = String((node.attrs as any).title || "")
     if (curTitle.trim() === nextTitle) return
 
-    const pos = this.getPos()
     const tr = this.view.state.tr.setNodeMarkup(pos, undefined, { ...(node.attrs as any), title: nextTitle })
     this.view.dispatch(tr)
     void (async () => {
@@ -510,6 +516,7 @@ export class PageLinkNodeView implements NodeView {
     const iconChanged = (cachedIcon || "") !== (freshIcon || "")
     if (titleChanged || iconChanged) {
       const pos = this.getPos()
+      if (pos == null) return
       const curNode = this.view.state.doc.nodeAt(pos)
       if (!curNode) return
       const tr = this.view.state.tr.setNodeMarkup(pos, undefined, {

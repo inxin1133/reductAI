@@ -15,9 +15,9 @@ export class ListItemNodeView implements NodeView {
   private checkboxRoot: HTMLButtonElement | null = null
   private checkboxIndicator: HTMLElement | null = null
   private view: EditorView
-  private getPos: () => number
+  private getPos: () => number | undefined
 
-  constructor(node: PMNode, view: EditorView, getPos: () => number) {
+  constructor(node: PMNode, view: EditorView, getPos: () => number | undefined) {
     this.view = view
     this.getPos = getPos
 
@@ -33,6 +33,7 @@ export class ListItemNodeView implements NodeView {
 
   private getParentListKind(): string {
     const pos = this.getPos()
+    if (pos == null) return ""
     const $pos = this.view.state.doc.resolve(pos)
     const parent = $pos.parent
     if (parent.type.name !== "bullet_list") return ""
@@ -92,7 +93,9 @@ export class ListItemNodeView implements NodeView {
           e.preventDefault()
           e.stopPropagation()
 
-          const curNode = this.view.state.doc.nodeAt(this.getPos())
+          const pos = this.getPos()
+          if (pos == null) return
+          const curNode = this.view.state.doc.nodeAt(pos)
           if (!curNode) return
           const curAttrs = curNode.attrs as unknown as ListItemAttrs
           const next = !curAttrs.checked
@@ -101,7 +104,7 @@ export class ListItemNodeView implements NodeView {
           root.dataset.state = next ? "checked" : "unchecked"
           root.setAttribute("aria-checked", next ? "true" : "false")
 
-          const tr = this.view.state.tr.setNodeMarkup(this.getPos(), undefined, { ...curNode.attrs, checked: next })
+          const tr = this.view.state.tr.setNodeMarkup(pos, undefined, { ...curNode.attrs, checked: next })
           this.view.dispatch(tr)
           this.view.focus()
         })

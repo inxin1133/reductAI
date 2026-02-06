@@ -2335,11 +2335,14 @@ export default function Timeline() {
                                     <span className="inline-block size-2 rounded-full bg-primary animate-pulse" />
                                     <span>{step}...</span>
                                   </div>
-                                  <div className="p-3 space-y-2">
+                                  <div className="p-3 space-y-2 w-[300px]">
                                     <Skeleton className="h-4 w-[38%]" />
                                     <Skeleton className="h-4 w-[92%]" />
                                     <Skeleton className="h-4 w-[84%]" />
                                     <Skeleton className="h-4 w-[64%]" />
+                                    <div className="text-xs text-muted-foreground bg-muted/40 border border-border rounded-md px-2 py-1 inline-block">
+                                      🧑‍💻 답변 생성 중입니다. 이 페이지에서 기다리실 필요 없이, 원하시면 다른 메뉴로 이동해도 괜찮아요, 여러분의 시간은 소중하니깐요. LLM 응답이 오면 바로 알려드릴께요.
+                                    </div>
                                   </div>
                                 </div>
                               )

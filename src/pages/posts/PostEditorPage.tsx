@@ -59,6 +59,7 @@ import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Input } from "@/components/ui/input"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { toast } from "sonner"
 import EmojiPicker, { Theme } from "emoji-picker-react"
 import type { EmojiClickData } from "emoji-picker-react"
@@ -759,6 +760,17 @@ export default function PostEditorPage() {
       return false
     }
   })
+  const pmToolbarShortcutLabel = useMemo(() => {
+    try {
+      if (typeof navigator === "undefined") return "Ctrl+K"
+      const platform = navigator.platform || ""
+      const ua = navigator.userAgent || ""
+      const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua)
+      return isMac ? "⌘+K" : "Ctrl+K"
+    } catch {
+      return "Ctrl+K"
+    }
+  }, [])
 
   useEffect(() => {
     try {
@@ -768,6 +780,19 @@ export default function PostEditorPage() {
       // ignore (storage might be blocked)
     }
   }, [pmToolbarOpen])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat) return
+      if (!event.metaKey && !event.ctrlKey) return
+      if (event.key.toLowerCase() !== "k") return
+      event.preventDefault()
+      setPmToolbarOpen((prev) => !prev)
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [])
 
   useEffect(() => {
     try {
@@ -3248,24 +3273,35 @@ export default function PostEditorPage() {
           <Button variant="ghost" size="sm" className="sm:hidden" onClick={createNewFromNav} title="새 페이지">
             <Plus className="size-4" />
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            title="툴바"
-            className="hidden sm:block"
-            onClick={() => setPmToolbarOpen((v) => !v)}
-            aria-pressed={pmToolbarOpen}
-          >
-            {pmToolbarOpen ? <SquareChevronUp /> : <Settings2 />}
-          </Button>
-          <Button
-            variant="ghost"            
-            size="sm"
-            title="페이지 너비 토글"
-            onClick={() => setIsWideLayout((v) => !v)}
-          >
-            {isWideLayout ? <ChevronsRightLeft /> : <ChevronsLeftRight />}
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="hidden sm:block"
+                onClick={() => setPmToolbarOpen((v) => !v)}
+                aria-pressed={pmToolbarOpen}
+              >
+                {pmToolbarOpen ? <SquareChevronUp /> : <Settings2 />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              <div className="flex flex-col gap-0.5">
+                <span>툴바</span>
+                <span className="text-[11px] text-muted-foreground">단축키: {pmToolbarShortcutLabel}</span>
+              </div>
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="sm" onClick={() => setIsWideLayout((v) => !v)}>
+                {isWideLayout ? <ChevronsRightLeft /> : <ChevronsLeftRight />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              페이지 너비 토글
+            </TooltipContent>
+          </Tooltip>
         </div>
       }
       leftPane={

@@ -73,6 +73,95 @@ function isUuid(v: unknown): v is string {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v)
 }
 
+function extractUsageFromProviderRaw(raw: any): {
+  input_tokens: number
+  cached_input_tokens: number
+  output_tokens: number
+  total_tokens: number
+} {
+  const au = raw?.usage
+  if (
+    au &&
+    (typeof au.cache_read_input_tokens === "number" || typeof au.cache_creation_input_tokens === "number") &&
+    typeof au.input_tokens === "number"
+  ) {
+    const input = Number(au.input_tokens || 0)
+    const cacheRead = Number(au.cache_read_input_tokens || 0)
+    const cacheCreate = Number(au.cache_creation_input_tokens || 0)
+    const totalInput = input + cacheRead + cacheCreate
+    const output = Number(au.output_tokens || 0)
+    const total = totalInput + output
+    return { input_tokens: totalInput, cached_input_tokens: cacheRead, output_tokens: output, total_tokens: total }
+  }
+  const u = raw?.usage
+  if (u && (typeof u.input_tokens === "number" || typeof u.output_tokens === "number")) {
+    const input = Number(u.input_tokens || 0)
+    const output = Number(u.output_tokens || 0)
+    const cached = Number(u?.input_tokens_details?.cached_tokens || 0)
+    const total = typeof u.total_tokens === "number" ? Number(u.total_tokens) : input + output
+    return { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: total }
+  }
+  const cu = raw?.usage
+  if (cu && (typeof cu.prompt_tokens === "number" || typeof cu.completion_tokens === "number")) {
+    const input = Number(cu.prompt_tokens || 0)
+    const output = Number(cu.completion_tokens || 0)
+    const cached = Number(cu?.prompt_tokens_details?.cached_tokens || 0)
+    const total = typeof cu.total_tokens === "number" ? Number(cu.total_tokens) : input + output
+    return { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: total }
+  }
+  return { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 }
+}
+
+function toLlmModality(modelType: ModelType, hasImageInput: boolean) {
+  if (modelType === "image") return hasImageInput ? "image_read" : "image_create"
+  if (modelType === "audio") return "audio"
+  if (modelType === "music") return "music"
+  if (modelType === "video") return "video"
+  return "text"
+}
+
+function extractStaticContextFromTemplate(templateBody: Record<string, unknown> | null) {
+  if (!templateBody) return ""
+  const parts: string[] = []
+
+  const instructions = typeof templateBody.instructions === "string" ? templateBody.instructions.trim() : ""
+  if (instructions) parts.push(instructions)
+
+  const system = templateBody.system
+  if (typeof system === "string" && system.trim()) parts.push(system.trim())
+  if (Array.isArray(system)) {
+    const sysText = system
+      .map((b) => {
+        if (!b || typeof b !== "object") return ""
+        const bo = b as Record<string, unknown>
+        return typeof bo.text === "string" ? bo.text : ""
+      })
+      .filter(Boolean)
+      .join("\n\n")
+      .trim()
+    if (sysText) parts.push(sysText)
+  }
+
+  const msgs = Array.isArray(templateBody.messages) ? (templateBody.messages as Array<Record<string, unknown>>) : []
+  for (const m of msgs) {
+    const role = typeof m.role === "string" ? m.role : ""
+    if (role !== "system" && role !== "developer") continue
+    const content = typeof m.content === "string" ? m.content.trim() : ""
+    if (content) parts.push(content)
+  }
+
+  return parts.filter(Boolean).join("\n\n").trim()
+}
+
+function buildPromptCacheKey(args: { providerKey: string; modelApiId: string; staticContext: string }) {
+  const ctx = args.staticContext.trim()
+  if (!ctx) return null
+  const digest = crypto.createHash("sha256").update(ctx).digest("hex").slice(0, 16)
+  const providerKey = args.providerKey || "unknown"
+  const modelApiId = args.modelApiId || "unknown"
+  return `tpl:${providerKey}:${modelApiId}:${digest}`
+}
+
 function parseOpenAiImageError(raw: string): {
   status: number | null
   apiRoot: string | null
@@ -1402,6 +1491,19 @@ export async function chatRun(req: Request, res: Response) {
   let cleanupActiveRun = () => {}
   let isAborted = () => false
   let clientRequestId = ""
+  const runStartedAtMs = Date.now()
+  let requestIdForLog = ""
+  let usedCredentialId: string | null = null
+  let usedProviderId: string | null = null
+  let usedModelDbId: string | null = null
+  let usedModelApiId: string | null = null
+  let usedProviderSlug: string | null = null
+  let webSearchCount = 0
+  let webQueryCharsTotal = 0
+  let webResponseBytesTotal = 0
+  let webBudgetCount: number | null = null
+  let imageUsage: { count: number; size?: string; quality?: string } | null = null
+  let musicUsage: { seconds: number; sample_rate?: number; channels?: string; bit_depth?: number } | null = null
   try {
     const userId = (req as AuthedRequest).userId
     const authHeader = String(req.headers.authorization || "")
@@ -1444,6 +1546,7 @@ export async function chatRun(req: Request, res: Response) {
 
     const prompt = String(userPrompt || "").trim()
     clientRequestId = String(client_request_id || "").trim()
+    requestIdForLog = clientRequestId || crypto.randomUUID()
     if (!prompt) return res.status(400).json({ message: "userPrompt is required" })
 
     const mt = (String(model_type || "").trim() as ModelType) || "text"
@@ -1516,6 +1619,9 @@ export async function chatRun(req: Request, res: Response) {
         m.id,
         m.model_id AS model_api_id,
         m.max_output_tokens,
+        m.input_token_cost_per_1k,
+        m.output_token_cost_per_1k,
+        m.currency,
         m.prompt_template_id,
         m.response_schema_id,
         m.capabilities,
@@ -1681,6 +1787,10 @@ export async function chatRun(req: Request, res: Response) {
 
     const providerKey = String(row.provider_family || row.provider_slug || "").trim().toLowerCase()
     const modelApiId = String(row.model_api_id || "")
+    usedProviderId = providerId
+    usedModelDbId = chosenModelDbId
+    usedModelApiId = modelApiId
+    usedProviderSlug = String(row.provider_slug || "")
     // Prefer DB-provided logo_key; if missing, derive a safe default that matches `providerLogoRegistry.tsx` keys.
     const providerLogoKeyRaw = typeof row.provider_logo_key === "string" && row.provider_logo_key.trim() ? row.provider_logo_key.trim() : null
     const providerSlugLower = String(row.provider_slug || "").trim().toLowerCase()
@@ -1700,6 +1810,15 @@ export async function chatRun(req: Request, res: Response) {
     ]
       .filter(Boolean)
       .join("\n\n")
+    const dynamicContext = input
+    const staticContext = extractStaticContextFromTemplate(templateBody)
+    const promptCacheKey = buildPromptCacheKey({ providerKey, modelApiId, staticContext })
+    const promptCacheRetentionRaw =
+      typeof (mergedOptions as Record<string, unknown> | null)?.prompt_cache_retention === "string"
+        ? String((mergedOptions as Record<string, unknown>).prompt_cache_retention)
+        : ""
+    const promptCacheRetention =
+      promptCacheRetentionRaw === "24h" ? "24h" : promptCacheRetentionRaw === "in_memory" ? "in_memory" : null
 
     // ✅ 선생성: user 메시지 + assistant(in_progress) 메시지
     const userMessageId = crypto.randomUUID()
@@ -1899,6 +2018,7 @@ export async function chatRun(req: Request, res: Response) {
           usedProfileKey = profile.profile_key
           profileAttempted = true
           const auth = await resolveAuthForModelApiProfile({ providerId, authProfileId: profile.auth_profile_id })
+          usedCredentialId = auth.credentialId
           out = await executeHttpJsonProfile({
             apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
             apiKey: auth.apiKey,
@@ -1956,6 +2076,7 @@ export async function chatRun(req: Request, res: Response) {
 
     if (out == null) {
       const auth = await resolveAuthForModelApiProfile({ providerId, authProfileId: null })
+      usedCredentialId = auth.credentialId
       // Fallback: 기존 provider별 하드코딩 실행기
       if (mt === "text") {
         if (providerKey === "openai") {
@@ -1991,6 +2112,7 @@ export async function chatRun(req: Request, res: Response) {
           const hl = lang2 || (browserLangs[0] ? normLang(browserLangs[0]) : "en")
 
           const maxSearchCalls = 3
+          webBudgetCount = maxSearchCalls
 
           const templateMsgs =
             injectedTemplate && typeof injectedTemplate === "object" && !Array.isArray(injectedTemplate)
@@ -2127,6 +2249,8 @@ export async function chatRun(req: Request, res: Response) {
                 })
                 continue
               }
+              webSearchCount += 1
+              webQueryCharsTotal += q.length
               const result = await serperSearch({
                 apiKey: serperKey,
                 query: q,
@@ -2136,6 +2260,12 @@ export async function chatRun(req: Request, res: Response) {
                 timeoutMs: 10000,
                 signal: abortSignal,
               })
+              try {
+                const rawBytes = JSON.stringify(result.raw ?? result).length
+                webResponseBytesTotal += rawBytes
+              } catch {
+                // ignore
+              }
               // Keep tool payload compact (raw is kept server-side only if needed)
               messages.push({
                 role: "tool",
@@ -2165,6 +2295,8 @@ export async function chatRun(req: Request, res: Response) {
             outputFormat: "block_json",
             templateBody: injectedTemplate || undefined,
             responseSchema,
+            promptCacheKey,
+            promptCacheRetention,
             signal: abortSignal,
           })
           out = { ...r, content: { output_text: r.output_text, raw: r.raw } }
@@ -2177,6 +2309,8 @@ export async function chatRun(req: Request, res: Response) {
           input,
           maxTokens: safeMaxTokens,
           templateBody: injectedTemplate || undefined,
+          cacheControl: { ttl: undefined },
+          staticSystemText: staticContext || null,
           signal: abortSignal,
         })
         out = { ...r, content: { output_text: r.output_text, raw: r.raw } }
@@ -2276,6 +2410,11 @@ export async function chatRun(req: Request, res: Response) {
       // Prefer data URLs when available; otherwise download URLs to keep assets permanent.
       const sourceUrls: string[] = (r.data_urls && r.data_urls.length ? r.data_urls : r.urls) || []
       const resolvedUrls = await materializeImageUrlsToDataUrls(sourceUrls, abortSignal)
+      imageUsage = {
+        count: resolvedUrls.length || n,
+        size: typeof size === "string" ? size : undefined,
+        quality: typeof quality === "string" ? quality : undefined,
+      }
       const blocks = resolvedUrls.length
         ? resolvedUrls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
         : [{ type: "markdown", markdown: "이미지 생성 결과를 받지 못했습니다." }]
@@ -2325,6 +2464,27 @@ export async function chatRun(req: Request, res: Response) {
         speed,
         signal: abortSignal,
       })
+      if (mt === "music") {
+        const seconds =
+          typeof (mergedOptions as Record<string, unknown> | null)?.seconds === "number"
+            ? Number((mergedOptions as Record<string, unknown>).seconds)
+            : typeof (mergedOptions as Record<string, unknown> | null)?.duration === "number"
+              ? Number((mergedOptions as Record<string, unknown>).duration)
+              : 0
+        const sampleRate =
+          typeof (mergedOptions as Record<string, unknown> | null)?.sample_rate === "number"
+            ? Number((mergedOptions as Record<string, unknown>).sample_rate)
+            : undefined
+        const channels =
+          typeof (mergedOptions as Record<string, unknown> | null)?.channels === "string"
+            ? String((mergedOptions as Record<string, unknown>).channels)
+            : undefined
+        const bitDepth =
+          typeof (mergedOptions as Record<string, unknown> | null)?.bit_depth === "number"
+            ? Number((mergedOptions as Record<string, unknown>).bit_depth)
+            : undefined
+        musicUsage = { seconds, sample_rate: sampleRate, channels, bit_depth: bitDepth }
+      }
       const blockJson = {
         title: mt === "music" ? "음악 생성" : "오디오 생성",
         summary: "오디오 생성이 완료되었습니다.",
@@ -2438,6 +2598,223 @@ export async function chatRun(req: Request, res: Response) {
         `UPDATE model_conversations SET title = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND title = $3`,
         [convId, finalTitle, tempTitle]
       )
+    }
+
+    // ✅ usage log (best-effort)
+    try {
+      if (usedProviderId && usedModelDbId && usedModelApiId) {
+        const usage = extractUsageFromProviderRaw(out?.raw)
+        const inputTokens = usage.input_tokens
+        const cachedInputTokens = usage.cached_input_tokens
+        const outputTokens = usage.output_tokens
+        const totalTokens = usage.total_tokens || inputTokens + outputTokens
+
+        const inputCostPer1k = Number(row.input_token_cost_per_1k || 0)
+        const outputCostPer1k = Number(row.output_token_cost_per_1k || 0)
+        const costCurrency = String(row.currency || "USD")
+        const inputCost = (inputTokens / 1000) * inputCostPer1k
+        const cachedInputCost = (cachedInputTokens / 1000) * inputCostPer1k
+        const outputCost = (outputTokens / 1000) * outputCostPer1k
+        const totalCost = inputCost + outputCost
+
+        const modality = toLlmModality(mt, incomingImageDataUrls.length > 0 || incomingImageUrls.length > 0)
+        const featureName = mt === "text" || mt === "code" || mt === "multimodal" ? "chat" : mt
+        const requestedModel = model_api_id ? String(model_api_id).trim() : usedModelApiId
+
+        const attachmentStats = { total: incoming.length, images: 0, files: 0, links: 0 }
+        for (const a of incoming) {
+          if (!a || typeof a !== "object") continue
+          const kind = typeof (a as Record<string, unknown>).kind === "string" ? String((a as Record<string, unknown>).kind) : ""
+          if (kind === "image") attachmentStats.images += 1
+          else if (kind === "file") attachmentStats.files += 1
+          else if (kind === "link") attachmentStats.links += 1
+        }
+
+        const requestData = {
+          provider_slug: usedProviderSlug,
+          model_type: mt,
+          requested_model: requestedModel,
+          resolved_model: usedModelApiId,
+          max_tokens: safeMaxTokens,
+          input_preview: prompt.slice(0, 500),
+          static_context_preview: staticContext ? staticContext.slice(0, 1000) : "",
+          dynamic_context_preview: dynamicContext ? dynamicContext.slice(0, 1000) : "",
+          prompt_cache_key: promptCacheKey || null,
+          prompt_cache_retention: promptCacheRetention || null,
+          attachments: attachmentStats,
+          web_allowed: Boolean(web_allowed),
+          web_search_country: web_search_country || null,
+          web_search_languages: web_search_languages || null,
+        }
+        const responseData = {
+          output_text_preview: String(contentTextForHistory || "").slice(0, 1000),
+          raw: out?.raw ?? null,
+        }
+        const modelParams = {
+          max_tokens: safeMaxTokens,
+          options: mergedOptions,
+          profile_key: usedProfileKey,
+        }
+        const responseTimeMs = Date.now() - runStartedAtMs
+        const status = didUpdateAssistant ? "success" : "failed"
+
+        const logRes = await query(
+          `
+          INSERT INTO llm_usage_logs (
+            tenant_id, user_id, provider_id, model_id, credential_id, service_id,
+            requested_model, resolved_model, modality, feature_name, request_id,
+            conversation_id, model_message_id,
+            web_enabled, web_provider, web_search_mode, web_budget_count, web_search_count,
+            input_tokens, cached_input_tokens, output_tokens, total_tokens,
+            input_cost, cached_input_cost, output_cost, total_cost, currency,
+            response_time_ms, status, error_code, error_message,
+            request_data, response_data, model_parameters,
+            ip_address, user_agent, metadata
+          ) VALUES (
+            $1, $2, $3, $4, $5, $6,
+            $7, $8, $9, $10, $11,
+            $12, $13,
+            $14, $15, $16, $17, $18,
+            $19, $20, $21, $22,
+            $23, $24, $25, $26, $27,
+            $28, $29, $30, $31,
+            $32::jsonb, $33::jsonb, $34::jsonb,
+            $35::inet, $36, $37::jsonb
+          )
+          ON CONFLICT (tenant_id, request_id) DO UPDATE SET
+            status = EXCLUDED.status,
+            error_code = EXCLUDED.error_code,
+            error_message = EXCLUDED.error_message,
+            response_time_ms = EXCLUDED.response_time_ms,
+            input_tokens = EXCLUDED.input_tokens,
+            cached_input_tokens = EXCLUDED.cached_input_tokens,
+            output_tokens = EXCLUDED.output_tokens,
+            total_tokens = EXCLUDED.total_tokens,
+            input_cost = EXCLUDED.input_cost,
+            cached_input_cost = EXCLUDED.cached_input_cost,
+            output_cost = EXCLUDED.output_cost,
+            total_cost = EXCLUDED.total_cost,
+            currency = EXCLUDED.currency,
+            request_data = EXCLUDED.request_data,
+            response_data = EXCLUDED.response_data,
+            model_parameters = EXCLUDED.model_parameters,
+            model_message_id = COALESCE(llm_usage_logs.model_message_id, EXCLUDED.model_message_id),
+            conversation_id = COALESCE(llm_usage_logs.conversation_id, EXCLUDED.conversation_id),
+            web_search_count = EXCLUDED.web_search_count
+          RETURNING id
+          `,
+          [
+            tenantId,
+            userId,
+            usedProviderId,
+            usedModelDbId,
+            usedCredentialId,
+            null,
+            requestedModel,
+            usedModelApiId,
+            modality,
+            featureName,
+            requestIdForLog,
+            convId,
+            assistantMessageId,
+            Boolean(web_allowed),
+            webSearchCount > 0 ? "serper" : null,
+            web_allowed ? "auto" : "off",
+            webBudgetCount,
+            webSearchCount,
+            inputTokens,
+            cachedInputTokens,
+            outputTokens,
+            totalTokens,
+            inputCost,
+            cachedInputCost,
+            outputCost,
+            totalCost,
+            costCurrency,
+            responseTimeMs,
+            status,
+            null,
+            null,
+            JSON.stringify(requestData),
+            JSON.stringify(responseData),
+            JSON.stringify(modelParams),
+            (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() || (req.socket.remoteAddress ?? null),
+            String(req.headers["user-agent"] || ""),
+            JSON.stringify({
+              api: "ai-agent-service",
+              endpoint: "/api/ai/chat/run",
+              client_request_id: clientRequestId || null,
+              profile_key: usedProfileKey || null,
+              profile_attempted: profileAttempted,
+            }),
+          ]
+        )
+
+        const usageLogId = logRes.rows[0]?.id as string | undefined
+        if (usageLogId) {
+          if (inputTokens > 0 || cachedInputTokens > 0 || outputTokens > 0) {
+            await query(
+              `
+              INSERT INTO llm_token_usages (
+                usage_log_id, input_tokens, cached_input_tokens, output_tokens, unit
+              )
+              SELECT $1, $2, $3, $4, 'tokens'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM llm_token_usages WHERE usage_log_id = $1
+              )
+              `,
+              [usageLogId, inputTokens, cachedInputTokens, outputTokens]
+            )
+          }
+
+          if (imageUsage) {
+            await query(
+              `
+              INSERT INTO llm_image_usages (
+                usage_log_id, image_count, size, quality, unit
+              )
+              SELECT $1, $2, $3, $4, 'image'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM llm_image_usages WHERE usage_log_id = $1
+              )
+              `,
+              [usageLogId, imageUsage.count, imageUsage.size || null, imageUsage.quality || null]
+            )
+          }
+
+          if (musicUsage) {
+            await query(
+              `
+              INSERT INTO llm_music_usages (
+                usage_log_id, seconds, sample_rate, channels, bit_depth, unit
+              )
+              SELECT $1, $2, $3, $4, $5, 'second'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM llm_music_usages WHERE usage_log_id = $1
+              )
+              `,
+              [usageLogId, musicUsage.seconds, musicUsage.sample_rate || null, musicUsage.channels || null, musicUsage.bit_depth || null]
+            )
+          }
+
+          if (webSearchCount > 0) {
+            await query(
+              `
+              INSERT INTO llm_web_search_usages (
+                usage_log_id, provider, count, query_chars_total, response_bytes_total, status, unit
+              )
+              SELECT $1, $2, $3, $4, $5, 'success', 'request'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM llm_web_search_usages WHERE usage_log_id = $1
+              )
+              `,
+              [usageLogId, "serper", webSearchCount, webQueryCharsTotal, webResponseBytesTotal]
+            )
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[usage-log] insert failed:", e)
     }
 
     responseFinalized = true

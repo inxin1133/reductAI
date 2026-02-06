@@ -87,6 +87,7 @@ import {
   Quote,
   CopyPlus,
   SquareCode,
+  Smile,
   AtSign,
   Image as ImageIcon,
   TextAlignStart,
@@ -136,6 +137,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import EmojiPicker, { Theme } from "emoji-picker-react"
+import type { EmojiClickData } from "emoji-picker-react"
 
 type PmDocJson = unknown
 type PmCommand = (state: EditorState, dispatch?: (tr: Transaction) => void, view?: EditorView) => boolean
@@ -147,6 +150,7 @@ type Props = {
   toolbarOpen: boolean
   postId?: string
 }
+
 
 function topLevelIndexAtPos(doc: PMNode, pos: number): number | null {
   let cur = 0
@@ -651,6 +655,11 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
   // Anchor position for page link popover (at cursor/block position)
   const [pageLinkAnchor, setPageLinkAnchor] = useState<{ left: number; top: number } | null>(null)
 
+  // Inline emoji picker state
+  const [inlineIconPickerOpen, setInlineIconPickerOpen] = useState(false)
+  const [inlineIconPickerAnchor, setInlineIconPickerAnchor] = useState<{ left: number; top: number } | null>(null)
+  const inlineIconEditorStateRef = useRef<EditorState | null>(null)
+
   // Calculate anchor position from current selection
   const calcPageLinkAnchor = useCallback(() => {
     const view = viewRef.current
@@ -661,6 +670,19 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
     const coords = view.coordsAtPos(from)
     const surfaceRect = surface.getBoundingClientRect()
     
+    return {
+      left: coords.left - surfaceRect.left,
+      top: coords.bottom - surfaceRect.top + 4,
+    }
+  }, [])
+
+  const calcInlineIconAnchor = useCallback(() => {
+    const view = viewRef.current
+    const surface = surfaceRef.current
+    if (!view || !surface) return null
+    const { from } = view.state.selection
+    const coords = view.coordsAtPos(from)
+    const surfaceRect = surface.getBoundingClientRect()
     return {
       left: coords.left - surfaceRect.left,
       top: coords.bottom - surfaceRect.top + 4,
@@ -679,6 +701,69 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
     setPageLinkPickerOpen(true)
   }, [calcPageLinkAnchor])
 
+  const openInlineIconPicker = useCallback(() => {
+    const view = viewRef.current
+    if (view) inlineIconEditorStateRef.current = view.state
+    const anchor = calcInlineIconAnchor()
+    if (anchor) setInlineIconPickerAnchor(anchor)
+    setInlineIconPickerOpen(true)
+  }, [calcInlineIconAnchor])
+
+  const insertInlineEmoji = useCallback((emoji: string) => {
+    const view = viewRef.current
+    if (!view) return
+    const paragraph = editorSchema.nodes.paragraph
+    const baseState = inlineIconEditorStateRef.current || view.state
+    let tr = baseState.tr
+
+    const ensureTextSelection = () => {
+      if (baseState.selection instanceof TextSelection && baseState.selection.$from.parent.isTextblock) {
+        return baseState.selection
+      }
+      try {
+        const nearFrom = TextSelection.near(baseState.doc.resolve(baseState.selection.from), 1)
+        if (nearFrom.$from.parent.isTextblock) return nearFrom
+      } catch {
+        // ignore
+      }
+      try {
+        const nearTo = TextSelection.near(baseState.doc.resolve(baseState.selection.to), -1)
+        if (nearTo.$from.parent.isTextblock) return nearTo
+      } catch {
+        // ignore
+      }
+      return null
+    }
+
+    const textSel = ensureTextSelection()
+    if (textSel) {
+      tr = tr.setSelection(textSel)
+    } else if (paragraph) {
+      const insertAt = Math.min(baseState.selection.to, baseState.doc.content.size)
+      tr = tr.insert(insertAt, paragraph.create())
+      tr = tr.setSelection(TextSelection.create(tr.doc, insertAt + 1))
+    }
+
+    tr = tr.insertText(emoji)
+    view.dispatch(tr.scrollIntoView())
+    view.focus()
+    inlineIconEditorStateRef.current = null
+    setInlineIconPickerOpen(false)
+    setInlineIconPickerAnchor(null)
+  }, [])
+
+  const modKeyLabel = useMemo(() => {
+    try {
+      if (typeof navigator === "undefined") return "Ctrl"
+      const platform = navigator.platform || ""
+      const ua = navigator.userAgent || ""
+      const isMac = /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac OS X/i.test(ua)
+      return isMac ? "⌘" : "Ctrl"
+    } catch {
+      return "Ctrl"
+    }
+  }, [])
+
   // Listen for page link picker open event (from blockCommandRegistry)
   useEffect(() => {
     const handler = () => {
@@ -687,6 +772,15 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
     window.addEventListener("reductai:open-page-link-picker", handler)
     return () => window.removeEventListener("reductai:open-page-link-picker", handler)
   }, [openPageLinkPicker])
+
+  // Listen for inline emoji picker open event (from slash command)
+  useEffect(() => {
+    const handler = () => {
+      openInlineIconPicker()
+    }
+    window.addEventListener("reductai:open-inline-emoji-picker", handler)
+    return () => window.removeEventListener("reductai:open-inline-emoji-picker", handler)
+  }, [openInlineIconPicker])
 
   // Load categories and pages when page link picker opens
   useEffect(() => {
@@ -733,6 +827,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
       })
       .catch(() => null)
   }, [pageLinkPickerOpen])
+
+  // Inline emoji picker doesn't need icon search.
 
   // Table cell selection toolbar (drag/F5 selection).
   const [tableCellSelectionAnchor, setTableCellSelectionAnchor] = useState<{ left: number; top: number } | null>(null)
@@ -980,15 +1076,26 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
     const view = new EditorView(mountRef.current, {
       state,
       nodeViews: {
-        page_link: (node, view, getPos) => new PageLinkNodeView(node, view, getPos as () => number),
-        code_block: (node, view, getPos) => new CodeBlockNodeView(node, view, getPos as () => number),
-        list_item: (node, view, getPos) => new ListItemNodeView(node, view, getPos as () => number),
-        table: (node, view, getPos) => new TableNodeView(node, view, getPos as () => number),
+        page_link: (node, view, getPos) => new PageLinkNodeView(node, view, getPos),
+        code_block: (node, view, getPos) => new CodeBlockNodeView(node, view, getPos),
+        list_item: (node, view, getPos) => new ListItemNodeView(node, view, getPos),
+        table: (node, view, getPos) => new TableNodeView(node, view, getPos),
         image: createMediaNodeView("image"),
         video: createMediaNodeView("video"),
         audio: createMediaNodeView("audio"),
       },
       handleDOMEvents: {
+        keydown: (_v, event) => {
+          const e = event as KeyboardEvent
+          if (e.defaultPrevented) return false
+          const isMod = e.metaKey || e.ctrlKey
+          if (!isMod || e.shiftKey || e.altKey) return false
+          if (e.key.toLowerCase() !== "j") return false
+          e.preventDefault()
+          e.stopPropagation()
+          openInlineIconPicker()
+          return true
+        },
         copy: (v, event) => {
           // Fail-safe: ensure F5 block/cell selection can be copied even if another plugin swallows copy.
           if (event.defaultPrevented) return false
@@ -1191,6 +1298,30 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
       },
     })
     viewRef.current = view
+
+    // Normalize legacy inline_icon nodes to plain text emoji (or icon name).
+    const inlineIconNode = editorSchema.nodes.inline_icon
+    if (inlineIconNode) {
+      const replacements: Array<{ from: number; to: number; text: string }> = []
+      view.state.doc.descendants((node, pos) => {
+        if (node.type !== inlineIconNode) return true
+        const raw = typeof (node.attrs as { icon?: unknown }).icon === "string" ? String(node.attrs.icon) : ""
+        let text = ""
+        if (raw.startsWith("emoji:")) text = raw.slice("emoji:".length)
+        else if (raw.startsWith("lucide:")) text = raw.slice("lucide:".length)
+        else if (raw) text = raw
+        replacements.push({ from: pos, to: pos + node.nodeSize, text })
+        return true
+      })
+      if (replacements.length) {
+        let tr = view.state.tr
+        for (let i = replacements.length - 1; i >= 0; i -= 1) {
+          const { from, to, text } = replacements[i]
+          tr = tr.replaceWith(from, to, text ? editorSchema.text(text) : Fragment.empty)
+        }
+        view.dispatch(tr)
+      }
+    }
 
     // Initialize embed id set from initial doc so first deletion is tracked correctly.
     const initEmbeds = new Set<string>()
@@ -2824,6 +2955,18 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
                 <File />
               </ButtonGroupItem>
             </ToolbarTooltip>
+            <ToolbarTooltip label="Emoji" shortcut={`${modKeyLabel}+J`}>
+              <ButtonGroupItem
+                variant="outline"
+                size="sm"
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  openInlineIconPicker()
+                }}
+              >
+                <Smile />
+              </ButtonGroupItem>
+            </ToolbarTooltip>
           </ButtonGroup>
 
           {/* 테이블 형식 */}
@@ -3740,6 +3883,41 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
           </PopoverContent>
         </Popover>
         <div ref={mountRef} />
+
+        {/* Inline Icon Picker Popover - positioned at cursor */}
+        <Popover
+          open={inlineIconPickerOpen}
+          onOpenChange={(open) => {
+            setInlineIconPickerOpen(open)
+            if (!open) {
+              setInlineIconPickerAnchor(null)
+              inlineIconEditorStateRef.current = null
+            }
+          }}
+        >
+          <PopoverAnchor
+            style={{
+              position: "absolute",
+              left: inlineIconPickerAnchor?.left ?? 0,
+              top: inlineIconPickerAnchor?.top ?? 0,
+              width: 0,
+              height: 0,
+            }}
+          />
+          <PopoverContent className="w-[370px] p-3 z-50" align="start" sideOffset={4}>
+            <div className="max-h-[360px] overflow-auto pr-1">
+              <EmojiPicker
+                theme={document.documentElement.classList.contains("dark") ? Theme.DARK : Theme.LIGHT}
+                previewConfig={{ showPreview: false }}
+                onEmojiClick={(emoji: EmojiClickData) => {
+                  const native = emoji?.emoji ? String(emoji.emoji) : ""
+                  if (!native) return
+                  insertInlineEmoji(native)
+                }}
+              />
+            </div>
+          </PopoverContent>
+        </Popover>
 
         {/* Page Link Picker Popover - positioned at cursor */}
         <Popover

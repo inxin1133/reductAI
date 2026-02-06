@@ -69,6 +69,20 @@ function extractUsageFromProviderRaw(raw: any): {
   output_tokens: number
   total_tokens: number
 } {
+  const au = raw?.usage
+  if (
+    au &&
+    (typeof au.cache_read_input_tokens === "number" || typeof au.cache_creation_input_tokens === "number") &&
+    typeof au.input_tokens === "number"
+  ) {
+    const input = Number(au.input_tokens || 0)
+    const cacheRead = Number(au.cache_read_input_tokens || 0)
+    const cacheCreate = Number(au.cache_creation_input_tokens || 0)
+    const totalInput = input + cacheRead + cacheCreate
+    const output = Number(au.output_tokens || 0)
+    const total = totalInput + output
+    return { input_tokens: totalInput, cached_input_tokens: cacheRead, output_tokens: output, total_tokens: total }
+  }
   // OpenAI responses API
   const u = raw?.usage
   if (u && (typeof u.input_tokens === "number" || typeof u.output_tokens === "number")) {

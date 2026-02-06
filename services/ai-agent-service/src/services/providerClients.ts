@@ -672,6 +672,8 @@ export async function openaiSimulateChat(args: {
   outputFormat?: "block_json"
   templateBody?: Record<string, unknown> | null
   responseSchema?: OpenAiJsonSchema | null
+  promptCacheKey?: string | null
+  promptCacheRetention?: "in_memory" | "24h" | null
   signal?: AbortSignal
 }) {
   const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl)
@@ -874,6 +876,8 @@ export async function openaiSimulateChat(args: {
             // 텍스트 출력 우선
             text: { verbosity: "low" },
           }),
+      ...(args.promptCacheKey ? { prompt_cache_key: args.promptCacheKey } : {}),
+      ...(args.promptCacheRetention ? { prompt_cache_retention: args.promptCacheRetention } : {}),
     }
     // templateBody(JSONB)를 base body에 merge (runtime/base wins)
     return sanitizedTemplate && typeof sanitizedTemplate === "object" ? deepMerge(sanitizedTemplate, baseBody) : baseBody
@@ -892,6 +896,8 @@ export async function openaiSimulateChat(args: {
       ...(templateInstructions ? { instructions: templateInstructions } : {}),
       response_format: { type: "json_object" },
       text: { verbosity: "low" },
+      ...(args.promptCacheKey ? { prompt_cache_key: args.promptCacheKey } : {}),
+      ...(args.promptCacheRetention ? { prompt_cache_retention: args.promptCacheRetention } : {}),
     }
   }
 
@@ -907,6 +913,8 @@ export async function openaiSimulateChat(args: {
       reasoning: { effort: reasoningEffortForModel(args.model) },
       ...(templateInstructions ? { instructions: templateInstructions } : {}),
       text: { verbosity: "low" },
+      ...(args.promptCacheKey ? { prompt_cache_key: args.promptCacheKey } : {}),
+      ...(args.promptCacheRetention ? { prompt_cache_retention: args.promptCacheRetention } : {}),
     }
   }
 
@@ -1081,6 +1089,8 @@ export async function anthropicSimulateChat(args: {
   input: string
   maxTokens: number
   templateBody?: Record<string, unknown> | null
+  cacheControl?: { ttl?: "5m" | "1h" } | null
+  staticSystemText?: string | null
   signal?: AbortSignal
 }) {
   const base = (args.apiBaseUrl || "https://api.anthropic.com/v1").replace(/\/+$/g, "")
@@ -1090,6 +1100,50 @@ export async function anthropicSimulateChat(args: {
     messages: [{ role: "user", content: args.input }],
   }
   const body = args.templateBody && typeof args.templateBody === "object" ? deepMerge(args.templateBody, baseBody) : baseBody
+
+  if (args.cacheControl) {
+    const ttl = args.cacheControl.ttl
+    const cacheControl = ttl ? { type: "ephemeral", ttl } : { type: "ephemeral" }
+    const sys = (body as Record<string, unknown>).system
+    const hasCacheControl = (blocks: Array<Record<string, unknown>>) =>
+      blocks.some((b) => typeof b.cache_control === "object" && b.cache_control !== null)
+
+    if (typeof sys === "string") {
+      const text = sys.trim()
+      if (text) {
+        ;(body as Record<string, unknown>).system = [{ type: "text", text, cache_control: cacheControl }]
+      }
+    } else if (Array.isArray(sys)) {
+      const blocks = sys
+        .map((b) => {
+          if (!b || typeof b !== "object") return null
+          const bo = b as Record<string, unknown>
+          if (typeof bo.type !== "string") bo.type = "text"
+          return bo
+        })
+        .filter(Boolean) as Array<Record<string, unknown>>
+      if (blocks.length > 0) {
+        if (!hasCacheControl(blocks)) {
+          for (let i = blocks.length - 1; i >= 0; i -= 1) {
+            const t = typeof blocks[i].text === "string" ? blocks[i].text.trim() : ""
+            if (t) {
+              blocks[i].cache_control = cacheControl
+              break
+            }
+          }
+        }
+        ;(body as Record<string, unknown>).system = blocks
+      } else if (args.staticSystemText && args.staticSystemText.trim()) {
+        ;(body as Record<string, unknown>).system = [
+          { type: "text", text: args.staticSystemText.trim(), cache_control: cacheControl },
+        ]
+      }
+    } else if (args.staticSystemText && args.staticSystemText.trim()) {
+      ;(body as Record<string, unknown>).system = [
+        { type: "text", text: args.staticSystemText.trim(), cache_control: cacheControl },
+      ]
+    }
+  }
 
   const res = await fetch(`${base}/messages`, {
     method: "POST",

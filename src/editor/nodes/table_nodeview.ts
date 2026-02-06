@@ -25,7 +25,7 @@ export class TableNodeView implements NodeView {
 
   private opts: Required<Options>
 
-  constructor(node: PMNode, view: EditorView, getPos: () => number, opts?: Options) {
+  constructor(node: PMNode, view: EditorView, getPos: () => number | undefined, opts?: Options) {
     void view
     void getPos
     this.opts = {

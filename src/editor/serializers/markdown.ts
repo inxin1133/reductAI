@@ -108,6 +108,18 @@ export function buildMarkdownSerializer() {
     },
 
     // Custom nodes
+    inline_icon: (state, node) => {
+      const raw = String(node.attrs.icon || "")
+      if (raw.startsWith("emoji:")) {
+        state.text(raw.slice("emoji:".length))
+        return
+      }
+      if (raw.startsWith("lucide:")) {
+        state.text(`[${raw.slice("lucide:".length)}]`)
+        return
+      }
+      state.text("")
+    },
     image: (state, node) => {
       const alt = esc(node.attrs.alt || "image")
       const src = String(node.attrs.src || "")

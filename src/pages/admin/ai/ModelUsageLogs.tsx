@@ -32,11 +32,15 @@ type UsageLogRow = {
   created_at: string
   status: UsageStatus
   feature_name: string
+  modality: string
+  requested_model?: string | null
+  resolved_model?: string | null
   request_id: string | null
-  provider_slug: string
-  model_api_id: string
-  model_display_name: string
+  provider_slug?: string | null
+  model_api_id?: string | null
+  model_display_name?: string | null
   input_tokens: number
+  cached_input_tokens?: number
   output_tokens: number
   total_tokens: number
   total_cost: string
@@ -46,6 +50,10 @@ type UsageLogRow = {
   error_message?: string | null
   user_id?: string | null
   user_email?: string | null
+  image_count?: number
+  video_seconds?: number | string
+  music_seconds?: number | string
+  web_search_count?: number
 }
 
 type ListResponse = {
@@ -56,9 +64,21 @@ type ListResponse = {
   rows: UsageLogRow[]
 }
 
+type UsageDetail = {
+  row: Record<string, unknown>
+  usages?: {
+    tokens?: Array<Record<string, unknown>>
+    images?: Array<Record<string, unknown>>
+    videos?: Array<Record<string, unknown>>
+    music?: Array<Record<string, unknown>>
+    web_searches?: Array<Record<string, unknown>>
+  }
+}
+
 type DetailResponse = {
   ok: boolean
   row: Record<string, unknown>
+  usages?: UsageDetail["usages"]
 }
 
 const API_URL = "/api/ai/usage-logs"
@@ -72,10 +92,50 @@ function fmtDt(iso: string) {
   }
 }
 
+function toNumber(v: unknown) {
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0
+  const n = Number.parseFloat(String(v ?? ""))
+  return Number.isFinite(n) ? n : 0
+}
+
+function fmtSeconds(v: unknown) {
+  const n = toNumber(v)
+  if (!n) return "0s"
+  const fixed = n % 1 === 0 ? String(n) : n.toFixed(2)
+  return `${fixed}s`
+}
+
 function statusBadgeVariant(s: UsageStatus) {
   if (s === "success") return "default"
   if (s === "rate_limited" || s === "partial") return "secondary"
   return "destructive"
+}
+
+function formatTokens(row: UsageLogRow) {
+  const input = toNumber(row.input_tokens)
+  const cached = toNumber(row.cached_input_tokens)
+  const output = toNumber(row.output_tokens)
+  const total = toNumber(row.total_tokens) || input + output
+  if (cached > 0) return `${input}+${cached}/${output}/${total}`
+  return `${input}/${output}/${total}`
+}
+
+function formatUsage(row: UsageLogRow) {
+  let usage = "-"
+  if (row.modality === "image_create" || row.modality === "image_read") {
+    usage = `${toNumber(row.image_count)} images`
+  } else if (row.modality === "video") {
+    usage = `${fmtSeconds(row.video_seconds)}`
+  } else if (row.modality === "music") {
+    usage = `${fmtSeconds(row.music_seconds)}`
+  } else {
+    usage = `${formatTokens(row)} tokens`
+  }
+  const webCount = toNumber(row.web_search_count)
+  if (webCount > 0) {
+    return `${usage} · web ${webCount}`
+  }
+  return usage
 }
 
 export default function ModelUsageLogs() {
@@ -85,6 +145,7 @@ export default function ModelUsageLogs() {
 
   const [q, setQ] = useState("")
   const [status, setStatus] = useState<UsageStatus | "all">("all")
+  const [modality, setModality] = useState<"all" | "text" | "image_read" | "image_create" | "audio" | "video" | "music">("all")
   const [providerSlug, setProviderSlug] = useState("")
   const [modelId, setModelId] = useState("")
   const [featureName, setFeatureName] = useState("")
@@ -95,7 +156,7 @@ export default function ModelUsageLogs() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
-  const [detail, setDetail] = useState<Record<string, unknown> | null>(null)
+  const [detail, setDetail] = useState<UsageDetail | null>(null)
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams()
@@ -106,8 +167,9 @@ export default function ModelUsageLogs() {
     if (providerSlug.trim()) params.set("provider_slug", providerSlug.trim())
     if (modelId.trim()) params.set("model_id", modelId.trim())
     if (featureName.trim()) params.set("feature_name", featureName.trim())
+    if (modality !== "all") params.set("modality", modality)
     return params.toString()
-  }, [featureName, limit, modelId, page, providerSlug, q, status])
+  }, [featureName, limit, modality, modelId, page, providerSlug, q, status])
 
   async function fetchList() {
     setLoading(true)
@@ -135,10 +197,10 @@ export default function ModelUsageLogs() {
       const res = await fetch(`${API_URL}/${id}`)
       const json = (await res.json()) as DetailResponse
       if (!res.ok || !json.ok) throw new Error("FAILED_DETAIL")
-      setDetail(json.row)
+      setDetail({ row: json.row, usages: json.usages })
     } catch (e) {
       console.error(e)
-      setDetail({ error: "상세 조회 실패" })
+      setDetail({ row: { error: "상세 조회 실패" } })
     } finally {
       setDetailLoading(false)
     }
@@ -213,6 +275,26 @@ export default function ModelUsageLogs() {
           placeholder="provider_slug (ex: openai)"
           className="w-[220px]"
         />
+        <Select
+          value={modality}
+          onValueChange={(v) => {
+            setPage(0)
+            setModality(v as typeof modality)
+          }}
+        >
+          <SelectTrigger className="w-[190px]">
+            <SelectValue placeholder="모달리티(전체)" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">모달리티(전체)</SelectItem>
+            <SelectItem value="text">text</SelectItem>
+            <SelectItem value="image_read">image_read</SelectItem>
+            <SelectItem value="image_create">image_create</SelectItem>
+            <SelectItem value="audio">audio</SelectItem>
+            <SelectItem value="video">video</SelectItem>
+            <SelectItem value="music">music</SelectItem>
+          </SelectContent>
+        </Select>
         <Input
           value={modelId}
           onChange={(e) => {
@@ -240,9 +322,10 @@ export default function ModelUsageLogs() {
               <TableHead className="min-w-[160px]">시간</TableHead>
               <TableHead>상태</TableHead>
               <TableHead>기능</TableHead>
+              <TableHead>모달리티</TableHead>
               <TableHead className="min-w-[120px]">Provider</TableHead>
               <TableHead className="min-w-[260px]">Model</TableHead>
-              <TableHead className="text-right">Tokens</TableHead>
+              <TableHead className="text-right">Usage</TableHead>
               <TableHead className="text-right">Cost</TableHead>
               <TableHead className="text-right">Latency</TableHead>
               <TableHead className="min-w-[220px]">Request ID</TableHead>
@@ -253,14 +336,14 @@ export default function ModelUsageLogs() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={11} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={12} className="py-8 text-center text-muted-foreground">
                   <Loader2 className="h-4 w-4 inline-block animate-spin mr-2" />
                   로딩 중...
                 </TableCell>
               </TableRow>
             ) : rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={11} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={12} className="py-10 text-center text-muted-foreground">
                   로그가 없습니다.
                 </TableCell>
               </TableRow>
@@ -272,15 +355,20 @@ export default function ModelUsageLogs() {
                     <Badge variant={statusBadgeVariant(r.status) as any}>{r.status}</Badge>
                   </TableCell>
                   <TableCell>{r.feature_name}</TableCell>
-                  <TableCell className="font-mono">{r.provider_slug}</TableCell>
+                  <TableCell className="font-mono">{r.modality}</TableCell>
+                  <TableCell className="font-mono">{r.provider_slug || "-"}</TableCell>
                   <TableCell>
                     <div className="flex flex-col">
-                      <span className="font-medium">{r.model_display_name}</span>
-                      <span className="text-xs text-muted-foreground font-mono">{r.model_api_id}</span>
+                      <span className="font-medium">
+                        {r.model_display_name || r.resolved_model || r.requested_model || "-"}
+                      </span>
+                      <span className="text-xs text-muted-foreground font-mono">
+                        {r.model_api_id || r.resolved_model || r.requested_model || "-"}
+                      </span>
                     </div>
                   </TableCell>
                   <TableCell className="text-right font-mono">
-                    {r.input_tokens}/{r.output_tokens}/{r.total_tokens}
+                    {formatUsage(r)}
                   </TableCell>
                   <TableCell className="text-right font-mono">
                     {r.total_cost} {r.currency}
@@ -339,6 +427,110 @@ export default function ModelUsageLogs() {
           ) : (
             <div className="space-y-2">
               <div className="text-sm text-muted-foreground font-mono">id: {selectedId}</div>
+              {detail?.row && (
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div className="border rounded-md p-2">
+                    <div className="text-xs text-muted-foreground">모델</div>
+                    <div className="font-mono">
+                      {(detail.row as any).requested_model || "-"} → {(detail.row as any).resolved_model || "-"}
+                    </div>
+                  </div>
+                  <div className="border rounded-md p-2">
+                    <div className="text-xs text-muted-foreground">모달리티</div>
+                    <div className="font-mono">{(detail.row as any).modality || "-"}</div>
+                  </div>
+                  <div className="border rounded-md p-2">
+                    <div className="text-xs text-muted-foreground">토큰 요약</div>
+                    <div className="font-mono">
+                      {toNumber((detail.row as any).input_tokens) +
+                        (toNumber((detail.row as any).cached_input_tokens) > 0
+                          ? `+${toNumber((detail.row as any).cached_input_tokens)}`
+                          : "")}
+                      /{toNumber((detail.row as any).output_tokens)}/{toNumber((detail.row as any).total_tokens)}
+                    </div>
+                  </div>
+                  <div className="border rounded-md p-2">
+                    <div className="text-xs text-muted-foreground">비용</div>
+                    <div className="font-mono">
+                      {(detail.row as any).total_cost ?? "-"} {(detail.row as any).currency ?? ""}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {detail?.usages && (
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  {detail.usages.tokens && detail.usages.tokens.length > 0 && (
+                    <div className="border rounded-md p-2">
+                      <div className="text-xs text-muted-foreground">토큰 사용량</div>
+                      <div className="space-y-1 text-xs font-mono">
+                        {detail.usages.tokens.map((u, i) => (
+                          <div key={`tokens-${i}`}>
+                            {toNumber((u as any).input_tokens)}+
+                            {toNumber((u as any).cached_input_tokens)}/
+                            {toNumber((u as any).output_tokens)} tokens
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {detail.usages.images && detail.usages.images.length > 0 && (
+                    <div className="border rounded-md p-2">
+                      <div className="text-xs text-muted-foreground">이미지 사용량</div>
+                      <div className="space-y-1 text-xs font-mono">
+                        {detail.usages.images.map((u, i) => (
+                          <div key={`images-${i}`}>
+                            {toNumber((u as any).image_count)} images
+                            {(u as any).size ? ` · ${(u as any).size}` : ""}
+                            {(u as any).quality ? ` · ${(u as any).quality}` : ""}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {detail.usages.videos && detail.usages.videos.length > 0 && (
+                    <div className="border rounded-md p-2">
+                      <div className="text-xs text-muted-foreground">비디오 사용량</div>
+                      <div className="space-y-1 text-xs font-mono">
+                        {detail.usages.videos.map((u, i) => (
+                          <div key={`videos-${i}`}>
+                            {fmtSeconds((u as any).seconds)}
+                            {(u as any).size ? ` · ${(u as any).size}` : ""}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {detail.usages.music && detail.usages.music.length > 0 && (
+                    <div className="border rounded-md p-2">
+                      <div className="text-xs text-muted-foreground">음악 사용량</div>
+                      <div className="space-y-1 text-xs font-mono">
+                        {detail.usages.music.map((u, i) => (
+                          <div key={`music-${i}`}>
+                            {fmtSeconds((u as any).seconds)}
+                            {(u as any).sample_rate ? ` · ${(u as any).sample_rate}` : ""}
+                            {(u as any).channels ? ` · ${(u as any).channels}` : ""}
+                            {(u as any).bit_depth ? ` · ${(u as any).bit_depth}` : ""}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {detail.usages.web_searches && detail.usages.web_searches.length > 0 && (
+                    <div className="border rounded-md p-2">
+                      <div className="text-xs text-muted-foreground">웹검색 사용량</div>
+                      <div className="space-y-1 text-xs font-mono">
+                        {detail.usages.web_searches.map((u, i) => (
+                          <div key={`web-${i}`}>
+                            {toNumber((u as any).count)} requests
+                            {(u as any).provider ? ` · ${(u as any).provider}` : ""}
+                            {(u as any).status ? ` · ${(u as any).status}` : ""}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="border rounded-md p-3 bg-muted/30 overflow-auto max-h-[60vh]">
                 <pre className="text-xs whitespace-pre-wrap break-all">
                   {JSON.stringify(detail, null, 2)}
