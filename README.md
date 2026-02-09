@@ -79,6 +79,7 @@ docker compose down
 # 서비스만 재시작
 docker compose up -d --build post-service
 docker compose up -d --build ai-agent-service
+docker compose up -d --build file-service
 
 # 서비스만 간단히 재시작
 docker compose restart post-service

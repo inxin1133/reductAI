@@ -241,6 +241,7 @@ export async function listMediaAssets(req: Request, res: Response) {
 
     const sourceRaw = q.source_type || q.sourceType || '';
     const kindRaw = q.kind || '';
+    const pageScopeRaw = String(q.page_scope || q.pageScope || '').trim().toLowerCase();
     const searchRaw = String(q.q || q.search || '').trim();
     const includeExpired = String(q.include_expired || q.includeExpired || '').toLowerCase() === 'true';
     const limit = Math.max(1, Math.min(200, Number(q.limit ?? 100)));
@@ -248,17 +249,41 @@ export async function listMediaAssets(req: Request, res: Response) {
 
     const sourceTypes = parseList(sourceRaw).filter((s) => VALID_SOURCE_TYPES.has(s as FileSourceType));
     const kinds = parseList(kindRaw).filter((s) => VALID_KINDS.has(s as MediaKind));
+    const pageCategoryType =
+      pageScopeRaw === 'personal' || pageScopeRaw === 'user'
+        ? 'personal_page'
+        : pageScopeRaw === 'team' || pageScopeRaw === 'group' || pageScopeRaw === 'shared' || pageScopeRaw === 'tenant'
+          ? 'team_page'
+          : '';
+    const isPersonalScope = pageCategoryType === 'personal_page';
 
-    const where: string[] = ['a.tenant_id = $1', "a.status <> 'deleted'"];
-    const params: any[] = [tenantId];
+    const where: string[] = [];
+    if (pageCategoryType) {
+      where.push(`a.status IN ('stored','deleted')`);
+    } else {
+      where.push(`a.status <> 'deleted'`);
+    }
+    const params: any[] = [];
+    const joinSql =
+      pageCategoryType
+        ? `JOIN file_asset_post_links l ON l.asset_id = a.id
+           JOIN posts p ON p.id = l.post_id AND p.deleted_at IS NULL AND COALESCE(p.status,'') <> 'deleted'`
+        : '';
+    if (!isPersonalScope) {
+      params.push(tenantId);
+      where.push(`a.tenant_id = $${params.length}`);
+    }
     if (scope !== 'tenant') {
       params.push(userId);
       where.push(`a.user_id = $${params.length}`);
     }
     if (!includeExpired) where.push('(a.expires_at IS NULL OR a.expires_at > NOW())');
 
-    if (sourceTypes.length > 0) {
-      params.push(sourceTypes);
+    const pageScopeSourceDefaults = ['post_upload', 'ai_generated', 'attachment'];
+    const effectiveSourceTypes =
+      pageCategoryType && sourceTypes.length === 0 ? pageScopeSourceDefaults : sourceTypes;
+    if (effectiveSourceTypes.length > 0) {
+      params.push(effectiveSourceTypes);
       where.push(`a.source_type = ANY($${params.length}::text[])`);
     }
     if (kinds.length > 0) {
@@ -269,15 +294,30 @@ export async function listMediaAssets(req: Request, res: Response) {
       params.push(`%${searchRaw}%`);
       where.push(`(a.original_filename ILIKE $${params.length} OR a.storage_key ILIKE $${params.length})`);
     }
+    if (pageCategoryType) {
+      params.push(pageCategoryType);
+      where.push(`l.scope_type = $${params.length}`);
+      if (pageCategoryType === 'personal_page') {
+        params.push(userId);
+        where.push(`l.owner_user_id = $${params.length}`);
+      } else {
+        params.push(tenantId);
+        where.push(`l.tenant_id = $${params.length}`);
+      }
+    }
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     const totalRes = await query(
       `
-      SELECT COALESCE(SUM(a.bytes),0)::bigint AS total_bytes,
+      SELECT COALESCE(SUM(sub.bytes),0)::bigint AS total_bytes,
              COUNT(*)::int AS total_count
-      FROM file_assets a
-      ${whereSql}
+      FROM (
+        SELECT DISTINCT a.id, a.bytes
+        FROM file_assets a
+        ${joinSql}
+        ${whereSql}
+      ) sub
       `,
       params
     );
@@ -287,7 +327,7 @@ export async function listMediaAssets(req: Request, res: Response) {
     const itemParams = [...params, limit, offset];
     const itemRes = await query(
       `
-      SELECT
+      SELECT DISTINCT
         a.id,
         a.source_type,
         a.kind,
@@ -312,6 +352,7 @@ export async function listMediaAssets(req: Request, res: Response) {
         ap.product_name AS provider_product_name,
         ap.logo_key AS provider_logo_key
       FROM file_assets a
+      ${joinSql}
       LEFT JOIN model_messages mm
         ON a.reference_type = 'message'
         AND a.reference_id = mm.id
@@ -348,6 +389,7 @@ export async function listMediaAssets(req: Request, res: Response) {
         status: row.status,
         metadata,
         is_favorite: Boolean((metadata as any)?.favorite),
+        is_missing: String(row.status || '') === 'deleted',
         is_pinned:
           row.source_type === 'attachment' && (row.expires_at === null || typeof row.expires_at === 'undefined'),
         model_api_id: row.model_api_id,

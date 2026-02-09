@@ -88,6 +88,7 @@ export function Sidebar({ className }: SidebarProps) {
   const SIDEBAR_OPEN_KEY = "reductai:sidebar:isOpen"
   const PERSONAL_OPEN_KEY = "reductai:sidebar:isPersonalOpen"
   const TEAM_OPEN_KEY = "reductai:sidebar:isTeamOpen"
+  const TENANT_INFO_CACHE_KEY = "reductai:sidebar:tenantInfo:v1"
   const getInitialIsOpen = () => {
     try {
       if (typeof window === "undefined") return true
@@ -189,8 +190,26 @@ export function Sidebar({ className }: SidebarProps) {
     }
   })
   const [teamCatsLoading, setTeamCatsLoading] = useState(false)
-  const [tenantType, setTenantType] = useState<string>("") // personal | team | group (or empty while loading)
-  const [tenantName, setTenantName] = useState<string>("")
+  const [tenantType, setTenantType] = useState<string>(() => {
+    try {
+      const raw = window.localStorage.getItem(TENANT_INFO_CACHE_KEY)
+      const j = raw ? JSON.parse(raw) : null
+      const type = typeof j?.tenant_type === "string" ? String(j.tenant_type) : ""
+      return type
+    } catch {
+      return ""
+    }
+  }) // personal | team | group (or empty while loading)
+  const [tenantName, setTenantName] = useState<string>(() => {
+    try {
+      const raw = window.localStorage.getItem(TENANT_INFO_CACHE_KEY)
+      const j = raw ? JSON.parse(raw) : null
+      const name = typeof j?.name === "string" ? String(j.name).trim() : ""
+      return name
+    } catch {
+      return ""
+    }
+  })
 
   const tenantPageLabel = useMemo(() => {
     const name = String(tenantName || "").trim()
@@ -652,6 +671,16 @@ export function Sidebar({ className }: SidebarProps) {
     const name = typeof j.name === "string" ? String(j.name).trim() : ""
     if (type) setTenantType(type)
     if (name) setTenantName(name)
+    if (type || name) {
+      try {
+        window.localStorage.setItem(
+          TENANT_INFO_CACHE_KEY,
+          JSON.stringify({ tenant_type: type || "", name: name || "" })
+        )
+      } catch {
+        // ignore
+      }
+    }
   }
 
   // Ensure tenantType is available even when the sidebar is collapsed (isOpen=false),

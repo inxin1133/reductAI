@@ -22,6 +22,10 @@ function slugify(input: string) {
     .slice(0, 60)
 }
 
+function isUuid(v: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v)
+}
+
 async function assertCategoryAccess(args: {
   categoryId: string
   tenantId: string
@@ -135,6 +139,7 @@ export async function savePostContent(req: Request, res: Response) {
   try {
     const { id } = req.params
     const userId = (req as AuthedRequest).userId
+    const tenantId = await resolveTenantId(req as AuthedRequest)
     const body = req.body as { docJson?: any; version?: number; pmSchemaVersion?: number }
 
     if (!body?.docJson || typeof body.docJson !== "object") {
@@ -190,16 +195,60 @@ export async function savePostContent(req: Request, res: Response) {
 
     const blocks = docJsonToBlocks({ postId: id, docJson: body.docJson, pmSchemaVersion })
 
-    const assetIds = extractMediaAssetIdsFromDocJson(body.docJson)
+    const rawAssetIds = extractMediaAssetIdsFromDocJson(body.docJson)
+    const assetIds = Array.from(new Set(rawAssetIds.map(String))).filter((v) => isUuid(v))
+    await client.query(`DELETE FROM file_asset_post_links WHERE post_id = $1`, [id])
     if (assetIds.length) {
+      const metaRes = await client.query(
+        `
+        SELECT bc.category_type, COALESCE(bc.user_id, bc.author_id) AS owner_id
+        FROM posts p
+        LEFT JOIN board_categories bc ON bc.id = p.category_id
+        WHERE p.id = $1
+        LIMIT 1
+        `,
+        [id]
+      )
+      const categoryType = String(metaRes.rows?.[0]?.category_type || "")
+      const scopeType = categoryType === "team_page" ? "team_page" : "personal_page"
+      const ownerId = String(metaRes.rows?.[0]?.owner_id || userId || "")
       await client.query(
         `
         UPDATE file_assets
         SET expires_at = NULL,
-            metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{pinned_by_post}', 'true'::jsonb, true)
+            metadata = jsonb_set(
+              jsonb_set(
+                jsonb_set(
+                  jsonb_set(
+                    jsonb_set(COALESCE(metadata, '{}'::jsonb), '{pinned_by_post}', 'true'::jsonb, true),
+                    '{pinned_scope}', to_jsonb($2::text), true
+                  ),
+                  '{pinned_owner_id}', to_jsonb($3::text), true
+                ),
+                '{pinned_tenant_id}', to_jsonb($4::text), true
+              ),
+              '{pinned_post_id}', to_jsonb($5::text), true
+            )
         WHERE id = ANY($1::uuid[])
         `,
-        [assetIds]
+        [assetIds, scopeType, ownerId, tenantId, id]
+      )
+      const ownerForLink = scopeType === "personal_page" ? ownerId : null
+      const tenantForLink = scopeType === "team_page" ? tenantId : null
+      await client.query(
+        `
+        INSERT INTO file_asset_post_links
+          (asset_id, post_id, scope_type, owner_user_id, tenant_id, created_at, updated_at)
+        SELECT a, $2, $3, $4, $5, NOW(), NOW()
+        FROM UNNEST($1::uuid[]) AS a
+        ON CONFLICT (asset_id, post_id)
+        DO UPDATE SET
+          scope_type = EXCLUDED.scope_type,
+          owner_user_id = EXCLUDED.owner_user_id,
+          tenant_id = EXCLUDED.tenant_id,
+          updated_at = NOW()
+        `,
+        [assetIds, id, scopeType, ownerForLink, tenantForLink]
       )
     }
 

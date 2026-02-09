@@ -83,11 +83,16 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
   const fetchAssetsPage = React.useCallback(
     async (nextOffset: number, limit = PAGE_SIZE) => {
       const params = new URLSearchParams({
-        source_type: "post_upload",
+        source_type: "post_upload,ai_generated,attachment",
         limit: String(limit),
         offset: String(nextOffset),
       })
-      if (scope === "tenant") params.set("scope", "tenant")
+      if (scope === "tenant") {
+        params.set("scope", "tenant")
+        params.set("page_scope", "team")
+      } else {
+        params.set("page_scope", "personal")
+      }
       const res = await fetch(`${FILES_API_BASE}?${params.toString()}`, {
         headers: { ...authHeaders() },
       })
@@ -310,28 +315,34 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
     return true
   }
 
+  const escapeHtmlAttr = (value: string) =>
+    value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+
   const copyLink = async (asset: FileAsset) => {
-    try {
-      if (asset.kind === "image" || String(asset.mime || "").startsWith("image/")) {
-        const canWriteImage =
+    const isImage = asset.kind === "image" || String(asset.mime || "").startsWith("image/")
+    if (isImage) {
+      try {
+        const canWrite =
           typeof navigator !== "undefined" &&
           !!navigator.clipboard &&
           typeof (navigator.clipboard as unknown as { write?: unknown }).write === "function" &&
           typeof (globalThis as unknown as { ClipboardItem?: unknown }).ClipboardItem !== "undefined"
-        if (!canWriteImage) throw new Error("CLIPBOARD_IMAGE_UNSUPPORTED")
+        if (!canWrite) throw new Error("CLIPBOARD_HTML_UNSUPPORTED")
 
-        const res = await fetch(scopedUrl(asset.url), { headers: { ...authHeaders() } })
-        if (!res.ok) throw new Error("FETCH_FAILED")
-        const blob = await res.blob()
-        const mime = blob.type || asset.mime || "image/png"
+        const url = scopedUrl(asset.url)
+        const alt = escapeHtmlAttr(getFileName(asset))
+        const html = `<img src="${escapeHtmlAttr(url)}" alt="${alt}" />`
         const ClipboardItemCtor = (globalThis as unknown as { ClipboardItem: typeof ClipboardItem }).ClipboardItem
-        const item = new ClipboardItemCtor({ [mime]: blob })
+        const item = new ClipboardItemCtor({
+          "text/plain": new Blob([url], { type: "text/plain" }),
+          "text/html": new Blob([html], { type: "text/html" }),
+        })
         await (navigator.clipboard as unknown as { write: (items: ClipboardItem[]) => Promise<void> }).write([item])
         toast("복사되었습니다.")
         return
+      } catch {
+        // fallback to URL text
       }
-    } catch {
-      // fallback to URL text
     }
 
     const url = withAuthToken(asset.url, scopeParams)

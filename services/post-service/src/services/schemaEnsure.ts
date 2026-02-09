@@ -140,6 +140,76 @@ export async function ensurePostEditorSchema(): Promise<void> {
   await exec(`CREATE INDEX IF NOT EXISTS idx_post_blocks_post_id ON post_blocks(post_id);`)
   await exec(`CREATE INDEX IF NOT EXISTS idx_post_blocks_sort_key ON post_blocks(post_id, sort_key);`)
 
+  // file_asset_post_links: page <-> asset linkage (for file list scoping)
+  await exec(`
+    CREATE TABLE IF NOT EXISTS file_asset_post_links (
+      asset_id UUID NOT NULL,
+      post_id UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+      scope_type VARCHAR(50) NOT NULL,
+      owner_user_id UUID,
+      tenant_id UUID,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (asset_id, post_id)
+    );
+  `)
+  await exec(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'file_asset_post_links_scope_check'
+      ) THEN
+        ALTER TABLE file_asset_post_links
+          ADD CONSTRAINT file_asset_post_links_scope_check
+          CHECK (scope_type IN ('personal_page', 'team_page'));
+      END IF;
+    END $$;
+  `)
+  await exec(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'file_asset_post_links_asset_fkey'
+      ) THEN
+        ALTER TABLE file_asset_post_links
+          ADD CONSTRAINT file_asset_post_links_asset_fkey
+          FOREIGN KEY (asset_id) REFERENCES file_assets(id) ON DELETE CASCADE;
+      END IF;
+    END $$;
+  `)
+  await exec(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'file_asset_post_links_owner_fkey'
+      ) THEN
+        ALTER TABLE file_asset_post_links
+          ADD CONSTRAINT file_asset_post_links_owner_fkey
+          FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE SET NULL;
+      END IF;
+    END $$;
+  `)
+  await exec(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'file_asset_post_links_tenant_fkey'
+      ) THEN
+        ALTER TABLE file_asset_post_links
+          ADD CONSTRAINT file_asset_post_links_tenant_fkey
+          FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE;
+      END IF;
+    END $$;
+  `)
+  await exec(`CREATE INDEX IF NOT EXISTS idx_file_asset_post_links_post_id ON file_asset_post_links(post_id);`)
+  await exec(`CREATE INDEX IF NOT EXISTS idx_file_asset_post_links_asset_id ON file_asset_post_links(asset_id);`)
+  await exec(
+    `CREATE INDEX IF NOT EXISTS idx_file_asset_post_links_scope_owner ON file_asset_post_links(scope_type, owner_user_id);`
+  )
+  await exec(
+    `CREATE INDEX IF NOT EXISTS idx_file_asset_post_links_scope_tenant ON file_asset_post_links(scope_type, tenant_id);`
+  )
+
   // Cleanup: categories are hard-deleted in the product UX.
   // Remove any previously soft-deleted categories to avoid accumulation.
   await exec(`DELETE FROM board_categories WHERE deleted_at IS NOT NULL;`)

@@ -9,8 +9,11 @@ export type FileAsset = {
   expires_at: string | null
   created_at: string | null
   updated_at: string | null
+  status?: string | null
+  metadata?: Record<string, unknown>
   is_favorite?: boolean
   is_pinned?: boolean
+  is_missing?: boolean
   model_api_id?: string | null
   model_display_name?: string | null
   provider_slug?: string | null
@@ -91,6 +94,17 @@ export const getModelLabel = (asset: FileAsset) => {
   const provider =
     String(asset.provider_product_name || asset.provider_name || asset.provider_slug || asset.provider_key || "").trim() || ""
   return provider ? `${base} (${provider})` : base
+}
+
+export const getAssetSourceLabel = (asset: FileAsset) => {
+  const metaSource = typeof asset.metadata?.source === "string" ? asset.metadata.source.trim() : ""
+  const metaSourceLower = metaSource.toLowerCase()
+  if (metaSource === "원본" || metaSourceLower === "original") return "출처: 원본"
+  if (asset.source_type === "external_link") return "출처: 원본"
+  if (asset.source_type === "post_upload") return "출처: 페이지 직접 파일 첨부"
+  if (asset.source_type === "ai_generated") return "출처: 생성 파일 > AI 생성 파일"
+  if (asset.source_type === "attachment") return "출처: 생성 파일 > 첨부 파일"
+  return "출처: -"
 }
 
 export const getFileName = (asset: FileAsset) => {

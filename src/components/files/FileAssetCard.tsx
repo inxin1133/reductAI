@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Download, Trash2, Copy, Star, Pin, Video, Music, FileText } from "lucide-react"
+import { Download, Trash2, Copy, Star, Pin, Video, Music, FileText, Link2Off } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/utils"
 import type { FileAsset } from "@/components/files/fileAssetUtils"
@@ -8,6 +8,7 @@ import {
   formatDateTime,
   getAssetCategory,
   getAssetLabel,
+  getAssetSourceLabel,
   getFileName,
   getModelLabel,
   withAuthToken,
@@ -47,11 +48,21 @@ export function FileAssetCard({
 }: FileAssetCardProps) {
   const [previewError, setPreviewError] = React.useState(false)
   const category = getAssetCategory(asset)
+  const isMissing = Boolean(asset.is_missing)
+  const showBroken = isMissing || previewError
   const canFavorite = favoriteMode === "favorite" && typeof onToggleFavorite === "function"
   const canPin = favoriteMode === "pin" && typeof onTogglePin === "function"
 
   const preview = () => {
-    if (category === "image" && !previewError) {
+    if (showBroken) {
+      return (
+        <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground">
+          <Link2Off className="size-8" />
+          <span className="text-xs">원본 삭제됨</span>
+        </div>
+      )
+    }
+    if (category === "image") {
       return (
         <img
           alt={getFileName(asset)}
@@ -140,6 +151,10 @@ export function FileAssetCard({
         <div className="flex items-center gap-2">
           <span className="text-muted-foreground">용량</span>
           <span className="flex-1 truncate text-foreground">{formatBytes(asset.bytes)}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-muted-foreground">출처</span>
+          <span className="flex-1 truncate text-foreground">{getAssetSourceLabel(asset)}</span>
         </div>
         {detailRow}
       </div>
