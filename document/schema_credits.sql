@@ -228,6 +228,8 @@ CREATE TABLE credit_ledger_entries (
     payment_transaction_id UUID REFERENCES payment_transactions(id) ON DELETE SET NULL,
     expires_at TIMESTAMP WITH TIME ZONE,
     occurred_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     metadata JSONB DEFAULT '{}'::jsonb,
     CHECK (amount_credits <> 0)
 );
@@ -306,18 +308,18 @@ COMMENT ON COLUMN credit_user_preferences.updated_at IS '수정 시간(TIMESTAMP
 -- 9. UPDATED_AT TRIGGERS (업데이트 시간 트리거)
 -- ============================================
 
-DO $$
+DO $do$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'update_updated_at_column') THEN
         CREATE OR REPLACE FUNCTION update_updated_at_column()
-        RETURNS TRIGGER AS $$
+        RETURNS TRIGGER AS $func$
         BEGIN
             NEW.updated_at = CURRENT_TIMESTAMP;
             RETURN NEW;
         END;
-        $$ language 'plpgsql';
+        $func$ language 'plpgsql';
     END IF;
-END $$;
+END $do$;
 
 CREATE TRIGGER update_credit_settings_updated_at BEFORE UPDATE ON credit_settings
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

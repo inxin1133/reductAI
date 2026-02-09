@@ -102,6 +102,7 @@ CREATE TABLE pricing_rates (
     tier_max BIGINT,
     metadata JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (rate_card_id, sku_id, tier_unit, tier_min, tier_max),
     CHECK (tier_min IS NULL OR tier_min >= 0),
     CHECK (tier_max IS NULL OR tier_max >= COALESCE(tier_min, 0))
@@ -187,6 +188,8 @@ END $$;
 CREATE TRIGGER update_pricing_rate_cards_updated_at BEFORE UPDATE ON pricing_rate_cards
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_pricing_skus_updated_at BEFORE UPDATE ON pricing_skus
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_pricing_rates_updated_at BEFORE UPDATE ON pricing_rates
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_pricing_markup_rules_updated_at BEFORE UPDATE ON pricing_markup_rules
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
