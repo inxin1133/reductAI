@@ -834,6 +834,10 @@ export async function openaiSimulateChat(args: {
     const out: Record<string, unknown> = { ...(templateBody as Record<string, unknown>) }
     // `responses` API does not accept chat-style `messages`. We still use it to derive `instructions`.
     delete out.messages
+    // Internal-only config (not supported by OpenAI responses API)
+    delete out.web_search_config
+    // Responses API uses text.format instead of response_format
+    delete out.response_format
     return out
   }
 
@@ -851,6 +855,20 @@ export async function openaiSimulateChat(args: {
     const schema = args.responseSchema || (args.outputFormat === "block_json" ? openAiBlockJsonSchema() : null)
     const templateInstructions = buildInstructionsFromTemplate(args.templateBody || null)
     const sanitizedTemplate = sanitizeTemplateForResponses(args.templateBody || null)
+    const textConfig = schema
+      ? {
+          format: {
+            type: "json_schema",
+            name: schema.name,
+            schema: schema.schema,
+            strict: schema.strict !== false,
+          },
+        }
+      : {
+          format: { type: "text" },
+          verbosity: "low",
+        }
+
     const baseBody = {
       model: args.model,
       input: args.input,
@@ -860,22 +878,7 @@ export async function openaiSimulateChat(args: {
       reasoning: { effort: reasoningEffortForModel(args.model) },
       ...(templateInstructions ? { instructions: templateInstructions } : {}),
       // 서버 레벨 JSON 강제 (가능한 경우)
-      ...(schema
-        ? {
-            // 기본: json_schema (가능한 모델/계정에서 가장 강력한 강제)
-            response_format: {
-              type: "json_schema",
-              json_schema: {
-                name: schema.name,
-                schema: schema.schema,
-                strict: schema.strict !== false,
-              },
-            },
-          }
-        : {
-            // 텍스트 출력 우선
-            text: { verbosity: "low" },
-          }),
+      text: textConfig,
       ...(args.promptCacheKey ? { prompt_cache_key: args.promptCacheKey } : {}),
       ...(args.promptCacheRetention ? { prompt_cache_retention: args.promptCacheRetention } : {}),
     }
@@ -894,8 +897,7 @@ export async function openaiSimulateChat(args: {
       max_output_tokens: args.maxTokens,
       reasoning: { effort: reasoningEffortForModel(args.model) },
       ...(templateInstructions ? { instructions: templateInstructions } : {}),
-      response_format: { type: "json_object" },
-      text: { verbosity: "low" },
+      text: { format: { type: "json_object" }, verbosity: "low" },
       ...(args.promptCacheKey ? { prompt_cache_key: args.promptCacheKey } : {}),
       ...(args.promptCacheRetention ? { prompt_cache_retention: args.promptCacheRetention } : {}),
     }
@@ -912,16 +914,20 @@ export async function openaiSimulateChat(args: {
       max_output_tokens: args.maxTokens,
       reasoning: { effort: reasoningEffortForModel(args.model) },
       ...(templateInstructions ? { instructions: templateInstructions } : {}),
-      text: { verbosity: "low" },
+      text: { format: { type: "text" }, verbosity: "low" },
       ...(args.promptCacheKey ? { prompt_cache_key: args.promptCacheKey } : {}),
       ...(args.promptCacheRetention ? { prompt_cache_retention: args.promptCacheRetention } : {}),
     }
   }
 
+  let lastResponsesError: Record<string, unknown> | null = null
   async function tryResponsesWithNonEmptyText(bodies: Array<unknown>) {
     for (const body of bodies) {
       const r = await postJson(`${apiRoot}/responses`, body)
-      if (!r.res.ok) continue
+      if (!r.res.ok) {
+        lastResponsesError = { status: r.res.status, json: r.json }
+        continue
+      }
       const text = extractTextFromResponses(r.json)
       const truncated = r.json?.incomplete_details?.reason === "max_output_tokens"
 
@@ -933,12 +939,21 @@ export async function openaiSimulateChat(args: {
         if (retry.res.ok) {
           const t2 = extractTextFromResponses(retry.json)
           if (t2 && t2.length >= (text || "").length) {
+            if (retry.json && typeof retry.json === "object") {
+              ;(retry.json as Record<string, unknown>)._meta = { endpoint: "responses", retried: true }
+            }
             return { ok: true as const, raw: retry.json, output_text: t2 }
           }
         }
       }
 
-      if (text) return { ok: true as const, raw: r.json, output_text: text }
+      if (text) {
+        if (r.json && typeof r.json === "object") {
+          ;(r.json as Record<string, unknown>)._meta = { endpoint: "responses" }
+        }
+        return { ok: true as const, raw: r.json, output_text: text }
+      }
+      lastResponsesError = { status: r.res.status, json: r.json, reason: "empty_text" }
     }
     return { ok: false as const }
   }
@@ -1000,6 +1015,12 @@ export async function openaiSimulateChat(args: {
       if (!text) {
         const tried = await tryResponsesWithNonEmptyText([responsesBody(), responsesBodyJsonObject(), responsesBodyPlain()])
         if (tried.ok) return { raw: tried.raw, output_text: tried.output_text }
+      }
+      if (json && typeof json === "object") {
+        ;(json as Record<string, unknown>)._meta = {
+          endpoint: "chat.completions",
+          responses_error: lastResponsesError,
+        }
       }
       if (text && text.trim()) return { raw: json, output_text: text }
       // Last resort: don't store empty output_text if we got a payload.
@@ -1125,9 +1146,11 @@ export async function anthropicSimulateChat(args: {
       if (blocks.length > 0) {
         if (!hasCacheControl(blocks)) {
           for (let i = blocks.length - 1; i >= 0; i -= 1) {
-            const t = typeof blocks[i].text === "string" ? blocks[i].text.trim() : ""
-            if (t) {
-              blocks[i].cache_control = cacheControl
+            const block = blocks[i]
+            if (!block) continue
+            const text = typeof block.text === "string" ? block.text.trim() : ""
+            if (text) {
+              block.cache_control = cacheControl
               break
             }
           }

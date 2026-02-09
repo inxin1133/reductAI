@@ -2016,33 +2016,41 @@ export async function chatRun(req: Request, res: Response) {
         const profile = await loadModelApiProfile({ tenantId, providerId, modelDbId: chosenModelDbId, purpose })
         if (profile) {
           usedProfileKey = profile.profile_key
-          profileAttempted = true
-          const auth = await resolveAuthForModelApiProfile({ providerId, authProfileId: profile.auth_profile_id })
-          usedCredentialId = auth.credentialId
-          out = await executeHttpJsonProfile({
-            apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-            apiKey: auth.apiKey,
-            accessToken: auth.accessToken,
-            modelApiId,
-            purpose,
-            prompt,
-            input,
-            language: finalLang,
-            maxTokens: safeMaxTokens,
-            history,
-            options: mergedOptions,
-            injectedTemplate,
-            profile,
-            configVars: auth.configVars,
-            signal: abortSignal,
-          })
-          // Defensive fallback:
-          // Some model_api_profiles mappings (especially for OpenAI structured outputs) can yield empty text
-          // even though the provider returned a valid JSON payload. In that case, fall back to the built-in
-          // provider client (which has richer extraction + schema handling).
-          if (!out.output_text || !String(out.output_text).trim()) {
-            console.warn("[model_api_profiles] empty output_text -> fallback to provider client:", usedProfileKey)
+          const isOpenAiResponsesProfile = providerKey === "openai" && /^openai\.responses/i.test(usedProfileKey || "")
+          if (isOpenAiResponsesProfile) {
+            // Prefer built-in OpenAI Responses path (prompt_cache_key/retention, template->instructions handling).
+            profileAttempted = false
+            profileError = "BYPASS_OPENAI_RESPONSES_PROFILE"
             out = null
+          } else {
+            profileAttempted = true
+            const auth = await resolveAuthForModelApiProfile({ providerId, authProfileId: profile.auth_profile_id })
+            usedCredentialId = auth.credentialId
+            out = await executeHttpJsonProfile({
+              apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+              apiKey: auth.apiKey,
+              accessToken: auth.accessToken,
+              modelApiId,
+              purpose,
+              prompt,
+              input,
+              language: finalLang,
+              maxTokens: safeMaxTokens,
+              history,
+              options: mergedOptions,
+              injectedTemplate,
+              profile,
+              configVars: auth.configVars,
+              signal: abortSignal,
+            })
+            // Defensive fallback:
+            // Some model_api_profiles mappings (especially for OpenAI structured outputs) can yield empty text
+            // even though the provider returned a valid JSON payload. In that case, fall back to the built-in
+            // provider client (which has richer extraction + schema handling).
+            if (!out.output_text || !String(out.output_text).trim()) {
+              console.warn("[model_api_profiles] empty output_text -> fallback to provider client:", usedProfileKey)
+              out = null
+            }
           }
         }
       } catch (e) {
@@ -2746,6 +2754,7 @@ export async function chatRun(req: Request, res: Response) {
               client_request_id: clientRequestId || null,
               profile_key: usedProfileKey || null,
               profile_attempted: profileAttempted,
+              profile_error: profileError ? String((profileError as any)?.message || profileError) : null,
             }),
           ]
         )

@@ -1,9 +1,7 @@
 # GPT-5.2
 
 `prompt_templates.body`
-*웹 서치 정책(코드 적용)*
-> 참고: Responses API 사용 시 `response_format`은 사용하지 않습니다. (서버에서 `text.format`으로 처리)
-> 참고: `web_search_config`는 템플릿에 두지 않고 코드에서 정책/제어합니다.
+*웹 서치 적용버전*
 ```json
 {
   "messages": [
@@ -19,7 +17,28 @@
       "role": "user",
       "content": "{{input}}"
     }
-  ]
+  ],
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "{{response_schema_name}}",
+      "strict": "{{response_schema_strict}}",
+      "schema": "{{response_schema_json}}"
+    }
+  },
+  "web_search_config": {
+    "provider": "serper",
+    "tool_name": "search_web",
+    "max_search_calls": "{{max_search_calls}}",
+    "max_total_snippet_tokens": "{{max_total_snippet_tokens}}",
+    "timeout_ms": "{{search_timeout_ms}}",
+    "retry": {
+      "max_attempts": "{{search_retry_max}}",
+      "backoff": "exponential",
+      "base_delay_ms": "{{search_retry_base_delay_ms}}",
+      "max_delay_ms": "{{search_retry_max_delay_ms}}"
+    }
+  }
 }
 ```
 
@@ -158,9 +177,7 @@
 # GPT-5 mini
 
 `prompt_templates.body`
-*웹 서치 정책(코드 적용)*
-> 참고: Responses API 사용 시 `response_format`은 사용하지 않습니다. (서버에서 `text.format`으로 처리)
-> 참고: `web_search_config`는 템플릿에 두지 않고 코드에서 정책/제어합니다.
+*웹 서치 적용버전*
 ```json
 {
   "messages": [
@@ -176,7 +193,28 @@
       "role": "user",
       "content": "{{input}}"
     }
-  ]
+  ],
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "{{response_schema_name}}",
+      "strict": "{{response_schema_strict}}",
+      "schema": "{{response_schema_json}}"
+    }
+  },
+  "web_search_config": {
+    "provider": "serper",
+    "tool_name": "search_web",
+    "max_search_calls": "{{max_search_calls}}",
+    "max_total_snippet_tokens": "{{max_total_snippet_tokens}}",
+    "timeout_ms": "{{search_timeout_ms}}",
+    "retry": {
+      "max_attempts": "{{search_retry_max}}",
+      "backoff": "exponential",
+      "base_delay_ms": "{{search_retry_base_delay_ms}}",
+      "max_delay_ms": "{{search_retry_max_delay_ms}}"
+    }
+  }
 }
 ```
 
