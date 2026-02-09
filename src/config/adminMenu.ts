@@ -60,6 +60,7 @@ export const adminMenuGroups: MenuGroup[] = [
           { title: "Provider 인증 프로필(Auth Profiles)", href: "/admin/ai/provider-auth-profiles" },
           { title: "모델 라우팅 규칙", href: "/admin/ai/model-routing-rules" },                    
           { title: "모델 사용 로그", href: "/admin/ai/model-usage-logs" },          
+          { title: "웹검색 정책", href: "/admin/ai/web-search-settings" },
         ]
       },
       { 

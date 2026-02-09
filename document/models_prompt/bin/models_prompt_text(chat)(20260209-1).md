@@ -5,7 +5,6 @@
 > 참고: Responses API 사용 시 `response_format`은 사용하지 않습니다. (서버에서 `text.format`으로 처리)
 > 참고: `web_search_config`는 템플릿에 두지 않고 코드에서 정책/제어합니다.
 ```json
-
 {
   "messages": [
     {
@@ -23,6 +22,7 @@
   ]
 }
 ```
+
 
 
 

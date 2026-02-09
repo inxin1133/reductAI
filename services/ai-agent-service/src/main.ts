@@ -15,6 +15,7 @@ import {
   ensurePromptSuggestionsSchema,
   ensureResponseSchemasSchema,
   ensureTimelineSchema,
+  ensureWebSearchSettingsSchema,
 } from "./services/schemaBootstrap"
 import chatRoutes from "./routes/chatRoutes"
 import chatUiRoutes from "./routes/chatUiRoutes"
@@ -26,6 +27,7 @@ import responseSchemasRoutes from "./routes/responseSchemasRoutes"
 import promptSuggestionsRoutes from "./routes/promptSuggestionsRoutes"
 import modelApiProfilesRoutes from "./routes/modelApiProfilesRoutes"
 import providerAuthProfilesRoutes from "./routes/providerAuthProfilesRoutes"
+import webSearchSettingsRoutes from "./routes/webSearchSettingsRoutes"
 
 dotenv.config()
 
@@ -54,6 +56,7 @@ app.use("/api/ai/response-schemas", responseSchemasRoutes)
 app.use("/api/ai/prompt-suggestions", promptSuggestionsRoutes)
 app.use("/api/ai/model-api-profiles", modelApiProfilesRoutes)
 app.use("/api/ai/provider-auth-profiles", providerAuthProfilesRoutes)
+app.use("/api/ai/web-search-settings", webSearchSettingsRoutes)
 
 app.get("/health", (_req: any, res: any) => {
   res.json({ status: "ok", service: "ai-agent-service" })
@@ -72,6 +75,7 @@ app.listen(PORT, async () => {
     await ensurePromptSuggestionsSchema()
     await ensureModelApiProfilesSchema()
     await ensureProviderAuthProfilesSchema()
+    await ensureWebSearchSettingsSchema()
     // Best-effort: seed default Sora video model_api_profile for OpenAI Sora providers.
     // Users can edit/override in Admin (Model API Profiles).
     const { ensureDefaultSoraVideoProfiles } = await import("./services/schemaBootstrap")

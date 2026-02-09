@@ -44,7 +44,6 @@ export default function FrontAI() {
   
   const [selection, setSelection] = React.useState<{ modelApiId: string; providerSlug: string; modelType: string }>(() => readSelectionFromStorage())
   const [selectionVersion, setSelectionVersion] = React.useState(0)
-
   // 토큰이 없거나 만료된 경우 접근 차단 및 경고 표시
   React.useEffect(() => {
     const token = localStorage.getItem("token")
@@ -139,20 +138,28 @@ export default function FrontAI() {
         {/* Main Body - 메인 바디 */}
       <div className="flex flex-1 flex-col gap-[40px] items-center justify-center px-[24px] pb-[24px] pt-[84px] relative w-full h-full">
         <ChatInterface
-          key={`${selection.modelType || "text"}:${selection.providerSlug || "none"}:${selection.modelApiId || "none"}:${selectionVersion}`}
+          key={`frontai:${selectionVersion}`}
           // FrontAI에서는 "첫 질문 시작"만 하고, 실제 대화는 Timeline에서 이어가도록 합니다.
           submitMode="emit"
-          forceSelectionSync
-          selectionOverride={{
-            modelType: (selection.modelType as "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code") || undefined,
-            providerSlug: selection.providerSlug || undefined,
-            modelApiId: selection.modelApiId || undefined,
-          }}
           initialSelectedModel={selection.modelApiId || undefined}
           initialProviderSlug={selection.providerSlug || undefined}
           initialModelType={(selection.modelType as "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code") || undefined}
           onSelectionChange={(selection) => {
             if (!selection.modelApiId || !selection.providerSlug) return
+            setSelection((prev) => {
+              if (
+                prev.modelApiId === selection.modelApiId &&
+                prev.providerSlug === selection.providerSlug &&
+                prev.modelType === selection.modelType
+              ) {
+                return prev
+              }
+              return {
+                modelApiId: selection.modelApiId || "",
+                providerSlug: selection.providerSlug || "",
+                modelType: selection.modelType || "",
+              }
+            })
             try {
               localStorage.setItem(LAST_SELECTION_KEY, JSON.stringify({
                 modelApiId: selection.modelApiId || "",
@@ -167,11 +174,6 @@ export default function FrontAI() {
             } catch {
               // ignore storage issues
             }
-            setSelection({
-              modelApiId: selection.modelApiId || "",
-              providerSlug: selection.providerSlug || "",
-              modelType: selection.modelType || "",
-            })
           }}
           onSubmit={({ input, providerSlug, model, modelType, options, attachments }) => {
             try {

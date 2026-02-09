@@ -15,6 +15,7 @@ import {
 import { resolveAuthForModelApiProfile } from "../services/authProfilesService"
 import { newAssetId, storeImageDataUrlAsAsset } from "../services/fileServiceClient"
 import { normalizeAiContent } from "../utils/normalizeAiContent"
+import { getWebSearchPolicy } from "../services/webSearchSettingsService"
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 
@@ -252,6 +253,105 @@ function extractRequestedLanguage(text: string): string | null {
 function clampInt(n: number, min: number, max: number) {
   if (!Number.isFinite(n)) return min
   return Math.max(min, Math.min(max, Math.floor(n)))
+}
+
+function clampText(input: string, maxChars: number) {
+  const s = String(input || "").replace(/\s+/g, " ").trim()
+  if (!maxChars || maxChars <= 0) return ""
+  if (s.length <= maxChars) return s
+  return s.slice(0, Math.max(0, maxChars - 1)) + "…"
+}
+
+function normLang(x: string) {
+  const s = String(x || "").trim().toLowerCase()
+  return (s.split(/[-_]/)[0] || "en").slice(0, 8)
+}
+
+function normCountry(x: string) {
+  const s = String(x || "").trim().toLowerCase()
+  return (s || "").replace(/[^a-z]/g, "").slice(0, 2) || ""
+}
+
+function normalizeLocaleTag(input: string) {
+  const raw = String(input || "").trim()
+  if (!raw) return ""
+  const cleaned = raw.replace(/_/g, "-")
+  if (cleaned.includes("-")) return cleaned
+  const lower = cleaned.toLowerCase()
+  if (lower === "ko") return "ko-KR"
+  if (lower === "ja") return "ja-JP"
+  if (lower === "zh") return "zh-CN"
+  if (lower === "en") return "en-US"
+  return cleaned
+}
+
+function resolveLocaleTag(args: { finalLang: string; sessionLang?: string; webSearchLanguages?: string[] | null }) {
+  const firstWebLang = Array.isArray(args.webSearchLanguages) ? args.webSearchLanguages[0] : ""
+  const raw = String(firstWebLang || args.sessionLang || args.finalLang || "en-US").trim()
+  return normalizeLocaleTag(raw) || "en-US"
+}
+
+function formatCurrentDateTime(now: Date) {
+  const pad2 = (n: number) => String(n).padStart(2, "0")
+  const yyyy = now.getFullYear()
+  const mm = pad2(now.getMonth() + 1)
+  const dd = pad2(now.getDate())
+  const hh = pad2(now.getHours())
+  const mi = pad2(now.getMinutes())
+  const ss = pad2(now.getSeconds())
+  const offsetMin = -now.getTimezoneOffset()
+  const sign = offsetMin >= 0 ? "+" : "-"
+  const abs = Math.abs(offsetMin)
+  const offH = pad2(Math.floor(abs / 60))
+  const offM = pad2(abs % 60)
+  const offset = `${sign}${offH}:${offM}`
+  return {
+    date: `${yyyy}-${mm}-${dd}`,
+    datetime: `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}${offset}`,
+  }
+}
+
+function resolveWebLocale(args: { finalLang: string; web_search_country?: string | null; web_search_languages?: string[] | null }) {
+  const lang2 = normLang(args.finalLang)
+  const countryFromClient = normCountry(args.web_search_country || "")
+  const countryFromLang = lang2 === "ko" ? "kr" : lang2 === "ja" ? "jp" : lang2 === "zh" ? "cn" : "us"
+  const gl = countryFromClient || countryFromLang
+  const browserLangs = Array.isArray(args.web_search_languages) ? args.web_search_languages : []
+  const hl = lang2 || (browserLangs[0] ? normLang(browserLangs[0]) : "en")
+  return { gl, hl }
+}
+
+function compactSearchResults(organic: unknown, maxChars: number) {
+  const list = Array.isArray(organic) ? organic : []
+  const out: Array<{ title: string; link: string; snippet: string }> = []
+  let remaining = Math.max(0, maxChars)
+  for (const raw of list) {
+    if (remaining <= 0) break
+    if (!raw || typeof raw !== "object") continue
+    const rec = raw as Record<string, unknown>
+    const title = clampText(String(rec.title || ""), 160)
+    const link = clampText(String(rec.link || rec.url || ""), 300)
+    const snippet = clampText(String(rec.snippet || rec.content || ""), Math.min(700, remaining))
+    const used = title.length + link.length + snippet.length + 10
+    if (used > remaining && out.length > 0) break
+    out.push({ title, link, snippet })
+    remaining -= used
+  }
+  return out
+}
+
+function formatSearchContext(organic: Array<{ title: string; link: string; snippet: string }>) {
+  return organic
+    .map((o, idx) => {
+      const parts = [
+        `[${idx + 1}] ${o.title || "Untitled"}`.trim(),
+        o.link ? o.link.trim() : "",
+        o.snippet ? o.snippet.trim() : "",
+      ].filter(Boolean)
+      return parts.join("\n")
+    })
+    .filter(Boolean)
+    .join("\n\n")
 }
 
 function deepInjectVars(input: unknown, vars: Record<string, unknown>): unknown {
@@ -1508,6 +1608,7 @@ export async function chatRun(req: Request, res: Response) {
     const userId = (req as AuthedRequest).userId
     const authHeader = String(req.headers.authorization || "")
     const tenantId = await ensureSystemTenantId()
+    const webSearchPolicy = await getWebSearchPolicy(tenantId)
 
     const {
       model_type,
@@ -1701,6 +1802,11 @@ export async function chatRun(req: Request, res: Response) {
     }
 
     const finalLang = requestedLang || detectedLang || historyLang || sessionLang || "ko"
+    const now = new Date()
+    const tz = Intl?.DateTimeFormat?.().resolvedOptions?.().timeZone
+    const currentTimezone = typeof tz === "string" && tz ? tz : "UTC"
+    const currentLocale = resolveLocaleTag({ finalLang, sessionLang, webSearchLanguages: web_search_languages })
+    const { date: currentDate, datetime: currentDatetime } = formatCurrentDateTime(now)
 
     // 6) short-term + long-term context
     const history = await loadHistory({ conversationId: convId })
@@ -1745,18 +1851,22 @@ export async function chatRun(req: Request, res: Response) {
       prompt,
       user_input: prompt,
       language: finalLang,
+      current_date: currentDate,
+      current_datetime: currentDatetime,
+      current_timezone: currentTimezone,
+      current_locale: currentLocale,
       shortHistory: history.shortText,
       longSummary: history.conversationSummary || history.longText,
       response_schema_name: responseSchema?.name || "",
       response_schema_json: responseSchema?.schema || {},
       response_schema_strict: responseSchema?.strict !== false,
       // Web search policy defaults (used by prompt_templates if present)
-      max_search_calls: 3,
-      max_total_snippet_tokens: 1200,
-      search_timeout_ms: 10000,
-      search_retry_max: 2,
-      search_retry_base_delay_ms: 500,
-      search_retry_max_delay_ms: 2000,
+      max_search_calls: webSearchPolicy.max_search_calls,
+      max_total_snippet_tokens: webSearchPolicy.max_total_snippet_tokens,
+      search_timeout_ms: webSearchPolicy.timeout_ms,
+      search_retry_max: webSearchPolicy.retry_max,
+      search_retry_base_delay_ms: webSearchPolicy.retry_base_delay_ms,
+      search_retry_max_delay_ms: webSearchPolicy.retry_max_delay_ms,
     }
     for (const [k, v] of Object.entries(mergedOptions || {})) {
       if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean") continue
@@ -2000,7 +2110,13 @@ export async function chatRun(req: Request, res: Response) {
 
     let out: { output_text: string; raw: unknown; content: Record<string, unknown> } | null = null
 
-    const webAllowed = Boolean(web_allowed) && mt === "text"
+    const webPolicyProviders = new Set(
+      (webSearchPolicy.enabled_providers || []).map((p: unknown) => String(p || "").toLowerCase()).filter(Boolean)
+    )
+    const providerAllowsWeb = webPolicyProviders.size ? webPolicyProviders.has(providerKey) : true
+    const webAllowed = Boolean(web_allowed) && mt === "text" && webSearchPolicy.enabled && providerAllowsWeb
+    const webProvider = webAllowed ? webSearchPolicy.provider : null
+    const webSearchMode = webAllowed ? "auto" : "off"
     const forceBuiltinImageEdit = mt === "image" && incomingImageDataUrls.length > 0
 
     // ✅ DB-driven execution: if a model_api_profile exists for this provider/purpose, try it first.
@@ -2098,28 +2214,10 @@ export async function chatRun(req: Request, res: Response) {
           }
 
           const { serperSearch } = await import("../services/serperSearch")
+          const { gl, hl } = resolveWebLocale({ finalLang, web_search_country, web_search_languages })
 
-          function normLang(x: string) {
-            const s = String(x || "").trim().toLowerCase()
-            return (s.split(/[-_]/)[0] || "en").slice(0, 8)
-          }
-          function normCountry(x: string) {
-            const s = String(x || "").trim().toLowerCase()
-            return (s || "").replace(/[^a-z]/g, "").slice(0, 2) || ""
-          }
-          // 1) Country: browser hint first (best-effort)
-          // 2) Fallback: language -> country heuristic
-          const lang2 = normLang(finalLang)
-          const countryFromClient = normCountry(web_search_country || "")
-          const countryFromLang =
-            lang2 === "ko" ? "kr" : lang2 === "ja" ? "jp" : lang2 === "zh" ? "cn" : lang2 === "en" ? "us" : "us"
-          const gl = countryFromClient || countryFromLang
-
-          // Language priority: system language (finalLang) first, then browser hint list as fallback.
-          const browserLangs = Array.isArray(web_search_languages) ? web_search_languages : []
-          const hl = lang2 || (browserLangs[0] ? normLang(browserLangs[0]) : "en")
-
-          const maxSearchCalls = 3
+          const maxSearchCalls = webSearchPolicy.max_search_calls
+          const snippetBudgetChars = webSearchPolicy.max_total_snippet_tokens * 4
           webBudgetCount = maxSearchCalls
 
           const templateMsgs =
@@ -2265,7 +2363,7 @@ export async function chatRun(req: Request, res: Response) {
                 country: gl,
                 language: hl,
                 limit: 5,
-                timeoutMs: 10000,
+                timeoutMs: webSearchPolicy.timeout_ms,
                 signal: abortSignal,
               })
               try {
@@ -2275,10 +2373,16 @@ export async function chatRun(req: Request, res: Response) {
                 // ignore
               }
               // Keep tool payload compact (raw is kept server-side only if needed)
+              const compactOrganic = compactSearchResults(result.organic, snippetBudgetChars)
               messages.push({
                 role: "tool",
                 tool_call_id: tc.id,
-                content: JSON.stringify({ query: result.query, country: result.country, language: result.language, organic: result.organic }),
+                content: JSON.stringify({
+                  query: result.query,
+                  country: result.country,
+                  language: result.language,
+                  organic: compactOrganic,
+                }),
               })
             }
           }
@@ -2323,11 +2427,50 @@ export async function chatRun(req: Request, res: Response) {
         })
         out = { ...r, content: { output_text: r.output_text, raw: r.raw } }
         } else if (providerKey === "google") {
+        let googleInput = input
+        if (webAllowed) {
+          const serperKey = String(process.env.SERPER_API_KEY || "").trim()
+          if (!serperKey) {
+            return await failAndRespond(500, {
+              message: "Web search is enabled, but SERPER_API_KEY is not configured on ai-agent-service.",
+              details: "Set SERPER_API_KEY in ai-agent-service environment (.env) and restart the service.",
+            })
+          }
+          const { serperSearch } = await import("../services/serperSearch")
+          const { gl, hl } = resolveWebLocale({ finalLang, web_search_country, web_search_languages })
+          const queryText = clampText(prompt, 500)
+          if (queryText) {
+            webBudgetCount = webSearchPolicy.max_search_calls
+            webSearchCount += 1
+            webQueryCharsTotal += queryText.length
+            const result = await serperSearch({
+              apiKey: serperKey,
+              query: queryText,
+              country: gl,
+              language: hl,
+              limit: 5,
+              timeoutMs: webSearchPolicy.timeout_ms,
+              signal: abortSignal,
+            })
+            try {
+              const rawBytes = JSON.stringify(result.raw ?? result).length
+              webResponseBytesTotal += rawBytes
+            } catch {
+              // ignore
+            }
+            const snippetBudgetChars = webSearchPolicy.max_total_snippet_tokens * 4
+            const compactOrganic = compactSearchResults(result.organic, snippetBudgetChars)
+            const webContext = formatSearchContext(compactOrganic)
+            if (webContext) {
+              googleInput = `웹 검색 결과:\n${webContext}\n\n${input}`
+            }
+          }
+        }
         const r = await googleSimulateChat({
           apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
           apiKey: auth.apiKey,
           model: modelApiId,
-          input,
+          input: googleInput,
           maxTokens: safeMaxTokens,
           templateBody: injectedTemplate || undefined,
           signal: abortSignal,
@@ -2650,7 +2793,7 @@ export async function chatRun(req: Request, res: Response) {
           prompt_cache_key: promptCacheKey || null,
           prompt_cache_retention: promptCacheRetention || null,
           attachments: attachmentStats,
-          web_allowed: Boolean(web_allowed),
+          web_allowed: Boolean(webAllowed),
           web_search_country: web_search_country || null,
           web_search_languages: web_search_languages || null,
         }
@@ -2665,6 +2808,9 @@ export async function chatRun(req: Request, res: Response) {
         }
         const responseTimeMs = Date.now() - runStartedAtMs
         const status = didUpdateAssistant ? "success" : "failed"
+        const web_enabled = webAllowed
+        const web_provider = webProvider
+        const web_search_mode = webSearchMode
 
         const logRes = await query(
           `
@@ -2725,9 +2871,9 @@ export async function chatRun(req: Request, res: Response) {
             requestIdForLog,
             convId,
             assistantMessageId,
-            Boolean(web_allowed),
-            webSearchCount > 0 ? "serper" : null,
-            web_allowed ? "auto" : "off",
+            web_enabled,
+            web_provider,
+            web_search_mode,
             webBudgetCount,
             webSearchCount,
             inputTokens,
@@ -2817,7 +2963,7 @@ export async function chatRun(req: Request, res: Response) {
                 SELECT 1 FROM llm_web_search_usages WHERE usage_log_id = $1
               )
               `,
-              [usageLogId, "serper", webSearchCount, webQueryCharsTotal, webResponseBytesTotal]
+              [usageLogId, webProvider || "serper", webSearchCount, webQueryCharsTotal, webResponseBytesTotal]
             )
           }
         }

@@ -1,6 +1,7 @@
 import { Request, Response } from "express"
 import { query } from "../config/db"
 import { ensureSystemTenantId } from "../services/systemTenantService"
+import { getWebSearchPolicy } from "../services/webSearchSettingsService"
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 
@@ -8,6 +9,7 @@ const MODEL_TYPES: ModelType[] = ["text", "image", "audio", "music", "video", "m
 
 export async function getChatUiConfig(_req: Request, res: Response) {
   try {
+    const tenantId = await ensureSystemTenantId()
     // 1) active models only (provider shown if it has at least one active model)
     const rows = await query(
       `
@@ -83,11 +85,13 @@ export async function getChatUiConfig(_req: Request, res: Response) {
 
     // include only types that actually have providers (for tabs)
     const activeModelTypes = MODEL_TYPES.filter((t) => (providersByType[t] || []).length > 0)
+    const webSearchPolicy = await getWebSearchPolicy(tenantId)
 
     return res.json({
       ok: true,
       model_types: activeModelTypes,
       providers_by_type: providersByType,
+      web_search_policy: webSearchPolicy,
     })
   } catch (e: any) {
     console.error("getChatUiConfig error:", e)

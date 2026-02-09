@@ -492,6 +492,47 @@ COMMENT ON COLUMN prompt_suggestions.created_at IS '생성 시각';
 COMMENT ON COLUMN prompt_suggestions.updated_at IS '최종 수정 시각';
 
 -- ============================================
+-- 7.35 WEB SEARCH SETTINGS (관리자 웹검색 정책)
+-- ============================================
+-- 웹검색(Serper 기반) 사용 정책을 테넌트 단위로 관리합니다.
+-- - enabled: 관리자 정책으로 웹검색 기능 자체를 ON/OFF
+-- - default_allowed: 클라이언트 초기 토글 기본값
+-- - enabled_providers: web search를 허용할 provider family 목록 (openai/google/anthropic 등)
+
+CREATE TABLE ai_web_search_settings (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    default_allowed BOOLEAN NOT NULL DEFAULT FALSE,
+    provider VARCHAR(50) NOT NULL DEFAULT 'serper',
+    enabled_providers JSONB NOT NULL DEFAULT '["openai","google","anthropic"]',
+    max_search_calls INTEGER NOT NULL DEFAULT 3,
+    max_total_snippet_tokens INTEGER NOT NULL DEFAULT 1200,
+    timeout_ms INTEGER NOT NULL DEFAULT 10000,
+    retry_max INTEGER NOT NULL DEFAULT 2,
+    retry_base_delay_ms INTEGER NOT NULL DEFAULT 500,
+    retry_max_delay_ms INTEGER NOT NULL DEFAULT 2000,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (tenant_id)
+);
+
+COMMENT ON TABLE ai_web_search_settings IS '웹검색 정책 설정 (테넌트별)';
+COMMENT ON COLUMN ai_web_search_settings.tenant_id IS '테넌트 ID (tenants 테이블 참조)';
+COMMENT ON COLUMN ai_web_search_settings.enabled IS '웹검색 기능 활성 여부(관리자 정책)';
+COMMENT ON COLUMN ai_web_search_settings.default_allowed IS '클라이언트 기본 웹검색 토글 값';
+COMMENT ON COLUMN ai_web_search_settings.provider IS '웹검색 공급자 식별자 (현재 serper)';
+COMMENT ON COLUMN ai_web_search_settings.enabled_providers IS '웹검색 허용 provider family 목록(JSON 배열)';
+COMMENT ON COLUMN ai_web_search_settings.max_search_calls IS '최대 검색 호출 횟수';
+COMMENT ON COLUMN ai_web_search_settings.max_total_snippet_tokens IS '스니펫 최대 토큰 예산';
+COMMENT ON COLUMN ai_web_search_settings.timeout_ms IS '검색 타임아웃(ms)';
+COMMENT ON COLUMN ai_web_search_settings.retry_max IS '검색 재시도 횟수';
+COMMENT ON COLUMN ai_web_search_settings.retry_base_delay_ms IS '재시도 기본 지연(ms)';
+COMMENT ON COLUMN ai_web_search_settings.retry_max_delay_ms IS '재시도 최대 지연(ms)';
+COMMENT ON COLUMN ai_web_search_settings.created_at IS '생성 시각';
+COMMENT ON COLUMN ai_web_search_settings.updated_at IS '최종 수정 시각';
+
+-- ============================================
 -- 7.4 MODEL API PROFILES (Provider별 호출/응답 프로필)
 -- ============================================
 -- 목적(purpose: chat/image/audio/music/video/...)별로

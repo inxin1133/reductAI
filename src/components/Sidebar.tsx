@@ -190,6 +190,14 @@ export function Sidebar({ className }: SidebarProps) {
   })
   const [teamCatsLoading, setTeamCatsLoading] = useState(false)
   const [tenantType, setTenantType] = useState<string>("") // personal | team | group (or empty while loading)
+  const [tenantName, setTenantName] = useState<string>("")
+
+  const tenantPageLabel = useMemo(() => {
+    const name = String(tenantName || "").trim()
+    if (name) return `${name} 페이지`
+    if (tenantType === "group") return "그룹 페이지"
+    return "팀 페이지"
+  }, [tenantName, tenantType])
 
   const [editingCat, setEditingCat] = useState<{ type: "personal" | "team"; id: string; name: string } | null>(null)
   const [draggingCat, setDraggingCat] = useState<{ type: "personal" | "team"; id: string } | null>(null)
@@ -641,7 +649,9 @@ export function Sidebar({ className }: SidebarProps) {
     if (!r || !r.ok) return
     const j = (await r.json().catch(() => ({}))) as Record<string, unknown>
     const type = typeof j.tenant_type === "string" ? String(j.tenant_type) : ""
+    const name = typeof j.name === "string" ? String(j.name).trim() : ""
     if (type) setTenantType(type)
+    if (name) setTenantName(name)
   }
 
   // Ensure tenantType is available even when the sidebar is collapsed (isOpen=false),
@@ -1304,7 +1314,7 @@ export function Sidebar({ className }: SidebarProps) {
                    className="text-sm text-foreground cursor-pointer select-none"
                    onClick={() => setIsTeamOpen(prev => !prev)}
                  >
-                   팀/그룹 페이지
+                   {tenantPageLabel}
                  </span>
                  <button
                    type="button"
@@ -1905,7 +1915,7 @@ export function Sidebar({ className }: SidebarProps) {
             <div className="flex flex-col p-2 gap-1">
               <div className="flex items-center gap-2 px-2 h-8 opacity-70 cursor-pointer select-none">
                 <span className="flex-1 text-left text-xs text-sidebar-foreground" onClick={() => setIsTeamOpen((prev) => !prev)}>
-                  팀 페이지
+                  {tenantPageLabel}
                 </span>
                 <div
                   className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground"
@@ -2398,7 +2408,7 @@ export function Sidebar({ className }: SidebarProps) {
                       ? "bg-neutral-200"
                       : "hover:bg-neutral-200"
                   )}
-                  title="팀 페이지"
+                  title={tenantPageLabel}
                   onClick={() => {
                     void goToTopCategory("team")
                   }}
@@ -2408,7 +2418,7 @@ export function Sidebar({ className }: SidebarProps) {
               </HoverCardTrigger>
               <HoverCardContent side="right" align="start" className="w-[280px] p-2">
                 <div className="flex items-center justify-between px-1 pb-2">
-                  <div className="text-sm font-semibold">팀 페이지</div>
+                  <div className="text-sm font-semibold">{tenantPageLabel}</div>
                   <button
                     type="button"
                     className="size-8 rounded-md hover:bg-neutral-200 flex items-center justify-center"

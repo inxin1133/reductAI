@@ -135,6 +135,20 @@ type ChatUiConfig = {
   ok: boolean
   model_types: ModelType[]
   providers_by_type: Record<string, UiProviderGroup[]>
+  web_search_policy?: WebSearchPolicy
+}
+
+type WebSearchPolicy = {
+  enabled: boolean
+  default_allowed: boolean
+  provider: string
+  enabled_providers: string[]
+  max_search_calls: number
+  max_total_snippet_tokens: number
+  timeout_ms: number
+  retry_max: number
+  retry_base_delay_ms: number
+  retry_max_delay_ms: number
 }
 
 const CHAT_UI_CONFIG_API = "/api/ai/chat-ui/config"
@@ -634,6 +648,7 @@ export function ChatInterface({
 
   const [uiLoading, setUiLoading] = React.useState(false)
   const [uiConfig, setUiConfig] = React.useState<ChatUiConfig | null>(null)
+  const webSearchPolicy = uiConfig?.web_search_policy
 
   // 마지막 선택 상태 저장 키
   const SELECTION_STORAGE_KEY = "reductai.chat.lastSelection.v1"
@@ -697,6 +712,10 @@ export function ChatInterface({
     }
     return ""
   })
+
+  const lastProviderByTypeRef = React.useRef<Record<string, string>>({})
+  const lastModelByTypeProviderRef = React.useRef<Record<string, string>>({})
+  const selectionKeyForTypeProvider = React.useCallback((type: ModelType, providerId: string) => `${type}::${providerId}`, [])
 
   // (8) capabilities.options/defaults 기반 옵션 상태
   const [runtimeOptions, setRuntimeOptions] = React.useState<Record<string, unknown>>({})
@@ -1339,6 +1358,7 @@ export function ChatInterface({
     return byId || currentProviderGroups[0]
   }, [currentProviderGroups, selectedProviderId])
 
+
   const selectableModels = React.useMemo(() => {
     const list = currentProviderGroup?.models || []
     return list.filter((m) => m.is_available && String(m.model_api_id || "").trim())
@@ -1532,6 +1552,24 @@ export function ChatInterface({
     return selectedModel?.capabilities ?? {}
   }, [selectedModel?.capabilities])
 
+  React.useEffect(() => {
+    const type = useSelectionOverride ? uiSelectedType : selectedType
+    const providerId = useSelectionOverride ? uiProviderGroup?.provider?.id : currentProviderGroup?.provider?.id
+    const modelApiId = useSelectionOverride ? uiSelectedModelApiId : effectiveModelApiId
+    if (!type || !providerId || !modelApiId) return
+    lastProviderByTypeRef.current[type] = String(providerId)
+    lastModelByTypeProviderRef.current[selectionKeyForTypeProvider(type, String(providerId))] = String(modelApiId)
+  }, [
+    currentProviderGroup?.provider?.id,
+    effectiveModelApiId,
+    selectionKeyForTypeProvider,
+    selectedType,
+    uiProviderGroup?.provider?.id,
+    uiSelectedModelApiId,
+    uiSelectedType,
+    useSelectionOverride,
+  ])
+
   // runtimeOptionsByModel는 useState 초기화 시 localStorage에서 불러오므로 별도 로드 불필요
 
   // Prompt focus + stable switching between compact single-line and multi-line modes.
@@ -1615,6 +1653,7 @@ export function ChatInterface({
 
   const resizePromptTextarea = React.useCallback((el: HTMLTextAreaElement | null) => {
     if (!el) return
+    if (isComposingRef.current) return
     // auto-grow up to 12 lines; then scroll
     try {
       el.style.height = "auto"
@@ -1623,6 +1662,24 @@ export function ChatInterface({
       // ignore
     }
   }, [])
+
+  const upgradeCompactToMulti = React.useCallback(
+    (el: HTMLTextAreaElement | null, fallbackValue?: string) => {
+      if (!isCompact) return
+      if (!el) return
+      const v = typeof fallbackValue === "string" ? fallbackValue : el.value
+      try {
+        const start = typeof el.selectionStart === "number" ? el.selectionStart : v.length
+        const end = typeof el.selectionEnd === "number" ? el.selectionEnd : v.length
+        pendingSelectionRef.current = { start, end }
+      } catch {
+        pendingSelectionRef.current = { start: v.length, end: v.length }
+      }
+      compactUpgradedAtRef.current = Date.now()
+      setCompactPromptMode("multi")
+    },
+    [isCompact]
+  )
 
   // Ensure textarea auto-resize also works for paste/programmatic prompt changes (not only typing).
   React.useLayoutEffect(() => {
@@ -1978,6 +2035,14 @@ export function ChatInterface({
   const hasOptions = ["image", "video", "audio", "music"].includes(uiSelectedType)
 
   // Web search toggle (text/chat only)
+  const [webAllowedHasStorage, setWebAllowedHasStorage] = React.useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem("reductai:web_allowed")
+      return v === "1" || v === "0"
+    } catch {
+      return false
+    }
+  })
   const [webAllowed, setWebAllowed] = React.useState<boolean>(() => {
     try {
       const v = localStorage.getItem("reductai:web_allowed")
@@ -1989,10 +2054,36 @@ export function ChatInterface({
   React.useEffect(() => {
     try {
       localStorage.setItem("reductai:web_allowed", webAllowed ? "1" : "0")
+      setWebAllowedHasStorage(true)
     } catch {
       // ignore
     }
   }, [webAllowed])
+
+  React.useEffect(() => {
+    if (webAllowedHasStorage) return
+    if (typeof webSearchPolicy?.default_allowed !== "boolean") return
+    setWebAllowed(Boolean(webSearchPolicy.default_allowed))
+  }, [webAllowedHasStorage, webSearchPolicy?.default_allowed])
+
+  const currentProviderKey = React.useMemo(() => {
+    const raw = currentProviderGroup?.provider?.provider_family || currentProviderGroup?.provider?.slug || ""
+    return String(raw || "").trim().toLowerCase()
+  }, [currentProviderGroup])
+
+  const webSearchProviders = React.useMemo(() => {
+    const raw = Array.isArray(webSearchPolicy?.enabled_providers) ? webSearchPolicy?.enabled_providers : []
+    return new Set(raw.map((p) => String(p || "").trim().toLowerCase()).filter(Boolean))
+  }, [webSearchPolicy?.enabled_providers])
+
+  const webSearchEnabled = typeof webSearchPolicy?.enabled === "boolean" ? webSearchPolicy.enabled : true
+  const webSearchProviderAllowed = !webSearchProviders.size ? true : (currentProviderKey ? webSearchProviders.has(currentProviderKey) : true)
+  const effectiveWebAllowed = Boolean(webAllowed) && webSearchEnabled && webSearchProviderAllowed
+  const webSearchDisabledReason = !webSearchEnabled
+    ? "관리자 정책으로 웹검색이 비활성화되었습니다."
+    : !webSearchProviderAllowed
+      ? "현재 선택된 모델에서는 웹검색이 허용되지 않습니다."
+      : null
 
   const [isWaitingForResponse, setIsWaitingForResponse] = React.useState(false)
   const [isStopHovered, setIsStopHovered] = React.useState(false)
@@ -2174,7 +2265,7 @@ export function ChatInterface({
         setIsWaitingForResponse(true)
         const maxTokens = sendModelType === "text" ? 2048 : 512
 
-        const webAllowedForRequest = Boolean(webAllowed) && sendModelType === "text"
+        const webAllowedForRequest = Boolean(effectiveWebAllowed) && sendModelType === "text"
         const webCountry = webAllowedForRequest ? inferCountryFromBrowser() : null
         const webLanguages =
           webAllowedForRequest && typeof navigator !== "undefined" && Array.isArray(navigator.languages) && navigator.languages.length
@@ -2395,14 +2486,29 @@ export function ChatInterface({
               if (uiSelectedType === t) return
               selectionDirtyRef.current = true
               setSelectedType(t)
-              setSelectedProviderId("")
-              setSelectedSubModel("")
               setRuntimeOptionsSafe({})
               const groups = (uiConfig?.providers_by_type?.[t] || []) as UiProviderGroup[]
-              const firstGroup = groups[0]
-              const firstModel = firstGroup?.models?.find((m) => m.is_available)?.model_api_id || ""
-              if (firstGroup?.provider?.slug && firstModel) {
-                persistFrontAiSelection(String(firstGroup.provider.slug), String(firstModel), t)
+              if (!groups.length) {
+                setSelectedProviderId("")
+                setSelectedSubModel("")
+                return
+              }
+              const savedProviderId = lastProviderByTypeRef.current[t]
+              const savedGroup = savedProviderId ? groups.find((g) => String(g.provider.id) === String(savedProviderId)) : null
+              const targetGroup = savedGroup || groups[0]
+              const availableModels = (targetGroup?.models || []).filter((m) => m.is_available)
+              const savedModelId = targetGroup
+                ? lastModelByTypeProviderRef.current[selectionKeyForTypeProvider(t, String(targetGroup.provider.id))]
+                : ""
+              const nextModelId =
+                (savedModelId && availableModels.find((m) => m.model_api_id === savedModelId)?.model_api_id) ||
+                availableModels.find((m) => m.is_default)?.model_api_id ||
+                availableModels[0]?.model_api_id ||
+                ""
+              setSelectedProviderId(String(targetGroup?.provider?.id || ""))
+              setSelectedSubModel(String(nextModelId || ""))
+              if (targetGroup?.provider?.slug && nextModelId) {
+                persistFrontAiSelection(String(targetGroup.provider.slug), String(nextModelId), t)
               }
             }}
           >
@@ -2434,9 +2540,16 @@ export function ChatInterface({
             onClick={() => {
               selectionDirtyRef.current = true
               setSelectedProviderId(g.provider.id)
-              const firstModel = g.models?.find((m) => m.is_available)?.model_api_id || ""
-              if (g.provider.slug && firstModel) {
-                persistFrontAiSelection(g.provider.slug, String(firstModel), uiSelectedType)
+              const availableModels = (g.models || []).filter((m) => m.is_available)
+              const savedModelId = lastModelByTypeProviderRef.current[selectionKeyForTypeProvider(uiSelectedType, String(g.provider.id))]
+              const nextModelId =
+                (savedModelId && availableModels.find((m) => m.model_api_id === savedModelId)?.model_api_id) ||
+                availableModels.find((m) => m.is_default)?.model_api_id ||
+                availableModels[0]?.model_api_id ||
+                ""
+              setSelectedSubModel(String(nextModelId || ""))
+              if (g.provider.slug && nextModelId) {
+                persistFrontAiSelection(g.provider.slug, String(nextModelId), uiSelectedType)
               }
             }}
           >
@@ -2649,6 +2762,7 @@ export function ChatInterface({
                           resizePromptTextarea(el)
 
                           if (isCompact) {
+                            if (isComposingRef.current) return
                             // Switch back to compact single input when it becomes single-line again.
                             const v = String(e.target.value || "")
                             if (!v.includes("\n")) {
@@ -2752,14 +2866,22 @@ export function ChatInterface({
                             <div className="flex items-center gap-1">
                               <span className="text-sm hidden md:block text-muted-foreground">웹 허용</span>
                               <Globe className="size-4 md:hidden text-muted-foreground" />
-                              <Switch checked={webAllowed} onCheckedChange={(v) => setWebAllowed(Boolean(v))} />
+                              <Switch
+                                checked={effectiveWebAllowed}
+                                disabled={!webSearchEnabled || !webSearchProviderAllowed}
+                                onCheckedChange={(v) => setWebAllowed(Boolean(v))}
+                              />
                             </div>
                           ) : (
                             <div className="hidden" />
                           )}
                         </TooltipTrigger>
                         <TooltipContent>
-                          <p>웹 허용 시, AI가 판단하여 웹 검색이 필요할 경우 웹 검색을 통해 최신 정보를 반영합니다. 웹검색은 적은량의 추가 비용이 발생합니다.</p>
+                          <p>
+                            {webSearchDisabledReason
+                              ? webSearchDisabledReason
+                              : "웹 허용 시, AI가 판단하여 웹 검색이 필요할 경우 웹 검색을 통해 최신 정보를 반영합니다."}
+                          </p>
                         </TooltipContent>
                       </Tooltip>
                       {/* Timeline compact: single-line prompt textarea (looks like input, switches to multi textarea when it wraps) */}
@@ -2781,21 +2903,23 @@ export function ChatInterface({
                             window.requestAnimationFrame(() => {
                               const shouldMulti = v.includes("\n") || el.scrollWidth > el.clientWidth + 2
                               if (shouldMulti) {
-                                // Preserve caret position when switching to multi textarea.
-                                try {
-                                  const start = typeof el.selectionStart === "number" ? el.selectionStart : v.length
-                                  const end = typeof el.selectionEnd === "number" ? el.selectionEnd : v.length
-                                  pendingSelectionRef.current = { start, end }
-                                } catch {
-                                  pendingSelectionRef.current = { start: v.length, end: v.length }
-                                }
-                                compactUpgradedAtRef.current = Date.now()
-                                setCompactPromptMode("multi")
+                                if (isComposingRef.current) return
+                                upgradeCompactToMulti(el, v)
                               }
                             })
                           }}
                           onPaste={(e) => {
                             handlePasteAttachments(e)
+                          }}
+                          onCompositionStart={() => (isComposingRef.current = true)}
+                          onCompositionEnd={(e) => {
+                            isComposingRef.current = false
+                            const el = e.currentTarget
+                            window.requestAnimationFrame(() => {
+                              const v = el.value
+                              const shouldMulti = v.includes("\n") || el.scrollWidth > el.clientWidth + 2
+                              if (shouldMulti) upgradeCompactToMulti(el, v)
+                            })
                           }}
                           onKeyDown={(e) => {
                             if (isWaitingForResponse) return

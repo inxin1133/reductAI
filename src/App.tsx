@@ -30,6 +30,7 @@ import ResponseSchemas from "./pages/admin/ai/ResponseSchemas";
 import PromptSuggestions from "./pages/admin/ai/PromptSuggestions";
 import ModelApiProfiles from "./pages/admin/ai/ModelApiProfiles";
 import ProviderAuthProfiles from "./pages/admin/ai/ProviderAuthProfiles";
+import WebSearchSettings from "./pages/admin/ai/WebSearchSettings";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 
@@ -199,6 +200,10 @@ const router = createBrowserRouter([
           {
             path: "ai/provider-auth-profiles",
             element: <ProviderAuthProfiles />,
+          },
+          {
+            path: "ai/web-search-settings",
+            element: <WebSearchSettings />,
           },
         ],
       },
