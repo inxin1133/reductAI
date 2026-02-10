@@ -8,7 +8,15 @@ import { toast } from "sonner"
 import { Download, Trash2, Star, Pin, ChevronLeft, ChevronRight, X } from "lucide-react"
 import { FileAssetCard } from "@/components/files/FileAssetCard"
 import type { FileAsset } from "@/components/files/fileAssetUtils"
-import { formatBytes, getAssetCategory, getFileName, withAuthToken } from "@/components/files/fileAssetUtils"
+import {
+  formatBytes,
+  getAssetCategory,
+  getFileName,
+  detectImageMimeFromBytes,
+  inferImageMimeFromFilename,
+  isImageAsset,
+  withAuthToken,
+} from "@/components/files/fileAssetUtils"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -395,34 +403,72 @@ export default function FileAssetsPage() {
   const escapeHtmlAttr = (value: string) =>
     value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 
-  const copyLink = async (asset: FileAsset) => {
-    const isImage = asset.kind === "image" || String(asset.mime || "").startsWith("image/")
-    if (isImage) {
-      try {
-        const canWrite =
-          typeof navigator !== "undefined" &&
-          !!navigator.clipboard &&
-          typeof (navigator.clipboard as unknown as { write?: unknown }).write === "function" &&
-          typeof (globalThis as unknown as { ClipboardItem?: unknown }).ClipboardItem !== "undefined"
-        if (!canWrite) throw new Error("CLIPBOARD_HTML_UNSUPPORTED")
+  const buildImageClipboardItem = async (asset: FileAsset, url: string) => {
+    const res = await fetch(url, { headers: { ...authHeaders() } })
+    if (!res.ok) throw new Error("FETCH_FAILED")
+    const headerType = String(res.headers.get("content-type") || "")
+      .split(";")[0]
+      .trim()
+      .toLowerCase()
+    const blob = await res.blob()
+    const inferred = inferImageMimeFromFilename(asset.original_filename)
+    const assetMime = String(asset.mime || "").trim().toLowerCase()
+    let mime =
+      (headerType.startsWith("image/") && headerType) ||
+      (String(blob.type || "").toLowerCase().startsWith("image/") ? blob.type : "") ||
+      (assetMime.startsWith("image/") ? assetMime : "") ||
+      inferred
+    if (!String(mime || "").startsWith("image/")) {
+      const headBytes = new Uint8Array(await blob.slice(0, 64).arrayBuffer())
+      const sniffed = detectImageMimeFromBytes(headBytes)
+      if (sniffed) mime = sniffed
+    }
+    if (!String(mime || "").startsWith("image/") && isImageAsset(asset)) {
+      mime = "image/png"
+    }
+    if (!String(mime || "").startsWith("image/")) return null
+    const blobForClipboard = blob.type && blob.type === mime ? blob : blob.slice(0, blob.size, mime)
+    const alt = escapeHtmlAttr(getFileName(asset))
+    const html = `<img src="${escapeHtmlAttr(url)}" alt="${alt}" />`
+    const ClipboardItemCtor = (globalThis as unknown as { ClipboardItem: typeof ClipboardItem }).ClipboardItem
+    return new ClipboardItemCtor({
+      [mime]: blobForClipboard,
+      "text/html": new Blob([html], { type: "text/html" }),
+    })
+  }
 
+  const copyLink = async (asset: FileAsset) => {
+    const isImage = isImageAsset(asset)
+    const preferBinaryOnly = tab === "attachment"
+    const shouldTryImage = isImage || (preferBinaryOnly && asset.source_type === "attachment")
+    if (shouldTryImage) {
+      try {
         const url = asset.url
-        const alt = escapeHtmlAttr(getFileName(asset))
-        const html = `<img src="${escapeHtmlAttr(url)}" alt="${alt}" />`
-        const ClipboardItemCtor = (globalThis as unknown as { ClipboardItem: typeof ClipboardItem }).ClipboardItem
-        const item = new ClipboardItemCtor({
-          "text/plain": new Blob([url], { type: "text/plain" }),
-          "text/html": new Blob([html], { type: "text/html" }),
-        })
-        await (navigator.clipboard as unknown as { write: (items: ClipboardItem[]) => Promise<void> }).write([item])
-        toast("복사되었습니다.")
-        return
-      } catch {
-        // fallback to URL text
+        const item = await buildImageClipboardItem(asset, url)
+        if (item) {
+          const canWrite =
+            typeof navigator !== "undefined" &&
+            !!navigator.clipboard &&
+            typeof (navigator.clipboard as unknown as { write?: unknown }).write === "function" &&
+            typeof (globalThis as unknown as { ClipboardItem?: unknown }).ClipboardItem !== "undefined"
+          if (!canWrite) throw new Error("CLIPBOARD_HTML_UNSUPPORTED")
+          await (navigator.clipboard as unknown as { write: (items: ClipboardItem[]) => Promise<void> }).write([item])
+          toast("복사되었습니다.")
+          return
+        }
+      } catch (err) {
+        if (preferBinaryOnly && isImage) {
+          toast("이미지 복사에 실패했습니다.")
+          return
+        }
+        if (preferBinaryOnly && String((err as Error)?.message || "") === "CLIPBOARD_HTML_UNSUPPORTED") {
+          toast("이미지 복사는 HTTPS 환경에서만 지원됩니다.")
+          return
+        }
       }
     }
 
-    const url = withAuthToken(asset.url)
+    const url = asset.url
     try {
       await navigator.clipboard.writeText(url)
       toast("복사되었습니다.")
