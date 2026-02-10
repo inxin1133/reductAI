@@ -1,8 +1,9 @@
 import * as React from "react"
 import { Download, Trash2, Copy, Star, Pin, Video, Music, FileText, Link2Off, CloudUpload, Brain } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
-import type { FileAsset } from "@/components/files/fileAssetUtils"
+import type { FileAsset, AssetOriginContext } from "@/components/files/fileAssetUtils"
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip"
 import {
   formatBytes,
@@ -12,6 +13,7 @@ import {
   getAssetSourceLabel,
   getFileName,
   getModelLabel,
+  isOriginalSourceAsset,
   withAuthToken,
 } from "@/components/files/fileAssetUtils"
 
@@ -31,6 +33,7 @@ type FileAssetCardProps = {
   detailMode?: DetailMode
   favoriteMode?: FavoriteMode
   authQuery?: Record<string, string | undefined>
+  originContext?: AssetOriginContext
 }
 
 export function FileAssetCard({
@@ -46,15 +49,22 @@ export function FileAssetCard({
   detailMode = "none",
   favoriteMode = "none",
   authQuery,
+  originContext,
 }: FileAssetCardProps) {
   const [previewError, setPreviewError] = React.useState(false)
   const category = getAssetCategory(asset)
   const isMissing = Boolean(asset.is_missing)
   const showBroken = isMissing || previewError
   const isAttachmentSource = asset.source_type === "attachment" || asset.source_type === "post_upload"
+  const canDelete = isOriginalSourceAsset(asset, originContext)
   const canCopy = !isAttachmentSource && typeof onCopy === "function"
   const canFavorite = favoriteMode === "favorite" && typeof onToggleFavorite === "function"
   const canPin = favoriteMode === "pin" && typeof onTogglePin === "function"
+  const linkedPages = Array.isArray(asset.linked_posts) ? asset.linked_posts : []
+  const primaryLink = linkedPages[0]
+  const remainingLinks = linkedPages.slice(1)
+  const shouldShowPath = originContext === "page" && linkedPages.length > 0 && category === "image"
+  const pageTitle = (title?: string | null) => (String(title || "").trim() ? String(title).trim() : "제목 없음")
 
   const preview = () => {
     if (showBroken) {
@@ -172,6 +182,41 @@ export function FileAssetCard({
       <div className="relative w-full aspect-square rounded-md bg-muted flex items-center justify-center">{preview()}</div>
 
       <div className="flex flex-col gap-2 text-sm">
+        {shouldShowPath ? (
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground">경로</span>
+            <div className="flex-1 truncate text-foreground flex items-center gap-2">
+              {primaryLink ? (
+                <a className="truncate hover:underline" href={`/posts/${primaryLink.id}/edit`}>
+                  {pageTitle(primaryLink.title)}
+                </a>
+              ) : (
+                <span>-</span>
+              )}
+              {remainingLinks.length > 0 ? (
+                <>
+                  <span className="text-muted-foreground">… 외 </span>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <button type="button" className="text-muted-foreground hover:underline">
+                        {remainingLinks.length}
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-64">
+                      <div className="flex flex-col gap-1 text-sm">
+                        {remainingLinks.map((p) => (
+                          <a key={p.id} className="truncate hover:underline" href={`/posts/${p.id}/edit`}>
+                            {pageTitle(p.title)}
+                          </a>
+                        ))}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                </>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
         <div className="flex items-center gap-2">
           <span className="text-muted-foreground">이름</span>
           <span className="flex-1 truncate text-foreground">{getFileName(asset)}</span>
@@ -182,7 +227,7 @@ export function FileAssetCard({
         </div>
         <div className="flex items-center gap-2">
           <span className="text-muted-foreground">출처</span>
-          <span className="flex-1 truncate text-foreground">{getAssetSourceLabel(asset)}</span>
+          <span className="flex-1 truncate text-foreground">{getAssetSourceLabel(asset, originContext)}</span>
         </div>
         {detailRow}
       </div>
@@ -206,14 +251,16 @@ export function FileAssetCard({
         >
           <Download className="size-4" />
         </button>
-        <button
-          type="button"
-          className="size-8 rounded-md border border-border bg-background flex items-center justify-center hover:bg-accent"
-          onClick={() => onRequestDelete(asset)}
-          aria-label="삭제"
-        >
-          <Trash2 className="size-4" />
-        </button>
+        {canDelete ? (
+          <button
+            type="button"
+            className="size-8 rounded-md border border-border bg-background flex items-center justify-center hover:bg-accent"
+            onClick={() => onRequestDelete(asset)}
+            aria-label="삭제"
+          >
+            <Trash2 className="size-4" />
+          </button>
+        ) : null}
       </div>
     </div>
   )

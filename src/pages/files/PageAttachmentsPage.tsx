@@ -494,6 +494,7 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
                       onPreviewImage={openImageViewer}
                       favoriteMode="favorite"
                       detailMode="none"
+                      originContext="page"
                       authQuery={scopeParams}
                     />
                   ))}

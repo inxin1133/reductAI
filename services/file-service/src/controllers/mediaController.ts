@@ -269,6 +269,23 @@ export async function listMediaAssets(req: Request, res: Response) {
         ? `JOIN file_asset_post_links l ON l.asset_id = a.id
            JOIN posts p ON p.id = l.post_id AND p.deleted_at IS NULL AND COALESCE(p.status,'') <> 'deleted'`
         : '';
+    const linkedPostsJoinSql = pageCategoryType
+      ? `LEFT JOIN LATERAL (
+           SELECT jsonb_agg(jsonb_build_object('id', x.id, 'title', x.title) ORDER BY x.updated_at DESC) AS linked_posts
+           FROM (
+             SELECT DISTINCT p2.id, p2.title, p2.updated_at
+             FROM file_asset_post_links l2
+             JOIN posts p2 ON p2.id = l2.post_id AND p2.deleted_at IS NULL AND COALESCE(p2.status,'') <> 'deleted'
+             WHERE l2.asset_id = a.id
+               AND l2.scope_type = l.scope_type
+               AND (
+                 (l.scope_type = 'personal_page' AND l2.owner_user_id = l.owner_user_id)
+                 OR (l.scope_type = 'team_page' AND l2.tenant_id = l.tenant_id)
+               )
+             ORDER BY p2.updated_at DESC
+           ) x
+         ) lp ON true`
+      : '';
     if (!isPersonalScope) {
       params.push(tenantId);
       where.push(`a.tenant_id = $${params.length}`);
@@ -350,9 +367,11 @@ export async function listMediaAssets(req: Request, res: Response) {
         am.display_name AS model_display_name,
         ap.name AS provider_name,
         ap.product_name AS provider_product_name,
-        ap.logo_key AS provider_logo_key
+        ap.logo_key AS provider_logo_key,
+        ${pageCategoryType ? "lp.linked_posts" : "NULL::jsonb"} AS linked_posts
       FROM file_assets a
       ${joinSql}
+      ${linkedPostsJoinSql}
       LEFT JOIN model_messages mm
         ON a.reference_type = 'message'
         AND a.reference_id = mm.id
@@ -370,6 +389,17 @@ export async function listMediaAssets(req: Request, res: Response) {
 
     const items = itemRes.rows.map((row: any) => {
       const metadata = row.metadata && typeof row.metadata === 'object' ? row.metadata : {};
+      let linkedPosts: Array<{ id: string; title: string }> = [];
+      if (Array.isArray(row.linked_posts)) {
+        linkedPosts = row.linked_posts as Array<{ id: string; title: string }>;
+      } else if (typeof row.linked_posts === 'string' && row.linked_posts.trim()) {
+        try {
+          const parsed = JSON.parse(row.linked_posts);
+          if (Array.isArray(parsed)) linkedPosts = parsed as Array<{ id: string; title: string }>;
+        } catch {
+          linkedPosts = [];
+        }
+      }
       return {
         id: String(row.id),
         url: `/api/ai/media/assets/${row.id}`,
@@ -399,6 +429,7 @@ export async function listMediaAssets(req: Request, res: Response) {
         provider_name: row.provider_name,
         provider_product_name: row.provider_product_name,
         provider_logo_key: row.provider_logo_key,
+        linked_posts: linkedPosts,
       };
     });
 

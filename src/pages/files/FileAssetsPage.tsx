@@ -576,6 +576,7 @@ export default function FileAssetsPage() {
                         onPreviewImage={openImageViewer}
                         favoriteMode="favorite"
                         detailMode="model"
+                        originContext="library"
                       />
                     ))}
                   </div>
@@ -652,6 +653,7 @@ export default function FileAssetsPage() {
                         onPreviewImage={openImageViewer}
                         favoriteMode="pin"
                         detailMode="expires"
+                        originContext="library"
                       />
                     ))}
                   </div>
