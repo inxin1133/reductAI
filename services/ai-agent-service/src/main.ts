@@ -31,6 +31,7 @@ import webSearchSettingsRoutes from "./routes/webSearchSettingsRoutes"
 import pricingRoutes from "./routes/pricingRoutes"
 import billingRoutes from "./routes/billingRoutes"
 import creditRoutes from "./routes/creditRoutes"
+import systemRoutes from "./routes/systemRoutes"
 
 dotenv.config()
 
@@ -63,6 +64,7 @@ app.use("/api/ai/web-search-settings", webSearchSettingsRoutes)
 app.use("/api/ai/pricing", pricingRoutes)
 app.use("/api/ai/billing", billingRoutes)
 app.use("/api/ai/credits", creditRoutes)
+app.use("/api/ai/system", systemRoutes)
 
 app.get("/health", (_req: any, res: any) => {
   res.json({ status: "ok", service: "ai-agent-service" })

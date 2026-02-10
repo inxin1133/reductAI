@@ -31,6 +31,9 @@ import PromptSuggestions from "./pages/admin/ai/PromptSuggestions";
 import ModelApiProfiles from "./pages/admin/ai/ModelApiProfiles";
 import ProviderAuthProfiles from "./pages/admin/ai/ProviderAuthProfiles";
 import WebSearchSettings from "./pages/admin/ai/WebSearchSettings";
+import SystemServices from "./pages/admin/system/Services";
+import SystemSecurity from "./pages/admin/system/Security";
+import SystemAudit from "./pages/admin/system/Audit";
 import AdminComingSoonPage from "./pages/admin/AdminComingSoonPage";
 import PricingRateCards from "./pages/admin/pricing/RateCards";
 import PublicPrices from "./pages/admin/pricing/PublicPrices";
@@ -230,33 +233,15 @@ const router = createBrowserRouter([
           // System settings (schema.sql)
           {
             path: "system/services",
-            element: (
-              <AdminComingSoonPage
-                title="서비스(Services) 관리"
-                description="마이크로서비스 정의 및 상태를 관리합니다."
-                relatedTables={["services", "service_instances", "tenant_service_access"]}
-              />
-            ),
+            element: <SystemServices />,
           },
           {
             path: "system/security",
-            element: (
-              <AdminComingSoonPage
-                title="보안 정책"
-                description="인증/세션/접근 제어 등 보안 정책을 관리합니다."
-                relatedTables={["user_sessions"]}
-              />
-            ),
+            element: <SystemSecurity />,
           },
           {
             path: "system/audit",
-            element: (
-              <AdminComingSoonPage
-                title="감사 로그(Audit)"
-                description="관리자 주요 작업 및 시스템 이벤트 로그를 추적/감사합니다."
-                relatedTables={["audit_logs"]}
-              />
-            ),
+            element: <SystemAudit />,
           },
 
           // Pricing (schema_pricing.sql)
