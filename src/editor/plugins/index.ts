@@ -15,7 +15,6 @@ import { blockInserterPlugin } from "./blockInserterPlugin"
 import { blockIdPlugin } from "./blockIdPlugin"
 import { tableCellSelectionKeysPlugin } from "./tableCellSelectionKeysPlugin"
 import { codeBlockPastePlugin } from "./codeBlockPastePlugin"
-import { imagePastePlugin } from "./imagePastePlugin"
 
 export function buildEditorPlugins(schema: Schema, opts?: { mention?: { enabled?: boolean } }) {
   const plugins: any[] = []
@@ -26,9 +25,6 @@ export function buildEditorPlugins(schema: Schema, opts?: { mention?: { enabled?
   plugins.push(gapCursor())
 
   plugins.push(inputRules({ rules: buildInputRules(schema) }))
-
-  // Prefer HTML image paste for internal asset URLs (avoid plain URL text paste).
-  plugins.push(imagePastePlugin(schema))
 
   // Paste handling for external code blocks (language inference + attrs)
   plugins.push(codeBlockPastePlugin(schema))

@@ -1,8 +1,9 @@
 import * as React from "react"
-import { Download, Trash2, Copy, Star, Pin, Video, Music, FileText, Link2Off } from "lucide-react"
+import { Download, Trash2, Copy, Star, Pin, Video, Music, FileText, Link2Off, CloudUpload, Brain } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/utils"
 import type { FileAsset } from "@/components/files/fileAssetUtils"
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip"
 import {
   formatBytes,
   formatDateTime,
@@ -50,6 +51,8 @@ export function FileAssetCard({
   const category = getAssetCategory(asset)
   const isMissing = Boolean(asset.is_missing)
   const showBroken = isMissing || previewError
+  const isAttachmentSource = asset.source_type === "attachment" || asset.source_type === "post_upload"
+  const canCopy = !isAttachmentSource && typeof onCopy === "function"
   const canFavorite = favoriteMode === "favorite" && typeof onToggleFavorite === "function"
   const canPin = favoriteMode === "pin" && typeof onTogglePin === "function"
 
@@ -108,7 +111,32 @@ export function FileAssetCard({
     >
       <div className="flex items-start gap-2">
         <div className="flex-1">
-          <div className="text-base font-bold text-card-foreground">{getAssetLabel(asset)}</div>
+          <div className="flex items-center gap-2 text-base font-bold text-card-foreground">
+            {isAttachmentSource ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <CloudUpload className="size-4 text-muted-foreground" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>첨부 파일</p>
+                </TooltipContent>
+              </Tooltip>
+            ) : asset.source_type === "ai_generated" ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <Brain className="size-4 text-muted-foreground" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>AI 생성 파일</p>
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+            <span>{getAssetLabel(asset)}</span>
+          </div>
           <div className="text-sm text-muted-foreground">{formatDateTime(asset.created_at)}</div>
         </div>
         <div className="flex items-center gap-2">
@@ -160,14 +188,16 @@ export function FileAssetCard({
       </div>
 
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          className="size-8 rounded-md border border-border bg-background flex items-center justify-center hover:bg-accent"
-          onClick={() => onCopy(asset)}
-          aria-label="복사"
-        >
-          <Copy className="size-4" />
-        </button>
+        {canCopy ? (
+          <button
+            type="button"
+            className="size-8 rounded-md border border-border bg-background flex items-center justify-center hover:bg-accent"
+            onClick={() => onCopy(asset)}
+            aria-label="복사"
+          >
+            <Copy className="size-4" />
+          </button>
+        ) : null}
         <button
           type="button"
           className="size-8 rounded-md border border-border bg-background flex items-center justify-center hover:bg-accent"
