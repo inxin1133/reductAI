@@ -460,8 +460,8 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
     })
   }, [])
 
-  const uploadImageToFileService = useCallback(async () => {
-    const file = await pickImageFile()
+  const uploadImageToFileService = useCallback(async (overrideFile?: File) => {
+    const file = overrideFile || (await pickImageFile())
     if (!file) return ""
     if (!file.type.startsWith("image/")) {
       toast("이미지 파일만 업로드할 수 있습니다.")
@@ -1209,6 +1209,96 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
           }
 
           return false
+        },
+        paste: (v, event) => {
+          // Handle clipboard screenshots (image/*) as page attachments (post_upload).
+          if (event.defaultPrevented) return false
+          const e = event as ClipboardEvent
+          const data: DataTransfer | null = e.clipboardData
+          if (!data) return false
+
+          const imageFiles: File[] = []
+          if (data.files && data.files.length) {
+            for (let i = 0; i < data.files.length; i += 1) {
+              const f = data.files.item(i)
+              if (f && String(f.type || "").startsWith("image/")) imageFiles.push(f)
+            }
+          } else if (data.items && data.items.length) {
+            for (let i = 0; i < data.items.length; i += 1) {
+              const it = data.items[i]
+              if (!it) continue
+              if (it.kind === "file" && String(it.type || "").startsWith("image/")) {
+                const f = it.getAsFile()
+                if (f) imageFiles.push(f)
+              }
+            }
+          }
+          if (!imageFiles.length) return false
+
+          const normalizeInternalAssetSrc = (raw: string) => {
+            const s = String(raw || "").trim()
+            if (!s) return ""
+            try {
+              const u = new URL(s, window.location.href)
+              const path = u.pathname || ""
+              if (path.startsWith("/api/ai/media/assets/")) return path
+            } catch {
+              // ignore
+            }
+            if (s.startsWith("/api/ai/media/assets/")) return s.split("?")[0]
+            return ""
+          }
+
+          const html = String(data.getData("text/html") || "")
+          const plain = String(data.getData("text/plain") || "").trim()
+
+          // If the clipboard already provides an internal asset URL (<img src="..."> or plain URL),
+          // prefer linking it (no re-upload) to avoid duplicating files.
+          const internalSrcFromHtml = (() => {
+            if (!html) return ""
+            if (typeof DOMParser === "undefined") return ""
+            try {
+              const doc = new DOMParser().parseFromString(html, "text/html")
+              const imgs = doc.querySelectorAll("img")
+              if (imgs.length !== 1) return ""
+              if (String(doc.body?.textContent || "").trim()) return ""
+              const src = imgs[0]?.getAttribute("src") || ""
+              return normalizeInternalAssetSrc(src)
+            } catch {
+              return ""
+            }
+          })()
+
+          const internalSrcFromPlain = (() => {
+            if (!plain) return ""
+            if (/\s/.test(plain)) return ""
+            return normalizeInternalAssetSrc(plain)
+          })()
+
+          const internalSrc = internalSrcFromHtml || internalSrcFromPlain
+          if (internalSrc) {
+            event.preventDefault()
+            event.stopPropagation()
+            const img = editorSchema.nodes.image
+            if (!img) return true
+            v.dispatch(v.state.tr.replaceSelectionWith(img.create({ src: internalSrc })).scrollIntoView())
+            v.focus()
+            return true
+          }
+
+          event.preventDefault()
+          event.stopPropagation()
+          void (async () => {
+            const img = editorSchema.nodes.image
+            if (!img) return
+            for (const f of imageFiles) {
+              const url = await uploadImageToFileService(f)
+              if (!url) continue
+              v.dispatch(v.state.tr.replaceSelectionWith(img.create({ src: url })).scrollIntoView())
+            }
+            v.focus()
+          })()
+          return true
         },
       },
       // NOTE:

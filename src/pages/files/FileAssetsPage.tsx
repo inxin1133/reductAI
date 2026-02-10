@@ -5,7 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
-import { Download, Trash2, Star, Pin, ChevronLeft, ChevronRight, X } from "lucide-react"
+import { Download, Trash2, Star, Pin, ChevronLeft, ChevronRight, X, Link2Off } from "lucide-react"
 import { FileAssetCard } from "@/components/files/FileAssetCard"
 import type { FileAsset } from "@/components/files/fileAssetUtils"
 import { formatBytes, getAssetCategory, getFileName, withAuthToken } from "@/components/files/fileAssetUtils"
@@ -62,6 +62,7 @@ export default function FileAssetsPage() {
   const [viewerOpen, setViewerOpen] = React.useState(false)
   const [viewerItems, setViewerItems] = React.useState<FileAsset[]>([])
   const [viewerIndex, setViewerIndex] = React.useState(0)
+  const [viewerError, setViewerError] = React.useState(false)
 
   React.useEffect(() => {
     const token = localStorage.getItem("token")
@@ -78,8 +79,9 @@ export default function FileAssetsPage() {
 
   const fetchAssetsPage = React.useCallback(
     async (sourceType: "ai_generated" | "attachment", offset: number, limit = PAGE_SIZE) => {
+      const flagScope = sourceType === "ai_generated" ? "library_ai" : "library_attachment"
       const res = await fetch(
-        `${FILES_API_BASE}?source_type=${encodeURIComponent(sourceType)}&limit=${limit}&offset=${offset}`,
+        `${FILES_API_BASE}?source_type=${encodeURIComponent(sourceType)}&limit=${limit}&offset=${offset}&flag_scope=${flagScope}`,
         {
           headers: { ...authHeaders() },
         }
@@ -229,7 +231,8 @@ export default function FileAssetsPage() {
   }
 
   const updateFavorite = async (asset: FileAsset) => {
-    const res = await fetch(`${FILES_API_BASE}/${asset.id}/favorite`, {
+    const flagScope = tab === "ai" ? "library_ai" : "library_attachment"
+    const res = await fetch(`${FILES_API_BASE}/${asset.id}/favorite?flag_scope=${flagScope}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ favorite: !asset.is_favorite }),
@@ -244,7 +247,8 @@ export default function FileAssetsPage() {
   }
 
   const updatePin = async (asset: FileAsset) => {
-    const res = await fetch(`${FILES_API_BASE}/${asset.id}/pin`, {
+    const flagScope = "library_attachment"
+    const res = await fetch(`${FILES_API_BASE}/${asset.id}/pin?flag_scope=${flagScope}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ pinned: !asset.is_pinned }),
@@ -360,6 +364,11 @@ export default function FileAssetsPage() {
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [closeImageViewer, showNextImage, showPrevImage, viewerOpen])
+
+  React.useEffect(() => {
+    if (!viewerOpen) return
+    setViewerError(false)
+  }, [viewerIndex, viewerOpen])
 
   const confirmSingleDelete = async () => {
     if (!singleDeleteTarget) return
@@ -701,11 +710,19 @@ export default function FileAssetsPage() {
         <div className="fixed inset-0 z-50">
           <div className="absolute inset-0 bg-black/70" onClick={closeImageViewer} />
           <div className="absolute inset-0 flex items-center justify-center p-6 pointer-events-none">
-            <img
-              src={withAuthToken(viewerAsset.url)}
-              alt={getFileName(viewerAsset)}
-              className="max-h-[85vh] max-w-[85vw] object-contain rounded-lg shadow-2xl pointer-events-auto"
-            />
+            {Boolean(viewerAsset.is_missing) || viewerError ? (
+              <div className="pointer-events-auto w-[85vw] max-w-[85vh] aspect-square rounded-lg bg-muted flex flex-col items-center justify-center gap-3 text-muted-foreground shadow-2xl">
+                <Link2Off className="size-10" />
+                <span className="text-sm">{viewerAsset.is_missing ? "원본 삭제됨" : "이미지를 불러올 수 없습니다."}</span>
+              </div>
+            ) : (
+              <img
+                src={withAuthToken(viewerAsset.url)}
+                alt={getFileName(viewerAsset)}
+                className="max-h-[85vh] max-w-[85vw] object-contain rounded-lg shadow-2xl pointer-events-auto"
+                onError={() => setViewerError(true)}
+              />
+            )}
           </div>
           <button
             type="button"

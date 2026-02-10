@@ -4,7 +4,7 @@ import { AppShell } from "@/components/layout/AppShell"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
-import { Download, Trash2, Star, ChevronLeft, ChevronRight, X } from "lucide-react"
+import { Download, Star, ChevronLeft, ChevronRight, X, Link2Off } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -59,13 +59,13 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
   const [favoriteOnly, setFavoriteOnly] = React.useState(false)
 
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set())
-  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false)
   const [bulkBusy, setBulkBusy] = React.useState(false)
   const [singleDeleteOpen, setSingleDeleteOpen] = React.useState(false)
   const [singleDeleteTarget, setSingleDeleteTarget] = React.useState<FileAsset | null>(null)
   const [viewerOpen, setViewerOpen] = React.useState(false)
   const [viewerItems, setViewerItems] = React.useState<FileAsset[]>([])
   const [viewerIndex, setViewerIndex] = React.useState(0)
+  const [viewerError, setViewerError] = React.useState(false)
 
   React.useEffect(() => {
     const token = localStorage.getItem("token")
@@ -90,19 +90,23 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
       if (scope === "tenant") {
         params.set("scope", "tenant")
         params.set("page_scope", "team")
+        params.set("flag_scope", "page_team")
       } else {
         params.set("page_scope", "personal")
+        params.set("flag_scope", "page_personal")
       }
       const res = await fetch(`${FILES_API_BASE}?${params.toString()}`, {
         headers: { ...authHeaders() },
       })
       if (!res.ok) throw new Error("FILES_FETCH_FAILED")
       const json = (await res.json().catch(() => null)) as
-        | { items?: FileAsset[]; total_bytes?: number; total_count?: number }
+        | { items?: FileAsset[]; total_bytes?: number; total_original_bytes?: number; total_count?: number }
         | null
       return {
         items: Array.isArray(json?.items) ? json!.items : [],
-        totalBytes: Number(json?.total_bytes || 0),
+        totalBytes: Number(
+          typeof json?.total_original_bytes === "number" ? json?.total_original_bytes : json?.total_bytes || 0
+        ),
         totalCount: Number(json?.total_count || 0),
       }
     },
@@ -186,7 +190,8 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
   )
 
   const updateFavorite = async (asset: FileAsset) => {
-    const res = await fetch(scopedUrl(`${FILES_API_BASE}/${asset.id}/favorite`), {
+    const flagScope = scope === "tenant" ? "page_team" : "page_personal"
+    const res = await fetch(scopedUrl(`${FILES_API_BASE}/${asset.id}/favorite?flag_scope=${flagScope}`), {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ favorite: !asset.is_favorite }),
@@ -283,6 +288,11 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [closeImageViewer, showNextImage, showPrevImage, viewerOpen])
+
+  React.useEffect(() => {
+    if (!viewerOpen) return
+    setViewerError(false)
+  }, [viewerIndex, viewerOpen])
 
   const confirmSingleDelete = async () => {
     if (!singleDeleteTarget) return
@@ -391,37 +401,11 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
     }
   }
 
-  const bulkDelete = async () => {
-    if (!selectedIds.size) return
-    setBulkBusy(true)
-    const ids = Array.from(selectedIds)
-    let ok = 0
-    for (const id of ids) {
-      const asset = assets.find((a) => a.id === id)
-      if (!asset) continue
-      const success = await deleteAsset(asset)
-      if (success) ok += 1
-    }
-    setBulkBusy(false)
-    setBulkDeleteOpen(false)
-    toast(`선택한 ${ok}개 파일을 삭제했습니다.`)
-    clearSelection()
-  }
-
   const headerActions = (
     <div className="flex items-center gap-2">
       <Button variant="outline" size="sm" disabled={!selectedIds.size || bulkBusy} onClick={bulkDownload}>
         <Download className="size-4" />
         선택 일괄 다운로드
-      </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={!selectedIds.size || bulkBusy}
-        onClick={() => setBulkDeleteOpen(true)}
-      >
-        <Trash2 className="size-4" />
-        선택 일괄 삭제
       </Button>
     </div>
   )
@@ -506,21 +490,6 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
         </div>
       </div>
 
-      <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>선택한 파일을 삭제할까요?</AlertDialogTitle>
-            <AlertDialogDescription>삭제된 파일은 복구할 수 없습니다.</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={bulkBusy}>취소</AlertDialogCancel>
-            <AlertDialogAction disabled={bulkBusy} onClick={() => void bulkDelete()}>
-              삭제
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
       <AlertDialog open={singleDeleteOpen} onOpenChange={setSingleDeleteOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -540,11 +509,19 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
         <div className="fixed inset-0 z-50">
           <div className="absolute inset-0 bg-black/70" onClick={closeImageViewer} />
           <div className="absolute inset-0 flex items-center justify-center p-6 pointer-events-none">
-            <img
-              src={withAuthToken(viewerAsset.url, scopeParams)}
-              alt={getFileName(viewerAsset)}
-              className="max-h-[85vh] max-w-[85vw] object-contain rounded-lg shadow-2xl pointer-events-auto"
-            />
+            {Boolean(viewerAsset.is_missing) || viewerError ? (
+              <div className="pointer-events-auto w-[85vw] max-w-[85vh] aspect-square rounded-lg bg-muted flex flex-col items-center justify-center gap-3 text-muted-foreground shadow-2xl">
+                <Link2Off className="size-10" />
+                <span className="text-sm">{viewerAsset.is_missing ? "원본 삭제됨" : "이미지를 불러올 수 없습니다."}</span>
+              </div>
+            ) : (
+              <img
+                src={withAuthToken(viewerAsset.url, scopeParams)}
+                alt={getFileName(viewerAsset)}
+                className="max-h-[85vh] max-w-[85vw] object-contain rounded-lg shadow-2xl pointer-events-auto"
+                onError={() => setViewerError(true)}
+              />
+            )}
           </div>
           <button
             type="button"

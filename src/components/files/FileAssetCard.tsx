@@ -65,6 +65,7 @@ export function FileAssetCard({
   const remainingLinks = linkedPages.slice(1)
   const shouldShowPath = originContext === "page" && linkedPages.length > 0 && category === "image"
   const pageTitle = (title?: string | null) => (String(title || "").trim() ? String(title).trim() : "제목 없음")
+  const isLinked = originContext === "page" && !isOriginalSourceAsset(asset, originContext)
 
   const preview = () => {
     if (showBroken) {
@@ -80,7 +81,7 @@ export function FileAssetCard({
         <img
           alt={getFileName(asset)}
           src={withAuthToken(asset.url, authQuery)}
-          className="absolute inset-0 size-full object-cover rounded-md cursor-zoom-in"
+          className="absolute inset-0 size-full object-cover rounded-md cursor-zoom-in border border-border/50"
           onError={() => setPreviewError(true)}
           onClick={() => onPreviewImage?.(asset)}
         />
@@ -181,7 +182,27 @@ export function FileAssetCard({
 
       <div className="relative w-full aspect-square rounded-md bg-muted flex items-center justify-center">{preview()}</div>
 
-      <div className="flex flex-col gap-2 text-sm">
+      <div className="flex flex-col gap-2 text-sm">        
+        <div className="flex items-center gap-2">
+          <span className="text-muted-foreground">이름</span>
+          <span className="flex-1 truncate text-foreground">{getFileName(asset)}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-muted-foreground">용량</span>
+          <span
+            className={cn(
+              "truncate",
+              showBroken ? "line-through text-muted-foreground" : "text-foreground"
+            )}
+          >
+            {formatBytes(asset.bytes)}
+          </span>
+          {isLinked ? <span className="text-xs text-muted-foreground">(Linked)</span> : null}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-muted-foreground">출처</span>
+          <span className="flex-1 truncate text-foreground">{getAssetSourceLabel(asset, originContext)}</span>
+        </div>
         {shouldShowPath ? (
           <div className="flex items-center gap-2">
             <span className="text-muted-foreground">경로</span>
@@ -198,7 +219,7 @@ export function FileAssetCard({
                   <span className="text-muted-foreground">… 외 </span>
                   <Popover>
                     <PopoverTrigger asChild>
-                      <button type="button" className="text-muted-foreground hover:underline">
+                      <button type="button" className="text-indigo-500 hover:underline cursor-pointer">
                         {remainingLinks.length}
                       </button>
                     </PopoverTrigger>
@@ -217,18 +238,6 @@ export function FileAssetCard({
             </div>
           </div>
         ) : null}
-        <div className="flex items-center gap-2">
-          <span className="text-muted-foreground">이름</span>
-          <span className="flex-1 truncate text-foreground">{getFileName(asset)}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-muted-foreground">용량</span>
-          <span className="flex-1 truncate text-foreground">{formatBytes(asset.bytes)}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-muted-foreground">출처</span>
-          <span className="flex-1 truncate text-foreground">{getAssetSourceLabel(asset, originContext)}</span>
-        </div>
         {detailRow}
       </div>
 

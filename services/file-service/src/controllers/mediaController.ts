@@ -62,6 +62,39 @@ function ttlDays() {
   return Number.isFinite(raw) && raw > 0 ? raw : 15;
 }
 
+function expandFlagScope(args: {
+  flagScopeRaw?: string;
+  tenantId: string;
+  userId: string;
+  pageCategoryType?: string;
+  effectiveSourceTypes?: string[];
+  sourceType?: string;
+}) {
+  const raw = String(args.flagScopeRaw || '').trim();
+  const base = raw.split(':')[0];
+  if (raw) {
+    if (base === 'page_team') return `page_team:${args.tenantId}`;
+    if (base === 'page_personal') return `page_personal:${args.userId}`;
+    if (base === 'library_ai') return `library_ai:${args.tenantId}`;
+    if (base === 'library_attachment') return `library_attachment:${args.tenantId}`;
+    return raw;
+  }
+
+  if (args.pageCategoryType) {
+    return args.pageCategoryType === 'personal_page'
+      ? `page_personal:${args.userId}`
+      : `page_team:${args.tenantId}`;
+  }
+
+  if (args.sourceType === 'ai_generated') return `library_ai:${args.tenantId}`;
+  if (args.sourceType === 'attachment') return `library_attachment:${args.tenantId}`;
+
+  if (args.effectiveSourceTypes?.includes('ai_generated')) return `library_ai:${args.tenantId}`;
+  if (args.effectiveSourceTypes?.includes('attachment')) return `library_attachment:${args.tenantId}`;
+
+  return 'default';
+}
+
 function isUuid(v: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 }
@@ -238,10 +271,10 @@ export async function listMediaAssets(req: Request, res: Response) {
     const userId = (req as AuthedRequest).userId;
     const q = (req.query || {}) as Record<string, unknown>;
     const scope = parseScope(q, hasTenantId);
-
     const sourceRaw = q.source_type || q.sourceType || '';
     const kindRaw = q.kind || '';
     const pageScopeRaw = String(q.page_scope || q.pageScope || '').trim().toLowerCase();
+    const flagScopeRaw = String(q.flag_scope || q.flagScope || '').trim();
     const searchRaw = String(q.q || q.search || '').trim();
     const includeExpired = String(q.include_expired || q.includeExpired || '').toLowerCase() === 'true';
     const limit = Math.max(1, Math.min(200, Number(q.limit ?? 100)));
@@ -256,6 +289,9 @@ export async function listMediaAssets(req: Request, res: Response) {
           ? 'team_page'
           : '';
     const isPersonalScope = pageCategoryType === 'personal_page';
+    const pageScopeSourceDefaults = ['post_upload', 'ai_generated', 'attachment'];
+    const effectiveSourceTypes =
+      pageCategoryType && sourceTypes.length === 0 ? pageScopeSourceDefaults : sourceTypes;
 
     const where: string[] = [];
     if (pageCategoryType) {
@@ -296,9 +332,13 @@ export async function listMediaAssets(req: Request, res: Response) {
     }
     if (!includeExpired) where.push('(a.expires_at IS NULL OR a.expires_at > NOW())');
 
-    const pageScopeSourceDefaults = ['post_upload', 'ai_generated', 'attachment'];
-    const effectiveSourceTypes =
-      pageCategoryType && sourceTypes.length === 0 ? pageScopeSourceDefaults : sourceTypes;
+    const effectiveFlagScope = expandFlagScope({
+      flagScopeRaw,
+      tenantId,
+      userId,
+      pageCategoryType,
+      effectiveSourceTypes,
+    });
     if (effectiveSourceTypes.length > 0) {
       params.push(effectiveSourceTypes);
       where.push(`a.source_type = ANY($${params.length}::text[])`);
@@ -327,10 +367,12 @@ export async function listMediaAssets(req: Request, res: Response) {
 
     const totalRes = await query(
       `
-      SELECT COALESCE(SUM(sub.bytes),0)::bigint AS total_bytes,
-             COUNT(*)::int AS total_count
+      SELECT
+        COALESCE(SUM(sub.bytes),0)::bigint AS total_bytes,
+        COALESCE(SUM(CASE WHEN sub.source_type = 'post_upload' AND sub.status <> 'deleted' THEN sub.bytes ELSE 0 END),0)::bigint AS total_original_bytes,
+        COUNT(*)::int AS total_count
       FROM (
-        SELECT DISTINCT a.id, a.bytes
+        SELECT DISTINCT a.id, a.bytes, a.source_type, a.status
         FROM file_assets a
         ${joinSql}
         ${whereSql}
@@ -339,6 +381,7 @@ export async function listMediaAssets(req: Request, res: Response) {
       params
     );
     const totalBytes = Number(totalRes.rows[0]?.total_bytes || 0);
+    const totalOriginalBytes = Number(totalRes.rows[0]?.total_original_bytes || 0);
     const totalCount = Number(totalRes.rows[0]?.total_count || 0);
 
     const itemParams = [...params, limit, offset];
@@ -389,6 +432,19 @@ export async function listMediaAssets(req: Request, res: Response) {
 
     const items = itemRes.rows.map((row: any) => {
       const metadata = row.metadata && typeof row.metadata === 'object' ? row.metadata : {};
+      const favoriteContexts = (metadata as any)?.favorite_contexts || {};
+      const pinContexts = (metadata as any)?.pin_contexts || {};
+      const isFavorite =
+        effectiveFlagScope && Object.prototype.hasOwnProperty.call(favoriteContexts, effectiveFlagScope)
+          ? Boolean(favoriteContexts[effectiveFlagScope])
+          : Boolean((metadata as any)?.favorite);
+      const legacyPinned =
+        Boolean((metadata as any)?.pinned_by_user) ||
+        (row.source_type === 'attachment' && (row.expires_at === null || typeof row.expires_at === 'undefined'));
+      const isPinned =
+        effectiveFlagScope && Object.prototype.hasOwnProperty.call(pinContexts, effectiveFlagScope)
+          ? Boolean(pinContexts[effectiveFlagScope])
+          : legacyPinned;
       let linkedPosts: Array<{ id: string; title: string }> = [];
       if (Array.isArray(row.linked_posts)) {
         linkedPosts = row.linked_posts as Array<{ id: string; title: string }>;
@@ -418,10 +474,9 @@ export async function listMediaAssets(req: Request, res: Response) {
         updated_at: row.updated_at,
         status: row.status,
         metadata,
-        is_favorite: Boolean((metadata as any)?.favorite),
+        is_favorite: isFavorite,
         is_missing: String(row.status || '') === 'deleted',
-        is_pinned:
-          row.source_type === 'attachment' && (row.expires_at === null || typeof row.expires_at === 'undefined'),
+        is_pinned: isPinned,
         model_api_id: row.model_api_id,
         model_display_name: row.model_display_name,
         provider_slug: row.provider_slug,
@@ -433,7 +488,12 @@ export async function listMediaAssets(req: Request, res: Response) {
       };
     });
 
-    return res.json({ items, total_bytes: totalBytes, total_count: totalCount });
+    return res.json({
+      items,
+      total_bytes: totalBytes,
+      total_original_bytes: totalOriginalBytes,
+      total_count: totalCount,
+    });
   } catch (e: any) {
     console.error('listMediaAssets error:', e);
     return res.status(500).json({ message: 'Failed to list media assets' });
@@ -504,6 +564,7 @@ export async function updateMediaAssetPin(req: Request, res: Response) {
     const userId = (req as AuthedRequest).userId;
     const q = (req.query || {}) as Record<string, unknown>;
     const scope = parseScope(q, hasTenantId);
+    const flagScopeRaw = String(q.flag_scope || q.flagScope || '').trim();
     const id = String(req.params.id || '').trim();
     if (!id) return res.status(400).json({ message: 'id is required' });
     const body = (req.body || {}) as Record<string, unknown>;
@@ -534,23 +595,36 @@ export async function updateMediaAssetPin(req: Request, res: Response) {
 
     const meta = row.metadata && typeof row.metadata === 'object' ? row.metadata : {};
     const pinnedByPost = Boolean((meta as any)?.pinned_by_post);
-    if (!pinned && pinnedByPost) {
+    const effectiveFlagScope = expandFlagScope({
+      flagScopeRaw,
+      tenantId,
+      userId,
+      sourceType: String(row.source_type || ''),
+    });
+    if (!pinned && pinnedByPost && effectiveFlagScope.startsWith('page_')) {
       return res.status(400).json({ message: 'Pinned by post; cannot unpin' });
     }
 
     const expiresAt = pinned ? null : new Date(Date.now() + ttlDays() * 24 * 60 * 60 * 1000);
+    const path = ['pin_contexts', effectiveFlagScope || 'default'];
     const expiresIdx = baseParams.length + 1;
     const pinnedIdx = baseParams.length + 2;
+    const pathIdx = baseParams.length + 3;
     const r = await query(
       `
       UPDATE file_assets
       SET expires_at = $${expiresIdx},
-          metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{pinned_by_user}', to_jsonb($${pinnedIdx}::boolean), true),
+          metadata = jsonb_set(
+            jsonb_set(COALESCE(metadata, '{}'::jsonb), '{pinned_by_user}', to_jsonb($${pinnedIdx}::boolean), true),
+            $${pathIdx}::text[],
+            to_jsonb($${pinnedIdx}::boolean),
+            true
+          ),
           updated_at = CURRENT_TIMESTAMP
       WHERE ${baseWhere.join(' AND ')}
       RETURNING id, expires_at, metadata
       `,
-      [...baseParams, expiresAt, pinned]
+      [...baseParams, expiresAt, pinned, path]
     );
     const next = r.rows[0] as any;
     return res.json({
@@ -572,6 +646,7 @@ export async function updateMediaAssetFavorite(req: Request, res: Response) {
     const userId = (req as AuthedRequest).userId;
     const q = (req.query || {}) as Record<string, unknown>;
     const scope = parseScope(q, hasTenantId);
+    const flagScopeRaw = String(q.flag_scope || q.flagScope || '').trim();
     const id = String(req.params.id || '').trim();
     if (!id) return res.status(400).json({ message: 'id is required' });
     const body = (req.body || {}) as Record<string, unknown>;
@@ -584,15 +659,39 @@ export async function updateMediaAssetFavorite(req: Request, res: Response) {
       where.push(`user_id = $${params.length}`);
     }
     const favoriteIdx = params.length + 1;
+    const current = await query(
+      `
+      SELECT source_type
+      FROM file_assets
+      WHERE ${where.join(' AND ')}
+      LIMIT 1
+      `,
+      params
+    );
+    if (current.rows.length === 0) return res.status(404).json({ message: 'Not found' });
+    const sourceType = String(current.rows[0]?.source_type || '');
+    const effectiveFlagScope = expandFlagScope({
+      flagScopeRaw,
+      tenantId,
+      userId,
+      sourceType,
+    });
+    const path = ['favorite_contexts', effectiveFlagScope || 'default'];
+    const pathIdx = params.length + 2;
     const r = await query(
       `
       UPDATE file_assets
-      SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{favorite}', to_jsonb($${favoriteIdx}::boolean), true),
+      SET metadata = jsonb_set(
+        jsonb_set(COALESCE(metadata, '{}'::jsonb), '{favorite}', to_jsonb($${favoriteIdx}::boolean), true),
+        $${pathIdx}::text[],
+        to_jsonb($${favoriteIdx}::boolean),
+        true
+      ),
           updated_at = CURRENT_TIMESTAMP
       WHERE ${where.join(' AND ')}
       RETURNING id, metadata
       `,
-      [...params, favorite]
+      [...params, favorite, path]
     );
     if (r.rows.length === 0) return res.status(404).json({ message: 'Not found' });
     return res.json({ ok: true, id, favorite });
