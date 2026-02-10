@@ -893,19 +893,65 @@ body {
   overflow-y: hidden;
   background: rgba(255, 255, 255, 0.98);
 }
-.ProseMirror .tableWrapper[data-borderless="true"] {
-  border: 0;
-  box-shadow: none;
+/* Block editor: highlight table border on hover */ 
+.pm-editor .tableWrapper {
+  outline: 1px solid transparent;
+  outline-offset: 0;
+  transition:
+    border-color 120ms ease,
+    outline-color 120ms ease,
+    outline-offset 120ms ease;
 }
-.ProseMirror .tableWrapper[data-borderless="true"] th,
-.ProseMirror .tableWrapper[data-borderless="true"] td,
-.ProseMirror .tableWrapper[data-borderless="true"] tr {
-  border: 0 !important;
+/* .pm-editor .tableWrapper:hover {
+  border-color: color-mix(in oklab, var(--foreground) 30%, transparent);
+  outline-color: color-mix(in oklab, var(--foreground) 12%, transparent);
 }
-.ProseMirror .tableWrapper > table {
-  
-  
+.pm-editor .tableWrapper[data-borderless="true"]:hover {  
+  outline-offset: 2px;
 }
+.pm-editor .tableWrapper:hover td,
+.pm-editor .tableWrapper:hover th {
+  border-color: color-mix(in oklab, var(--foreground) 22%, transparent);
+} */
+
+/* .pm-editor .tableWrapper[data-borderless="true"]:hover {
+  border: 1px;
+  border-radius: 8px;
+  border-color: color-mix(in oklab, var(--foreground) 22%, transparent);
+} */
+
+.pm-editor .tableWrapper[data-borderless="true"] {
+  /* TableNodeView sets inline border/box-shadow to none; keep that look by default. */
+  background: transparent;
+  border: 1px dashed transparent !important;
+  transition: border-color 140ms ease;
+}
+/* Borderless: hide all inner grid lines by default (no "cross" lines). */
+.pm-editor .tableWrapper[data-borderless="true"] th,
+.pm-editor .tableWrapper[data-borderless="true"] td {
+  border-right-width: 0;
+  border-bottom-width: 0;
+}
+/* Borderless: on hover/focus, show borders like a normal table (outer + inner grid). */
+.pm-editor .tableWrapper[data-borderless="true"]:is(:hover, :focus-within) {
+  border-color: var(--color-sky-100, var(--border)) !important;
+  background: color-mix(in oklab, var(--card) 98%, transparent);
+}
+.pm-editor .tableWrapper[data-borderless="true"]:is(:hover, :focus-within) th,
+.pm-editor .tableWrapper[data-borderless="true"]:is(:hover, :focus-within) td {
+  border-right: 1px dashed var(--color-sky-100, var(--border));
+  border-bottom: 1px dashed var(--color-sky-100, var(--border));
+}
+.pm-editor .tableWrapper[data-borderless="true"]:is(:hover, :focus-within) tr:last-child th,
+.pm-editor .tableWrapper[data-borderless="true"]:is(:hover, :focus-within) tr:last-child td {
+  border-bottom: 0;
+}
+.pm-editor .tableWrapper[data-borderless="true"]:is(:hover, :focus-within) tr th:last-child,
+.pm-editor .tableWrapper[data-borderless="true"]:is(:hover, :focus-within) tr td:last-child {
+  border-right: 0;
+}
+
+
 .ProseMirror table {
   border-collapse: separate;
   border-spacing: 0;
@@ -1049,6 +1095,52 @@ button:focus-visible {
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  /* shadcn/ui palette (500) */
+  --color-slate-500: #64748b;
+  --color-gray-500: #6b7280;
+  --color-zinc-500: #71717a;
+  --color-neutral-500: #737373;
+  --color-stone-500: #78716c;
+  --color-red-500: #ef4444;
+  --color-orange-500: #f97316;
+  --color-amber-500: #f59e0b;
+  --color-yellow-500: #eab308;
+  --color-lime-500: #84cc16;
+  --color-green-500: #22c55e;
+  --color-emerald-500: #10b981;
+  --color-teal-500: #14b8a6;
+  --color-cyan-500: #06b6d4;
+  --color-sky-500: #0ea5e9;
+  --color-blue-500: #3b82f6;
+  --color-indigo-500: #6366f1;
+  --color-violet-500: #8b5cf6;
+  --color-purple-500: #a855f7;
+  --color-fuchsia-500: #d946ef;
+  --color-pink-500: #ec4899;
+  --color-rose-500: #f43f5e;
+  /* shadcn/ui palette (100) */
+  --color-slate-100: #f1f5f9;
+  --color-gray-100: #f3f4f6;
+  --color-zinc-100: #f4f4f5;
+  --color-neutral-100: #f5f5f5;
+  --color-stone-100: #f5f5f4;
+  --color-red-100: #fee2e2;
+  --color-orange-100: #ffedd5;
+  --color-amber-100: #fef3c7;
+  --color-yellow-100: #fef9c3;
+  --color-lime-100: #ecfccb;
+  --color-green-100: #dcfce7;
+  --color-emerald-100: #d1fae5;
+  --color-teal-100: #ccfbf1;
+  --color-cyan-100: #cffafe;
+  --color-sky-100: #e0f2fe;
+  --color-blue-100: #dbeafe;
+  --color-indigo-100: #e0e7ff;
+  --color-violet-100: #ede9fe;
+  --color-purple-100: #f3e8ff;
+  --color-fuchsia-100: #fae8ff;
+  --color-pink-100: #fce7f3;
+  --color-rose-100: #ffe4e6;
 }
 
 .dark {
@@ -1083,7 +1175,33 @@ button:focus-visible {
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+  /* shadcn/ui palette (100) */
+  --color-slate-100: #1e293b;
+  --color-gray-100: #1f2937;
+  --color-zinc-100: #27272a;
+  --color-neutral-100: #262626;
+  --color-stone-100: #292524;
+  --color-red-100: #991b1b;
+  --color-orange-100: #9a3412;
+  --color-amber-100: #92400e;
+  --color-yellow-100: #854d0e;
+  --color-lime-100: #3f6212;
+  --color-green-100: #166534;
+  --color-emerald-100: #065f46;
+  --color-teal-100: #115e59;
+  --color-cyan-100: #155e75;
+  --color-sky-100: #075985;
+  --color-blue-100: #1e40af;
+  --color-indigo-100: #3730a3;
+  --color-violet-100: #5b21b6;
+  --color-purple-100: #6b21a8;
+  --color-fuchsia-100: #86198f;
+  --color-pink-100: #9d174d;
+  --color-rose-100: #9f1239;
 }
+
+
+ 
 
 @layer base {
   * {

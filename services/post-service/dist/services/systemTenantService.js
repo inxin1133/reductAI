@@ -11,7 +11,7 @@ async function ensureSystemTenantId() {
     if (existing.rows.length > 0)
         return existing.rows[0].id;
     const inserted = await (0, db_1.query)(`INSERT INTO tenants (owner_id, name, slug, tenant_type, status, metadata)
-     VALUES (NULL, $1, $2, 'enterprise', 'active', $3::jsonb)
+     VALUES (NULL, $1, $2, 'group', 'active', $3::jsonb)
      RETURNING id`, [SYSTEM_TENANT_NAME, SYSTEM_TENANT_SLUG, JSON.stringify({ system: true })]);
     return inserted.rows[0].id;
 }

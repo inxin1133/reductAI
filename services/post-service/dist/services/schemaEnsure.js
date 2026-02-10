@@ -31,9 +31,12 @@ async function ensurePostEditorSchema() {
   `);
     // Add new columns (safe even if they already exist)
     await exec(`ALTER TABLE board_categories ADD COLUMN IF NOT EXISTS author_id UUID;`);
+    await exec(`ALTER TABLE board_categories ADD COLUMN IF NOT EXISTS user_id UUID;`);
     await exec(`ALTER TABLE board_categories ADD COLUMN IF NOT EXISTS category_type VARCHAR(50) NOT NULL DEFAULT 'board';`);
     await exec(`ALTER TABLE board_categories ADD COLUMN IF NOT EXISTS icon VARCHAR(100);`);
     await exec(`ALTER TABLE board_categories ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`);
+    // Backfill user_id from author_id for existing rows (safe, idempotent).
+    await exec(`UPDATE board_categories SET user_id = author_id WHERE user_id IS NULL AND author_id IS NOT NULL;`);
     // Add FK + CHECK constraint if missing
     await exec(`
     DO $$
@@ -44,6 +47,18 @@ async function ensurePostEditorSchema() {
         ALTER TABLE board_categories
           ADD CONSTRAINT board_categories_author_id_fkey
           FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE SET NULL;
+      END IF;
+    END $$;
+  `);
+    await exec(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'board_categories_user_id_fkey'
+      ) THEN
+        ALTER TABLE board_categories
+          ADD CONSTRAINT board_categories_user_id_fkey
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL;
       END IF;
     END $$;
   `);
@@ -62,6 +77,7 @@ async function ensurePostEditorSchema() {
     // Indexes (idempotent)
     await exec(`CREATE INDEX IF NOT EXISTS idx_board_categories_tenant_id ON board_categories(tenant_id);`);
     await exec(`CREATE INDEX IF NOT EXISTS idx_board_categories_author_id ON board_categories(author_id);`);
+    await exec(`CREATE INDEX IF NOT EXISTS idx_board_categories_user_id ON board_categories(user_id);`);
     await exec(`CREATE INDEX IF NOT EXISTS idx_board_categories_type ON board_categories(tenant_id, category_type);`);
     await exec(`CREATE INDEX IF NOT EXISTS idx_board_categories_parent_id ON board_categories(parent_id);`);
     await exec(`CREATE INDEX IF NOT EXISTS idx_board_categories_slug ON board_categories(tenant_id, slug);`);
@@ -121,4 +137,84 @@ async function ensurePostEditorSchema() {
   `);
     await exec(`CREATE INDEX IF NOT EXISTS idx_post_blocks_post_id ON post_blocks(post_id);`);
     await exec(`CREATE INDEX IF NOT EXISTS idx_post_blocks_sort_key ON post_blocks(post_id, sort_key);`);
+    // file_asset_post_links: page <-> asset linkage (for file list scoping)
+    await exec(`
+    CREATE TABLE IF NOT EXISTS file_asset_post_links (
+      asset_id UUID NOT NULL,
+      post_id UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+      scope_type VARCHAR(50) NOT NULL,
+      owner_user_id UUID,
+      tenant_id UUID,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (asset_id, post_id)
+    );
+  `);
+    await exec(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'file_asset_post_links_scope_check'
+      ) THEN
+        ALTER TABLE file_asset_post_links
+          ADD CONSTRAINT file_asset_post_links_scope_check
+          CHECK (scope_type IN ('personal_page', 'team_page'));
+      END IF;
+    END $$;
+  `);
+    await exec(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'file_asset_post_links_asset_fkey'
+      ) THEN
+        ALTER TABLE file_asset_post_links
+          ADD CONSTRAINT file_asset_post_links_asset_fkey
+          FOREIGN KEY (asset_id) REFERENCES file_assets(id) ON DELETE CASCADE;
+      END IF;
+    END $$;
+  `);
+    await exec(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'file_asset_post_links_owner_fkey'
+      ) THEN
+        ALTER TABLE file_asset_post_links
+          ADD CONSTRAINT file_asset_post_links_owner_fkey
+          FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE SET NULL;
+      END IF;
+    END $$;
+  `);
+    await exec(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'file_asset_post_links_tenant_fkey'
+      ) THEN
+        ALTER TABLE file_asset_post_links
+          ADD CONSTRAINT file_asset_post_links_tenant_fkey
+          FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE;
+      END IF;
+    END $$;
+  `);
+    await exec(`CREATE INDEX IF NOT EXISTS idx_file_asset_post_links_post_id ON file_asset_post_links(post_id);`);
+    await exec(`CREATE INDEX IF NOT EXISTS idx_file_asset_post_links_asset_id ON file_asset_post_links(asset_id);`);
+    await exec(`CREATE INDEX IF NOT EXISTS idx_file_asset_post_links_scope_owner ON file_asset_post_links(scope_type, owner_user_id);`);
+    await exec(`CREATE INDEX IF NOT EXISTS idx_file_asset_post_links_scope_tenant ON file_asset_post_links(scope_type, tenant_id);`);
+    // Cleanup: categories are hard-deleted in the product UX.
+    // Remove any previously soft-deleted categories to avoid accumulation.
+    await exec(`DELETE FROM board_categories WHERE deleted_at IS NOT NULL;`);
+    // Cleanup: pages that were restored while their category was already deleted end up with:
+    // - category_id IS NULL
+    // - metadata.category_lost = true
+    // They don't appear under any category. User request: track & delete them.
+    // This cascades to post_blocks via FK.
+    await exec(`
+    DELETE FROM posts
+    WHERE deleted_at IS NULL
+      AND COALESCE(status,'') <> 'deleted'
+      AND category_id IS NULL
+      AND (COALESCE(metadata->>'category_lost','false')::boolean) = true
+  `);
 }

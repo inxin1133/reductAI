@@ -197,7 +197,20 @@ export async function savePostContent(req: Request, res: Response) {
 
     const rawAssetIds = extractMediaAssetIdsFromDocJson(body.docJson)
     const assetIds = Array.from(new Set(rawAssetIds.map(String))).filter((v) => isUuid(v))
-    await client.query(`DELETE FROM file_asset_post_links WHERE post_id = $1`, [id])
+
+    // Maintain file_asset_post_links with stable created_at:
+    // - Delete only removed links
+    // - Upsert current links (preserve created_at for existing)
+    const existingLinksRes = await client.query(`SELECT asset_id FROM file_asset_post_links WHERE post_id = $1`, [id])
+    const existingAssetIds = (existingLinksRes.rows || [])
+      .map((r: any) => String(r?.asset_id || ""))
+      .filter((v) => isUuid(v))
+    const desiredSet = new Set(assetIds)
+    const toRemove = existingAssetIds.filter((aid) => !desiredSet.has(aid))
+    if (toRemove.length) {
+      await client.query(`DELETE FROM file_asset_post_links WHERE post_id = $1 AND asset_id = ANY($2::uuid[])`, [id, toRemove])
+    }
+
     if (assetIds.length) {
       const metaRes = await client.query(
         `
@@ -469,7 +482,7 @@ export async function listMyPages(req: Request, res: Response) {
     }
     sql += `
        -- IMPORTANT: keep ordering stable; opening/saving a page updates updated_at and should NOT reshuffle the tree.
-       ORDER BY parent_id NULLS FIRST, page_order ASC, created_at ASC, id ASC`
+       ORDER BY parent_id NULLS FIRST, page_order ASC, created_at DESC, id DESC`
 
     const r = await query(sql, params)
     return res.json(r.rows)

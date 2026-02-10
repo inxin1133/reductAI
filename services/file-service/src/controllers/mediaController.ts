@@ -307,9 +307,11 @@ export async function listMediaAssets(req: Request, res: Response) {
         : '';
     const linkedPostsJoinSql = pageCategoryType
       ? `LEFT JOIN LATERAL (
-           SELECT jsonb_agg(jsonb_build_object('id', x.id, 'title', x.title) ORDER BY x.updated_at DESC) AS linked_posts
+           SELECT
+             MAX(x.linked_at) AS linked_at,
+             jsonb_agg(jsonb_build_object('id', x.id, 'title', x.title) ORDER BY x.updated_at DESC) AS linked_posts
            FROM (
-             SELECT DISTINCT p2.id, p2.title, p2.updated_at
+             SELECT DISTINCT p2.id, p2.title, p2.updated_at, l2.created_at AS linked_at
              FROM file_asset_post_links l2
              JOIN posts p2 ON p2.id = l2.post_id AND p2.deleted_at IS NULL AND COALESCE(p2.status,'') <> 'deleted'
              WHERE l2.asset_id = a.id
@@ -318,7 +320,6 @@ export async function listMediaAssets(req: Request, res: Response) {
                  (l.scope_type = 'personal_page' AND l2.owner_user_id = l.owner_user_id)
                  OR (l.scope_type = 'team_page' AND l2.tenant_id = l.tenant_id)
                )
-             ORDER BY p2.updated_at DESC
            ) x
          ) lp ON true`
       : '';
@@ -411,7 +412,8 @@ export async function listMediaAssets(req: Request, res: Response) {
         ap.name AS provider_name,
         ap.product_name AS provider_product_name,
         ap.logo_key AS provider_logo_key,
-        ${pageCategoryType ? "lp.linked_posts" : "NULL::jsonb"} AS linked_posts
+        ${pageCategoryType ? "lp.linked_posts" : "NULL::jsonb"} AS linked_posts,
+        ${pageCategoryType ? "lp.linked_at" : "NULL::timestamptz"} AS linked_at
       FROM file_assets a
       ${joinSql}
       ${linkedPostsJoinSql}
@@ -423,7 +425,7 @@ export async function listMediaAssets(req: Request, res: Response) {
       LEFT JOIN ai_providers ap
         ON ap.slug = (mm.metadata->>'provider_slug')
       ${whereSql}
-      ORDER BY a.created_at DESC
+      ORDER BY ${pageCategoryType ? "lp.linked_at DESC NULLS LAST, a.created_at DESC" : "a.created_at DESC"}
       LIMIT $${params.length + 1}
       OFFSET $${params.length + 2}
       `,

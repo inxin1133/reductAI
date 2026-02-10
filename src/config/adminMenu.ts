@@ -1,12 +1,12 @@
-import { 
-  Bot, 
-  Coins, 
-  FileText, 
-  Globe, 
-  LayoutDashboard, 
-  Settings, 
-  Users, 
-  WalletCards 
+import {
+  Bot,
+  Coins,
+  FileText,
+  Globe,
+  LayoutDashboard,
+  Settings,
+  Users,
+  WalletCards
 } from "lucide-react"
 
 export type SubMenuItem = {
@@ -36,8 +36,8 @@ export const adminMenuGroups: MenuGroup[] = [
   {
     title: "관리",
     items: [
-      { 
-        title: "회원 및 테넌트", 
+      {
+        title: "회원 및 테넌트",
         icon: Users,
         items: [
           { title: "회원 관리", href: "/admin/users" },
@@ -45,9 +45,9 @@ export const adminMenuGroups: MenuGroup[] = [
           { title: "역할 및 권한 관리", href: "/admin/roles" }, // RBAC
         ]
       },
-      { 
-        title: "AI 서비스", 
-        icon: Bot, 
+      {
+        title: "AI 서비스",
+        icon: Bot,
         items: [
           { title: "AI 제공업체(Providers)", href: "/admin/ai/providers" },
           { title: "AI API Key(Credentials)", href: "/admin/ai/credentials" },
@@ -58,14 +58,14 @@ export const adminMenuGroups: MenuGroup[] = [
           { title: "출력 계약(Response Schemas)", href: "/admin/ai/response-schemas" },
           { title: "모델 API 프로필(Model API Profiles)", href: "/admin/ai/model-api-profiles" },
           { title: "Provider 인증 프로필(Auth Profiles)", href: "/admin/ai/provider-auth-profiles" },
-          { title: "모델 라우팅 규칙", href: "/admin/ai/model-routing-rules" },                    
-          { title: "모델 사용 로그", href: "/admin/ai/model-usage-logs" },          
+          { title: "모델 라우팅 규칙", href: "/admin/ai/model-routing-rules" },
+          { title: "모델 사용 로그", href: "/admin/ai/model-usage-logs" },
           { title: "웹검색 정책", href: "/admin/ai/web-search-settings" },
         ]
       },
-      { 
-        title: "토큰 이코노미", 
-        icon: Coins, 
+      {
+        title: "토큰 이코노미",
+        icon: Coins,
         items: [
           { title: "토큰 상품 관리" },
           { title: "토큰 할당/지급" },
@@ -73,9 +73,9 @@ export const adminMenuGroups: MenuGroup[] = [
           { title: "유저/테넌트 잔액 조회" },
         ]
       },
-      { 
-        title: "결제 및 구독", 
-        icon: WalletCards, 
+      {
+        title: "결제 및 구독",
+        icon: WalletCards,
         items: [
           { title: "구독 플랜 관리" },
           { title: "구독 현황" },
@@ -83,9 +83,9 @@ export const adminMenuGroups: MenuGroup[] = [
           { title: "청구서(Invoices)" },
         ]
       },
-      { 
-        title: "CMS / 게시판", 
-        icon: FileText, 
+      {
+        title: "CMS / 게시판",
+        icon: FileText,
         items: [
           { title: "게시판/카테고리 관리" },
           { title: "게시물 관리" },
@@ -97,8 +97,8 @@ export const adminMenuGroups: MenuGroup[] = [
   {
     title: "설정",
     items: [
-      { 
-        title: "시스템 설정", 
+      {
+        title: "시스템 설정",
         icon: Settings,
         items: [
           { title: "서비스(Services) 관리" },
@@ -106,14 +106,14 @@ export const adminMenuGroups: MenuGroup[] = [
           { title: "감사 로그(Audit)" },
         ]
       },
-          { 
-            title: "다국어(i18n)", 
-            icon: Globe,
-            items: [
-              { title: "지원 언어 관리", href: "/admin/i18n/languages" },
-              { title: "네임스페이스 관리", href: "/admin/i18n/namespaces" },
-              { title: "번역 데이터 관리", href: "/admin/i18n/translations" },
-              { title: "번역 이력", href: "/admin/i18n/history" },
+      {
+        title: "다국어(i18n)",
+        icon: Globe,
+        items: [
+          { title: "지원 언어 관리", href: "/admin/i18n/languages" },
+          { title: "네임스페이스 관리", href: "/admin/i18n/namespaces" },
+          { title: "번역 데이터 관리", href: "/admin/i18n/translations" },
+          { title: "번역 이력", href: "/admin/i18n/history" },
         ]
       },
     ]

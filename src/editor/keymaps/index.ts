@@ -4,7 +4,7 @@ import { baseKeymap, chainCommands, setBlockType, toggleMark } from "prosemirror
 import { undo, redo } from "prosemirror-history"
 import { sinkListItem, liftListItem, splitListItem } from "prosemirror-schema-list"
 import type { Schema } from "prosemirror-model"
-import { TextSelection } from "prosemirror-state"
+import { NodeSelection, TextSelection } from "prosemirror-state"
 import {
   addColumnAfter,
   addRowAfter,
@@ -64,6 +64,167 @@ function indentBlock(delta: 1 | -1) {
     if (next === cur) return false
     if (!dispatch) return true
     const tr = state.tr.setNodeMarkup(found.pos, undefined, { ...(found.node.attrs as any), indent: next })
+    dispatch(tr.scrollIntoView())
+    return true
+  }
+}
+
+function childIndexAtPos(parent: any, pos: number): number | null {
+  let cur = 0
+  for (let i = 0; i < parent.childCount; i += 1) {
+    if (cur === pos) return i
+    cur += parent.child(i).nodeSize
+  }
+  return null
+}
+
+function childPosAtIndex(parent: any, index: number): number | null {
+  if (index < 0 || index >= parent.childCount) return null
+  let cur = 0
+  for (let i = 0; i < index; i += 1) {
+    cur += parent.child(i).nodeSize
+  }
+  return cur
+}
+
+function findTopLevelBlockRangeAtPos(doc: any, pos: number): { from: number; to: number } | null {
+  const p = Math.max(0, Math.min(Number.isFinite(pos) ? pos : 0, doc.content.size))
+  let last: { from: number; to: number } | null = null
+  let found: { from: number; to: number } | null = null
+  doc.forEach((node: any, offset: number) => {
+    const from = offset
+    const to = offset + node.nodeSize
+    last = { from, to }
+    if (!found && p >= from && p < to) found = { from, to }
+  })
+  return found || last
+}
+
+function restoreSelectionAfterMove(tr: any, sel: any, srcFrom: number, srcNode: any, insertPos: number) {
+  const doc = tr.doc
+  const clampAbs = (p: number) => Math.max(0, Math.min(Number(p || 0), doc.content.size))
+  const maxInside = Math.max(1, Number(srcNode?.nodeSize || 2) - 1)
+
+  const toInsideAbs = (rel: number) => {
+    const r = Math.max(1, Math.min(maxInside, Number(rel || 1)))
+    return clampAbs(insertPos + r)
+  }
+
+  try {
+    if (sel instanceof NodeSelection) {
+      return tr.setSelection(NodeSelection.create(doc, insertPos))
+    }
+
+    if (sel instanceof CellSelection) {
+      const aRel = sel.$anchorCell.pos - srcFrom
+      const hRel = sel.$headCell.pos - srcFrom
+      try {
+        return tr.setSelection(CellSelection.create(doc, insertPos + aRel, insertPos + hRel))
+      } catch {
+        // fall through
+      }
+    }
+
+    const anchorAbs = typeof sel?.anchor === "number" ? sel.anchor : typeof sel?.from === "number" ? sel.from : srcFrom + 1
+    const headAbs = typeof sel?.head === "number" ? sel.head : typeof sel?.to === "number" ? sel.to : anchorAbs
+    const anchorRel = anchorAbs - srcFrom
+    const headRel = headAbs - srcFrom
+    const nextAnchorAbs = toInsideAbs(anchorRel)
+    const nextHeadAbs = toInsideAbs(headRel)
+
+    if (nextAnchorAbs !== nextHeadAbs) {
+      return tr.setSelection(TextSelection.between(doc.resolve(nextAnchorAbs), doc.resolve(nextHeadAbs)))
+    }
+    return tr.setSelection(TextSelection.near(doc.resolve(nextAnchorAbs), 1))
+  } catch {
+    // ignore
+  }
+  return tr
+}
+
+function moveBlockBy(dir: -1 | 1, schema: Schema) {
+  return (state: any, dispatch: any) => {
+    const doc = state.doc
+    const sel = state.selection
+    const $from = sel?.$from
+
+    // If we're inside a list item, move the list item within its parent list.
+    const liType = schema.nodes.list_item
+    if (liType && $from) {
+      for (let d = $from.depth; d > 0; d -= 1) {
+        const node = $from.node(d)
+        if (!node || node.type !== liType) continue
+
+        const itemFrom = $from.before(d)
+        const parentDepth = d - 1
+        const parentNode = $from.node(parentDepth)
+        const parentStart = $from.start(parentDepth)
+        const rel = itemFrom - parentStart
+        const idx = childIndexAtPos(parentNode, rel)
+        if (idx == null) return true
+
+        const nextIdx = idx + dir
+        if (nextIdx < 0 || nextIdx >= parentNode.childCount) return true
+
+        const srcNode = doc.nodeAt(itemFrom)
+        if (!srcNode) return true
+        const srcFrom = itemFrom
+        const srcTo = srcFrom + srcNode.nodeSize
+
+        let dp: number
+        if (dir < 0) {
+          const prevPos = childPosAtIndex(parentNode, idx - 1)
+          if (prevPos == null) return true
+          dp = parentStart + prevPos
+        } else {
+          const nextPos = childPosAtIndex(parentNode, idx + 1)
+          if (nextPos == null) return true
+          const nextNode = parentNode.child(idx + 1)
+          dp = parentStart + nextPos + nextNode.nodeSize
+        }
+
+        if (!dispatch) return true
+
+        let tr = state.tr.delete(srcFrom, srcTo)
+        const insertPos = tr.mapping.map(dp, dp > srcFrom ? -1 : 1)
+        tr = tr.insert(insertPos, srcNode)
+        tr = restoreSelectionAfterMove(tr, sel, srcFrom, srcNode, insertPos)
+        dispatch(tr.scrollIntoView())
+        return true
+      }
+    }
+
+    // Otherwise, move the top-level block containing the selection.
+    const range = findTopLevelBlockRangeAtPos(doc, typeof sel?.from === "number" ? sel.from : 0)
+    if (!range) return false
+    const srcFrom = range.from
+    const srcNode = doc.nodeAt(srcFrom)
+    if (!srcNode) return false
+
+    const idx = childIndexAtPos(doc, srcFrom)
+    if (idx == null) return false
+    const nextIdx = idx + dir
+    if (nextIdx < 0 || nextIdx >= doc.childCount) return true
+
+    let dp: number
+    if (dir < 0) {
+      const prevPos = childPosAtIndex(doc, idx - 1)
+      if (prevPos == null) return true
+      dp = prevPos
+    } else {
+      const nextPos = childPosAtIndex(doc, idx + 1)
+      if (nextPos == null) return true
+      const nextNode = doc.child(idx + 1)
+      dp = nextPos + nextNode.nodeSize
+    }
+
+    if (!dispatch) return true
+
+    const srcTo = srcFrom + srcNode.nodeSize
+    let tr = state.tr.delete(srcFrom, srcTo)
+    const insertPos = tr.mapping.map(dp, dp > srcFrom ? -1 : 1)
+    tr = tr.insert(insertPos, srcNode)
+    tr = restoreSelectionAfterMove(tr, sel, srcFrom, srcNode, insertPos)
     dispatch(tr.scrollIntoView())
     return true
   }
@@ -304,6 +465,12 @@ export function buildEditorKeymap(schema: Schema) {
       if (isInListItem(state, schema)) return liftListItem(schema.nodes.list_item)(state, dispatch)
       return indentBlock(-1)(state, dispatch)
     },
+
+    // Block movement (Notion-like):
+    // - Mod+Shift+ArrowUp / ArrowDown moves the current "block" up/down.
+    // - Inside lists, moves the current list item within its list.
+    "Mod-Shift-ArrowUp": moveBlockBy(-1, schema),
+    "Mod-Shift-ArrowDown": moveBlockBy(1, schema),
 
     // Table UX:
     // - F5 selects the whole current cell (works for both cursor-in-cell and cell selections).

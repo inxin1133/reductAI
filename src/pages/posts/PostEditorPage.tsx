@@ -1428,8 +1428,8 @@ export default function PostEditorPage() {
       const title = String(ce.detail?.title || "New page")
       setMyPages((prev) => {
         if (prev.some((p) => String(p.id) === id)) return prev
-        // Keep existing order; append new pages at the end (until we introduce explicit ordering UX).
-        const next = prev.concat([
+        // New pages should appear at the top of the tree list (stable; not affected by updated_at).
+        return [
           {
             id,
             parent_id,
@@ -1438,8 +1438,8 @@ export default function PostEditorPage() {
             page_order: 0,
             updated_at: new Date().toISOString(),
           },
-        ])
-        return next
+          ...prev,
+        ]
       })
     }
 
@@ -2938,6 +2938,21 @@ export default function PostEditorPage() {
       const j = await r.json()
       const newId = String(j.id || "")
       if (!newId) throw new Error("Failed to create post (missing id)")
+      // Optimistically insert into tree at the very top so it doesn't jump around on refresh.
+      setMyPages((prev) => {
+        if (prev.some((p) => String(p.id) === newId)) return prev
+        return [
+          {
+            id: newId,
+            parent_id: null,
+            title: "New page",
+            child_count: 0,
+            page_order: 0,
+            updated_at: new Date().toISOString(),
+          },
+          ...prev,
+        ]
+      })
       navigate(`/posts/${newId}/edit${categoryQS}`)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to create"
