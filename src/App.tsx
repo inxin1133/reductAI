@@ -31,6 +31,23 @@ import PromptSuggestions from "./pages/admin/ai/PromptSuggestions";
 import ModelApiProfiles from "./pages/admin/ai/ModelApiProfiles";
 import ProviderAuthProfiles from "./pages/admin/ai/ProviderAuthProfiles";
 import WebSearchSettings from "./pages/admin/ai/WebSearchSettings";
+import AdminComingSoonPage from "./pages/admin/AdminComingSoonPage";
+import PricingRateCards from "./pages/admin/pricing/RateCards";
+import PublicPrices from "./pages/admin/pricing/PublicPrices";
+import PricingRates from "./pages/admin/pricing/Rates";
+import PricingMarkups from "./pages/admin/pricing/Markups";
+import BillingPlans from "./pages/admin/billing/Plans";
+import BillingPlanPrices from "./pages/admin/billing/PlanPrices";
+import BillingTaxFx from "./pages/admin/billing/TaxFx";
+import BillingPaymentSettings from "./pages/admin/billing/PaymentSettings";
+import BillingSubscriptions from "./pages/admin/billing/Subscriptions";
+import BillingInvoices from "./pages/admin/billing/Invoices";
+import BillingTransactions from "./pages/admin/billing/Transactions";
+import CreditTopupProducts from "./pages/admin/credits/TopupProducts";
+import CreditGrants from "./pages/admin/credits/Grants";
+import CreditAccounts from "./pages/admin/credits/Accounts";
+import CreditLedger from "./pages/admin/credits/Ledger";
+import CreditUsageAllocations from "./pages/admin/credits/UsageAllocations";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 
@@ -126,6 +143,10 @@ const router = createBrowserRouter([
         element: <AdminLayout />,
         children: [
           {
+            index: true,
+            element: <AdminDashboard />,
+          },
+          {
             path: "/admin/dashboard",
             element: <AdminDashboard />,
           },
@@ -204,6 +225,108 @@ const router = createBrowserRouter([
           {
             path: "ai/web-search-settings",
             element: <WebSearchSettings />,
+          },
+
+          // System settings (schema.sql)
+          {
+            path: "system/services",
+            element: (
+              <AdminComingSoonPage
+                title="서비스(Services) 관리"
+                description="마이크로서비스 정의 및 상태를 관리합니다."
+                relatedTables={["services", "service_instances", "tenant_service_access"]}
+              />
+            ),
+          },
+          {
+            path: "system/security",
+            element: (
+              <AdminComingSoonPage
+                title="보안 정책"
+                description="인증/세션/접근 제어 등 보안 정책을 관리합니다."
+                relatedTables={["user_sessions"]}
+              />
+            ),
+          },
+          {
+            path: "system/audit",
+            element: (
+              <AdminComingSoonPage
+                title="감사 로그(Audit)"
+                description="관리자 주요 작업 및 시스템 이벤트 로그를 추적/감사합니다."
+                relatedTables={["audit_logs"]}
+              />
+            ),
+          },
+
+          // Pricing (schema_pricing.sql)
+          {
+            path: "pricing/rate-cards",
+            element: <PricingRateCards />,
+          },
+          {
+            path: "pricing/rates",
+            element: <PricingRates />,
+          },
+          {
+            path: "pricing/markups",
+            element: <PricingMarkups />,
+          },
+          {
+            path: "pricing/public-prices",
+            element: <PublicPrices />,
+          },
+
+          // Credits (schema_credits.sql)
+          {
+            path: "credits/accounts",
+            element: <CreditAccounts />,
+          },
+          {
+            path: "credits/ledger",
+            element: <CreditLedger />,
+          },
+          {
+            path: "credits/grants",
+            element: <CreditGrants />,
+          },
+          {
+            path: "credits/topup-products",
+            element: <CreditTopupProducts />,
+          },
+          {
+            path: "credits/usage-allocations",
+            element: <CreditUsageAllocations />,
+          },
+
+          // Billing (schema_billing.sql)
+          {
+            path: "billing/plans",
+            element: <BillingPlans />,
+          },
+          {
+            path: "billing/plan-prices",
+            element: <BillingPlanPrices />,
+          },
+          {
+            path: "billing/subscriptions",
+            element: <BillingSubscriptions />,
+          },
+          {
+            path: "billing/invoices",
+            element: <BillingInvoices />,
+          },
+          {
+            path: "billing/transactions",
+            element: <BillingTransactions />,
+          },
+          {
+            path: "billing/payment-settings",
+            element: <BillingPaymentSettings />,
+          },
+          {
+            path: "billing/tax-fx",
+            element: <BillingTaxFx />,
           },
         ],
       },

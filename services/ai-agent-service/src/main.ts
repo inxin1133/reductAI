@@ -28,6 +28,9 @@ import promptSuggestionsRoutes from "./routes/promptSuggestionsRoutes"
 import modelApiProfilesRoutes from "./routes/modelApiProfilesRoutes"
 import providerAuthProfilesRoutes from "./routes/providerAuthProfilesRoutes"
 import webSearchSettingsRoutes from "./routes/webSearchSettingsRoutes"
+import pricingRoutes from "./routes/pricingRoutes"
+import billingRoutes from "./routes/billingRoutes"
+import creditRoutes from "./routes/creditRoutes"
 
 dotenv.config()
 
@@ -57,6 +60,9 @@ app.use("/api/ai/prompt-suggestions", promptSuggestionsRoutes)
 app.use("/api/ai/model-api-profiles", modelApiProfilesRoutes)
 app.use("/api/ai/provider-auth-profiles", providerAuthProfilesRoutes)
 app.use("/api/ai/web-search-settings", webSearchSettingsRoutes)
+app.use("/api/ai/pricing", pricingRoutes)
+app.use("/api/ai/billing", billingRoutes)
+app.use("/api/ai/credits", creditRoutes)
 
 app.get("/health", (_req: any, res: any) => {
   res.json({ status: "ok", service: "ai-agent-service" })

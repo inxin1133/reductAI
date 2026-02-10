@@ -277,12 +277,12 @@ function TimelineSidebarList({
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="size-6 rounded-full"
+                        className="size-4 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-700"
                         onClick={(e) => {
                           e.stopPropagation()
                         }}
                       >
-                        <MoreHorizontal className="size-4" />
+                        <MoreHorizontal className="size-3" />
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent
@@ -2079,7 +2079,7 @@ export default function Timeline() {
             <>
               {isMobile && (
                 <div
-                  className="fixed inset-0 top-[56px] z-30 bg-black/30"
+                  className="fixed inset-0 top-[56px] z-50 bg-black/30"
                   onClick={() => setIsSidebarOpen(false)}
                 />
               )}
@@ -2087,7 +2087,7 @@ export default function Timeline() {
               <div
                 className={cn(
                   "border-r border-border h-full flex flex-col pl-2 pr-1 py-4 bg-background shrink-0 relative",
-                  isMobile ? "fixed top-[56px] left-0 bottom-0 z-40 w-[240px] shadow-lg" : "min-w-[220px] max-w-[380px]"
+                  isMobile ? "fixed top-[56px] left-0 bottom-0 z-60 w-[240px] shadow-lg" : "min-w-[220px] max-w-[380px]"
                 )}
                 style={isMobile ? undefined : { width: sidebarWidth }}
               >

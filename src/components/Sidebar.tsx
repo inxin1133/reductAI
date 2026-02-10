@@ -1222,7 +1222,9 @@ export function Sidebar({ className }: SidebarProps) {
              <div 
                className={cn(
                  "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                 isFrontAIActive ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10" : "hover:bg-neutral-200"
+                isFrontAIActive
+                  ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10 dark:bg-neutral-800"
+                  : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                )}
                onClick={() => {
                  setIsMobileMenuOpen(false)
@@ -1235,7 +1237,9 @@ export function Sidebar({ className }: SidebarProps) {
              <div 
                className={cn(
                  "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                 isTimelineActive ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10" : "hover:bg-neutral-200"
+                isTimelineActive
+                  ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10 dark:bg-neutral-800"
+                  : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                )}
                onClick={() => {
                  setIsMobileMenuOpen(false)
@@ -1249,8 +1253,8 @@ export function Sidebar({ className }: SidebarProps) {
               className={cn(
                 "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
                 isGeneratedFilesActive
-                  ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10"
-                  : "hover:bg-neutral-200"
+                  ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10 dark:bg-neutral-800"
+                  : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
               )}
               onClick={() => {
                 setIsMobileMenuOpen(false)
@@ -1273,7 +1277,7 @@ export function Sidebar({ className }: SidebarProps) {
                  </span>
                  <button
                    type="button"
-                   className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200"
+                  className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
                    title="카테고리 추가"
                    onClick={(e) => {
                      e.preventDefault()
@@ -1306,7 +1310,7 @@ export function Sidebar({ className }: SidebarProps) {
                         key={c.id}
                         className={cn(
                           "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                          isActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                          isActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                         )}
                         onClick={() => {
                           setIsMobileMenuOpen(false)
@@ -1321,7 +1325,7 @@ export function Sidebar({ className }: SidebarProps) {
                   <div
                     className={cn(
                       "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                      isPersonalFilesActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                      isPersonalFilesActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                     )}
                     onClick={() => {
                       setIsMobileMenuOpen(false)
@@ -1347,7 +1351,7 @@ export function Sidebar({ className }: SidebarProps) {
                  </span>
                  <button
                    type="button"
-                   className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200"
+                  className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
                    title="카테고리 추가"
                    onClick={(e) => {
                      e.preventDefault()
@@ -1380,7 +1384,7 @@ export function Sidebar({ className }: SidebarProps) {
                         key={c.id}
                         className={cn(
                           "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                          isActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                          isActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                         )}
                         onClick={() => {
                           setIsMobileMenuOpen(false)
@@ -1395,7 +1399,7 @@ export function Sidebar({ className }: SidebarProps) {
                   <div
                     className={cn(
                       "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                      isSharedFilesActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                      isSharedFilesActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                     )}
                     onClick={() => {
                       setIsMobileMenuOpen(false)
@@ -1416,7 +1420,9 @@ export function Sidebar({ className }: SidebarProps) {
              <div
                className={cn(
                  "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                 isTrashActive ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10" : "hover:bg-neutral-200"
+                isTrashActive
+                  ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10 dark:bg-neutral-800"
+                  : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                )}
                onClick={() => {
                  setIsMobileMenuOpen(false)
@@ -1426,11 +1432,11 @@ export function Sidebar({ className }: SidebarProps) {
                  <Trash2 className="size-5" />
                  <span className="text-base text-foreground">휴지통</span>
               </div>
-              <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
+              <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800">
                  <PieChart className="size-5" />
                  <span className="text-base text-foreground">대시보드</span>
               </div>
-              <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200">
+              <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800">
                  <Settings className="size-5" />
                  <span className="text-base text-foreground">서비스</span>
               </div>
@@ -1515,7 +1521,7 @@ export function Sidebar({ className }: SidebarProps) {
            className={cn(
              "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
              !isOpen && "justify-center",
-             isFrontAIActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+            isFrontAIActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
            )}
            onClick={() => navigate('/front-ai')}
          >
@@ -1528,7 +1534,7 @@ export function Sidebar({ className }: SidebarProps) {
           className={cn(
             "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
             !isOpen && "justify-center",
-            isTimelineActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+            isTimelineActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
           )}
           onClick={() => navigate('/timeline')}
          >
@@ -1541,7 +1547,7 @@ export function Sidebar({ className }: SidebarProps) {
           className={cn(
             "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
             !isOpen && "justify-center",
-            isGeneratedFilesActive ? "bg-neutral-200" : "hover:bg-accent/50"
+            isGeneratedFilesActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-accent/50"
           )}
           onClick={() => navigate("/files")}
         >
@@ -1592,7 +1598,7 @@ export function Sidebar({ className }: SidebarProps) {
                        key={c.id}
                        className={cn(
                          "group relative flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer cursor-grab active:cursor-grabbing",
-                         isActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                        isActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                        )}
                        draggable
                        onDragStart={(e) => startCategoryDrag("personal", c.id, e)}
@@ -1678,7 +1684,7 @@ export function Sidebar({ className }: SidebarProps) {
                           <PopoverTrigger asChild>
                             <button
                               type="button"
-                              className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-300 rounded-sm"
+                              className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-300 dark:hover:bg-neutral-700 rounded-sm"
                               title="아이콘 변경"
                               draggable={false}
                               onDragStart={(e) => {
@@ -1867,7 +1873,7 @@ export function Sidebar({ className }: SidebarProps) {
                        <DropdownMenuTrigger asChild>
                          <button
                            type="button"
-                           className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300"
+                          className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300 dark:hover:bg-neutral-700"
                            onClick={(e) => e.stopPropagation()}
                            onPointerDown={(e) => e.stopPropagation()}
                            title="메뉴"
@@ -1923,7 +1929,7 @@ export function Sidebar({ className }: SidebarProps) {
                 <div
                   className={cn(
                     "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                    isPersonalFilesActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                    isPersonalFilesActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                   )}
                   onClick={() => {
                     setIsMobileMenuOpen(false)
@@ -1980,7 +1986,7 @@ export function Sidebar({ className }: SidebarProps) {
                         key={c.id}
                         className={cn(
                           "group relative flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer cursor-grab active:cursor-grabbing",
-                          isActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                          isActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                         )}
                         draggable
                         onDragStart={(e) => startCategoryDrag("team", c.id, e)}
@@ -2062,7 +2068,7 @@ export function Sidebar({ className }: SidebarProps) {
                             <PopoverTrigger asChild>
                               <button
                                 type="button"
-                                className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-300 rounded-sm"
+                                className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-300 dark:hover:bg-neutral-700 rounded-sm"
                                 title="아이콘 변경"
                                 draggable={false}
                                 onDragStart={(e) => {
@@ -2251,7 +2257,7 @@ export function Sidebar({ className }: SidebarProps) {
                         <DropdownMenuTrigger asChild>
                           <button
                             type="button"
-                            className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300"
+                            className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300 dark:hover:bg-neutral-700"
                             onClick={(e) => e.stopPropagation()}
                             onPointerDown={(e) => e.stopPropagation()}
                             title="메뉴"
@@ -2308,7 +2314,7 @@ export function Sidebar({ className }: SidebarProps) {
                   <div
                     className={cn(
                       "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                      isSharedFilesActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                      isSharedFilesActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                     )}
                     onClick={() => {
                       setIsMobileMenuOpen(false)
@@ -2343,8 +2349,8 @@ export function Sidebar({ className }: SidebarProps) {
                   "flex items-center justify-center h-8 rounded-md cursor-pointer",
                   // active when current category belongs to personal categories
                   isPostsActive && activeCategoryId && personalCategories.some((c) => String(c.id) === String(activeCategoryId))
-                    ? "bg-neutral-200"
-                    : "hover:bg-neutral-200"
+                    ? "bg-neutral-200 dark:bg-neutral-800"
+                    : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                 )}
                 title="개인 페이지"
                 onClick={() => {
@@ -2359,7 +2365,7 @@ export function Sidebar({ className }: SidebarProps) {
                 <div className="text-sm font-semibold">개인 페이지</div>
                 <button
                   type="button"
-                  className="size-8 rounded-md hover:bg-neutral-200 flex items-center justify-center"
+                  className="size-8 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800 flex items-center justify-center"
                   title="카테고리 추가"
                   onClick={(e) => {
                     e.preventDefault()
@@ -2397,7 +2403,7 @@ export function Sidebar({ className }: SidebarProps) {
                             key={c.id}
                             className={cn(
                               "flex items-center gap-2 px-2 h-8 rounded-md cursor-pointer",
-                              isActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                              isActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                             )}
                             onClick={() => {
                               setCollapsedPersonalHoverOpen(false)
@@ -2434,8 +2440,8 @@ export function Sidebar({ className }: SidebarProps) {
                     "flex items-center justify-center h-8 rounded-md cursor-pointer",
                     // active when current category belongs to team categories
                     isPostsActive && activeCategoryId && teamCategories.some((c) => String(c.id) === String(activeCategoryId))
-                      ? "bg-neutral-200"
-                      : "hover:bg-neutral-200"
+                      ? "bg-neutral-200 dark:bg-neutral-800"
+                      : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                   )}
                   title={tenantPageLabel}
                   onClick={() => {
@@ -2450,7 +2456,7 @@ export function Sidebar({ className }: SidebarProps) {
                   <div className="text-sm font-semibold">{tenantPageLabel}</div>
                   <button
                     type="button"
-                    className="size-8 rounded-md hover:bg-neutral-200 flex items-center justify-center"
+                    className="size-8 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800 flex items-center justify-center"
                     title="카테고리 추가"
                     onClick={(e) => {
                       e.preventDefault()
@@ -2490,7 +2496,7 @@ export function Sidebar({ className }: SidebarProps) {
                               key={c.id}
                               className={cn(
                                 "flex items-center gap-2 px-2 h-8 rounded-md cursor-pointer",
-                                isActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+                                isActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                               )}
                               onClick={() => {
                                 setCollapsedTeamHoverOpen(false)
@@ -2525,7 +2531,7 @@ export function Sidebar({ className }: SidebarProps) {
            className={cn(
              "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
              !isOpen && "justify-center",
-             isTrashActive ? "bg-neutral-200" : "hover:bg-neutral-200"
+            isTrashActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
            )}
            onClick={() => navigate("/trash")}
          >
@@ -2534,13 +2540,23 @@ export function Sidebar({ className }: SidebarProps) {
            </div>
            {isOpen && <span className="text-sm text-sidebar-foreground">휴지통</span>}
          </div>
-         <div className={cn("flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200", !isOpen && "justify-center")}>
+        <div
+          className={cn(
+            "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800",
+            !isOpen && "justify-center"
+          )}
+        >
            <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
              <PieChart className="size-full" />
            </div>
            {isOpen && <span className="text-sm text-sidebar-foreground">대시보드</span>}
          </div>
-         <div className={cn("flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200", !isOpen && "justify-center")}>
+        <div
+          className={cn(
+            "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800",
+            !isOpen && "justify-center"
+          )}
+        >
            <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
              <Settings className="size-full" />
            </div>

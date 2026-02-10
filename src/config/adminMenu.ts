@@ -1,7 +1,7 @@
 import {
   Bot,
   Coins,
-  FileText,
+  DollarSign,
   Globe,
   LayoutDashboard,
   Settings,
@@ -30,7 +30,7 @@ export const adminMenuGroups: MenuGroup[] = [
   {
     title: "일반",
     items: [
-      { title: "대시보드", icon: LayoutDashboard, href: "/admin" },
+      { title: "대시보드", icon: LayoutDashboard, href: "/admin/dashboard" },
     ]
   },
   {
@@ -42,7 +42,7 @@ export const adminMenuGroups: MenuGroup[] = [
         items: [
           { title: "회원 관리", href: "/admin/users" },
           { title: "테넌트 관리", href: "/admin/tenants" },
-          { title: "역할 및 권한 관리", href: "/admin/roles" }, // RBAC
+          { title: "역할 및 권한 관리", href: "/admin/roles" },
         ]
       },
       {
@@ -64,32 +64,37 @@ export const adminMenuGroups: MenuGroup[] = [
         ]
       },
       {
-        title: "토큰 이코노미",
+        title: "가격/요율 관리",
+        icon: DollarSign,
+        items: [
+          { title: "Rate Card/버전 관리", href: "/admin/pricing/rate-cards" },
+          { title: "모델/모달리티 요율표", href: "/admin/pricing/rates" },
+          { title: "마진 정책", href: "/admin/pricing/markups" },
+          { title: "사용자 공개 요금표", href: "/admin/pricing/public-prices" },
+        ]
+      },
+      {
+        title: "크레딧/포인트",
         icon: Coins,
         items: [
-          { title: "토큰 상품 관리" },
-          { title: "토큰 할당/지급" },
-          { title: "토큰 사용 이력" },
-          { title: "유저/테넌트 잔액 조회" },
+          { title: "크레딧 계정/풀", href: "/admin/credits/accounts" },
+          { title: "크레딧 원장(ledger)", href: "/admin/credits/ledger" },
+          { title: "그랜트/분배 정책", href: "/admin/credits/grants" },
+          { title: "충전 상품 관리", href: "/admin/credits/topup-products" },
+          { title: "크레딧 사용 분배", href: "/admin/credits/usage-allocations" },
         ]
       },
       {
-        title: "결제 및 구독",
-        icon: WalletCards,
+        title: "결제 및 구독", 
+        icon: WalletCards, 
         items: [
-          { title: "구독 플랜 관리" },
-          { title: "구독 현황" },
-          { title: "결제 내역(Transactions)" },
-          { title: "청구서(Invoices)" },
-        ]
-      },
-      {
-        title: "CMS / 게시판",
-        icon: FileText,
-        items: [
-          { title: "게시판/카테고리 관리" },
-          { title: "게시물 관리" },
-          { title: "댓글/신고 관리" },
+          { title: "구독 플랜 관리", href: "/admin/billing/plans" },
+          { title: "플랜 가격/버전", href: "/admin/billing/plan-prices" },
+          { title: "구독 현황", href: "/admin/billing/subscriptions" },
+          { title: "청구서(Invoices)", href: "/admin/billing/invoices" },
+          { title: "결제 내역(Transactions)", href: "/admin/billing/transactions" },
+          { title: "결제 수단/PG 설정", href: "/admin/billing/payment-settings" },
+          { title: "세금/환율 관리", href: "/admin/billing/tax-fx" },
         ]
       },
     ]
@@ -101,9 +106,9 @@ export const adminMenuGroups: MenuGroup[] = [
         title: "시스템 설정",
         icon: Settings,
         items: [
-          { title: "서비스(Services) 관리" },
-          { title: "보안 정책" },
-          { title: "감사 로그(Audit)" },
+          { title: "서비스(Services) 관리", href: "/admin/system/services" },
+          { title: "보안 정책", href: "/admin/system/security" },
+          { title: "감사 로그(Audit)", href: "/admin/system/audit" },
         ]
       },
       {

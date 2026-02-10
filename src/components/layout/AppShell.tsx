@@ -36,7 +36,7 @@ export function AppShell({
 
         <div className="flex-1 flex flex-col h-full w-full overflow-hidden relative">
           <UserHeader
-            className="absolute top-0 left-0 right-0 z-50"
+            className="absolute top-0 left-0 right-0 z-40 md:z-50"
             leftContent={headerLeftContent}
           >
             {headerContent}

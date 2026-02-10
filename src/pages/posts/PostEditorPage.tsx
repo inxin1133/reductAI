@@ -2852,7 +2852,7 @@ export default function PostEditorPage() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-4 shrink-0 hover:bg-neutral-200 rounded-full"
+                    className="size-4 shrink-0 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-full"
                     title="메뉴"
                     onPointerDown={(e) => e.stopPropagation()}
                     onClick={(e) => e.stopPropagation()}
@@ -2902,7 +2902,7 @@ export default function PostEditorPage() {
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-4 shrink-0 hover:bg-neutral-200 rounded-full"
+                className="size-4 shrink-0 hover:bg-neutral-200 dark:hover:bg-neutral-700 rounded-full"
                 title="새 페이지"
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
@@ -3165,7 +3165,7 @@ export default function PostEditorPage() {
           {(isMobile ? !isNavDrawerOpen : !navOpen) ? (
             <HoverCard openDelay={0} closeDelay={120}>
               <HoverCardTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-8 shrink-0" onClick={openNav} title="페이지 트리">
+                <Button variant="ghost" size="icon" className="size-8 shrink-0 hover:bg-neutral-100 dark:hover:bg-neutral-800" onClick={openNav} title="페이지 트리">
                   <ListTree className="size-4" />
                 </Button>
               </HoverCardTrigger>
@@ -3327,8 +3327,8 @@ export default function PostEditorPage() {
               {/* Mobile: NavDrawer - 모바일 왼쪽 페이지 트리 */}
               {isNavDrawerOpen ? (
                 <>
-                  <div className="fixed inset-0 top-[56px] z-30 bg-black/30" onClick={() => setIsNavDrawerOpen(false)} />
-                  <div className="fixed top-[56px] left-0 bottom-0 z-40 w-[320px] border-r border-border bg-background shadow-lg">
+                  <div className="fixed inset-0 top-[56px] z-50 bg-black/30" onClick={() => setIsNavDrawerOpen(false)} />
+                  <div className="fixed top-[56px] left-0 bottom-0 z-60 w-[320px] border-r border-border bg-background shadow-lg">
                     <div className="h-12 flex items-center justify-between px-3">
                       {renderCategoryHeader("font-semibold")}
                       <div className="flex items-center gap-2">
