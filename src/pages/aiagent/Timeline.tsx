@@ -1,7 +1,6 @@
 import * as React from "react"
 import { AppShell } from "@/components/layout/AppShell"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "sonner"
 import {
@@ -55,6 +54,8 @@ function TimelineSidebarList({
   onRename,
   onDelete,
   onReorder,
+  onMenuOpenChange,
+  onRenameStart,
 }: {
   conversations: TimelineConversation[]
   activeConversationId: string | null
@@ -64,6 +65,8 @@ function TimelineSidebarList({
   onRename: (id: string, title: string) => void | Promise<void>
   onDelete: (c: TimelineConversation) => void
   onReorder: (orderedIds: string[]) => void
+  onMenuOpenChange?: (open: boolean) => void
+  onRenameStart?: () => void
 }) {
   const listRef = React.useRef<HTMLDivElement | null>(null)
   const [scrollTop, setScrollTop] = React.useState(0)
@@ -91,6 +94,7 @@ function TimelineSidebarList({
     setRenameValue(c.title || "")
     renameFocusUntilRef.current = Date.now() + 400
     suppressMenuAutoFocusRef.current = true
+    onRenameStart?.()
     window.setTimeout(() => {
       const input = renameInputRef.current
       if (!input) return
@@ -103,6 +107,7 @@ function TimelineSidebarList({
   const cancelRename = () => {
     setRenameTargetId("")
     setRenameValue("")
+    onMenuOpenChange?.(false)
   }
 
   const commitRename = async () => {
@@ -119,6 +124,7 @@ function TimelineSidebarList({
       console.warn("[Timeline] inline rename failed:", e)
     } finally {
       cancelRename()
+      onMenuOpenChange?.(false)
     }
   }
 
@@ -273,7 +279,7 @@ function TimelineSidebarList({
                   )}
                 </div>
                 <div className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <DropdownMenu>
+                  <DropdownMenu onOpenChange={(open) => onMenuOpenChange?.(open)}>
                     <DropdownMenuTrigger asChild>
                       <Button
                         variant="ghost"
@@ -288,6 +294,7 @@ function TimelineSidebarList({
                     </DropdownMenuTrigger>
                     <DropdownMenuContent
                       align="end"
+                      className="z-[200]"
                       onClick={(e) => e.stopPropagation()}
                       onCloseAutoFocus={(e) => {
                         if (suppressMenuAutoFocusRef.current) {
@@ -299,18 +306,14 @@ function TimelineSidebarList({
                         }
                       }}
                     >
-                      <DropdownMenuItem
-                        onSelect={(e) => {
-                          startRename(c)
-                        }}
-                      >
+                      <DropdownMenuItem onSelect={() => startRename(c)}>
                         이름 바꾸기
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         className="text-destructive focus:text-destructive"
-                        onSelect={(e) => {
-                          e.preventDefault()
+                        onSelect={(event) => {
+                          event.preventDefault()
                           onDelete(c)
                         }}
                       >
@@ -1991,6 +1994,10 @@ export default function Timeline() {
     }
   }, [STOP_TEXT, activeConversationId, applyStopMessage, authHeaders, initialToSend?.requestId, markConversationStopped])
 
+  const [hoverCardOpen, setHoverCardOpen] = React.useState(false)
+  const [hoverMenuOpen, setHoverMenuOpen] = React.useState(false)
+  const [hoverRenameOpen, setHoverRenameOpen] = React.useState(false)
+
   return (
     <AppShell
       headerLeftContent={
@@ -2014,7 +2021,12 @@ export default function Timeline() {
               <GalleryVerticalEnd className="size-4" />
             </Button>
           ) : (
-            <HoverCard openDelay={0} closeDelay={100}>
+            <HoverCard
+              openDelay={0}
+              closeDelay={100}
+              open={hoverCardOpen || hoverMenuOpen || hoverRenameOpen}
+              onOpenChange={setHoverCardOpen}
+            >
               <HoverCardTrigger asChild>
                 <Button
                   variant="ghost"
@@ -2031,6 +2043,8 @@ export default function Timeline() {
                   activeConversationId={activeConversationId}
                   ellipsis={ellipsis}
                   showCreatingThread={isCreatingThread}
+                  onMenuOpenChange={setHoverMenuOpen}
+                  onRenameStart={() => setHoverRenameOpen(true)}
                   onSelect={(id) => {
                     // unread인 대화를 클릭하면: 블릿 제거 + 답변 위치로 앵커 이동
                     const target = conversations.find((c) => c.id === id)
@@ -2092,6 +2106,10 @@ export default function Timeline() {
                   activeConversationId={activeConversationId}
                   ellipsis={ellipsis}
                   showCreatingThread={isCreatingThread}
+                  onMenuOpenChange={(open) => {
+                    if (!open) return
+                  }}
+                  onRenameStart={() => setHoverRenameOpen(true)}
                   onSelect={(id) => {
                     const target = conversations.find((c) => c.id === id)
                     if (target?.hasUnread) {

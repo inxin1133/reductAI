@@ -687,10 +687,10 @@ export default function TrashPage() {
                             <div className="text-xs text-muted-foreground truncate">{t.updated_at}</div>
                           </div>
                           <div className="shrink-0 flex items-center gap-2">
-                            <Button size="sm" onClick={() => void restore(t.id)}>
+                            <Button size="sm" variant="outline" onClick={() => void restore(t.id)}>
                               복구
                             </Button>
-                            <Button size="sm" variant="destructive" onClick={() => setThreadPurgeTarget(t)}>
+                            <Button size="sm" variant="outline" className="text-destructive border-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => setThreadPurgeTarget(t)}>
                               완전삭제
                             </Button>
                           </div>
@@ -820,6 +820,7 @@ export default function TrashPage() {
                                   <div className="shrink-0 flex items-center gap-2">
                                     <Button
                                       size="sm"
+                                      variant="outline"
                                       onClick={() => {
                                         if (shouldRequireCategoryChoice(p)) {
                                           setRestoreConfirmTarget(p)
@@ -833,7 +834,8 @@ export default function TrashPage() {
                                     </Button>
                                     <Button
                                       size="sm"
-                                      variant="destructive"
+                                      variant="outline"
+                                      className="text-destructive border-destructive hover:bg-destructive/10 hover:text-destructive"
                                       onClick={() => {
                                         setPurgeConfirmTargetId(String(p.id))
                                         setPurgeConfirmOpen(true)
@@ -887,6 +889,7 @@ export default function TrashPage() {
                         <div className="shrink-0 flex items-center gap-2">
                           <Button
                             size="sm"
+                            variant="outline"
                             onClick={() => {
                               const id = selectedPostId
                               if (!id) return
@@ -905,7 +908,8 @@ export default function TrashPage() {
                           </Button>
                           <Button
                             size="sm"
-                            variant="destructive"
+                            variant="outline"
+                            className="text-destructive border-destructive hover:bg-destructive/10 hover:text-destructive"
                             onClick={() => {
                               if (!selectedPostId) return
                               setPurgeConfirmTargetId(String(selectedPostId))

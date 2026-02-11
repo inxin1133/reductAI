@@ -2658,11 +2658,13 @@ export default function PostEditorPage() {
             ref={observeTreeRow(id) as unknown as React.Ref<HTMLDivElement>}
             onClick={() => {
               if (Date.now() < pageDragBlockClickUntilRef.current) return
+              if (isMobile) setIsNavDrawerOpen(false)
               navigate(`/posts/${id}/edit${categoryQS}`)
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault()
+                if (isMobile) setIsNavDrawerOpen(false)
                 navigate(`/posts/${id}/edit${categoryQS}`)
               }
             }}
@@ -2862,7 +2864,7 @@ export default function PostEditorPage() {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
                   align="end"
-                  className="w-44"
+                  className="w-44 z-[70]"
                   onPointerDown={(e) => e.stopPropagation()}
                   onCloseAutoFocus={(e) => {
                     // Prevent Radix from restoring focus to the trigger button (it steals focus from our rename input).
