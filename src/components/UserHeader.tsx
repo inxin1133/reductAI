@@ -15,7 +15,7 @@ export function UserHeader({ className, children, leftContent }: UserHeaderProps
   return (
     <div
       className={cn(
-        "h-[60px] w-full flex items-center px-6 gap-4 shrink-0",
+        "h-[60px] w-full flex items-center pl-6 pr-2 gap-2 shrink-0",
         "bg-background/70 backdrop-blur-md supports-[backdrop-filter]:bg-background/60",
         className
       )}

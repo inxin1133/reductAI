@@ -966,7 +966,15 @@ export async function listDeletedPages(req: Request, res: Response) {
         p.category_id,
         (COALESCE(p.metadata->>'category_lost','false')::boolean) AS category_lost,
         p.deleted_at,
-        p.updated_at
+        p.updated_at,
+        (
+          SELECT COUNT(*)::int
+          FROM posts child
+          WHERE child.parent_id = p.id
+            AND child.tenant_id = $1
+            AND child.author_id = $2
+            AND (child.deleted_at IS NOT NULL OR COALESCE(child.status,'') = 'deleted')
+        ) AS child_count
       FROM posts p
       WHERE p.tenant_id = $1
         AND p.author_id = $2

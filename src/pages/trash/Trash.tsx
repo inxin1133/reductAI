@@ -4,6 +4,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { toast } from "sonner"
 import {
   AlertDialog,
@@ -34,7 +35,8 @@ import {
   X,
   ArrowLeft,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  RefreshCcw,
 } from "lucide-react"
 
 type DeletedThreadRow = {
@@ -451,46 +453,136 @@ export default function TrashPage() {
     <Tabs value={tab} onValueChange={(v) => setTab(v === "pages" ? "pages" : "timeline")}>
       <AppShell
         headerLeftContent={
-          <div className="flex flex-1 justify-start items-center gap-3">
+          <div className="flex flex-1 justify-start items-center">
             <TabsList>
-              <TabsTrigger value="timeline">타임라인에서 지운 대화</TabsTrigger>
-              <TabsTrigger value="pages">페이지에서 지운 페이지</TabsTrigger>
+              <TabsTrigger value="timeline">
+                <span className="md:hidden">삭제된 대화</span>
+                <span className="hidden md:inline">타임라인에서 지운 대화</span>
+              </TabsTrigger>
+              <TabsTrigger value="pages">
+                <span className="md:hidden">삭제된 페이지</span>
+                <span className="hidden md:inline">페이지에서 지운 페이지</span>
+              </TabsTrigger>
             </TabsList>
           </div>
         }
         headerContent={
           tab === "timeline" ? (
-            <div className="flex items-center gap-2 flex-wrap justify-end">
+            <div className="flex items-center gap-1 flex-wrap justify-end">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="lg:hidden"
+                    onClick={() => void bulkRestoreThreads(selectedThreadIds)}
+                    disabled={!hasSelectedThreads || bulkThreadActionLoading}
+                    aria-label="선택 일괄 복구"
+                  >
+                    <Undo2 className="w-4 h-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>선택 일괄 복구</p>
+                </TooltipContent>
+              </Tooltip>
               <Button
                 variant="outline"
                 size="sm"
+                className="hidden lg:inline-flex"
                 onClick={() => void bulkRestoreThreads(selectedThreadIds)}
                 disabled={!hasSelectedThreads || bulkThreadActionLoading}
               >
                 <Undo2 className="w-4 h-4" /> 선택 일괄 복구
               </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="lg:hidden"
+                    onClick={() => setBulkThreadPurgeOpen(true)}
+                    disabled={!hasSelectedThreads || bulkThreadActionLoading}
+                    aria-label="선택 일괄 완전삭제"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>선택 일괄 완전삭제</p>
+                </TooltipContent>
+              </Tooltip>
               <Button
                 variant="outline"
                 size="sm"
+                className="hidden lg:inline-flex"
                 onClick={() => setBulkThreadPurgeOpen(true)}
                 disabled={!hasSelectedThreads || bulkThreadActionLoading}
               >
                 <Trash2 className="w-4 h-4" /> 선택 일괄 완전삭제
               </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="lg:hidden"
+                    onClick={() => void fetchDeletedThreads()}
+                    disabled={loading || bulkThreadActionLoading}
+                    aria-label="새로고침"
+                  >
+                    <RefreshCcw className="w-4 h-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>새로고침</p>
+                </TooltipContent>
+              </Tooltip>
               <Button
                 variant="outline"
                 size="sm"
+                className="hidden lg:inline-flex"
                 onClick={() => void fetchDeletedThreads()}
                 disabled={loading || bulkThreadActionLoading}
               >
-                새로고침
+                <RefreshCcw className="w-4 h-4" /> 새로고침
               </Button>
             </div>
           ) : tab === "pages" ? (
             <div className="flex items-center gap-2 flex-wrap justify-end">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="lg:hidden"
+                    onClick={() => {
+                  const needsCategory = selectedPostIds.some((id) => {
+                    const post = deletedPosts.find((p) => String(p.id) === String(id))
+                    return shouldRequireCategoryChoice(post)
+                  })
+                  if (needsCategory) {
+                    setBulkRestoreTargetIds(selectedPostIds)
+                    setBulkRestoreCategoryId("")
+                    setBulkRestoreConfirmOpen(true)
+                    return
+                  }
+                  void bulkRestorePosts(selectedPostIds)
+                }}
+                    disabled={!hasSelectedPosts || bulkPostActionLoading}
+                    aria-label="선택 일괄 복구"
+                  >
+                    <Undo2 className="w-4 h-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>선택 일괄 복구</p>
+                </TooltipContent>
+              </Tooltip>
               <Button
                 variant="outline"
                 size="sm"
+                className="hidden lg:inline-flex"
                 onClick={() => {
                   const needsCategory = selectedPostIds.some((id) => {
                     const post = deletedPosts.find((p) => String(p.id) === String(id))
@@ -508,21 +600,57 @@ export default function TrashPage() {
               >
                 <Undo2 className="w-4 h-4" /> 선택 일괄 복구
               </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="lg:hidden"
+                    onClick={() => setBulkPostPurgeOpen(true)}
+                    disabled={!hasSelectedPosts || bulkPostActionLoading}
+                    aria-label="선택 일괄 완전삭제"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>선택 일괄 완전삭제</p>
+                </TooltipContent>
+              </Tooltip>
               <Button
                 variant="outline"
                 size="sm"
+                className="hidden lg:inline-flex"
                 onClick={() => setBulkPostPurgeOpen(true)}
                 disabled={!hasSelectedPosts || bulkPostActionLoading}
               >
                 <Trash2 className="w-4 h-4" /> 선택 일괄 완전삭제
               </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="lg:hidden"
+                    onClick={() => void fetchDeletedPosts()}
+                    disabled={postsLoading || bulkPostActionLoading}
+                    aria-label="새로고침"
+                  >
+                    <RefreshCcw className="w-4 h-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>새로고침</p>
+                </TooltipContent>
+              </Tooltip>
               <Button
                 variant="outline"
                 size="sm"
+                className="hidden lg:inline-flex"
                 onClick={() => void fetchDeletedPosts()}
                 disabled={postsLoading || bulkPostActionLoading}
               >
-                새로고침
+                <RefreshCcw className="w-4 h-4" /> 새로고침
               </Button>
             </div>
           ) : null
@@ -531,8 +659,8 @@ export default function TrashPage() {
         <div className="flex-1 h-full w-full overflow-hidden pt-[60px]">
           <div className="h-full w-full max-w-[1000px] mx-auto p-4">
             <TabsContent value="timeline">
-              <div className="border border-border rounded-lg overflow-hidden">                
-                <div className="max-h-[calc(100vh-220px)] overflow-y-auto">
+              <div className="border border-border rounded-lg overflow-hidden mb-4 max-h-[calc(100vh-100px)] self-start overflow-y-auto">                
+                <div className="">
                   {loading ? (
                     <div className="px-4 py-6 text-sm text-muted-foreground">불러오는 중…</div>
                   ) : threads.length === 0 ? (
@@ -623,11 +751,11 @@ export default function TrashPage() {
                   {/* Left: deleted pages list - 왼쪽 삭제된 페이지 목록 */}
                   <div
                     className={cn(
-                      "border border-border rounded-lg overflow-hidden self-start",
+                      "border border-border rounded-lg mb-4 max-h-[calc(100vh-100px)] overflow-hidden overflow-y-auto self-start",
                       isDetailOpen ? "hidden lg:block" : "block"
                     )}
                   >
-                    <div className="max-h-[calc(100vh-220px)] overflow-y-auto">
+                    <div className="">
                       {postsLoading ? (
                         <div className="px-4 py-6 text-sm text-muted-foreground">불러오는 중…</div>
                       ) : deletedPosts.length === 0 ? (
@@ -645,7 +773,7 @@ export default function TrashPage() {
                               <div
                                 key={p.id}
                                 className={cn(
-                                  "px-4 py-3 flex items-start gap-3 transition-colors",
+                                  "px-4 py-3 flex items-center gap-3 transition-colors",
                                   active ? "bg-accent/60" : "hover:bg-accent/40"
                                 )}
                               >
@@ -672,11 +800,7 @@ export default function TrashPage() {
                                 >
                                   <div className="flex items-center justify-between gap-2">
                                     <div className="text-sm font-medium truncate">{p.title || "제목 없음"}</div>
-                                    {childCount > 0 ? (
-                                      <Badge variant="outline" className="h-5 px-2 text-[10px] font-medium shrink-0">
-                                        {childCount}
-                                      </Badge>
-                                    ) : null}
+                                    
                                   </div>
                                   {needsCategory ? (
                                     <div className="text-xs text-destructive mt-1 truncate">
@@ -685,6 +809,13 @@ export default function TrashPage() {
                                   ) : null}
                                   <div className="text-xs text-muted-foreground truncate">{p.updated_at}</div>
                                 </button>
+                                <div className="shrink-0 flex items-center gap-2">
+                                {childCount > 0 ? (
+                                      <Badge variant="outline" className="h-5 px-2 text-[10px] font-medium shrink-0">
+                                        {childCount}
+                                      </Badge>
+                                    ) : null}
+                                </div>
                                 {!isDetailOpen ? (
                                   <div className="shrink-0 flex items-center gap-2">
                                     <Button
