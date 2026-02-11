@@ -3,6 +3,7 @@ import { Eclipse } from "lucide-react"
 import { useTheme } from "@/hooks/useTheme"
 import { LoginModal } from "@/components/LoginModal"
 import { ChatInterface } from "@/components/ChatInterface"
+import { consumeSessionExpiredNotice } from "@/lib/session"
 import {
   Select,
   SelectContent,
@@ -10,6 +11,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
  
 interface Language {
   code: string
@@ -25,6 +35,7 @@ export default function Intro() {
   const [isLoginModalOpen, setIsLoginModalOpen] = React.useState(false);
   const [languages, setLanguages] = React.useState<Language[]>([]);
   const [currentLang, setCurrentLang] = React.useState("");
+  const [sessionExpiredOpen, setSessionExpiredOpen] = React.useState(false);
 
   React.useEffect(() => {
     const fetchLanguages = async () => {
@@ -45,6 +56,12 @@ export default function Intro() {
       }
     };
     fetchLanguages();
+  }, []);
+
+  React.useEffect(() => {
+    if (consumeSessionExpiredNotice()) {
+      setSessionExpiredOpen(true);
+    }
   }, []);
 
   return (
@@ -146,6 +163,17 @@ export default function Intro() {
         </div>
       </div>
       <LoginModal open={isLoginModalOpen} onOpenChange={setIsLoginModalOpen} />
+      <AlertDialog open={sessionExpiredOpen} onOpenChange={setSessionExpiredOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>로그 세션이 종료되었습니다.</AlertDialogTitle>
+            <AlertDialogDescription>다시 로그인해 주세요.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction>확인</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

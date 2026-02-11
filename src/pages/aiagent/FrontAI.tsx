@@ -1,7 +1,7 @@
 import * as React from "react"
 import { AppShell } from "@/components/layout/AppShell"
 import { useNavigate } from "react-router-dom"
-import { useRef } from "react"
+import { handleSessionExpired, isSessionExpired, resetSessionExpiredGuard } from "@/lib/session"
 import { ChatInterface } from "@/components/ChatInterface"
 import { 
   Select,
@@ -22,7 +22,6 @@ interface Language {
 
 export default function FrontAI() {
   const navigate = useNavigate()
-  const alertShownRef = useRef(false)
   const [languages, setLanguages] = React.useState<Language[]>([]);
   const [currentLang, setCurrentLang] = React.useState("");
   const LAST_SELECTION_KEY = "reductai.frontai.lastSelection.v1"
@@ -44,27 +43,13 @@ export default function FrontAI() {
   
   const [selection, setSelection] = React.useState<{ modelApiId: string; providerSlug: string; modelType: string }>(() => readSelectionFromStorage())
   const [selectionVersion, setSelectionVersion] = React.useState(0)
-  // 토큰이 없거나 만료된 경우 접근 차단 및 경고 표시
+  // 토큰이 없거나 만료된 경우 접근 차단
   React.useEffect(() => {
-    const token = localStorage.getItem("token")
-    const expiresAt = Number(localStorage.getItem("token_expires_at") || 0)
-    const isExpired = !expiresAt || Date.now() > expiresAt
-
-    if (!token || isExpired) {
-      if (!alertShownRef.current) {
-        alertShownRef.current = true
-        localStorage.removeItem("token")
-        localStorage.removeItem("token_expires_at")
-        localStorage.removeItem("user_email")
-        localStorage.removeItem("user_id")
-        alert("로그인이 필요합니다. 로그인 페이지로 이동합니다.")
-        navigate("/", { replace: true })
-      }
+    if (isSessionExpired()) {
+      handleSessionExpired(navigate)
       return
     }
-
-    // 토큰이 정상인 경우 경고 상태 초기화
-    alertShownRef.current = false
+    resetSessionExpiredGuard()
   }, [navigate])
 
   React.useEffect(() => {

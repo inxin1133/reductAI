@@ -365,8 +365,8 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       const data = await response.json()
 
       if (response.ok && data.token) {
-        // 토큰과 만료 시간을 저장하여 세션 유지 (기본 1시간)
-        const expiresAt = Date.now() + 60 * 60 * 1000
+        // 토큰과 만료 시간을 저장하여 세션 유지 (기본 24시간)
+        const expiresAt = Date.now() + 24 * 60 * 60 * 1000
         localStorage.setItem('token', data.token)
         localStorage.setItem('token_expires_at', expiresAt.toString())
         localStorage.setItem('user_email', email)
@@ -404,8 +404,8 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       const data = await response.json()
 
       if (response.ok && data.token) {
-        // 토큰과 만료 시간을 저장하여 세션 유지 (기본 1시간)
-        const expiresAt = Date.now() + 60 * 60 * 1000
+        // 토큰과 만료 시간을 저장하여 세션 유지 (기본 24시간)
+        const expiresAt = Date.now() + 24 * 60 * 60 * 1000
         localStorage.setItem('token', data.token)
         localStorage.setItem('token_expires_at', expiresAt.toString())
         localStorage.setItem('user_email', email)

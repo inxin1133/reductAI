@@ -73,8 +73,8 @@ export default function AdminLogin() {
         return
       }
 
-      // 3) 세션 1시간 유지 (만료 시각 저장)
-      const expiresAt = Date.now() + 60 * 60 * 1000 // 1 hour
+      // 3) 세션 2시간 유지 (만료 시각 저장)
+      const expiresAt = Date.now() + 2 * 60 * 60 * 1000 // 2 hours
       localStorage.setItem("token", token)
       localStorage.setItem("token_expires_at", expiresAt.toString())
       localStorage.setItem("user_email", user.email || email)

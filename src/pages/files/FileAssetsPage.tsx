@@ -4,6 +4,7 @@ import { AppShell } from "@/components/layout/AppShell"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { handleSessionExpired, isSessionExpired, resetSessionExpiredGuard } from "@/lib/session"
 import { toast } from "sonner"
 import { Download, Trash2, Star, Pin, ChevronLeft, ChevronRight, X, Link2Off } from "lucide-react"
 import { FileAssetCard } from "@/components/files/FileAssetCard"
@@ -65,16 +66,11 @@ export default function FileAssetsPage() {
   const [viewerError, setViewerError] = React.useState(false)
 
   React.useEffect(() => {
-    const token = localStorage.getItem("token")
-    const expiresAt = Number(localStorage.getItem("token_expires_at") || 0)
-    const isExpired = !expiresAt || Date.now() > expiresAt
-    if (!token || isExpired) {
-      localStorage.removeItem("token")
-      localStorage.removeItem("token_expires_at")
-      localStorage.removeItem("user_email")
-      localStorage.removeItem("user_id")
-      navigate("/", { replace: true })
+    if (isSessionExpired()) {
+      handleSessionExpired(navigate)
+      return
     }
+    resetSessionExpiredGuard()
   }, [navigate])
 
   const fetchAssetsPage = React.useCallback(

@@ -22,6 +22,7 @@ import {
   Ellipsis
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { handleSessionExpired, isSessionExpired, resetSessionExpiredGuard } from "@/lib/session"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -1049,29 +1050,12 @@ export function Sidebar({ className }: SidebarProps) {
   }
 
   // 토큰이 없거나 만료된 경우 접근 차단
-  const alertShownRef = useRef(false)
-
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    const expiresAt = Number(localStorage.getItem('token_expires_at') || 0)
-    const isExpired = !expiresAt || Date.now() > expiresAt
-
-    if (!token || isExpired) {
-      if (!alertShownRef.current) {
-        alertShownRef.current = true
-        // 보안상 정리 후 경고 표시
-        localStorage.removeItem('token')
-        localStorage.removeItem('token_expires_at')
-        localStorage.removeItem('user_email')
-        localStorage.removeItem('user_id')
-        alert('로그인이 필요합니다. 인트로(로그인) 페이지로 이동합니다.')
-        navigate('/', { replace: true })
-      }
+    if (isSessionExpired()) {
+      handleSessionExpired(navigate)
       return
     }
-
-    // 토큰이 정상인 경우 경고 상태 초기화
-    alertShownRef.current = false
+    resetSessionExpiredGuard()
   }, [navigate])
 
   // Profile Popover Content (Shared) - 프로필 팝오버 콘텐츠 (공유)

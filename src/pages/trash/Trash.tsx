@@ -3,6 +3,7 @@ import { AppShell } from "@/components/layout/AppShell"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import {
   AlertDialog,
@@ -15,6 +16,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
+import { handleSessionExpired, isSessionExpired, resetSessionExpiredGuard } from "@/lib/session"
 import { useNavigate } from "react-router-dom"
 import { ProseMirrorViewer } from "@/components/post/ProseMirrorViewer"
 import {
@@ -29,7 +31,10 @@ import {
 import { 
   Trash2,
   Undo2,
-  X
+  X,
+  ArrowLeft,
+  ChevronDown,
+  ChevronUp
 } from "lucide-react"
 
 type DeletedThreadRow = {
@@ -48,6 +53,7 @@ type DeletedPostRow = {
   icon?: string | null
   deleted_at?: string | null
   updated_at: string
+  child_count?: number
 }
 
 type CategoryRow = {
@@ -81,6 +87,8 @@ export default function TrashPage() {
     ancestors?: DeletedPostRow[]
     children?: DeletedPostRow[]
   } | null>(null)
+  const [childrenOpen, setChildrenOpen] = React.useState(false)
+  const [postDetailHistory, setPostDetailHistory] = React.useState<string[]>([])
   const [purgeConfirmOpen, setPurgeConfirmOpen] = React.useState(false)
   const [purgeConfirmTargetId, setPurgeConfirmTargetId] = React.useState<string>("")
   const [restoreConfirmTarget, setRestoreConfirmTarget] = React.useState<DeletedPostRow | null>(null)
@@ -100,16 +108,11 @@ export default function TrashPage() {
 
   // auth guard (same style as Timeline)
   React.useEffect(() => {
-    const token = localStorage.getItem("token")
-    const expiresAt = Number(localStorage.getItem("token_expires_at") || 0)
-    const isExpired = !expiresAt || Date.now() > expiresAt
-    if (!token || isExpired) {
-      localStorage.removeItem("token")
-      localStorage.removeItem("token_expires_at")
-      localStorage.removeItem("user_email")
-      localStorage.removeItem("user_id")
-      navigate("/", { replace: true })
+    if (isSessionExpired()) {
+      handleSessionExpired(navigate)
+      return
     }
+    resetSessionExpiredGuard()
   }, [navigate])
 
   const fetchDeletedThreads = React.useCallback(async () => {
@@ -142,8 +145,12 @@ export default function TrashPage() {
       const next = Array.isArray(rows) ? rows : []
       setDeletedPosts(next)
       setSelectedPostIds((prev) => prev.filter((id) => next.some((p) => String(p.id) === String(id))))
-      // if current selection disappeared, clear it
-      if (selectedPostId && !next.some((p) => String(p.id) === String(selectedPostId))) {
+      // if current selection disappeared, clear it (only for top-level list selections)
+      if (
+        selectedPostId &&
+        !next.some((p) => String(p.id) === String(selectedPostId)) &&
+        postDetailHistory.length === 0
+      ) {
         setSelectedPostId("")
         setPostDetail(null)
       }
@@ -152,7 +159,7 @@ export default function TrashPage() {
     } finally {
       setPostsLoading(false)
     }
-  }, [authHeaders, selectedPostId])
+  }, [authHeaders, postDetailHistory.length, selectedPostId])
 
   const fetchDeletedPostDetail = React.useCallback(
     async (id: string) => {
@@ -204,6 +211,15 @@ export default function TrashPage() {
     if (!selectedPostId) return
     void fetchDeletedPostDetail(selectedPostId)
   }, [fetchDeletedPostDetail, selectedPostId, tab])
+
+  React.useEffect(() => {
+    if (!selectedPostId) {
+      setChildrenOpen(false)
+      setPostDetailHistory([])
+      return
+    }
+    setChildrenOpen(false)
+  }, [selectedPostId])
 
   const restore = React.useCallback(
     async (id: string) => {
@@ -419,6 +435,17 @@ export default function TrashPage() {
   const hasSelectedThreads = selectedThreadIds.length > 0
   const hasSelectedPosts = selectedPostIds.length > 0
   const isDetailOpen = Boolean(selectedPostId)
+  const childrenCount = postDetail?.children?.length ?? 0
+  const hasChildren = childrenCount > 0
+  const deletedChildrenCountMap = React.useMemo(() => {
+    const map: Record<string, number> = {}
+    deletedPosts.forEach((p) => {
+      if (!p.parent_id) return
+      const key = String(p.parent_id)
+      map[key] = (map[key] || 0) + 1
+    })
+    return map
+  }, [deletedPosts])
 
   return (
     <Tabs value={tab} onValueChange={(v) => setTab(v === "pages" ? "pages" : "timeline")}>
@@ -592,11 +619,11 @@ export default function TrashPage() {
 
             <TabsContent value="pages">
               <div className="">
-                <div className={cn("grid gap-4", isDetailOpen ? "lg:grid-cols-[260px_1fr]" : "grid-cols-1")}>
-                  {/* Left: deleted pages list */}
+                <div className={cn("grid gap-4 items-start", isDetailOpen ? "lg:grid-cols-[260px_1fr]" : "grid-cols-1")}>
+                  {/* Left: deleted pages list - 왼쪽 삭제된 페이지 목록 */}
                   <div
                     className={cn(
-                      "border border-border rounded-lg overflow-hidden",
+                      "border border-border rounded-lg overflow-hidden self-start",
                       isDetailOpen ? "hidden lg:block" : "block"
                     )}
                   >
@@ -610,6 +637,10 @@ export default function TrashPage() {
                           {deletedPosts.map((p) => {
                             const active = String(p.id) === String(selectedPostId)
                             const needsCategory = shouldRequireCategoryChoice(p)
+                            const childCount =
+                              deletedChildrenCountMap[String(p.id)] ??
+                              p.child_count ??
+                              (String(p.id) === String(selectedPostId) ? postDetail?.children?.length ?? 0 : 0)
                             return (
                               <div
                                 key={p.id}
@@ -634,9 +665,19 @@ export default function TrashPage() {
                                 <button
                                   type="button"
                                   className="flex-1 min-w-0 text-left"
-                                  onClick={() => setSelectedPostId(String(p.id))}
+                                  onClick={() => {
+                                    setPostDetailHistory([])
+                                    setSelectedPostId(String(p.id))
+                                  }}
                                 >
-                                  <div className="text-sm font-medium truncate">{p.title || "제목 없음"}</div>
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="text-sm font-medium truncate">{p.title || "제목 없음"}</div>
+                                    {childCount > 0 ? (
+                                      <Badge variant="outline" className="h-5 px-2 text-[10px] font-medium shrink-0">
+                                        {childCount}
+                                      </Badge>
+                                    ) : null}
+                                  </div>
                                   {needsCategory ? (
                                     <div className="text-xs text-destructive mt-1 truncate">
                                       복원 시 카테고리를 선택해야 합니다.
@@ -679,9 +720,9 @@ export default function TrashPage() {
                     </div>
                   </div>
 
-                  {/* Right: deleted page detail (Notion-like) */}
+                  {/* Right: deleted page detail (Notion-like) - 오른쪽 삭제된 페이지 상세 */}
                   {isDetailOpen ? (
-                    <div className="border border-border rounded-lg overflow-hidden">
+                    <div className="border border-border rounded-lg overflow-hidden mb-4 max-h-[calc(100vh-100px)] flex flex-col self-start">
                       <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
                         <div className="min-w-0 flex items-start gap-2">
                           <Button
@@ -691,6 +732,8 @@ export default function TrashPage() {
                             onClick={() => {
                               setSelectedPostId("")
                               setPostDetail(null)
+                              setPostDetailHistory([])
+                              setChildrenOpen(false)
                             }}
                             aria-label="페이지 닫기"
                           >
@@ -744,39 +787,82 @@ export default function TrashPage() {
                         </div>
                       </div>
 
-                      {postDetailLoading ? (
-                        <div className="px-4 py-10 text-sm text-muted-foreground">불러오는 중…</div>
-                      ) : !postDetail ? (
-                        <div className="px-4 py-10 text-sm text-muted-foreground">페이지를 불러오지 못했습니다.</div>
-                      ) : (
-                        <div className="p-4 grid grid-cols-1 lg:grid-cols-[1fr_260px] gap-4">
-                          <div className="min-h-[360px]">
-                            <ProseMirrorViewer docJson={postDetail.docJson} className="prose max-w-none" />
-                          </div>
-                          <div className="border border-border rounded-lg overflow-hidden">
-                            <div className="px-3 py-2 border-b border-border text-xs font-medium">자식 페이지</div>
-                            <div className="max-h-[520px] overflow-y-auto">
-                              {(postDetail.children || []).length === 0 ? (
-                                <div className="px-3 py-3 text-xs text-muted-foreground">자식 페이지가 없습니다.</div>
-                              ) : (
-                                <div className="divide-y divide-border">
-                                  {(postDetail.children || []).map((c) => (
-                                    <button
-                                      key={String(c.id)}
-                                      type="button"
-                                      className="w-full text-left px-3 py-2 hover:bg-accent/40 transition-colors"
-                                      onClick={() => setSelectedPostId(String(c.id))}
-                                    >
-                                      <div className="text-sm truncate">{c.title || "제목 없음"}</div>
-                                      <div className="text-xs text-muted-foreground truncate">{c.updated_at}</div>
-                                    </button>
-                                  ))}
-                                </div>
-                              )}
+                      {/* 자식페이지 목록 */}
+                      <div className="px-4 mt-4 pb-2">
+                        <div className="border border-border rounded-lg overflow-hidden">
+                          {postDetailHistory.length ? (
+                            <div className="px-3 pt-2">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2"
+                                onClick={() => {
+                                  setPostDetailHistory((prev) => {
+                                    if (!prev.length) return prev
+                                    const next = [...prev]
+                                    const prevId = next.pop()
+                                    if (prevId) {
+                                      setSelectedPostId(prevId)
+                                    }
+                                    return next
+                                  })
+                                }}
+                              >
+                                <ArrowLeft className="size-4" />
+                                뒤로가기
+                              </Button>
+                            </div>
+                          ) : null}
+                          <button
+                            type="button"
+                            className={cn(
+                              "w-full px-3 py-2 border-b border-border text-xs font-medium flex items-center justify-between",
+                              hasChildren ? "hover:bg-accent/40 transition-colors" : "opacity-60 cursor-default"
+                            )}
+                            onClick={() => {
+                              if (!hasChildren) return
+                              setChildrenOpen((prev) => !prev)
+                            }}
+                          >
+                            <span>{`자식페이지: ${hasChildren ? childrenCount : "없음"}`}</span>
+                            {childrenOpen ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+                          </button>
+                          {hasChildren && childrenOpen ? (
+                            <div className="divide-y divide-border">
+                              {(postDetail?.children || []).map((c) => (
+                                <button
+                                  key={String(c.id)}
+                                  type="button"
+                                  className="w-full text-left px-3 py-2 hover:bg-accent/40 transition-colors"
+                                  onClick={() => {
+                                    if (selectedPostId) {
+                                      setPostDetailHistory((prev) => [...prev, String(selectedPostId)])
+                                    }
+                                    setSelectedPostId(String(c.id))
+                                  }}
+                                >
+                                  <div className="text-sm truncate">{c.title || "제목 없음"}</div>
+                                  <div className="text-xs text-muted-foreground truncate">{c.updated_at}</div>
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="flex-1 min-h-0 overflow-y-auto">
+                        {postDetailLoading ? (
+                          <div className="px-4 py-10 text-sm text-muted-foreground">불러오는 중…</div>
+                        ) : !postDetail ? (
+                          <div className="px-4 py-10 text-sm text-muted-foreground">페이지를 불러오지 못했습니다.</div>
+                        ) : (
+                          <div className="p-4 grid grid-cols-1 gap-4">
+                            <div className="min-h-[360px]">
+                              <ProseMirrorViewer docJson={postDetail.docJson} className="prose max-w-none" />
                             </div>
                           </div>
-                        </div>
-                      )}
+                        )}
+                      </div>
                     </div>
                   ) : null}
                 </div>

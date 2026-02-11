@@ -31,6 +31,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { Copy, Volume2, Repeat, ChevronsLeft, PencilLine, GalleryVerticalEnd, MoreHorizontal, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { handleSessionExpired, isSessionExpired, resetSessionExpiredGuard } from "@/lib/session"
 import { ChatInterface } from "@/components/ChatInterface"
 import { ProseMirrorViewer } from "@/components/post/ProseMirrorViewer"
 import { aiJsonToPmDoc } from "@/components/post/aiBlocksToPmDoc"
@@ -1126,16 +1127,11 @@ export default function Timeline() {
 
   // 보안: Timeline은 사용자별 히스토리를 다루므로 로그인(토큰)이 없으면 접근 불가
   React.useEffect(() => {
-    const token = localStorage.getItem("token")
-    const expiresAt = Number(localStorage.getItem("token_expires_at") || 0)
-    const isExpired = !expiresAt || Date.now() > expiresAt
-    if (!token || isExpired) {
-      localStorage.removeItem("token")
-      localStorage.removeItem("token_expires_at")
-      localStorage.removeItem("user_email")
-      localStorage.removeItem("user_id")
-      navigate("/", { replace: true })
+    if (isSessionExpired()) {
+      handleSessionExpired(navigate)
+      return
     }
+    resetSessionExpiredGuard()
   }, [navigate])
 
   // Timeline API는 JWT에서 userId를 추출하므로, 클라이언트는 Authorization 헤더만 보내면 됩니다.
