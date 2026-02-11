@@ -1,5 +1,6 @@
 import { Request, Response } from "express"
 import { query } from "../config/db"
+import { lookupTenants, lookupUsers } from "../services/identityClient"
 
 type AuditStatus = "success" | "failure" | "error"
 
@@ -76,10 +77,8 @@ export async function listAuditLogs(req: Request, res: Response) {
           OR COALESCE(a.error_message, '') ILIKE $${params.length + 1}
           OR COALESCE(a.ip_address::text, '') ILIKE $${params.length + 1}
           OR COALESCE(a.user_agent, '') ILIKE $${params.length + 1}
-          OR COALESCE(u.email, '') ILIKE $${params.length + 1}
-          OR COALESCE(u.full_name, '') ILIKE $${params.length + 1}
-          OR COALESCE(t.name, '') ILIKE $${params.length + 1}
-          OR COALESCE(t.slug, '') ILIKE $${params.length + 1}
+          OR COALESCE(a.user_id::text, '') ILIKE $${params.length + 1}
+          OR COALESCE(a.tenant_id::text, '') ILIKE $${params.length + 1}
           OR COALESCE(s.name, '') ILIKE $${params.length + 1}
           OR COALESCE(s.slug, '') ILIKE $${params.length + 1}
         )`
@@ -93,8 +92,6 @@ export async function listAuditLogs(req: Request, res: Response) {
       `
       SELECT COUNT(*)::int AS total
       FROM audit_logs a
-      LEFT JOIN users u ON u.id = a.user_id
-      LEFT JOIN tenants t ON t.id = a.tenant_id
       LEFT JOIN services s ON s.id = a.service_id
       ${whereSql}
       `,
@@ -118,16 +115,9 @@ export async function listAuditLogs(req: Request, res: Response) {
         a.response_data,
         a.error_message,
         a.created_at,
-        u.email AS user_email,
-        u.full_name AS user_name,
-        t.name AS tenant_name,
-        t.slug AS tenant_slug,
-        t.tenant_type,
         s.name AS service_name,
         s.slug AS service_slug
       FROM audit_logs a
-      LEFT JOIN users u ON u.id = a.user_id
-      LEFT JOIN tenants t ON t.id = a.tenant_id
       LEFT JOIN services s ON s.id = a.service_id
       ${whereSql}
       ORDER BY a.created_at DESC
@@ -136,12 +126,37 @@ export async function listAuditLogs(req: Request, res: Response) {
       [...params, limit, offset]
     )
 
+    const authHeader = String(req.headers.authorization || "")
+    const userIds = Array.from(
+      new Set(listRes.rows.map((row) => row.user_id).filter((id) => typeof id === "string" && id))
+    )
+    const tenantIds = Array.from(
+      new Set(listRes.rows.map((row) => row.tenant_id).filter((id) => typeof id === "string" && id))
+    )
+    const [userMap, tenantMap] = await Promise.all([
+      lookupUsers(userIds, authHeader),
+      lookupTenants(tenantIds, authHeader),
+    ])
+
+    const rows = listRes.rows.map((row) => {
+      const user = row.user_id ? userMap.get(String(row.user_id)) : undefined
+      const tenant = row.tenant_id ? tenantMap.get(String(row.tenant_id)) : undefined
+      return {
+        ...row,
+        user_email: user?.email ?? null,
+        user_name: user?.full_name ?? null,
+        tenant_name: tenant?.name ?? null,
+        tenant_slug: tenant?.slug ?? null,
+        tenant_type: tenant?.tenant_type ?? null,
+      }
+    })
+
     return res.json({
       ok: true,
       total: countRes.rows[0]?.total ?? 0,
       limit,
       offset,
-      rows: listRes.rows,
+      rows,
     })
   } catch (e: any) {
     console.error("listAuditLogs error:", e)

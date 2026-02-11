@@ -145,3 +145,35 @@ export const updateUser = async (req: Request, res: Response) => {
     client.release();
   }
 };
+
+export const lookupUsers = async (req: Request, res: Response) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    const cleaned = Array.from(
+      new Set(
+        ids
+          .map((id: unknown) => (typeof id === 'string' ? id.trim() : ''))
+          .filter((id: string) => /^[0-9a-fA-F-]{36}$/.test(id))
+      )
+    );
+
+    if (cleaned.length === 0) {
+      return res.json({ ok: true, rows: [] });
+    }
+
+    const { rows } = await pool.query(
+      `
+        SELECT id, email, full_name
+        FROM users
+        WHERE id = ANY($1::uuid[])
+          AND deleted_at IS NULL
+      `,
+      [cleaned]
+    );
+
+    res.json({ ok: true, rows });
+  } catch (error) {
+    console.error('Error looking up users:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};

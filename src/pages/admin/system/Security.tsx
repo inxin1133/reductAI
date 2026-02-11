@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { adminFetch } from "@/lib/adminFetch"
 import {
   Table,
   TableBody,
@@ -98,7 +99,7 @@ export default function SystemSecurity() {
   async function fetchSessions() {
     setLoading(true)
     try {
-      const res = await fetch(`${API_URL}?${queryString}`)
+      const res = await adminFetch(`${API_URL}?${queryString}`)
       const json = (await res.json()) as ListResponse<SessionRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setRows(json.rows || [])
@@ -116,7 +117,7 @@ export default function SystemSecurity() {
     const label = row.user_email || row.user_id
     if (!confirm(`"${label}" 세션을 종료할까요?`)) return
     try {
-      const res = await fetch(`${API_URL}/${row.id}`, { method: "DELETE" })
+      const res = await adminFetch(`${API_URL}/${row.id}`, { method: "DELETE" })
       const json = await res.json().catch(() => ({}))
       if (!res.ok || !json.ok) {
         return alert(json.message || "세션 종료에 실패했습니다.")

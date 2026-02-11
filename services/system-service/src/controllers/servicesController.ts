@@ -1,5 +1,6 @@
 import { Request, Response } from "express"
 import { query } from "../config/db"
+import { lookupTenants } from "../services/identityClient"
 
 function toInt(v: unknown, fallback: number) {
   if (v === null || v === undefined || v === "") return fallback
@@ -214,8 +215,7 @@ export async function listServiceInstances(req: Request, res: Response) {
           OR COALESCE(si.region, '') ILIKE $${params.length + 1}
           OR COALESCE(s.name, '') ILIKE $${params.length + 1}
           OR COALESCE(s.slug, '') ILIKE $${params.length + 1}
-          OR COALESCE(t.name, '') ILIKE $${params.length + 1}
-          OR COALESCE(t.slug, '') ILIKE $${params.length + 1}
+          OR COALESCE(si.tenant_id::text, '') ILIKE $${params.length + 1}
         )`
       )
       params.push(`%${q}%`)
@@ -228,7 +228,6 @@ export async function listServiceInstances(req: Request, res: Response) {
       SELECT COUNT(*)::int AS total
       FROM service_instances si
       JOIN services s ON s.id = si.service_id
-      JOIN tenants t ON t.id = si.tenant_id
       ${whereSql}
       `,
       params
@@ -249,13 +248,9 @@ export async function listServiceInstances(req: Request, res: Response) {
         si.created_at,
         si.updated_at,
         s.name AS service_name,
-        s.slug AS service_slug,
-        t.name AS tenant_name,
-        t.slug AS tenant_slug,
-        t.tenant_type
+        s.slug AS service_slug
       FROM service_instances si
       JOIN services s ON s.id = si.service_id
-      JOIN tenants t ON t.id = si.tenant_id
       ${whereSql}
       ORDER BY si.created_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
@@ -263,12 +258,28 @@ export async function listServiceInstances(req: Request, res: Response) {
       [...params, limit, offset]
     )
 
+    const authHeader = String(req.headers.authorization || "")
+    const tenantIds = Array.from(
+      new Set(listRes.rows.map((row) => row.tenant_id).filter((id) => typeof id === "string" && id))
+    )
+    const tenantMap = await lookupTenants(tenantIds, authHeader)
+
+    const rows = listRes.rows.map((row) => {
+      const tenant = row.tenant_id ? tenantMap.get(String(row.tenant_id)) : undefined
+      return {
+        ...row,
+        tenant_name: tenant?.name ?? null,
+        tenant_slug: tenant?.slug ?? null,
+        tenant_type: tenant?.tenant_type ?? null,
+      }
+    })
+
     return res.json({
       ok: true,
       total: countRes.rows[0]?.total ?? 0,
       limit,
       offset,
-      rows: listRes.rows,
+      rows,
     })
   } catch (e: any) {
     console.error("listServiceInstances error:", e)
@@ -432,8 +443,7 @@ export async function listTenantServiceAccess(req: Request, res: Response) {
         `(
           COALESCE(s.name, '') ILIKE $${params.length + 1}
           OR COALESCE(s.slug, '') ILIKE $${params.length + 1}
-          OR COALESCE(t.name, '') ILIKE $${params.length + 1}
-          OR COALESCE(t.slug, '') ILIKE $${params.length + 1}
+          OR COALESCE(tsa.tenant_id::text, '') ILIKE $${params.length + 1}
         )`
       )
       params.push(`%${q}%`)
@@ -446,7 +456,6 @@ export async function listTenantServiceAccess(req: Request, res: Response) {
       SELECT COUNT(*)::int AS total
       FROM tenant_service_access tsa
       JOIN services s ON s.id = tsa.service_id
-      JOIN tenants t ON t.id = tsa.tenant_id
       ${whereSql}
       `,
       params
@@ -465,13 +474,9 @@ export async function listTenantServiceAccess(req: Request, res: Response) {
         tsa.granted_at,
         tsa.expires_at,
         s.name AS service_name,
-        s.slug AS service_slug,
-        t.name AS tenant_name,
-        t.slug AS tenant_slug,
-        t.tenant_type
+        s.slug AS service_slug
       FROM tenant_service_access tsa
       JOIN services s ON s.id = tsa.service_id
-      JOIN tenants t ON t.id = tsa.tenant_id
       ${whereSql}
       ORDER BY tsa.granted_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
@@ -479,12 +484,28 @@ export async function listTenantServiceAccess(req: Request, res: Response) {
       [...params, limit, offset]
     )
 
+    const authHeader = String(req.headers.authorization || "")
+    const tenantIds = Array.from(
+      new Set(listRes.rows.map((row) => row.tenant_id).filter((id) => typeof id === "string" && id))
+    )
+    const tenantMap = await lookupTenants(tenantIds, authHeader)
+
+    const rows = listRes.rows.map((row) => {
+      const tenant = row.tenant_id ? tenantMap.get(String(row.tenant_id)) : undefined
+      return {
+        ...row,
+        tenant_name: tenant?.name ?? null,
+        tenant_slug: tenant?.slug ?? null,
+        tenant_type: tenant?.tenant_type ?? null,
+      }
+    })
+
     return res.json({
       ok: true,
       total: countRes.rows[0]?.total ?? 0,
       limit,
       offset,
-      rows: listRes.rows,
+      rows,
     })
   } catch (e: any) {
     console.error("listTenantServiceAccess error:", e)

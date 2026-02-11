@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { adminFetch } from "@/lib/adminFetch"
 import {
   Table,
   TableBody,
@@ -157,7 +158,7 @@ export default function PlanPrices() {
 
   async function fetchPlans() {
     try {
-      const res = await fetch(`${PLANS_API}?limit=200&offset=0`)
+      const res = await adminFetch(`${PLANS_API}?limit=200&offset=0`)
       const json = (await res.json()) as PlanListResponse | any
       if (res.ok && json?.ok && Array.isArray(json.rows)) {
         setPlans(json.rows)
@@ -177,7 +178,7 @@ export default function PlanPrices() {
   async function fetchList() {
     setLoading(true)
     try {
-      const res = await fetch(`${PLAN_PRICES_API}?${queryString}`)
+      const res = await adminFetch(`${PLAN_PRICES_API}?${queryString}`)
       const json = (await res.json()) as ListResponse
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setRows(json.rows || [])
@@ -273,7 +274,7 @@ export default function PlanPrices() {
 
     try {
       setSaving(true)
-      const res = await fetch(editing ? `${PLAN_PRICES_API}/${editing.id}` : PLAN_PRICES_API, {
+      const res = await adminFetch(editing ? `${PLAN_PRICES_API}/${editing.id}` : PLAN_PRICES_API, {
         method: editing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(result.payload),

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { adminFetch } from "@/lib/adminFetch"
 import {
   Table,
   TableBody,
@@ -231,7 +232,7 @@ export default function BillingSubscriptions() {
 
   async function fetchPlans() {
     try {
-      const res = await fetch(`${PLANS_API}?limit=200&offset=0`)
+      const res = await adminFetch(`${PLANS_API}?limit=200&offset=0`)
       const json = (await res.json()) as PlanListResponse | any
       if (res.ok && json?.ok && Array.isArray(json.rows)) {
         setPlans(json.rows)
@@ -251,7 +252,7 @@ export default function BillingSubscriptions() {
   async function fetchSubscriptions() {
     setLoading(true)
     try {
-      const res = await fetch(`${SUBS_API}?${queryString}`)
+      const res = await adminFetch(`${SUBS_API}?${queryString}`)
       const json = (await res.json()) as ListResponse<SubscriptionRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setRows(json.rows || [])
@@ -268,7 +269,7 @@ export default function BillingSubscriptions() {
   async function fetchChanges() {
     setChangesLoading(true)
     try {
-      const res = await fetch(`${CHANGES_API}?${changesQuery}`)
+      const res = await adminFetch(`${CHANGES_API}?${changesQuery}`)
       const json = (await res.json()) as ListResponse<ChangeRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setChanges(json.rows || [])
@@ -330,7 +331,7 @@ export default function BillingSubscriptions() {
 
     try {
       setSaving(true)
-      const res = await fetch(`${SUBS_API}/${editing.id}`, {
+      const res = await adminFetch(`${SUBS_API}/${editing.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

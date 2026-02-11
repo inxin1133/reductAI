@@ -1,22 +1,21 @@
 import express from "express"
 import {
+  bulkUpdateRates,
+  cloneRateCard,
+  createMarkup,
+  createRateCard,
+  deleteMarkup,
+  listMarkups,
   listPublicPrices,
   listRateCards,
-  createRateCard,
-  updateRateCard,
-  cloneRateCard,
   listRates,
-  updateRate,
-  bulkUpdateRates,
-  listMarkups,
-  createMarkup,
   updateMarkup,
-  deleteMarkup,
+  updateRate,
+  updateRateCard,
 } from "../controllers/pricingController"
 
 const router = express.Router()
 
-// Admin: public price table (read-only)
 router.get("/public-prices", listPublicPrices)
 router.get("/rate-cards", listRateCards)
 router.post("/rate-cards", createRateCard)
@@ -31,4 +30,3 @@ router.put("/markups/:id", updateMarkup)
 router.delete("/markups/:id", deleteMarkup)
 
 export default router
-

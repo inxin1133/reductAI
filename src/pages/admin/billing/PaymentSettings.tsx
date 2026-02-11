@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { adminFetch } from "@/lib/adminFetch"
 import {
   Table,
   TableBody,
@@ -274,7 +275,7 @@ export default function PaymentSettings() {
   async function fetchProviders() {
     setProviderLoading(true)
     try {
-      const res = await fetch(`${PROVIDER_API}?${providerQuery}`)
+      const res = await adminFetch(`${PROVIDER_API}?${providerQuery}`)
       const json = (await res.json()) as ListResponse<ProviderConfigRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setProviderRows(json.rows || [])
@@ -291,7 +292,7 @@ export default function PaymentSettings() {
   async function fetchAccounts() {
     setAccountLoading(true)
     try {
-      const res = await fetch(`${ACCOUNTS_API}?${accountQuery}`)
+      const res = await adminFetch(`${ACCOUNTS_API}?${accountQuery}`)
       const json = (await res.json()) as ListResponse<BillingAccountRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setAccountRows(json.rows || [])
@@ -308,7 +309,7 @@ export default function PaymentSettings() {
   async function fetchMethods() {
     setMethodLoading(true)
     try {
-      const res = await fetch(`${METHODS_API}?${methodQuery}`)
+      const res = await adminFetch(`${METHODS_API}?${methodQuery}`)
       const json = (await res.json()) as ListResponse<PaymentMethodRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setMethodRows(json.rows || [])
@@ -358,7 +359,7 @@ export default function PaymentSettings() {
     if (configValue === null) return alert("config JSON 형식이 올바르지 않습니다.")
     try {
       setProviderSaving(true)
-      const res = await fetch(providerEditing ? `${PROVIDER_API}/${providerEditing.id}` : PROVIDER_API, {
+      const res = await adminFetch(providerEditing ? `${PROVIDER_API}/${providerEditing.id}` : PROVIDER_API, {
         method: providerEditing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -419,7 +420,7 @@ export default function PaymentSettings() {
 
     try {
       setAccountSaving(true)
-      const res = await fetch(accountEditing ? `${ACCOUNTS_API}/${accountEditing.id}` : ACCOUNTS_API, {
+      const res = await adminFetch(accountEditing ? `${ACCOUNTS_API}/${accountEditing.id}` : ACCOUNTS_API, {
         method: accountEditing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -490,7 +491,7 @@ export default function PaymentSettings() {
 
     try {
       setMethodSaving(true)
-      const res = await fetch(methodEditing ? `${METHODS_API}/${methodEditing.id}` : METHODS_API, {
+      const res = await adminFetch(methodEditing ? `${METHODS_API}/${methodEditing.id}` : METHODS_API, {
         method: methodEditing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

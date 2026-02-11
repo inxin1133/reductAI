@@ -1,5 +1,6 @@
 import { Request, Response } from "express"
 import { query } from "../config/db"
+import { lookupTenants, lookupUsers } from "../services/identityClient"
 
 type SessionStatus = "active" | "expired"
 
@@ -33,30 +34,29 @@ export async function listUserSessions(req: Request, res: Response) {
 
     if (status) {
       if (!SESSION_STATUSES.has(status)) return res.status(400).json({ message: "invalid status" })
-      if (status === "active") where.push(`us.expires_at > NOW()`)
-      if (status === "expired") where.push(`us.expires_at <= NOW()`)
+      if (status === "active") where.push(`expires_at > NOW()`)
+      if (status === "expired") where.push(`expires_at <= NOW()`)
     }
     if (tenantId) {
-      where.push(`us.tenant_id = $${params.length + 1}`)
+      where.push(`tenant_id = $${params.length + 1}`)
       params.push(tenantId)
     }
     if (userId) {
-      where.push(`us.user_id = $${params.length + 1}`)
+      where.push(`user_id = $${params.length + 1}`)
       params.push(userId)
     }
     if (ip) {
-      where.push(`COALESCE(us.ip_address::text, '') ILIKE $${params.length + 1}`)
+      where.push(`COALESCE(ip_address::text, '') ILIKE $${params.length + 1}`)
       params.push(`%${ip}%`)
     }
     if (q) {
       where.push(
         `(
-          COALESCE(u.email, '') ILIKE $${params.length + 1}
-          OR COALESCE(u.full_name, '') ILIKE $${params.length + 1}
-          OR COALESCE(t.name, '') ILIKE $${params.length + 1}
-          OR COALESCE(t.slug, '') ILIKE $${params.length + 1}
-          OR COALESCE(us.token_hash, '') ILIKE $${params.length + 1}
-          OR COALESCE(us.ip_address::text, '') ILIKE $${params.length + 1}
+          COALESCE(token_hash, '') ILIKE $${params.length + 1}
+          OR COALESCE(ip_address::text, '') ILIKE $${params.length + 1}
+          OR COALESCE(user_agent, '') ILIKE $${params.length + 1}
+          OR COALESCE(user_id::text, '') ILIKE $${params.length + 1}
+          OR COALESCE(tenant_id::text, '') ILIKE $${params.length + 1}
         )`
       )
       params.push(`%${q}%`)
@@ -64,51 +64,60 @@ export async function listUserSessions(req: Request, res: Response) {
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : ""
 
-    const countRes = await query(
-      `
-      SELECT COUNT(*)::int AS total
-      FROM user_sessions us
-      JOIN users u ON u.id = us.user_id
-      LEFT JOIN tenants t ON t.id = us.tenant_id
-      ${whereSql}
-      `,
-      params
-    )
+    const countRes = await query(`SELECT COUNT(*)::int AS total FROM user_sessions ${whereSql}`, params)
 
     const listRes = await query(
       `
       SELECT
-        us.id,
-        us.user_id,
-        us.tenant_id,
-        us.token_hash,
-        us.ip_address::text AS ip_address,
-        us.user_agent,
-        us.expires_at,
-        us.last_activity_at,
-        us.created_at,
-        u.email AS user_email,
-        u.full_name AS user_name,
-        t.name AS tenant_name,
-        t.slug AS tenant_slug,
-        t.tenant_type,
-        CASE WHEN us.expires_at <= NOW() THEN 'expired' ELSE 'active' END AS status
-      FROM user_sessions us
-      JOIN users u ON u.id = us.user_id
-      LEFT JOIN tenants t ON t.id = us.tenant_id
+        id,
+        user_id,
+        tenant_id,
+        token_hash,
+        ip_address::text AS ip_address,
+        user_agent,
+        expires_at,
+        last_activity_at,
+        created_at,
+        CASE WHEN expires_at <= NOW() THEN 'expired' ELSE 'active' END AS status
+      FROM user_sessions
       ${whereSql}
-      ORDER BY us.created_at DESC
+      ORDER BY created_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
       [...params, limit, offset]
     )
+
+    const authHeader = String(req.headers.authorization || "")
+    const userIds = Array.from(
+      new Set(listRes.rows.map((row) => row.user_id).filter((id) => typeof id === "string" && id))
+    )
+    const tenantIds = Array.from(
+      new Set(listRes.rows.map((row) => row.tenant_id).filter((id) => typeof id === "string" && id))
+    )
+    const [userMap, tenantMap] = await Promise.all([
+      lookupUsers(userIds, authHeader),
+      lookupTenants(tenantIds, authHeader),
+    ])
+
+    const rows = listRes.rows.map((row) => {
+      const user = row.user_id ? userMap.get(String(row.user_id)) : undefined
+      const tenant = row.tenant_id ? tenantMap.get(String(row.tenant_id)) : undefined
+      return {
+        ...row,
+        user_email: user?.email ?? null,
+        user_name: user?.full_name ?? null,
+        tenant_name: tenant?.name ?? null,
+        tenant_slug: tenant?.slug ?? null,
+        tenant_type: tenant?.tenant_type ?? null,
+      }
+    })
 
     return res.json({
       ok: true,
       total: countRes.rows[0]?.total ?? 0,
       limit,
       offset,
-      rows: listRes.rows,
+      rows,
     })
   } catch (e: any) {
     console.error("listUserSessions error:", e)

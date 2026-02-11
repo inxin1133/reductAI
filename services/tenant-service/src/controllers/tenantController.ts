@@ -173,3 +173,35 @@ export const deleteTenant = async (req: Request, res: Response) => {
   }
 };
 
+export const lookupTenants = async (req: Request, res: Response) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    const cleaned = Array.from(
+      new Set(
+        ids
+          .map((id: unknown) => (typeof id === 'string' ? id.trim() : ''))
+          .filter((id: string) => /^[0-9a-fA-F-]{36}$/.test(id))
+      )
+    );
+
+    if (cleaned.length === 0) {
+      return res.json({ ok: true, rows: [] });
+    }
+
+    const { rows } = await pool.query(
+      `
+        SELECT id, name, slug, tenant_type
+        FROM tenants
+        WHERE id = ANY($1::uuid[])
+          AND deleted_at IS NULL
+      `,
+      [cleaned]
+    );
+
+    res.json({ ok: true, rows });
+  } catch (error) {
+    console.error('Error looking up tenants:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
+

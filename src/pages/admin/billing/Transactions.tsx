@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { adminFetch } from "@/lib/adminFetch"
 import {
   Table,
   TableBody,
@@ -155,7 +156,7 @@ export default function BillingTransactions() {
   async function fetchTransactions() {
     setLoading(true)
     try {
-      const res = await fetch(`${API_URL}?${queryString}`)
+      const res = await adminFetch(`${API_URL}?${queryString}`)
       const json = (await res.json()) as ListResponse<TransactionRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setRows(json.rows || [])
@@ -193,7 +194,7 @@ export default function BillingTransactions() {
 
     try {
       setSaving(true)
-      const res = await fetch(`${API_URL}/${editing.id}`, {
+      const res = await adminFetch(`${API_URL}/${editing.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

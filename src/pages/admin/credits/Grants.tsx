@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { adminFetch } from "@/lib/adminFetch"
 import {
   Table,
   TableBody,
@@ -215,7 +216,7 @@ export default function CreditGrants() {
   async function fetchGrants() {
     setGrantLoading(true)
     try {
-      const res = await fetch(`${GRANTS_API}?${grantQuery}`)
+      const res = await adminFetch(`${GRANTS_API}?${grantQuery}`)
       const json = (await res.json()) as ListResponse<PlanGrantRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setGrantRows(json.rows || [])
@@ -232,7 +233,7 @@ export default function CreditGrants() {
   async function fetchTransfers() {
     setTransferLoading(true)
     try {
-      const res = await fetch(`${TRANSFERS_API}?${transferQuery}`)
+      const res = await adminFetch(`${TRANSFERS_API}?${transferQuery}`)
       const json = (await res.json()) as ListResponse<TransferRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setTransferRows(json.rows || [])
@@ -292,7 +293,7 @@ export default function CreditGrants() {
 
     try {
       setSaving(true)
-      const res = await fetch(editing ? `${GRANTS_API}/${editing.id}` : GRANTS_API, {
+      const res = await adminFetch(editing ? `${GRANTS_API}/${editing.id}` : GRANTS_API, {
         method: editing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

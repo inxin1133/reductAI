@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { adminFetch } from "@/lib/adminFetch"
 import {
   Table,
   TableBody,
@@ -289,7 +290,7 @@ export default function SystemServices() {
   async function fetchServices() {
     setServiceLoading(true)
     try {
-      const res = await fetch(`${SERVICES_API}?${serviceQuery}`)
+      const res = await adminFetch(`${SERVICES_API}?${serviceQuery}`)
       const json = (await res.json()) as ListResponse<ServiceRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setServiceRows(json.rows || [])
@@ -306,7 +307,7 @@ export default function SystemServices() {
   async function fetchInstances() {
     setInstanceLoading(true)
     try {
-      const res = await fetch(`${INSTANCES_API}?${instanceQuery}`)
+      const res = await adminFetch(`${INSTANCES_API}?${instanceQuery}`)
       const json = (await res.json()) as ListResponse<ServiceInstanceRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setInstanceRows(json.rows || [])
@@ -323,7 +324,7 @@ export default function SystemServices() {
   async function fetchAccess() {
     setAccessLoading(true)
     try {
-      const res = await fetch(`${ACCESS_API}?${accessQuery}`)
+      const res = await adminFetch(`${ACCESS_API}?${accessQuery}`)
       const json = (await res.json()) as ListResponse<TenantServiceAccessRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setAccessRows(json.rows || [])
@@ -389,7 +390,7 @@ export default function SystemServices() {
 
     try {
       setServiceSaving(true)
-      const res = await fetch(serviceEditing ? `${SERVICES_API}/${serviceEditing.id}` : SERVICES_API, {
+      const res = await adminFetch(serviceEditing ? `${SERVICES_API}/${serviceEditing.id}` : SERVICES_API, {
         method: serviceEditing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -450,7 +451,7 @@ export default function SystemServices() {
 
     try {
       setInstanceSaving(true)
-      const res = await fetch(instanceEditing ? `${INSTANCES_API}/${instanceEditing.id}` : INSTANCES_API, {
+      const res = await adminFetch(instanceEditing ? `${INSTANCES_API}/${instanceEditing.id}` : INSTANCES_API, {
         method: instanceEditing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -510,7 +511,7 @@ export default function SystemServices() {
 
     try {
       setAccessSaving(true)
-      const res = await fetch(accessEditing ? `${ACCESS_API}/${accessEditing.id}` : ACCESS_API, {
+      const res = await adminFetch(accessEditing ? `${ACCESS_API}/${accessEditing.id}` : ACCESS_API, {
         method: accessEditing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),

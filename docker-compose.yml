@@ -22,12 +22,20 @@ services:
       - TENANT_SERVICE_URL=http://tenant-service:3003
       - I18N_SERVICE_URL=http://i18n-service:3006
       - AI_AGENT_SERVICE_URL=http://ai-agent-service:3007
+      - PRICING_SERVICE_URL=http://pricing-service:3009
+      - BILLING_SERVICE_URL=http://billing-service:3010
+      - CREDITS_SERVICE_URL=http://credits-service:3011
+      - SYSTEM_SERVICE_URL=http://system-service:3004
       - POST_SERVICE_URL=http://post-service:3005
       - FILE_SERVICE_URL=http://file-service:3008
     depends_on:
       - auth-service
       - i18n-service
       - ai-agent-service
+      - pricing-service
+      - billing-service
+      - credits-service
+      - system-service
       - post-service
     networks:
       - reduct-network
@@ -149,6 +157,108 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - SERPER_API_KEY=${SERPER_API_KEY}
       - FILE_SERVICE_URL=http://file-service:3008
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - reduct-network
+
+  # Pricing Service
+  pricing-service:
+    build:
+      context: ./services/pricing-service
+      dockerfile: Dockerfile
+    ports:
+      - "3009:3009"
+    volumes:
+      - ./services/pricing-service:/app
+      - /app/node_modules
+    command: npm run dev
+    environment:
+      - PORT=3009
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - JWT_SECRET=${JWT_SECRET}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - reduct-network
+
+  # Billing Service
+  billing-service:
+    build:
+      context: ./services/billing-service
+      dockerfile: Dockerfile
+    ports:
+      - "3010:3010"
+    volumes:
+      - ./services/billing-service:/app
+      - /app/node_modules
+    command: npm run dev
+    environment:
+      - PORT=3010
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - JWT_SECRET=${JWT_SECRET}
+      - USER_SERVICE_URL=http://user-service:3002
+      - TENANT_SERVICE_URL=http://tenant-service:3003
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - reduct-network
+
+  # Credits Service
+  credits-service:
+    build:
+      context: ./services/credits-service
+      dockerfile: Dockerfile
+    ports:
+      - "3011:3011"
+    volumes:
+      - ./services/credits-service:/app
+      - /app/node_modules
+    command: npm run dev
+    environment:
+      - PORT=3011
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - JWT_SECRET=${JWT_SECRET}
+      - USER_SERVICE_URL=http://user-service:3002
+      - TENANT_SERVICE_URL=http://tenant-service:3003
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - reduct-network
+
+  # System Service
+  system-service:
+    build:
+      context: ./services/system-service
+      dockerfile: Dockerfile
+    ports:
+      - "3004:3004"
+    volumes:
+      - ./services/system-service:/app
+      - /app/node_modules
+    command: npm run dev
+    environment:
+      - PORT=3004
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - JWT_SECRET=${JWT_SECRET}
+      - USER_SERVICE_URL=http://user-service:3002
+      - TENANT_SERVICE_URL=http://tenant-service:3003
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

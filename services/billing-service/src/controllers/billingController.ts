@@ -1,5 +1,6 @@
 import { Request, Response } from "express"
 import { query } from "../config/db"
+import { lookupTenants } from "../services/identityClient"
 
 function toInt(v: unknown, fallback: number | null = null) {
   if (v === null || v === undefined || v === "") return fallback
@@ -575,10 +576,9 @@ export async function listBillingSubscriptions(req: Request, res: Response) {
     if (q) {
       where.push(
         `(
-          t.name ILIKE $${params.length + 1}
-          OR t.slug ILIKE $${params.length + 1}
-          OR b.name ILIKE $${params.length + 1}
+          b.name ILIKE $${params.length + 1}
           OR b.slug ILIKE $${params.length + 1}
+          OR s.tenant_id::text ILIKE $${params.length + 1}
         )`
       )
       params.push(`%${q}%`)
@@ -590,7 +590,6 @@ export async function listBillingSubscriptions(req: Request, res: Response) {
       `
       SELECT COUNT(*)::int AS total
       FROM billing_subscriptions s
-      JOIN tenants t ON t.id = s.tenant_id
       JOIN billing_plans b ON b.id = s.plan_id
       ${whereSql}
       `,
@@ -601,14 +600,10 @@ export async function listBillingSubscriptions(req: Request, res: Response) {
       `
       SELECT
         s.*,
-        t.name AS tenant_name,
-        t.slug AS tenant_slug,
-        t.tenant_type AS tenant_type,
         b.name AS plan_name,
         b.slug AS plan_slug,
         b.tier AS plan_tier
       FROM billing_subscriptions s
-      JOIN tenants t ON t.id = s.tenant_id
       JOIN billing_plans b ON b.id = s.plan_id
       ${whereSql}
       ORDER BY s.current_period_end DESC, s.created_at DESC
@@ -617,12 +612,27 @@ export async function listBillingSubscriptions(req: Request, res: Response) {
       [...params, limit, offset]
     )
 
+    const authHeader = String(req.headers.authorization || "")
+    const tenantIds = Array.from(
+      new Set(listRes.rows.map((row) => row.tenant_id).filter((id) => typeof id === "string" && id))
+    )
+    const tenantMap = await lookupTenants(tenantIds, authHeader)
+    const rows = listRes.rows.map((row) => {
+      const tenant = row.tenant_id ? tenantMap.get(String(row.tenant_id)) : undefined
+      return {
+        ...row,
+        tenant_name: tenant?.name ?? null,
+        tenant_slug: tenant?.slug ?? null,
+        tenant_type: tenant?.tenant_type ?? null,
+      }
+    })
+
     return res.json({
       ok: true,
       total: countRes.rows[0]?.total ?? 0,
       limit,
       offset,
-      rows: listRes.rows,
+      rows,
     })
   } catch (e: any) {
     console.error("listBillingSubscriptions error:", e)
@@ -747,12 +757,11 @@ export async function listBillingSubscriptionChanges(req: Request, res: Response
     if (q) {
       where.push(
         `(
-          t.name ILIKE $${params.length + 1}
-          OR t.slug ILIKE $${params.length + 1}
-          OR bf.name ILIKE $${params.length + 1}
+          bf.name ILIKE $${params.length + 1}
           OR bf.slug ILIKE $${params.length + 1}
           OR bt.name ILIKE $${params.length + 1}
           OR bt.slug ILIKE $${params.length + 1}
+          OR s.tenant_id::text ILIKE $${params.length + 1}
         )`
       )
       params.push(`%${q}%`)
@@ -765,7 +774,6 @@ export async function listBillingSubscriptionChanges(req: Request, res: Response
       SELECT COUNT(*)::int AS total
       FROM billing_subscription_changes c
       JOIN billing_subscriptions s ON s.id = c.subscription_id
-      JOIN tenants t ON t.id = s.tenant_id
       LEFT JOIN billing_plans bf ON bf.id = c.from_plan_id
       LEFT JOIN billing_plans bt ON bt.id = c.to_plan_id
       ${whereSql}
@@ -777,16 +785,13 @@ export async function listBillingSubscriptionChanges(req: Request, res: Response
       `
       SELECT
         c.*,
-        t.name AS tenant_name,
-        t.slug AS tenant_slug,
-        t.tenant_type AS tenant_type,
+        s.tenant_id,
         bf.name AS from_plan_name,
         bf.slug AS from_plan_slug,
         bt.name AS to_plan_name,
         bt.slug AS to_plan_slug
       FROM billing_subscription_changes c
       JOIN billing_subscriptions s ON s.id = c.subscription_id
-      JOIN tenants t ON t.id = s.tenant_id
       LEFT JOIN billing_plans bf ON bf.id = c.from_plan_id
       LEFT JOIN billing_plans bt ON bt.id = c.to_plan_id
       ${whereSql}
@@ -796,12 +801,27 @@ export async function listBillingSubscriptionChanges(req: Request, res: Response
       [...params, limit, offset]
     )
 
+    const authHeader = String(req.headers.authorization || "")
+    const tenantIds = Array.from(
+      new Set(listRes.rows.map((row) => row.tenant_id).filter((id) => typeof id === "string" && id))
+    )
+    const tenantMap = await lookupTenants(tenantIds, authHeader)
+    const rows = listRes.rows.map((row) => {
+      const tenant = row.tenant_id ? tenantMap.get(String(row.tenant_id)) : undefined
+      return {
+        ...row,
+        tenant_name: tenant?.name ?? null,
+        tenant_slug: tenant?.slug ?? null,
+        tenant_type: tenant?.tenant_type ?? null,
+      }
+    })
+
     return res.json({
       ok: true,
       total: countRes.rows[0]?.total ?? 0,
       limit,
       offset,
-      rows: listRes.rows,
+      rows,
     })
   } catch (e: any) {
     console.error("listBillingSubscriptionChanges error:", e)
@@ -843,10 +863,9 @@ export async function listBillingInvoices(req: Request, res: Response) {
       where.push(
         `(
           i.invoice_number ILIKE $${params.length + 1}
-          OR t.name ILIKE $${params.length + 1}
-          OR t.slug ILIKE $${params.length + 1}
           OR b.name ILIKE $${params.length + 1}
           OR b.slug ILIKE $${params.length + 1}
+          OR i.tenant_id::text ILIKE $${params.length + 1}
         )`
       )
       params.push(`%${q}%`)
@@ -858,7 +877,6 @@ export async function listBillingInvoices(req: Request, res: Response) {
       `
       SELECT COUNT(*)::int AS total
       FROM billing_invoices i
-      JOIN tenants t ON t.id = i.tenant_id
       LEFT JOIN billing_subscriptions s ON s.id = i.subscription_id
       LEFT JOIN billing_plans b ON b.id = s.plan_id
       ${whereSql}
@@ -870,16 +888,12 @@ export async function listBillingInvoices(req: Request, res: Response) {
       `
       SELECT
         i.*,
-        t.name AS tenant_name,
-        t.slug AS tenant_slug,
-        t.tenant_type AS tenant_type,
         s.status AS subscription_status,
         s.billing_cycle AS subscription_billing_cycle,
         b.name AS plan_name,
         b.slug AS plan_slug,
         b.tier AS plan_tier
       FROM billing_invoices i
-      JOIN tenants t ON t.id = i.tenant_id
       LEFT JOIN billing_subscriptions s ON s.id = i.subscription_id
       LEFT JOIN billing_plans b ON b.id = s.plan_id
       ${whereSql}
@@ -889,12 +903,27 @@ export async function listBillingInvoices(req: Request, res: Response) {
       [...params, limit, offset]
     )
 
+    const authHeader = String(req.headers.authorization || "")
+    const tenantIds = Array.from(
+      new Set(listRes.rows.map((row) => row.tenant_id).filter((id) => typeof id === "string" && id))
+    )
+    const tenantMap = await lookupTenants(tenantIds, authHeader)
+    const rows = listRes.rows.map((row) => {
+      const tenant = row.tenant_id ? tenantMap.get(String(row.tenant_id)) : undefined
+      return {
+        ...row,
+        tenant_name: tenant?.name ?? null,
+        tenant_slug: tenant?.slug ?? null,
+        tenant_type: tenant?.tenant_type ?? null,
+      }
+    })
+
     return res.json({
       ok: true,
       total: countRes.rows[0]?.total ?? 0,
       limit,
       offset,
-      rows: listRes.rows,
+      rows,
     })
   } catch (e: any) {
     console.error("listBillingInvoices error:", e)
@@ -1040,9 +1069,8 @@ export async function listPaymentTransactions(req: Request, res: Response) {
       where.push(
         `(
           pt.provider_transaction_id ILIKE $${params.length + 1}
-          OR t.name ILIKE $${params.length + 1}
-          OR t.slug ILIKE $${params.length + 1}
           OR i.invoice_number ILIKE $${params.length + 1}
+          OR ba.tenant_id::text ILIKE $${params.length + 1}
         )`
       )
       params.push(`%${q}%`)
@@ -1055,7 +1083,6 @@ export async function listPaymentTransactions(req: Request, res: Response) {
       SELECT COUNT(*)::int AS total
       FROM payment_transactions pt
       JOIN billing_accounts ba ON ba.id = pt.billing_account_id
-      JOIN tenants t ON t.id = ba.tenant_id
       LEFT JOIN billing_invoices i ON i.id = pt.invoice_id
       ${whereSql}
       `,
@@ -1066,13 +1093,10 @@ export async function listPaymentTransactions(req: Request, res: Response) {
       `
       SELECT
         pt.*,
-        t.name AS tenant_name,
-        t.slug AS tenant_slug,
-        t.tenant_type AS tenant_type,
+        ba.tenant_id,
         i.invoice_number
       FROM payment_transactions pt
       JOIN billing_accounts ba ON ba.id = pt.billing_account_id
-      JOIN tenants t ON t.id = ba.tenant_id
       LEFT JOIN billing_invoices i ON i.id = pt.invoice_id
       ${whereSql}
       ORDER BY pt.processed_at DESC NULLS LAST, pt.created_at DESC
@@ -1081,12 +1105,27 @@ export async function listPaymentTransactions(req: Request, res: Response) {
       [...params, limit, offset]
     )
 
+    const authHeader = String(req.headers.authorization || "")
+    const tenantIds = Array.from(
+      new Set(listRes.rows.map((row) => row.tenant_id).filter((id) => typeof id === "string" && id))
+    )
+    const tenantMap = await lookupTenants(tenantIds, authHeader)
+    const rows = listRes.rows.map((row) => {
+      const tenant = row.tenant_id ? tenantMap.get(String(row.tenant_id)) : undefined
+      return {
+        ...row,
+        tenant_name: tenant?.name ?? null,
+        tenant_slug: tenant?.slug ?? null,
+        tenant_type: tenant?.tenant_type ?? null,
+      }
+    })
+
     return res.json({
       ok: true,
       total: countRes.rows[0]?.total ?? 0,
       limit,
       offset,
-      rows: listRes.rows,
+      rows,
     })
   } catch (e: any) {
     console.error("listPaymentTransactions error:", e)
@@ -1645,8 +1684,7 @@ export async function listBillingAccounts(req: Request, res: Response) {
         `(
           ba.billing_email ILIKE $${params.length + 1}
           OR ba.billing_name ILIKE $${params.length + 1}
-          OR t.name ILIKE $${params.length + 1}
-          OR t.slug ILIKE $${params.length + 1}
+          OR ba.tenant_id::text ILIKE $${params.length + 1}
         )`
       )
       params.push(`%${q}%`)
@@ -1658,7 +1696,6 @@ export async function listBillingAccounts(req: Request, res: Response) {
       `
       SELECT COUNT(*)::int AS total
       FROM billing_accounts ba
-      JOIN tenants t ON t.id = ba.tenant_id
       ${whereSql}
       `,
       params
@@ -1667,12 +1704,8 @@ export async function listBillingAccounts(req: Request, res: Response) {
     const listRes = await query(
       `
       SELECT
-        ba.*,
-        t.name AS tenant_name,
-        t.slug AS tenant_slug,
-        t.tenant_type AS tenant_type
+        ba.*
       FROM billing_accounts ba
-      JOIN tenants t ON t.id = ba.tenant_id
       ${whereSql}
       ORDER BY ba.created_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
@@ -1680,12 +1713,27 @@ export async function listBillingAccounts(req: Request, res: Response) {
       [...params, limit, offset]
     )
 
+    const authHeader = String(req.headers.authorization || "")
+    const tenantIds = Array.from(
+      new Set(listRes.rows.map((row) => row.tenant_id).filter((id) => typeof id === "string" && id))
+    )
+    const tenantMap = await lookupTenants(tenantIds, authHeader)
+    const rows = listRes.rows.map((row) => {
+      const tenant = row.tenant_id ? tenantMap.get(String(row.tenant_id)) : undefined
+      return {
+        ...row,
+        tenant_name: tenant?.name ?? null,
+        tenant_slug: tenant?.slug ?? null,
+        tenant_type: tenant?.tenant_type ?? null,
+      }
+    })
+
     return res.json({
       ok: true,
       total: countRes.rows[0]?.total ?? 0,
       limit,
       offset,
-      rows: listRes.rows,
+      rows,
     })
   } catch (e: any) {
     console.error("listBillingAccounts error:", e)
@@ -1874,8 +1922,7 @@ export async function listPaymentMethods(req: Request, res: Response) {
           pm.provider_payment_method_id ILIKE $${params.length + 1}
           OR pm.provider_customer_id ILIKE $${params.length + 1}
           OR pm.card_last4 ILIKE $${params.length + 1}
-          OR t.name ILIKE $${params.length + 1}
-          OR t.slug ILIKE $${params.length + 1}
+          OR ba.tenant_id::text ILIKE $${params.length + 1}
         )`
       )
       params.push(`%${q}%`)
@@ -1888,7 +1935,6 @@ export async function listPaymentMethods(req: Request, res: Response) {
       SELECT COUNT(*)::int AS total
       FROM payment_methods pm
       JOIN billing_accounts ba ON ba.id = pm.billing_account_id
-      JOIN tenants t ON t.id = ba.tenant_id
       ${whereSql}
       `,
       params
@@ -1899,13 +1945,9 @@ export async function listPaymentMethods(req: Request, res: Response) {
       SELECT
         pm.*,
         ba.tenant_id,
-        ba.billing_email,
-        t.name AS tenant_name,
-        t.slug AS tenant_slug,
-        t.tenant_type AS tenant_type
+        ba.billing_email
       FROM payment_methods pm
       JOIN billing_accounts ba ON ba.id = pm.billing_account_id
-      JOIN tenants t ON t.id = ba.tenant_id
       ${whereSql}
       ORDER BY pm.created_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
@@ -1913,12 +1955,27 @@ export async function listPaymentMethods(req: Request, res: Response) {
       [...params, limit, offset]
     )
 
+    const authHeader = String(req.headers.authorization || "")
+    const tenantIds = Array.from(
+      new Set(listRes.rows.map((row) => row.tenant_id).filter((id) => typeof id === "string" && id))
+    )
+    const tenantMap = await lookupTenants(tenantIds, authHeader)
+    const rows = listRes.rows.map((row) => {
+      const tenant = row.tenant_id ? tenantMap.get(String(row.tenant_id)) : undefined
+      return {
+        ...row,
+        tenant_name: tenant?.name ?? null,
+        tenant_slug: tenant?.slug ?? null,
+        tenant_type: tenant?.tenant_type ?? null,
+      }
+    })
+
     return res.json({
       ok: true,
       total: countRes.rows[0]?.total ?? 0,
       limit,
       offset,
-      rows: listRes.rows,
+      rows,
     })
   } catch (e: any) {
     console.error("listPaymentMethods error:", e)

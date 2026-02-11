@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { adminFetch } from "@/lib/adminFetch"
 import {
   Table,
   TableBody,
@@ -191,7 +192,7 @@ export default function TaxFx() {
   async function fetchTaxRates() {
     setTaxLoading(true)
     try {
-      const res = await fetch(`${TAX_API}?${taxQuery}`)
+      const res = await adminFetch(`${TAX_API}?${taxQuery}`)
       const json = (await res.json()) as ListResponse<TaxRateRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setTaxRows(json.rows || [])
@@ -208,7 +209,7 @@ export default function TaxFx() {
   async function fetchFxRates() {
     setFxLoading(true)
     try {
-      const res = await fetch(`${FX_API}?${fxQuery}`)
+      const res = await adminFetch(`${FX_API}?${fxQuery}`)
       const json = (await res.json()) as ListResponse<FxRateRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setFxRows(json.rows || [])
@@ -261,7 +262,7 @@ export default function TaxFx() {
 
     try {
       setTaxSaving(true)
-      const res = await fetch(taxEditing ? `${TAX_API}/${taxEditing.id}` : TAX_API, {
+      const res = await adminFetch(taxEditing ? `${TAX_API}/${taxEditing.id}` : TAX_API, {
         method: taxEditing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -316,7 +317,7 @@ export default function TaxFx() {
 
     try {
       setFxSaving(true)
-      const res = await fetch(fxEditing ? `${FX_API}/${fxEditing.id}` : FX_API, {
+      const res = await adminFetch(fxEditing ? `${FX_API}/${fxEditing.id}` : FX_API, {
         method: fxEditing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

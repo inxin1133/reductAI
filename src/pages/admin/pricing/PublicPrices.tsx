@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { adminFetch } from "@/lib/adminFetch"
 import {
   Table,
   TableBody,
@@ -95,7 +96,7 @@ export default function PublicPrices() {
   async function fetchList() {
     setLoading(true)
     try {
-      const res = await fetch(`${API_URL}?${queryString}`)
+      const res = await adminFetch(`${API_URL}?${queryString}`)
       const json = (await res.json()) as ListResponse
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setRows(json.rows || [])

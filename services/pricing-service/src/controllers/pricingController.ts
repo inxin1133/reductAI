@@ -313,13 +313,13 @@ export async function cloneRateCard(req: Request, res: Response) {
 export async function listRates(req: Request, res: Response) {
   try {
     const q = toStr(req.query.q)
-    const rateCardId = toStr(req.query.rate_card_id)
     const providerSlug = toStr(req.query.provider_slug)
     const modelKey = toStr(req.query.model_key)
     const modality = toStr(req.query.modality)
     const usageKind = toStr(req.query.usage_kind)
     const tokenCategory = toStr(req.query.token_category)
     const tierUnit = toStr(req.query.tier_unit)
+    const rateCardId = toStr(req.query.rate_card_id)
     const rateCardStatus = toStr(req.query.rate_card_status)
 
     const limit = Math.min(toInt(req.query.limit, 50), 200)
@@ -331,6 +331,10 @@ export async function listRates(req: Request, res: Response) {
     if (rateCardId) {
       where.push(`r.rate_card_id = $${params.length + 1}`)
       params.push(rateCardId)
+    }
+    if (rateCardStatus) {
+      where.push(`rc.status = $${params.length + 1}`)
+      params.push(rateCardStatus)
     }
     if (providerSlug) {
       where.push(`s.provider_slug = $${params.length + 1}`)
@@ -355,10 +359,6 @@ export async function listRates(req: Request, res: Response) {
     if (tierUnit) {
       where.push(`r.tier_unit = $${params.length + 1}`)
       params.push(tierUnit)
-    }
-    if (rateCardStatus) {
-      where.push(`rc.status = $${params.length + 1}`)
-      params.push(rateCardStatus)
     }
     if (q) {
       where.push(
@@ -394,7 +394,7 @@ export async function listRates(req: Request, res: Response) {
         rc.version AS rate_card_version,
         rc.status AS rate_card_status,
         rc.effective_at AS rate_card_effective_at,
-        s.id AS sku_id,
+        r.sku_id,
         s.sku_code,
         s.provider_slug,
         s.model_key,
@@ -407,13 +407,12 @@ export async function listRates(req: Request, res: Response) {
         r.rate_value,
         r.tier_unit,
         r.tier_min,
-        r.tier_max,
-        r.updated_at
+        r.tier_max
       FROM pricing_rates r
       JOIN pricing_rate_cards rc ON rc.id = r.rate_card_id
       JOIN pricing_skus s ON s.id = r.sku_id
       ${whereSql}
-      ORDER BY rc.effective_at DESC, rc.version DESC, s.provider_slug ASC, s.model_name ASC, s.usage_kind ASC, r.tier_unit NULLS FIRST, r.tier_min NULLS FIRST
+      ORDER BY rc.effective_at DESC, rc.version DESC, s.provider_slug ASC, s.model_name ASC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
       [...params, limit, offset]
@@ -437,23 +436,55 @@ export async function updateRate(req: Request, res: Response) {
     const id = String(req.params.id || "")
     if (!id) return res.status(400).json({ message: "id is required" })
 
-    const rawRate = (req.body?.rate_value ?? "").toString().trim()
-    if (!rawRate) return res.status(400).json({ message: "rate_value is required" })
-    const rateValue = Number(rawRate)
-    if (!Number.isFinite(rateValue)) return res.status(400).json({ message: "rate_value must be numeric" })
+    const input = req.body || {}
+    const fields: string[] = []
+    const params: any[] = []
 
-    const updated = await query(
+    const setField = (name: string, value: any) => {
+      fields.push(`${name} = $${params.length + 1}`)
+      params.push(value)
+    }
+
+    if (input.rate_value !== undefined) {
+      const rateValue = Number(input.rate_value)
+      if (!Number.isFinite(rateValue) || rateValue < 0) {
+        return res.status(400).json({ message: "rate_value must be non-negative number" })
+      }
+      setField("rate_value", rateValue)
+    }
+    if (input.tier_unit !== undefined) {
+      const tierUnit = toStr(input.tier_unit)
+      setField("tier_unit", tierUnit || null)
+    }
+    if (input.tier_min !== undefined) {
+      const tierMin = input.tier_min === null || input.tier_min === "" ? null : Number(input.tier_min)
+      if (tierMin !== null && (!Number.isFinite(tierMin) || tierMin < 0)) {
+        return res.status(400).json({ message: "tier_min must be non-negative number" })
+      }
+      setField("tier_min", tierMin)
+    }
+    if (input.tier_max !== undefined) {
+      const tierMax = input.tier_max === null || input.tier_max === "" ? null : Number(input.tier_max)
+      if (tierMax !== null && (!Number.isFinite(tierMax) || tierMax < 0)) {
+        return res.status(400).json({ message: "tier_max must be non-negative number" })
+      }
+      setField("tier_max", tierMax)
+    }
+
+    if (fields.length === 0) return res.status(400).json({ message: "No fields to update" })
+
+    const result = await query(
       `
       UPDATE pricing_rates
-      SET rate_value = $1, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $2
-      RETURNING id, rate_card_id, sku_id, rate_value, tier_unit, tier_min, tier_max, updated_at
+      SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $${params.length + 1}
+      RETURNING id, rate_card_id, sku_id, rate_value, tier_unit, tier_min, tier_max, created_at, updated_at
       `,
-      [rateValue, id]
+      [...params, id]
     )
 
-    if (updated.rows.length === 0) return res.status(404).json({ message: "Rate not found" })
-    return res.json({ ok: true, row: updated.rows[0] })
+    if (result.rows.length === 0) return res.status(404).json({ message: "Rate not found" })
+    return res.json({ ok: true, row: result.rows[0] })
   } catch (e: any) {
     console.error("updateRate error:", e)
     return res.status(500).json({ message: "Failed to update rate", details: String(e?.message || e) })
@@ -556,25 +587,13 @@ export async function bulkUpdateRates(req: Request, res: Response) {
   }
 }
 
-function toBool(v: unknown): boolean | null {
-  if (typeof v === "boolean") return v
-  if (typeof v === "string") {
-    if (v.toLowerCase() === "true") return true
-    if (v.toLowerCase() === "false") return false
-  }
-  return null
-}
-
 export async function listMarkups(req: Request, res: Response) {
   try {
     const q = toStr(req.query.q)
-    const scopeType = toStr(req.query.scope_type)
+    const status = toStr(req.query.status)
+    const providerSlug = toStr(req.query.provider_slug)
+    const modelKey = toStr(req.query.model_key)
     const modality = toStr(req.query.modality)
-    const usageKind = toStr(req.query.usage_kind)
-    const tokenCategory = toStr(req.query.token_category)
-    const modelId = toStr(req.query.model_id)
-    const isActiveRaw = toStr(req.query.is_active)
-    const isActive = isActiveRaw ? toBool(isActiveRaw) : null
 
     const limit = Math.min(toInt(req.query.limit, 50), 200)
     const offset = toInt(req.query.offset, 0)
@@ -582,36 +601,29 @@ export async function listMarkups(req: Request, res: Response) {
     const where: string[] = []
     const params: any[] = []
 
-    if (scopeType) {
-      where.push(`m.scope_type = $${params.length + 1}`)
-      params.push(scopeType)
+    if (status) {
+      where.push(`status = $${params.length + 1}`)
+      params.push(status)
+    }
+    if (providerSlug) {
+      where.push(`provider_slug = $${params.length + 1}`)
+      params.push(providerSlug)
+    }
+    if (modelKey) {
+      where.push(`model_key = $${params.length + 1}`)
+      params.push(modelKey)
     }
     if (modality) {
-      where.push(`m.modality = $${params.length + 1}`)
+      where.push(`modality = $${params.length + 1}`)
       params.push(modality)
-    }
-    if (usageKind) {
-      where.push(`m.usage_kind = $${params.length + 1}`)
-      params.push(usageKind)
-    }
-    if (tokenCategory) {
-      where.push(`m.token_category = $${params.length + 1}`)
-      params.push(tokenCategory)
-    }
-    if (modelId) {
-      where.push(`m.model_id = $${params.length + 1}`)
-      params.push(modelId)
-    }
-    if (isActive !== null) {
-      where.push(`m.is_active = $${params.length + 1}`)
-      params.push(isActive)
     }
     if (q) {
       where.push(
         `(
-          m.name ILIKE $${params.length + 1}
-          OR COALESCE(am.display_name, '') ILIKE $${params.length + 1}
-          OR COALESCE(am.model_id, '') ILIKE $${params.length + 1}
+          name ILIKE $${params.length + 1}
+          OR COALESCE(description, '') ILIKE $${params.length + 1}
+          OR COALESCE(provider_slug, '') ILIKE $${params.length + 1}
+          OR COALESCE(model_key, '') ILIKE $${params.length + 1}
         )`
       )
       params.push(`%${q}%`)
@@ -619,26 +631,26 @@ export async function listMarkups(req: Request, res: Response) {
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : ""
 
-    const countRes = await query(
-      `
-      SELECT COUNT(*)::int AS total
-      FROM pricing_markup_rules m
-      LEFT JOIN ai_models am ON am.id = m.model_id
-      ${whereSql}
-      `,
-      params
-    )
+    const countRes = await query(`SELECT COUNT(*)::int AS total FROM pricing_markup_rules ${whereSql}`, params)
 
     const listRes = await query(
       `
       SELECT
-        m.*,
-        am.display_name AS model_display_name,
-        am.model_id AS model_api_id
-      FROM pricing_markup_rules m
-      LEFT JOIN ai_models am ON am.id = m.model_id
+        id,
+        name,
+        description,
+        provider_slug,
+        model_key,
+        modality,
+        margin_percent,
+        status,
+        effective_from,
+        effective_to,
+        created_at,
+        updated_at
+      FROM pricing_markup_rules
       ${whereSql}
-      ORDER BY m.priority DESC, m.created_at DESC
+      ORDER BY created_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
       [...params, limit, offset]
@@ -657,50 +669,43 @@ export async function listMarkups(req: Request, res: Response) {
   }
 }
 
+const MARKUP_STATUSES = new Set(["active", "inactive"])
+
 export async function createMarkup(req: Request, res: Response) {
   try {
-    const {
-      name,
-      scope_type,
-      model_id = null,
-      modality = null,
-      usage_kind = null,
-      token_category = null,
-      margin_percent,
-      priority = 0,
-      is_active = true,
-      effective_at = null,
-      metadata = {},
-    } = req.body || {}
+    const name = toStr(req.body?.name)
+    const description = typeof req.body?.description === "string" ? req.body.description : null
+    const providerSlug = toStr(req.body?.provider_slug)
+    const modelKey = toStr(req.body?.model_key)
+    const modality = toStr(req.body?.modality)
+    const marginPercent = Number(req.body?.margin_percent)
+    const status = toStr(req.body?.status) || "active"
+    const effectiveFrom = req.body?.effective_from || null
+    const effectiveTo = req.body?.effective_to || null
 
-    if (!name || !scope_type) {
-      return res.status(400).json({ message: "name and scope_type are required" })
-    }
-    const marginValue = Number(margin_percent)
-    if (!Number.isFinite(marginValue)) {
-      return res.status(400).json({ message: "margin_percent must be numeric" })
-    }
+    if (!name) return res.status(400).json({ message: "name is required" })
+    if (!Number.isFinite(marginPercent)) return res.status(400).json({ message: "margin_percent must be numeric" })
+    if (!MARKUP_STATUSES.has(status)) return res.status(400).json({ message: "invalid status" })
 
     const result = await query(
       `
-      INSERT INTO pricing_markup_rules
-        (name, scope_type, model_id, modality, usage_kind, token_category, margin_percent, priority, is_active, effective_at, metadata)
-      VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
-      RETURNING *
+      INSERT INTO pricing_markup_rules (
+        name, description, provider_slug, model_key, modality, margin_percent, status, effective_from, effective_to
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      RETURNING
+        id, name, description, provider_slug, model_key, modality, margin_percent, status, effective_from, effective_to, created_at, updated_at
       `,
       [
         name,
-        scope_type,
-        model_id || null,
+        description,
+        providerSlug || null,
+        modelKey || null,
         modality || null,
-        usage_kind || null,
-        token_category || null,
-        marginValue,
-        Number(priority) || 0,
-        Boolean(is_active),
-        effective_at || null,
-        JSON.stringify(metadata || {}),
+        marginPercent,
+        status,
+        effectiveFrom,
+        effectiveTo,
       ]
     )
 
@@ -725,32 +730,42 @@ export async function updateMarkup(req: Request, res: Response) {
       params.push(value)
     }
 
-    if (input.name !== undefined) setField("name", input.name)
-    if (input.scope_type !== undefined) setField("scope_type", input.scope_type)
-    if (input.model_id !== undefined) setField("model_id", input.model_id || null)
-    if (input.modality !== undefined) setField("modality", input.modality || null)
-    if (input.usage_kind !== undefined) setField("usage_kind", input.usage_kind || null)
-    if (input.token_category !== undefined) setField("token_category", input.token_category || null)
-
+    if (input.name !== undefined) {
+      const name = toStr(input.name)
+      if (!name) return res.status(400).json({ message: "name must be non-empty" })
+      setField("name", name)
+    }
+    if (input.description !== undefined) {
+      const description = typeof input.description === "string" ? input.description : null
+      setField("description", description)
+    }
+    if (input.provider_slug !== undefined) {
+      const providerSlug = toStr(input.provider_slug)
+      setField("provider_slug", providerSlug || null)
+    }
+    if (input.model_key !== undefined) {
+      const modelKey = toStr(input.model_key)
+      setField("model_key", modelKey || null)
+    }
+    if (input.modality !== undefined) {
+      const modality = toStr(input.modality)
+      setField("modality", modality || null)
+    }
     if (input.margin_percent !== undefined) {
-      const n = Number(input.margin_percent)
-      if (!Number.isFinite(n)) return res.status(400).json({ message: "margin_percent must be numeric" })
-      setField("margin_percent", n)
+      const marginPercent = Number(input.margin_percent)
+      if (!Number.isFinite(marginPercent)) return res.status(400).json({ message: "margin_percent must be numeric" })
+      setField("margin_percent", marginPercent)
     }
-    if (input.priority !== undefined) {
-      const n = Number(input.priority)
-      setField("priority", Number.isFinite(n) ? Math.floor(n) : 0)
+    if (input.status !== undefined) {
+      const status = toStr(input.status)
+      if (!MARKUP_STATUSES.has(status)) return res.status(400).json({ message: "invalid status" })
+      setField("status", status)
     }
-    if (input.is_active !== undefined) {
-      const b = toBool(input.is_active)
-      if (b === null) return res.status(400).json({ message: "is_active must be boolean" })
-      setField("is_active", b)
+    if (input.effective_from !== undefined) {
+      setField("effective_from", input.effective_from || null)
     }
-    if (input.effective_at !== undefined) {
-      setField("effective_at", input.effective_at || null)
-    }
-    if (input.metadata !== undefined) {
-      setField("metadata", JSON.stringify(input.metadata || {}))
+    if (input.effective_to !== undefined) {
+      setField("effective_to", input.effective_to || null)
     }
 
     if (fields.length === 0) return res.status(400).json({ message: "No fields to update" })
@@ -760,7 +775,8 @@ export async function updateMarkup(req: Request, res: Response) {
       UPDATE pricing_markup_rules
       SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP
       WHERE id = $${params.length + 1}
-      RETURNING *
+      RETURNING
+        id, name, description, provider_slug, model_key, modality, margin_percent, status, effective_from, effective_to, created_at, updated_at
       `,
       [...params, id]
     )
@@ -777,12 +793,13 @@ export async function deleteMarkup(req: Request, res: Response) {
   try {
     const id = String(req.params.id || "")
     if (!id) return res.status(400).json({ message: "id is required" })
+
     const result = await query(`DELETE FROM pricing_markup_rules WHERE id = $1 RETURNING id`, [id])
     if (result.rows.length === 0) return res.status(404).json({ message: "Markup not found" })
-    return res.json({ ok: true })
+
+    return res.json({ ok: true, id: result.rows[0].id })
   } catch (e: any) {
     console.error("deleteMarkup error:", e)
     return res.status(500).json({ message: "Failed to delete markup", details: String(e?.message || e) })
   }
 }
-

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { adminFetch } from "@/lib/adminFetch"
 import {
   Table,
   TableBody,
@@ -174,7 +175,7 @@ export default function BillingInvoices() {
   async function fetchInvoices() {
     setLoading(true)
     try {
-      const res = await fetch(`${INVOICES_API}?${queryString}`)
+      const res = await adminFetch(`${INVOICES_API}?${queryString}`)
       const json = (await res.json()) as ListResponse<InvoiceRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setRows(json.rows || [])
@@ -191,7 +192,7 @@ export default function BillingInvoices() {
   async function fetchLineItems(invoiceId: string) {
     setLineLoading(true)
     try {
-      const res = await fetch(`${LINE_ITEMS_API}?invoice_id=${encodeURIComponent(invoiceId)}`)
+      const res = await adminFetch(`${LINE_ITEMS_API}?invoice_id=${encodeURIComponent(invoiceId)}`)
       const json = (await res.json()) as ListResponse<LineItemRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setLineItems(json.rows || [])
@@ -230,7 +231,7 @@ export default function BillingInvoices() {
 
     try {
       setSaving(true)
-      const res = await fetch(`${INVOICES_API}/${selected.id}`, {
+      const res = await adminFetch(`${INVOICES_API}/${selected.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

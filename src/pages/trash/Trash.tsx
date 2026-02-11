@@ -256,23 +256,26 @@ export default function TrashPage() {
   )
 
   return (
-    <AppShell
-      headerContent={
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold">휴지통</span>
-        </div>
-      }
-    >
-      <div className="flex-1 h-full w-full overflow-hidden pt-[60px]">
-        <div className="h-full w-full max-w-[1000px] mx-auto p-6">
-          <Tabs value={tab} onValueChange={(v) => setTab(v === "pages" ? "pages" : "timeline")}>
+    <Tabs value={tab} onValueChange={(v) => setTab(v === "pages" ? "pages" : "timeline")}>
+      <AppShell
+        headerLeftContent={
+          <div className="flex flex-1 justify-start items-center gap-3">
             <TabsList>
               <TabsTrigger value="timeline">타임라인에서 지운 대화</TabsTrigger>
               <TabsTrigger value="pages">페이지에서 지운 페이지</TabsTrigger>
             </TabsList>
-
+          </div>
+        }
+        headerContent={
+          <div>
+            
+          </div>
+        }
+      >
+        <div className="flex-1 h-full w-full overflow-hidden">
+          <div className="h-full w-full max-w-[1000px] mx-auto">
             <TabsContent value="timeline">
-              <div className="mt-4 border border-border rounded-lg overflow-hidden">
+              <div className="border border-border rounded-lg overflow-hidden">
                 <div className="px-4 py-3 border-b border-border flex items-center justify-between">
                   <div className="text-sm font-medium">삭제된 대화</div>
                   <Button variant="outline" size="sm" onClick={() => void fetchDeletedThreads()} disabled={loading}>
@@ -536,10 +539,10 @@ export default function TrashPage() {
                 </AlertDialog>
               </div>
             </TabsContent>
-          </Tabs>
+          </div>
         </div>
-      </div>
-    </AppShell>
+      </AppShell>
+    </Tabs>
   )
 }
 

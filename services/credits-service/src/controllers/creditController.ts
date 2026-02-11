@@ -1,5 +1,6 @@
 import { Request, Response } from "express"
 import { query } from "../config/db"
+import { lookupTenants, lookupUsers } from "../services/identityClient"
 
 function toInt(v: unknown, fallback: number | null = null) {
   if (v === null || v === undefined || v === "") return fallback
@@ -40,6 +41,10 @@ const LEDGER_ENTRY_TYPES = new Set([
   "refund",
   "reversal",
 ])
+
+function uniqIds(values: Array<string | null | undefined>) {
+  return Array.from(new Set(values.filter((v): v is string => typeof v === "string" && v.length > 0)))
+}
 
 export async function listTopupProducts(req: Request, res: Response) {
   try {
@@ -283,12 +288,7 @@ export async function listPlanGrants(req: Request, res: Response) {
       params.push(isActive)
     }
     if (q) {
-      where.push(
-        `(
-          g.plan_slug ILIKE $${params.length + 1}
-          OR COALESCE(b.name, '') ILIKE $${params.length + 1}
-        )`
-      )
+      where.push(`g.plan_slug ILIKE $${params.length + 1}`)
       params.push(`%${q}%`)
     }
 
@@ -298,7 +298,6 @@ export async function listPlanGrants(req: Request, res: Response) {
       `
       SELECT COUNT(*)::int AS total
       FROM credit_plan_grants g
-      LEFT JOIN billing_plans b ON b.slug = g.plan_slug
       ${whereSql}
       `,
       params
@@ -307,13 +306,10 @@ export async function listPlanGrants(req: Request, res: Response) {
     const listRes = await query(
       `
       SELECT
-        g.*,
-        b.name AS plan_name,
-        b.tier AS plan_tier
+        g.*
       FROM credit_plan_grants g
-      LEFT JOIN billing_plans b ON b.slug = g.plan_slug
       ${whereSql}
-      ORDER BY g.plan_slug ASC, g.billing_cycle ASC, g.credit_type ASC
+      ORDER BY g.created_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
       [...params, limit, offset]
@@ -337,24 +333,26 @@ export async function createPlanGrant(req: Request, res: Response) {
     const planSlug = toStr(req.body?.plan_slug)
     const billingCycle = toStr(req.body?.billing_cycle)
     const creditType = toStr(req.body?.credit_type)
-    const monthlyCreditsRaw = req.body?.monthly_credits
-    const initialCreditsRaw = req.body?.initial_credits
-    const expiresInDaysRaw = req.body?.expires_in_days
+    const monthlyRaw = req.body?.monthly_credits
+    const initialRaw = req.body?.initial_credits
+    const expiresRaw = req.body?.expires_in_days
     const isActive = toBool(req.body?.is_active)
     const metadataInput = req.body?.metadata
     const metadataValue =
       metadataInput && typeof metadataInput === "object" ? metadataInput : metadataInput ? null : {}
 
-    const monthlyCredits = Number(monthlyCreditsRaw)
-    const initialCredits = Number(initialCreditsRaw)
+    const monthlyCredits = Number(monthlyRaw)
+    const initialCredits = Number(initialRaw)
     const expiresInDays =
-      expiresInDaysRaw === null || expiresInDaysRaw === undefined || expiresInDaysRaw === ""
-        ? null
-        : Number(expiresInDaysRaw)
+      expiresRaw === null || expiresRaw === undefined || expiresRaw === "" ? null : Number(expiresRaw)
 
     if (!planSlug) return res.status(400).json({ message: "plan_slug is required" })
-    if (!GRANT_BILLING_CYCLES.has(billingCycle)) return res.status(400).json({ message: "invalid billing_cycle" })
-    if (!GRANT_CREDIT_TYPES.has(creditType)) return res.status(400).json({ message: "invalid credit_type" })
+    if (!GRANT_BILLING_CYCLES.has(billingCycle)) {
+      return res.status(400).json({ message: "billing_cycle must be monthly or yearly" })
+    }
+    if (!GRANT_CREDIT_TYPES.has(creditType)) {
+      return res.status(400).json({ message: "credit_type must be subscription or topup" })
+    }
     if (!Number.isFinite(monthlyCredits) || monthlyCredits < 0) {
       return res.status(400).json({ message: "monthly_credits must be >= 0" })
     }
@@ -368,18 +366,18 @@ export async function createPlanGrant(req: Request, res: Response) {
 
     const result = await query(
       `
-      INSERT INTO credit_plan_grants
-        (plan_slug, billing_cycle, monthly_credits, initial_credits, credit_type, expires_in_days, is_active, metadata)
-      VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+      INSERT INTO credit_plan_grants (
+        plan_slug, billing_cycle, credit_type, monthly_credits, initial_credits, expires_in_days, is_active, metadata
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
       RETURNING *
       `,
       [
         planSlug,
         billingCycle,
+        creditType,
         Math.floor(monthlyCredits),
         Math.floor(initialCredits),
-        creditType,
         expiresInDays,
         isActive === null ? true : isActive,
         JSON.stringify(metadataValue || {}),
@@ -417,12 +415,16 @@ export async function updatePlanGrant(req: Request, res: Response) {
     }
     if (input.billing_cycle !== undefined) {
       const billingCycle = toStr(input.billing_cycle)
-      if (!GRANT_BILLING_CYCLES.has(billingCycle)) return res.status(400).json({ message: "invalid billing_cycle" })
+      if (!GRANT_BILLING_CYCLES.has(billingCycle)) {
+        return res.status(400).json({ message: "billing_cycle must be monthly or yearly" })
+      }
       setField("billing_cycle", billingCycle)
     }
     if (input.credit_type !== undefined) {
       const creditType = toStr(input.credit_type)
-      if (!GRANT_CREDIT_TYPES.has(creditType)) return res.status(400).json({ message: "invalid credit_type" })
+      if (!GRANT_CREDIT_TYPES.has(creditType)) {
+        return res.status(400).json({ message: "credit_type must be subscription or topup" })
+      }
       setField("credit_type", creditType)
     }
     if (input.monthly_credits !== undefined) {
@@ -441,9 +443,7 @@ export async function updatePlanGrant(req: Request, res: Response) {
     }
     if (input.expires_in_days !== undefined) {
       const expiresInDays =
-        input.expires_in_days === null || input.expires_in_days === undefined || input.expires_in_days === ""
-          ? null
-          : Number(input.expires_in_days)
+        input.expires_in_days === null || input.expires_in_days === "" ? null : Number(input.expires_in_days)
       if (expiresInDays !== null && (!Number.isFinite(expiresInDays) || expiresInDays < 0)) {
         return res.status(400).json({ message: "expires_in_days must be >= 0" })
       }
@@ -531,16 +531,8 @@ export async function listCreditTransfers(req: Request, res: Response) {
         `(
           COALESCE(fa.display_name, '') ILIKE $${params.length + 1}
           OR COALESCE(ta.display_name, '') ILIKE $${params.length + 1}
-          OR COALESCE(ft.name, '') ILIKE $${params.length + 1}
-          OR COALESCE(ft.slug, '') ILIKE $${params.length + 1}
-          OR COALESCE(tt.name, '') ILIKE $${params.length + 1}
-          OR COALESCE(tt.slug, '') ILIKE $${params.length + 1}
-          OR COALESCE(fu.email, '') ILIKE $${params.length + 1}
-          OR COALESCE(fu.full_name, '') ILIKE $${params.length + 1}
-          OR COALESCE(tu.email, '') ILIKE $${params.length + 1}
-          OR COALESCE(tu.full_name, '') ILIKE $${params.length + 1}
-          OR COALESCE(ru.email, '') ILIKE $${params.length + 1}
-          OR COALESCE(au.email, '') ILIKE $${params.length + 1}
+          OR COALESCE(ct.from_account_id::text, '') ILIKE $${params.length + 1}
+          OR COALESCE(ct.to_account_id::text, '') ILIKE $${params.length + 1}
         )`
       )
       params.push(`%${q}%`)
@@ -554,12 +546,6 @@ export async function listCreditTransfers(req: Request, res: Response) {
       FROM credit_transfers ct
       JOIN credit_accounts fa ON fa.id = ct.from_account_id
       JOIN credit_accounts ta ON ta.id = ct.to_account_id
-      LEFT JOIN tenants ft ON ft.id = fa.owner_tenant_id
-      LEFT JOIN tenants tt ON tt.id = ta.owner_tenant_id
-      LEFT JOIN users fu ON fu.id = fa.owner_user_id
-      LEFT JOIN users tu ON tu.id = ta.owner_user_id
-      LEFT JOIN users ru ON ru.id = ct.requested_by
-      LEFT JOIN users au ON au.id = ct.approved_by
       ${whereSql}
       `,
       params
@@ -573,31 +559,13 @@ export async function listCreditTransfers(req: Request, res: Response) {
         fa.owner_tenant_id AS from_owner_tenant_id,
         fa.owner_user_id AS from_owner_user_id,
         fa.display_name AS from_display_name,
-        ft.name AS from_tenant_name,
-        ft.slug AS from_tenant_slug,
-        fu.email AS from_user_email,
-        fu.full_name AS from_user_name,
         ta.owner_type AS to_owner_type,
         ta.owner_tenant_id AS to_owner_tenant_id,
         ta.owner_user_id AS to_owner_user_id,
-        ta.display_name AS to_display_name,
-        tt.name AS to_tenant_name,
-        tt.slug AS to_tenant_slug,
-        tu.email AS to_user_email,
-        tu.full_name AS to_user_name,
-        ru.email AS requested_email,
-        ru.full_name AS requested_name,
-        au.email AS approved_email,
-        au.full_name AS approved_name
+        ta.display_name AS to_display_name
       FROM credit_transfers ct
       JOIN credit_accounts fa ON fa.id = ct.from_account_id
       JOIN credit_accounts ta ON ta.id = ct.to_account_id
-      LEFT JOIN tenants ft ON ft.id = fa.owner_tenant_id
-      LEFT JOIN tenants tt ON tt.id = ta.owner_tenant_id
-      LEFT JOIN users fu ON fu.id = fa.owner_user_id
-      LEFT JOIN users tu ON tu.id = ta.owner_user_id
-      LEFT JOIN users ru ON ru.id = ct.requested_by
-      LEFT JOIN users au ON au.id = ct.approved_by
       ${whereSql}
       ORDER BY ct.created_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
@@ -605,12 +573,48 @@ export async function listCreditTransfers(req: Request, res: Response) {
       [...params, limit, offset]
     )
 
+    const authHeader = String(req.headers.authorization || "")
+    const userIds = uniqIds(
+      listRes.rows.flatMap((row) => [row.from_owner_user_id, row.to_owner_user_id, row.requested_by, row.approved_by])
+    )
+    const tenantIds = uniqIds(listRes.rows.flatMap((row) => [row.from_owner_tenant_id, row.to_owner_tenant_id]))
+
+    const [userMap, tenantMap] = await Promise.all([
+      lookupUsers(userIds, authHeader),
+      lookupTenants(tenantIds, authHeader),
+    ])
+
+    const rows = listRes.rows.map((row) => {
+      const fromTenant = row.from_owner_tenant_id ? tenantMap.get(String(row.from_owner_tenant_id)) : undefined
+      const toTenant = row.to_owner_tenant_id ? tenantMap.get(String(row.to_owner_tenant_id)) : undefined
+      const fromUser = row.from_owner_user_id ? userMap.get(String(row.from_owner_user_id)) : undefined
+      const toUser = row.to_owner_user_id ? userMap.get(String(row.to_owner_user_id)) : undefined
+      const requested = row.requested_by ? userMap.get(String(row.requested_by)) : undefined
+      const approved = row.approved_by ? userMap.get(String(row.approved_by)) : undefined
+
+      return {
+        ...row,
+        from_tenant_name: fromTenant?.name ?? null,
+        from_tenant_slug: fromTenant?.slug ?? null,
+        from_user_email: fromUser?.email ?? null,
+        from_user_name: fromUser?.full_name ?? null,
+        to_tenant_name: toTenant?.name ?? null,
+        to_tenant_slug: toTenant?.slug ?? null,
+        to_user_email: toUser?.email ?? null,
+        to_user_name: toUser?.full_name ?? null,
+        requested_email: requested?.email ?? null,
+        requested_name: requested?.full_name ?? null,
+        approved_email: approved?.email ?? null,
+        approved_name: approved?.full_name ?? null,
+      }
+    })
+
     return res.json({
       ok: true,
       total: countRes.rows[0]?.total ?? 0,
       limit,
       offset,
-      rows: listRes.rows,
+      rows,
     })
   } catch (e: any) {
     console.error("listCreditTransfers error:", e)
@@ -665,12 +669,9 @@ export async function listCreditAccounts(req: Request, res: Response) {
       where.push(
         `(
           COALESCE(ca.display_name, '') ILIKE $${params.length + 1}
-          OR COALESCE(ot.name, '') ILIKE $${params.length + 1}
-          OR COALESCE(ot.slug, '') ILIKE $${params.length + 1}
-          OR COALESCE(ou.email, '') ILIKE $${params.length + 1}
-          OR COALESCE(ou.full_name, '') ILIKE $${params.length + 1}
-          OR COALESCE(st.name, '') ILIKE $${params.length + 1}
-          OR COALESCE(st.slug, '') ILIKE $${params.length + 1}
+          OR COALESCE(ca.owner_tenant_id::text, '') ILIKE $${params.length + 1}
+          OR COALESCE(ca.owner_user_id::text, '') ILIKE $${params.length + 1}
+          OR COALESCE(ca.source_tenant_id::text, '') ILIKE $${params.length + 1}
         )`
       )
       params.push(`%${q}%`)
@@ -678,46 +679,50 @@ export async function listCreditAccounts(req: Request, res: Response) {
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : ""
 
-    const countRes = await query(
-      `
-      SELECT COUNT(*)::int AS total
-      FROM credit_accounts ca
-      LEFT JOIN tenants ot ON ot.id = ca.owner_tenant_id
-      LEFT JOIN users ou ON ou.id = ca.owner_user_id
-      LEFT JOIN tenants st ON st.id = ca.source_tenant_id
-      ${whereSql}
-      `,
-      params
-    )
+    const countRes = await query(`SELECT COUNT(*)::int AS total FROM credit_accounts ca ${whereSql}`, params)
 
     const listRes = await query(
       `
       SELECT
-        ca.*,
-        ot.name AS owner_tenant_name,
-        ot.slug AS owner_tenant_slug,
-        ot.tenant_type AS owner_tenant_type,
-        ou.email AS owner_user_email,
-        ou.full_name AS owner_user_name,
-        st.name AS source_tenant_name,
-        st.slug AS source_tenant_slug
+        ca.*
       FROM credit_accounts ca
-      LEFT JOIN tenants ot ON ot.id = ca.owner_tenant_id
-      LEFT JOIN users ou ON ou.id = ca.owner_user_id
-      LEFT JOIN tenants st ON st.id = ca.source_tenant_id
       ${whereSql}
-      ORDER BY ca.created_at DESC
+      ORDER BY ca.updated_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
       [...params, limit, offset]
     )
+
+    const authHeader = String(req.headers.authorization || "")
+    const tenantIds = uniqIds(listRes.rows.flatMap((row) => [row.owner_tenant_id, row.source_tenant_id]))
+    const userIds = uniqIds(listRes.rows.flatMap((row) => [row.owner_user_id]))
+    const [tenantMap, userMap] = await Promise.all([
+      lookupTenants(tenantIds, authHeader),
+      lookupUsers(userIds, authHeader),
+    ])
+
+    const rows = listRes.rows.map((row) => {
+      const ownerTenant = row.owner_tenant_id ? tenantMap.get(String(row.owner_tenant_id)) : undefined
+      const sourceTenant = row.source_tenant_id ? tenantMap.get(String(row.source_tenant_id)) : undefined
+      const ownerUser = row.owner_user_id ? userMap.get(String(row.owner_user_id)) : undefined
+      return {
+        ...row,
+        owner_tenant_name: ownerTenant?.name ?? null,
+        owner_tenant_slug: ownerTenant?.slug ?? null,
+        owner_tenant_type: ownerTenant?.tenant_type ?? null,
+        owner_user_email: ownerUser?.email ?? null,
+        owner_user_name: ownerUser?.full_name ?? null,
+        source_tenant_name: sourceTenant?.name ?? null,
+        source_tenant_slug: sourceTenant?.slug ?? null,
+      }
+    })
 
     return res.json({
       ok: true,
       total: countRes.rows[0]?.total ?? 0,
       limit,
       offset,
-      rows: listRes.rows,
+      rows,
     })
   } catch (e: any) {
     console.error("listCreditAccounts error:", e)
@@ -748,8 +753,8 @@ export async function updateCreditAccount(req: Request, res: Response) {
       setField("expires_at", input.expires_at || null)
     }
     if (input.display_name !== undefined) {
-      const displayName = typeof input.display_name === "string" ? input.display_name : null
-      setField("display_name", displayName)
+      const displayName = toStr(input.display_name)
+      setField("display_name", displayName || null)
     }
     if (input.metadata !== undefined) {
       const metadataInput = input.metadata
@@ -826,10 +831,12 @@ export async function listCreditLedgerEntries(req: Request, res: Response) {
       where.push(
         `(
           COALESCE(ca.display_name, '') ILIKE $${params.length + 1}
-          OR COALESCE(ot.name, '') ILIKE $${params.length + 1}
-          OR COALESCE(ot.slug, '') ILIKE $${params.length + 1}
-          OR COALESCE(ou.email, '') ILIKE $${params.length + 1}
-          OR COALESCE(ou.full_name, '') ILIKE $${params.length + 1}
+          OR COALESCE(le.account_id::text, '') ILIKE $${params.length + 1}
+          OR COALESCE(le.usage_log_id::text, '') ILIKE $${params.length + 1}
+          OR COALESCE(le.transfer_id::text, '') ILIKE $${params.length + 1}
+          OR COALESCE(le.subscription_id::text, '') ILIKE $${params.length + 1}
+          OR COALESCE(le.invoice_id::text, '') ILIKE $${params.length + 1}
+          OR COALESCE(le.payment_transaction_id::text, '') ILIKE $${params.length + 1}
         )`
       )
       params.push(`%${q}%`)
@@ -842,8 +849,6 @@ export async function listCreditLedgerEntries(req: Request, res: Response) {
       SELECT COUNT(*)::int AS total
       FROM credit_ledger_entries le
       JOIN credit_accounts ca ON ca.id = le.account_id
-      LEFT JOIN tenants ot ON ot.id = ca.owner_tenant_id
-      LEFT JOIN users ou ON ou.id = ca.owner_user_id
       ${whereSql}
       `,
       params
@@ -859,14 +864,9 @@ export async function listCreditLedgerEntries(req: Request, res: Response) {
         ca.display_name AS account_display_name,
         ca.owner_tenant_id,
         ca.owner_user_id,
-        ot.name AS owner_tenant_name,
-        ot.slug AS owner_tenant_slug,
-        ou.email AS owner_user_email,
-        ou.full_name AS owner_user_name
+        ca.source_tenant_id
       FROM credit_ledger_entries le
       JOIN credit_accounts ca ON ca.id = le.account_id
-      LEFT JOIN tenants ot ON ot.id = ca.owner_tenant_id
-      LEFT JOIN users ou ON ou.id = ca.owner_user_id
       ${whereSql}
       ORDER BY le.occurred_at DESC, le.created_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
@@ -874,12 +874,32 @@ export async function listCreditLedgerEntries(req: Request, res: Response) {
       [...params, limit, offset]
     )
 
+    const authHeader = String(req.headers.authorization || "")
+    const tenantIds = uniqIds(listRes.rows.flatMap((row) => [row.owner_tenant_id, row.source_tenant_id]))
+    const userIds = uniqIds(listRes.rows.flatMap((row) => [row.owner_user_id]))
+    const [tenantMap, userMap] = await Promise.all([
+      lookupTenants(tenantIds, authHeader),
+      lookupUsers(userIds, authHeader),
+    ])
+
+    const rows = listRes.rows.map((row) => {
+      const ownerTenant = row.owner_tenant_id ? tenantMap.get(String(row.owner_tenant_id)) : undefined
+      const ownerUser = row.owner_user_id ? userMap.get(String(row.owner_user_id)) : undefined
+      return {
+        ...row,
+        owner_tenant_name: ownerTenant?.name ?? null,
+        owner_tenant_slug: ownerTenant?.slug ?? null,
+        owner_user_email: ownerUser?.email ?? null,
+        owner_user_name: ownerUser?.full_name ?? null,
+      }
+    })
+
     return res.json({
       ok: true,
       total: countRes.rows[0]?.total ?? 0,
       limit,
       offset,
-      rows: listRes.rows,
+      rows,
     })
   } catch (e: any) {
     console.error("listCreditLedgerEntries error:", e)
@@ -896,9 +916,6 @@ export async function listCreditUsageAllocations(req: Request, res: Response) {
     const creditType = toStr(req.query.credit_type)
     const tenantId = toStr(req.query.tenant_id)
     const userId = toStr(req.query.user_id)
-    const providerSlug = toStr(req.query.provider_slug)
-    const modelApiId = toStr(req.query.model_id)
-    const modality = toStr(req.query.modality)
 
     const limit = Math.min(toInt(req.query.limit, 50) ?? 50, 200)
     const offset = toInt(req.query.offset, 0) ?? 0
@@ -932,30 +949,13 @@ export async function listCreditUsageAllocations(req: Request, res: Response) {
       where.push(`cua.user_id = $${params.length + 1}`)
       params.push(userId)
     }
-    if (providerSlug) {
-      where.push(`COALESCE(p.slug, l.request_data->>'provider_slug') = $${params.length + 1}`)
-      params.push(providerSlug)
-    }
-    if (modelApiId) {
-      where.push(`COALESCE(l.resolved_model, m.model_id) = $${params.length + 1}`)
-      params.push(modelApiId)
-    }
-    if (modality) {
-      where.push(`l.modality = $${params.length + 1}`)
-      params.push(modality)
-    }
     if (q) {
       where.push(
         `(
-          l.request_id ILIKE $${params.length + 1}
-          OR COALESCE(m.display_name, '') ILIKE $${params.length + 1}
-          OR COALESCE(l.resolved_model, m.model_id) ILIKE $${params.length + 1}
-          OR COALESCE(p.slug, l.request_data->>'provider_slug') ILIKE $${params.length + 1}
-          OR COALESCE(ot.name, '') ILIKE $${params.length + 1}
-          OR COALESCE(ot.slug, '') ILIKE $${params.length + 1}
-          OR COALESCE(ou.email, '') ILIKE $${params.length + 1}
-          OR COALESCE(ou.full_name, '') ILIKE $${params.length + 1}
-          OR COALESCE(u.email, '') ILIKE $${params.length + 1}
+          COALESCE(cua.usage_log_id::text, '') ILIKE $${params.length + 1}
+          OR COALESCE(cua.account_id::text, '') ILIKE $${params.length + 1}
+          OR COALESCE(cua.user_id::text, '') ILIKE $${params.length + 1}
+          OR COALESCE(ca.display_name, '') ILIKE $${params.length + 1}
         )`
       )
       params.push(`%${q}%`)
@@ -968,12 +968,6 @@ export async function listCreditUsageAllocations(req: Request, res: Response) {
       SELECT COUNT(*)::int AS total
       FROM credit_usage_allocations cua
       JOIN credit_accounts ca ON ca.id = cua.account_id
-      JOIN llm_usage_logs l ON l.id = cua.usage_log_id
-      LEFT JOIN users u ON u.id = cua.user_id
-      LEFT JOIN ai_models m ON m.id = l.model_id
-      LEFT JOIN ai_providers p ON p.id = l.provider_id
-      LEFT JOIN tenants ot ON ot.id = ca.owner_tenant_id
-      LEFT JOIN users ou ON ou.id = ca.owner_user_id
       ${whereSql}
       `,
       params
@@ -988,51 +982,62 @@ export async function listCreditUsageAllocations(req: Request, res: Response) {
         cua.account_id,
         cua.amount_credits,
         cua.created_at,
-        l.created_at AS usage_created_at,
-        l.request_id,
-        l.status AS usage_status,
-        l.feature_name,
-        l.modality,
-        l.total_tokens,
-        l.total_cost,
-        l.currency,
-        COALESCE(l.response_time_ms, l.latency_ms) AS response_time_ms,
-        u.email AS usage_user_email,
-        m.display_name AS model_display_name,
-        COALESCE(l.resolved_model, m.model_id) AS model_api_id,
-        COALESCE(p.slug, l.request_data->>'provider_slug') AS provider_slug,
+        NULL::timestamptz AS usage_created_at,
+        NULL::text AS request_id,
+        NULL::text AS usage_status,
+        NULL::text AS feature_name,
+        NULL::text AS modality,
+        NULL::int AS total_tokens,
+        NULL::numeric AS total_cost,
+        NULL::text AS currency,
+        NULL::int AS response_time_ms,
+        NULL::text AS model_display_name,
+        NULL::text AS model_api_id,
+        NULL::text AS provider_slug,
         ca.owner_type,
         ca.credit_type,
         ca.status AS account_status,
         ca.display_name AS account_display_name,
         ca.owner_tenant_id,
         ca.owner_user_id,
-        ca.source_tenant_id,
-        ot.name AS owner_tenant_name,
-        ot.slug AS owner_tenant_slug,
-        ou.email AS owner_user_email,
-        ou.full_name AS owner_user_name
+        ca.source_tenant_id
       FROM credit_usage_allocations cua
       JOIN credit_accounts ca ON ca.id = cua.account_id
-      JOIN llm_usage_logs l ON l.id = cua.usage_log_id
-      LEFT JOIN users u ON u.id = cua.user_id
-      LEFT JOIN ai_models m ON m.id = l.model_id
-      LEFT JOIN ai_providers p ON p.id = l.provider_id
-      LEFT JOIN tenants ot ON ot.id = ca.owner_tenant_id
-      LEFT JOIN users ou ON ou.id = ca.owner_user_id
       ${whereSql}
-      ORDER BY l.created_at DESC, cua.created_at DESC
+      ORDER BY cua.created_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
       [...params, limit, offset]
     )
+
+    const authHeader = String(req.headers.authorization || "")
+    const tenantIds = uniqIds(listRes.rows.flatMap((row) => [row.owner_tenant_id, row.source_tenant_id]))
+    const userIds = uniqIds(listRes.rows.flatMap((row) => [row.owner_user_id, row.user_id]))
+    const [tenantMap, userMap] = await Promise.all([
+      lookupTenants(tenantIds, authHeader),
+      lookupUsers(userIds, authHeader),
+    ])
+
+    const rows = listRes.rows.map((row) => {
+      const ownerTenant = row.owner_tenant_id ? tenantMap.get(String(row.owner_tenant_id)) : undefined
+      const ownerUser = row.owner_user_id ? userMap.get(String(row.owner_user_id)) : undefined
+      const usageUser = row.user_id ? userMap.get(String(row.user_id)) : undefined
+      return {
+        ...row,
+        owner_tenant_name: ownerTenant?.name ?? null,
+        owner_tenant_slug: ownerTenant?.slug ?? null,
+        owner_user_email: ownerUser?.email ?? null,
+        owner_user_name: ownerUser?.full_name ?? null,
+        usage_user_email: usageUser?.email ?? null,
+      }
+    })
 
     return res.json({
       ok: true,
       total: countRes.rows[0]?.total ?? 0,
       limit,
       offset,
-      rows: listRes.rows,
+      rows,
     })
   } catch (e: any) {
     console.error("listCreditUsageAllocations error:", e)

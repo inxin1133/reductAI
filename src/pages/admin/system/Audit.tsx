@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { adminFetch } from "@/lib/adminFetch"
 import {
   Table,
   TableBody,
@@ -133,7 +134,7 @@ export default function SystemAudit() {
   async function fetchAuditLogs() {
     setLoading(true)
     try {
-      const res = await fetch(`${API_URL}?${queryString}`)
+      const res = await adminFetch(`${API_URL}?${queryString}`)
       const json = (await res.json()) as ListResponse<AuditRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setRows(json.rows || [])

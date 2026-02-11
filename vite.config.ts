@@ -11,6 +11,10 @@ export default defineConfig(() => {
   const tenantTarget = process.env.TENANT_SERVICE_URL || 'http://localhost:3003';
   const i18nTarget = process.env.I18N_SERVICE_URL || 'http://localhost:3006';
   const aiAgentTarget = process.env.AI_AGENT_SERVICE_URL || 'http://localhost:3007';
+  const pricingTarget = process.env.PRICING_SERVICE_URL || 'http://localhost:3009';
+  const billingTarget = process.env.BILLING_SERVICE_URL || 'http://localhost:3010';
+  const creditsTarget = process.env.CREDITS_SERVICE_URL || 'http://localhost:3011';
+  const systemTarget = process.env.SYSTEM_SERVICE_URL || 'http://localhost:3004';
   const fileTarget = process.env.FILE_SERVICE_URL || 'http://localhost:3008';
   const postTarget = process.env.POST_SERVICE_URL || 'http://localhost:3005';
 
@@ -49,6 +53,22 @@ export default defineConfig(() => {
         },
         '/api/ai/media': {
           target: fileTarget,
+          changeOrigin: true,
+        },
+        '/api/ai/pricing': {
+          target: pricingTarget,
+          changeOrigin: true,
+        },
+        '/api/ai/billing': {
+          target: billingTarget,
+          changeOrigin: true,
+        },
+        '/api/ai/credits': {
+          target: creditsTarget,
+          changeOrigin: true,
+        },
+        '/api/ai/system': {
+          target: systemTarget,
           changeOrigin: true,
         },
         '/api/ai': {

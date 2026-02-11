@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { adminFetch } from "@/lib/adminFetch"
 import {
   Table,
   TableBody,
@@ -181,7 +182,7 @@ export default function Rates() {
 
   async function fetchRateCards() {
     try {
-      const res = await fetch(`${RATE_CARDS_API}?limit=200&offset=0`)
+      const res = await adminFetch(`${RATE_CARDS_API}?limit=200&offset=0`)
       const json = (await res.json()) as RateCardResponse
       if (!res.ok || !json.ok) throw new Error("FAILED_RATE_CARDS")
       const cards = json.rows || []
@@ -199,7 +200,7 @@ export default function Rates() {
   async function fetchRates() {
     setLoading(true)
     try {
-      const res = await fetch(`${RATES_API}?${queryString}`)
+      const res = await adminFetch(`${RATES_API}?${queryString}`)
       const json = (await res.json()) as RateListResponse
       if (!res.ok || !json.ok) throw new Error("FAILED_RATES")
       setRows(json.rows || [])
@@ -280,7 +281,7 @@ export default function Rates() {
 
     try {
       setCloneSaving(true)
-      const res = await fetch(`${RATE_CARDS_API}/${cloneForm.source_id}/clone`, {
+      const res = await adminFetch(`${RATE_CARDS_API}/${cloneForm.source_id}/clone`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -359,7 +360,7 @@ export default function Rates() {
       if (usageKind !== "all") payload.usage_kind = usageKind
       if (tokenCategory !== "all") payload.token_category = tokenCategory
 
-      const res = await fetch(BULK_UPDATE_API, {
+      const res = await adminFetch(BULK_UPDATE_API, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -390,7 +391,7 @@ export default function Rates() {
     }
     try {
       setSaving(true)
-      const res = await fetch(`${RATES_API}/${editing.id}`, {
+      const res = await adminFetch(`${RATES_API}/${editing.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rate_value: raw }),

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { adminFetch } from "@/lib/adminFetch"
 import {
   Table,
   TableBody,
@@ -158,7 +159,7 @@ export default function Markups() {
 
   async function fetchModels() {
     try {
-      const res = await fetch(`${MODELS_API_URL}?limit=2000&offset=0`)
+      const res = await adminFetch(`${MODELS_API_URL}?limit=2000&offset=0`)
       const json = (await res.json().catch(() => [])) as any
       const list = Array.isArray(json) ? json : []
       const normalized = list
@@ -178,7 +179,7 @@ export default function Markups() {
   async function fetchList() {
     setLoading(true)
     try {
-      const res = await fetch(`${API_URL}?${queryString}`)
+      const res = await adminFetch(`${API_URL}?${queryString}`)
       const json = (await res.json()) as ListResponse
       if (!res.ok || !json.ok) throw new Error("FAILED")
       setRows(json.rows || [])
@@ -286,7 +287,7 @@ export default function Markups() {
 
     try {
       setSaving(true)
-      const res = await fetch(editing ? `${API_URL}/${editing.id}` : API_URL, {
+      const res = await adminFetch(editing ? `${API_URL}/${editing.id}` : API_URL, {
         method: editing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -308,7 +309,7 @@ export default function Markups() {
   async function deleteMarkup(row: MarkupRow) {
     if (!confirm(`"${row.name}" 정책을 삭제할까요?`)) return
     try {
-      const res = await fetch(`${API_URL}/${row.id}`, { method: "DELETE" })
+      const res = await adminFetch(`${API_URL}/${row.id}`, { method: "DELETE" })
       const json = await res.json().catch(() => ({}))
       if (!res.ok || !json.ok) throw new Error("FAILED_DELETE")
       await fetchList()
