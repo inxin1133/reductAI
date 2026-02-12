@@ -240,13 +240,13 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
+        {/* <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
           <div className="flex gap-1 items-center flex-1">
             <span className="text-sm">🇰🇷</span>
             <p className="text-sm text-popover-foreground">한국어</p>
           </div>
           <ChevronRight className="size-4 text-popover-foreground shrink-0" />
-        </div>
+        </div> */}
       </div>
 
       <Separator className="my-2" />
