@@ -24,6 +24,7 @@ export default function FrontAI() {
   const navigate = useNavigate()
   const [languages, setLanguages] = React.useState<Language[]>([]);
   const [currentLang, setCurrentLang] = React.useState("");
+  const LANGUAGE_STORAGE_KEY = "reductai.language.v1"
   const LAST_SELECTION_KEY = "reductai.frontai.lastSelection.v1"
   
   const readSelectionFromStorage = () => {
@@ -90,10 +91,16 @@ export default function FrontAI() {
           const data = await res.json();
           const activeLangs = (data || []).filter((l: Language) => l.is_active !== false);
           setLanguages(activeLangs);
-          
+
           if (activeLangs.length > 0) {
-            const def = activeLangs.find((l: Language) => l.is_default)?.code || activeLangs[0].code;
-            setCurrentLang(def);
+            const saved = String(localStorage.getItem(LANGUAGE_STORAGE_KEY) || "").trim()
+            const savedValid = saved && activeLangs.some((l: Language) => l.code === saved)
+            const def = activeLangs.find((l: Language) => l.is_default)?.code || activeLangs[0].code
+            const next = savedValid ? saved : def
+            setCurrentLang(next)
+            if (next) {
+              localStorage.setItem(LANGUAGE_STORAGE_KEY, next)
+            }
           }
         }
       } catch (error) {
@@ -103,10 +110,37 @@ export default function FrontAI() {
     fetchLanguages();
   }, []);
 
+  React.useEffect(() => {
+    const handleStorage = (ev: StorageEvent) => {
+      if (ev.key !== LANGUAGE_STORAGE_KEY) return
+      const next = String(ev.newValue || "").trim()
+      if (!next) return
+      setCurrentLang(next)
+    }
+    const handleCustom = (ev: Event) => {
+      const next = (ev as CustomEvent<{ lang?: string }>).detail?.lang
+      if (!next) return
+      setCurrentLang(String(next))
+    }
+    window.addEventListener("storage", handleStorage)
+    window.addEventListener("reductai:language", handleCustom as EventListener)
+    return () => {
+      window.removeEventListener("storage", handleStorage)
+      window.removeEventListener("reductai:language", handleCustom as EventListener)
+    }
+  }, [])
+
   return (
     <AppShell
       headerContent={
-        <Select value={currentLang} onValueChange={setCurrentLang}>
+        <Select
+          value={currentLang}
+          onValueChange={(value) => {
+            setCurrentLang(value)
+            localStorage.setItem(LANGUAGE_STORAGE_KEY, value)
+            window.dispatchEvent(new CustomEvent("reductai:language", { detail: { lang: value } }))
+          }}
+        >
           <SelectTrigger className="w-[120px] h-9 bg-background">
             <SelectValue placeholder="언어 선택" />
           </SelectTrigger>

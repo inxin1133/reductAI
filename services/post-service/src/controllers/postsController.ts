@@ -806,6 +806,31 @@ export async function getCurrentTenant(req: Request, res: Response) {
   }
 }
 
+export async function listTenantMemberships(req: Request, res: Response) {
+  try {
+    const userId = (req as AuthedRequest).userId
+    const r = await query(
+      `
+      SELECT
+        t.id,
+        t.name,
+        t.tenant_type,
+        COALESCE(utr.is_primary_tenant, FALSE) AS is_primary
+      FROM user_tenant_roles utr
+      JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+      WHERE utr.user_id = $1
+        AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+      ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC, utr.granted_at ASC
+      `,
+      [userId]
+    )
+    return res.json(r.rows)
+  } catch (e) {
+    console.error("post-service listTenantMemberships error:", e)
+    return res.status(500).json({ message: "Failed to load tenant memberships" })
+  }
+}
+
 export async function updatePostCategory(req: Request, res: Response) {
   const client = await pool.connect()
   try {

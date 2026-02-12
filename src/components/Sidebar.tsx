@@ -1,4 +1,4 @@
-import { 
+import {
   Bot, 
   Clock, 
   Save, 
@@ -14,6 +14,8 @@ import {
   Wallet,
   Sun,
   Moon,
+  Monitor,
+  Check,
   ChevronRight,
   Pencil,
   LogOut,
@@ -80,6 +82,15 @@ function emitCategoryUpdated(detail: CategoryUpdatedDetail) {
 
 type SidebarProps = {
   className?: string
+}
+
+type Language = {
+  code: string
+  name: string
+  native_name: string
+  is_default: boolean
+  flag_emoji: string
+  is_active?: boolean
 }
 
 export function Sidebar({ className }: SidebarProps) {
@@ -211,6 +222,12 @@ export function Sidebar({ className }: SidebarProps) {
       return ""
     }
   })
+  const [tenantMemberships, setTenantMemberships] = useState<
+    Array<{ id: string; name?: string | null; tenant_type?: string | null; is_primary?: boolean }>
+  >([])
+  const [languages, setLanguages] = useState<Language[]>([])
+  const [currentLang, setCurrentLang] = useState("")
+  const LANGUAGE_STORAGE_KEY = "reductai.language.v1"
 
   const tenantPageLabel = useMemo(() => {
     const name = String(tenantName || "").trim()
@@ -218,6 +235,83 @@ export function Sidebar({ className }: SidebarProps) {
     if (tenantType === "group") return "그룹 페이지"
     return "팀 페이지"
   }, [tenantName, tenantType])
+
+  const resolveTenantLabel = (t: { name?: string | null; tenant_type?: string | null }) => {
+    if (String(t.tenant_type || "") === "personal") return "개인"
+    const name = String(t.name || "").trim()
+    return name || "팀/그룹"
+  }
+
+  const resolveServiceLabel = (t: { tenant_type?: string | null }) => {
+    const type = String(t.tenant_type || "")
+    if (type === "personal") return "Pro"
+    if (type === "team" || type === "group") return "Premium"
+    return "Basic"
+  }
+
+  const profileBadges = useMemo(() => {
+    if (tenantMemberships.length) {
+      return tenantMemberships.map((t) => ({
+        key: String(t.id),
+        label: `${resolveTenantLabel(t)}:${resolveServiceLabel(t)}`,
+      }))
+    }
+    if (!tenantType) return []
+    return [
+      {
+        key: tenantType,
+        label: `${resolveTenantLabel({ tenant_type: tenantType, name: tenantName })}:${resolveServiceLabel({
+          tenant_type: tenantType,
+        })}`,
+      },
+    ]
+  }, [tenantMemberships, tenantName, tenantType])
+
+  useEffect(() => {
+    const fetchLanguages = async () => {
+      try {
+        const res = await fetch("/api/i18n/languages")
+        if (res.ok) {
+          const data = await res.json()
+          const activeLangs = (data || []).filter((l: Language) => l.is_active !== false)
+          setLanguages(activeLangs)
+          if (activeLangs.length > 0) {
+            const saved = String(localStorage.getItem(LANGUAGE_STORAGE_KEY) || "").trim()
+            const savedValid = saved && activeLangs.some((l: Language) => l.code === saved)
+            const def = activeLangs.find((l: Language) => l.is_default)?.code || activeLangs[0].code
+            const next = savedValid ? saved : def
+            setCurrentLang(next)
+            if (next) {
+              localStorage.setItem(LANGUAGE_STORAGE_KEY, next)
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+    void fetchLanguages()
+  }, [])
+
+  useEffect(() => {
+    const handleStorage = (ev: StorageEvent) => {
+      if (ev.key !== LANGUAGE_STORAGE_KEY) return
+      const next = String(ev.newValue || "").trim()
+      if (!next) return
+      setCurrentLang(next)
+    }
+    const handleCustom = (ev: Event) => {
+      const next = (ev as CustomEvent<{ lang?: string }>).detail?.lang
+      if (!next) return
+      setCurrentLang(String(next))
+    }
+    window.addEventListener("storage", handleStorage)
+    window.addEventListener("reductai:language", handleCustom as EventListener)
+    return () => {
+      window.removeEventListener("storage", handleStorage)
+      window.removeEventListener("reductai:language", handleCustom as EventListener)
+    }
+  }, [])
 
   const [editingCat, setEditingCat] = useState<{ type: "personal" | "team"; id: string; name: string } | null>(null)
   const [draggingCat, setDraggingCat] = useState<{ type: "personal" | "team"; id: string } | null>(null)
@@ -446,7 +540,18 @@ export function Sidebar({ className }: SidebarProps) {
   const [isMobile, setIsMobile] = useState(false)
   const [isMobileProfileOpen, setIsMobileProfileOpen] = useState(false)
 
-  const { theme } = useTheme()
+  const { theme, themeMode, setThemeMode } = useTheme()
+  const userProfile = useMemo(() => {
+    if (typeof window === "undefined") {
+      return { name: "사용자", email: "", initial: "U" }
+    }
+    const rawName = String(localStorage.getItem("user_name") || "").trim()
+    const rawEmail = String(localStorage.getItem("user_email") || "").trim()
+    const nameFromEmail = rawEmail ? rawEmail.split("@")[0] : ""
+    const name = rawName || nameFromEmail || "사용자"
+    const initial = Array.from(name.trim() || "U")[0] || "U"
+    return { name, email: rawEmail, initial }
+  }, [])
 
   // 현재 페이지에 따라 GNB 메뉴 활성화 표시를 결정
   const isFrontAIActive = location.pathname.startsWith("/front-ai")
@@ -509,6 +614,7 @@ export function Sidebar({ className }: SidebarProps) {
     localStorage.removeItem('token_expires_at')
     localStorage.removeItem('user_email')
     localStorage.removeItem('user_id')
+    localStorage.removeItem('user_name')
     // 로그인 페이지(인트로)로 이동
     navigate('/')
   }
@@ -689,6 +795,27 @@ export function Sidebar({ className }: SidebarProps) {
   useEffect(() => {
     if (tenantType) return
     void loadTenantName()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const loadTenantMemberships = async () => {
+    const h = authHeaders()
+    if (!h.Authorization) return
+    const r = await fetch("/api/posts/tenant/memberships", { headers: h }).catch(() => null)
+    if (!r || !r.ok) return
+    const rows = (await r.json().catch(() => [])) as Array<{
+      id: string
+      name?: string | null
+      tenant_type?: string | null
+      is_primary?: boolean
+    }>
+    if (Array.isArray(rows)) {
+      setTenantMemberships(rows)
+    }
+  }
+
+  useEffect(() => {
+    void loadTenantMemberships()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -1070,24 +1197,29 @@ export function Sidebar({ className }: SidebarProps) {
       <div className="flex flex-col gap-1 px-1 py-1">
         <div className="flex gap-2 items-center px-2 py-1.5 rounded-sm">
           <div className="size-10 bg-teal-500 rounded-lg flex items-center justify-center shrink-0">
-            <span className="text-white font-semibold text-lg">김</span>
+            <span className="text-white font-semibold text-lg">{userProfile.initial}</span>
           </div>
           <div className="flex flex-col flex-1 min-w-0">
-            <p className="text-lg font-bold text-popover-foreground truncate">김가나</p>
+            <p className="text-lg font-bold text-popover-foreground truncate">{userProfile.name}</p>
           </div>
         </div>
         <div className="flex gap-1 items-center px-2 py-1.5 rounded-sm">
           <User className="size-4 text-muted-foreground shrink-0" />
-          <p className="text-xs text-muted-foreground truncate">abc@naver.com</p>
+          <p className="text-xs text-muted-foreground truncate">{userProfile.email || "-"}</p>
         </div>
         <div className="flex gap-1 items-center px-2 py-1.5 rounded-sm">
           <div className="flex gap-1 items-center flex-wrap">
-            <Badge variant="outline" className="h-[22px] px-2.5 py-0.5 text-xs font-medium">
-              개인:Pro
-            </Badge>
-            <Badge variant="outline" className="h-[22px] px-2.5 py-0.5 text-xs font-medium">
-              KIA:Premium
-            </Badge>
+            {profileBadges.length ? (
+              profileBadges.map((b) => (
+                <Badge key={b.key} variant="outline" className="h-[22px] px-2.5 py-0.5 text-xs font-medium">
+                  {b.label}
+                </Badge>
+              ))
+            ) : (
+              <Badge variant="outline" className="h-[22px] px-2.5 py-0.5 text-xs font-medium">
+                개인:Basic
+              </Badge>
+            )}
           </div>
         </div>
       </div>
@@ -1110,20 +1242,77 @@ export function Sidebar({ className }: SidebarProps) {
 
       {/* Theme & Language Section - 테마 및 언어 섹션 */}
       <div className="flex flex-col gap-0 px-1">
-        <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
-          <div className="flex gap-1 items-center flex-1">
-            {theme === 'dark' ? <Moon className="size-4 text-popover-foreground shrink-0" /> : <Sun className="size-4 text-popover-foreground shrink-0" />}
-            <p className="text-sm text-popover-foreground">Light</p>
-          </div>
-          <ChevronRight className="size-4 text-popover-foreground shrink-0" />
-        </div>
-        <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
-          <div className="flex gap-1 items-center flex-1">
-            <span className="text-sm">🇰🇷</span>
-            <p className="text-sm text-popover-foreground">한국어</p>
-          </div>
-          <ChevronRight className="size-4 text-popover-foreground shrink-0" />
-        </div>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
+              <div className="flex gap-1 items-center flex-1">
+                {themeMode === "system" ? (
+                  <Monitor className="size-4 text-popover-foreground shrink-0" />
+                ) : theme === "dark" ? (
+                  <Moon className="size-4 text-popover-foreground shrink-0" />
+                ) : (
+                  <Sun className="size-4 text-popover-foreground shrink-0" />
+                )}
+                <p className="text-sm text-popover-foreground">
+                  {themeMode === "system" ? "System" : themeMode === "dark" ? "Dark" : "Light"}
+                </p>
+              </div>
+              <ChevronRight className="size-4 text-popover-foreground shrink-0" />
+            </div>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="right" sideOffset={9} className="w-36">
+            <DropdownMenuItem onSelect={() => setThemeMode("light")}>
+              <span className="flex-1">Light</span>
+              {themeMode === "light" ? <Check className="size-4" /> : null}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setThemeMode("dark")}>
+              <span className="flex-1">Dark</span>
+              {themeMode === "dark" ? <Check className="size-4" /> : null}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setThemeMode("system")}>
+              <span className="flex-1">System</span>
+              {themeMode === "system" ? <Check className="size-4" /> : null}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
+              <div className="flex gap-1 items-center flex-1">
+                <span className="text-sm">
+                  {(() => {
+                    const current = languages.find((l: Language) => l.code === currentLang)
+                    return current?.flag_emoji || "🌐"
+                  })()}
+                </span>
+                <p className="text-sm text-popover-foreground">
+                  {(() => {
+                    const current = languages.find((l: Language) => l.code === currentLang)
+                    return current?.native_name || "언어 선택"
+                  })()}
+                </p>
+              </div>
+              <ChevronRight className="size-4 text-popover-foreground shrink-0" />
+            </div>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="right" sideOffset={9} className="w-44">
+            {languages.map((lang) => (
+              <DropdownMenuItem
+                key={lang.code}
+                onSelect={() => {
+                  setCurrentLang(lang.code)
+                  localStorage.setItem(LANGUAGE_STORAGE_KEY, lang.code)
+                  window.dispatchEvent(new CustomEvent("reductai:language", { detail: { lang: lang.code } }))
+                }}
+              >
+                <span className="flex-1">
+                  {lang.flag_emoji} {lang.native_name}
+                </span>
+                {currentLang === lang.code ? <Check className="size-4" /> : null}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       <Separator className="my-2" />
@@ -1474,14 +1663,16 @@ export function Sidebar({ className }: SidebarProps) {
               {isOpen ? (
                 <>
                    <div className="size-10 bg-teal-500 rounded-lg flex items-center justify-center shrink-0">
-                    <span className="text-white font-semibold text-lg">김</span>
+                    <span className="text-white font-semibold text-lg">{userProfile.initial}</span>
                   </div>
                   <div className="flex flex-col flex-1 min-w-0">
-                    <p className="text-sm text-left font-semibold text-sidebar-foreground truncate">김가나</p>
-                    <div className="flex items-center text-xs text-muted-foreground">
-                       <span>Pro</span>
-                       <span className="mx-1">・</span>
-                       <span>Premium</span>
+                    <p className="text-sm text-left font-semibold text-sidebar-foreground truncate">{userProfile.name}</p>
+                    <div className="flex items-center text-xs text-muted-foreground flex-wrap gap-1">
+                      {profileBadges.length ? (
+                        profileBadges.map((b) => <span key={b.key}>{b.label}</span>)
+                      ) : (
+                        <span>개인:Basic</span>
+                      )}
                     </div>
                   </div>
                   <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">

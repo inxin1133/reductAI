@@ -370,6 +370,9 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
         localStorage.setItem('token', data.token)
         localStorage.setItem('token_expires_at', expiresAt.toString())
         localStorage.setItem('user_email', email)
+        if (data.user?.full_name) {
+          localStorage.setItem('user_name', String(data.user.full_name))
+        }
         if (data.user?.id) {
           localStorage.setItem('user_id', data.user.id)
         }
@@ -409,6 +412,9 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
         localStorage.setItem('token', data.token)
         localStorage.setItem('token_expires_at', expiresAt.toString())
         localStorage.setItem('user_email', email)
+        if (data.user?.full_name) {
+          localStorage.setItem('user_name', String(data.user.full_name))
+        }
         if (data.user?.id) {
           localStorage.setItem('user_id', data.user.id)
         }

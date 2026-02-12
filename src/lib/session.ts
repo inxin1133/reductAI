@@ -14,6 +14,7 @@ export function clearAuthStorage() {
   localStorage.removeItem("token_expires_at")
   localStorage.removeItem("user_email")
   localStorage.removeItem("user_id")
+  localStorage.removeItem("user_name")
 }
 
 export function handleSessionExpired(

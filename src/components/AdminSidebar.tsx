@@ -9,6 +9,8 @@ import {
   Wallet,
   Sun,
   Moon,
+  Monitor,
+  Check,
   ChevronRight,
   LogOut
 } from "lucide-react"
@@ -20,6 +22,12 @@ import { IconReduct } from "@/components/icons/IconReduct"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { useTheme } from "@/hooks/useTheme"
 
 type AdminSidebarProps = {
@@ -52,7 +60,7 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
   const [isProfileOpen, setIsProfileOpen] = useState(false)
   const [isMobileProfileOpen, setIsMobileProfileOpen] = useState(false)
 
-  const { theme } = useTheme()
+  const { theme, themeMode, setThemeMode } = useTheme()
 
   // 서브메뉴 토글 상태 관리
   const [expandedMenus, setExpandedMenus] = useState<Record<string, boolean>>({})
@@ -118,6 +126,7 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
     localStorage.removeItem('token_expires_at')
     localStorage.removeItem('user_email')
     localStorage.removeItem('user_id')
+    localStorage.removeItem('user_name')
 
     // 로그인 페이지로 이동
     navigate('/admin/login')
@@ -198,13 +207,39 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
 
       {/* Theme & Language Section */}
       <div className="flex flex-col gap-0 px-1">
-        <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
-          <div className="flex gap-1 items-center flex-1">
-            {theme === 'dark' ? <Moon className="size-4 text-popover-foreground shrink-0" /> : <Sun className="size-4 text-popover-foreground shrink-0" />}
-            <p className="text-sm text-popover-foreground">Light</p>
-          </div>
-          <ChevronRight className="size-4 text-popover-foreground shrink-0" />
-        </div>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
+              <div className="flex gap-1 items-center flex-1">
+                {themeMode === "system" ? (
+                  <Monitor className="size-4 text-popover-foreground shrink-0" />
+                ) : theme === "dark" ? (
+                  <Moon className="size-4 text-popover-foreground shrink-0" />
+                ) : (
+                  <Sun className="size-4 text-popover-foreground shrink-0" />
+                )}
+                <p className="text-sm text-popover-foreground">
+                  {themeMode === "system" ? "System" : themeMode === "dark" ? "Dark" : "Light"}
+                </p>
+              </div>
+              <ChevronRight className="size-4 text-popover-foreground shrink-0" />
+            </div>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="right" sideOffset={9} className="w-36">
+            <DropdownMenuItem onSelect={() => setThemeMode("light")}>
+              <span className="flex-1">Light</span>
+              {themeMode === "light" ? <Check className="size-4" /> : null}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setThemeMode("dark")}>
+              <span className="flex-1">Dark</span>
+              {themeMode === "dark" ? <Check className="size-4" /> : null}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setThemeMode("system")}>
+              <span className="flex-1">System</span>
+              {themeMode === "system" ? <Check className="size-4" /> : null}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
           <div className="flex gap-1 items-center flex-1">
             <span className="text-sm">🇰🇷</span>

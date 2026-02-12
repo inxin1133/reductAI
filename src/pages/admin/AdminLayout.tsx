@@ -19,6 +19,7 @@ export default function AdminLayout() {
       localStorage.removeItem("token_expires_at")
       localStorage.removeItem("user_email")
       localStorage.removeItem("user_id")
+      localStorage.removeItem("user_name")
 
       alert("세션이 만료되었거나 로그인 정보가 없습니다. 다시 로그인해주세요.")
       navigate("/admin/login", { replace: true })

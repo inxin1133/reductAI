@@ -8,6 +8,7 @@ import {
   getPostContent,
   getPostPreview,
   getCurrentTenant,
+  listTenantMemberships,
   listDeletedPages,
   listMyPageCategories,
   listMyPages,
@@ -32,6 +33,7 @@ router.post("/categories/reorder", requireAuth, reorderCategories)
 
 // Tenant (current)
 router.get("/tenant/current", requireAuth, getCurrentTenant)
+router.get("/tenant/memberships", requireAuth, listTenantMemberships)
 
 // Trash (deleted posts)
 router.get("/trash", requireAuth, listDeletedPages)
