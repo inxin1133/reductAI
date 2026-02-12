@@ -543,6 +543,7 @@ export default function PostEditorPage() {
   const navResizeRef = useRef<{ startX: number; startW: number } | null>(null)
   const [isMobile, setIsMobile] = useState(false)
   const [isNavDrawerOpen, setIsNavDrawerOpen] = useState(false)
+  const navOverlayBlockUntilRef = useRef(0)
   const [myPages, setMyPages] = useState<MyPage[]>([])
   const [pageHasContent, setPageHasContent] = useState<Record<string, boolean>>({})
   // Keep latest pageHasContent in a ref so event handlers (embed removed/added) can read fresh values
@@ -1741,6 +1742,10 @@ export default function PostEditorPage() {
     else setNavOpen(true)
   }
 
+  const blockNavDrawerAutoClose = useCallback(() => {
+    navOverlayBlockUntilRef.current = Date.now() + 350
+  }, [])
+
   const startNavResize = (e: React.PointerEvent) => {
     if (isMobile) return
     if (typeof e.button === "number" && e.button !== 0) return
@@ -2656,14 +2661,18 @@ export default function PostEditorPage() {
               isDragging ? "opacity-50" : "",
             ].join(" ")}
             ref={observeTreeRow(id) as unknown as React.Ref<HTMLDivElement>}
-            onClick={() => {
+            onClick={(e) => {
               if (Date.now() < pageDragBlockClickUntilRef.current) return
+              if (Date.now() < navOverlayBlockUntilRef.current) return
+              if ((e.target as HTMLElement).closest("[data-row-action]")) return
               if (isMobile) setIsNavDrawerOpen(false)
               navigate(`/posts/${id}/edit${categoryQS}`)
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault()
+                if (Date.now() < navOverlayBlockUntilRef.current) return
+                if ((e.target as HTMLElement).closest("[data-row-action]")) return
                 if (isMobile) setIsNavDrawerOpen(false)
                 navigate(`/posts/${id}/edit${categoryQS}`)
               }
@@ -2685,6 +2694,7 @@ export default function PostEditorPage() {
             ) : (
               <div className="flex h-4 w-4 shrink-0"></div>
             )}
+            {/* 모바일 아이콘 변경 팝오버 */}
             <Popover open={iconPickerOpenId === id} onOpenChange={(open) => setIconPickerOpenId(open ? id : null)}>
               <PopoverTrigger asChild>
                 <button
@@ -2692,13 +2702,24 @@ export default function PostEditorPage() {
                   className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md hover:bg-neutral-200"
                   title="아이콘 변경"
                   // Prevent row navigation, but allow Radix PopoverTrigger to toggle.
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => {
+                    e.stopPropagation()
+                    blockNavDrawerAutoClose()
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    blockNavDrawerAutoClose()
+                  }}
                 >
                   {iconNode}
                 </button>
               </PopoverTrigger>
-              <PopoverContent align="start" sideOffset={6} className="w-[370px] p-3" onPointerDown={(e) => e.stopPropagation()}>
+              <PopoverContent
+                align="start"
+                sideOffset={6}
+                className="w-[370px] p-3 z-[1000]"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
                 <Tabs value={iconPickerTab} onValueChange={(v) => setIconPickerTab(v === "icon" ? "icon" : "emoji")}>
                   <TabsList>
                     <TabsTrigger value="emoji">이모지</TabsTrigger>
@@ -2713,6 +2734,7 @@ export default function PostEditorPage() {
                           const native = emoji?.emoji ? String(emoji.emoji) : ""
                           if (!native) return
                           void savePageIcon(id, { kind: "emoji", value: native })
+                          blockNavDrawerAutoClose()
                           setIconPickerOpenId(null)
                         }}
                       />
@@ -2769,6 +2791,7 @@ export default function PostEditorPage() {
                                     className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
                                     onClick={() => {
                                       void savePageIcon(id, { kind: "lucide", value: k })
+                                      blockNavDrawerAutoClose()
                                       setIconPickerOpenId(null)
                                     }}
                                     title={k}
@@ -2794,6 +2817,7 @@ export default function PostEditorPage() {
                             className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
                             onClick={() => {
                               void savePageIcon(id, { kind: "lucide", value: it.key })
+                              blockNavDrawerAutoClose()
                               setIconPickerOpenId(null)
                             }}
                             title={it.label}
@@ -2810,6 +2834,7 @@ export default function PostEditorPage() {
                         size="sm"
                         onClick={() => {
                           void savePageIcon(id, null)
+                          blockNavDrawerAutoClose()
                           setIconPickerOpenId(null)
                         }}
                       >
@@ -2858,6 +2883,7 @@ export default function PostEditorPage() {
                     title="메뉴"
                     onPointerDown={(e) => e.stopPropagation()}
                     onClick={(e) => e.stopPropagation()}
+                    data-row-action
                   >
                     <Ellipsis className="size-3" />
                   </Button>
@@ -2874,7 +2900,9 @@ export default function PostEditorPage() {
                   }}
                 >
                   <DropdownMenuItem
-                    onSelect={() => {
+                    onSelect={(e) => {
+                      e.stopPropagation()
+                      blockNavDrawerAutoClose()
                       openRename(id)
                     }}
                   >
@@ -2882,7 +2910,8 @@ export default function PostEditorPage() {
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onSelect={(e) => {
-                      e.preventDefault()
+                      e.stopPropagation()
+                      blockNavDrawerAutoClose()
                       void duplicatePage(id)
                     }}
                   >
@@ -2892,7 +2921,8 @@ export default function PostEditorPage() {
                   <DropdownMenuItem
                     className="text-destructive focus:text-destructive"
                     onSelect={(e) => {
-                      e.preventDefault()
+                      e.stopPropagation()
+                      blockNavDrawerAutoClose()
                       void softDeletePage(id)
                     }}
                   >
@@ -2992,7 +3022,12 @@ export default function PostEditorPage() {
                 {iconEl}
               </button>
             </PopoverTrigger>
-            <PopoverContent align="start" sideOffset={6} className="w-[370px] p-3" onPointerDown={(e) => e.stopPropagation()}>
+            <PopoverContent
+              align="start"
+              sideOffset={6}
+              className="w-[370px] p-3 z-[1000]"
+              onPointerDown={(e) => e.stopPropagation()}
+            >
               <Tabs value={iconPickerTab} onValueChange={(v) => setIconPickerTab(v === "icon" ? "icon" : "emoji")}>
                 <TabsList>
                   <TabsTrigger value="emoji">이모지</TabsTrigger>
@@ -3329,7 +3364,13 @@ export default function PostEditorPage() {
               {/* Mobile: NavDrawer - 모바일 왼쪽 페이지 트리 */}
               {isNavDrawerOpen ? (
                 <>
-                  <div className="fixed inset-0 top-[56px] z-50 bg-black/30" onClick={() => setIsNavDrawerOpen(false)} />
+                  <div
+                    className="fixed inset-0 top-[56px] z-50 bg-black/30"
+                    onClick={() => {
+                      if (Date.now() < navOverlayBlockUntilRef.current) return
+                      setIsNavDrawerOpen(false)
+                    }}
+                  />
                   <div className="fixed top-[56px] left-0 bottom-0 z-60 w-[320px] border-r border-border bg-background shadow-lg">
                     <div className="h-12 flex items-center justify-between px-3">
                       {renderCategoryHeader("font-semibold")}
