@@ -65,6 +65,7 @@ import { useTheme } from "@/hooks/useTheme"
 import { IconReduct } from "@/components/icons/IconReduct"
 import { SettingsDialog } from "@/components/settings/SettingsDialog"
 import { PlanDialog } from "@/components/settings/PlanDialog"
+import { TenantSettingsDialog } from "@/components/settings/TenantSettingsDialog"
 import EmojiPicker, { Theme } from "emoji-picker-react"
 import type { EmojiClickData } from "emoji-picker-react"
 
@@ -216,6 +217,16 @@ export function Sidebar({ className }: SidebarProps) {
       return ""
     }
   }) // personal | team | group (or empty while loading)
+  const [tenantId, setTenantId] = useState<string>(() => {
+    try {
+      const raw = window.localStorage.getItem(TENANT_INFO_CACHE_KEY)
+      const j = raw ? JSON.parse(raw) : null
+      const id = typeof j?.id === "string" ? String(j.id) : ""
+      return id
+    } catch {
+      return ""
+    }
+  })
   const [tenantName, setTenantName] = useState<string>(() => {
     try {
       const raw = window.localStorage.getItem(TENANT_INFO_CACHE_KEY)
@@ -227,7 +238,15 @@ export function Sidebar({ className }: SidebarProps) {
     }
   })
   const [tenantMemberships, setTenantMemberships] = useState<
-    Array<{ id: string; name?: string | null; tenant_type?: string | null; is_primary?: boolean }>
+    Array<{
+      id: string
+      name?: string | null
+      tenant_type?: string | null
+      is_primary?: boolean
+      role_slug?: string | null
+      role_name?: string | null
+      role_scope?: string | null
+    }>
   >([])
   const [languages, setLanguages] = useState<Language[]>([])
   const [currentLang, setCurrentLang] = useState("")
@@ -239,6 +258,17 @@ export function Sidebar({ className }: SidebarProps) {
     if (tenantType === "group") return "그룹 페이지"
     return "팀 페이지"
   }, [tenantName, tenantType])
+
+  const canManageTenant = useMemo(() => {
+    if (tenantType === "personal") return false
+    const targetId = tenantId || tenantMemberships.find((t) => t.is_primary)?.id || ""
+    if (!targetId) return false
+    const roleSlug = String(
+      tenantMemberships.find((t) => String(t.id) === String(targetId))?.role_slug || ""
+    ).toLowerCase()
+    const elevated = new Set(["owner", "admin", "tenant_admin", "tenant_owner"])
+    return elevated.has(roleSlug)
+  }, [tenantId, tenantMemberships, tenantType])
 
   const resolveTenantLabel = (t: { name?: string | null; tenant_type?: string | null }) => {
     if (String(t.tenant_type || "") === "personal") return "개인"
@@ -545,6 +575,7 @@ export function Sidebar({ className }: SidebarProps) {
   const [isMobileProfileOpen, setIsMobileProfileOpen] = useState(false)
   const [isSettingsDialogOpen, setIsSettingsDialogOpen] = useState(false)
   const [isPlanDialogOpen, setIsPlanDialogOpen] = useState(false)
+  const [isTenantSettingsDialogOpen, setIsTenantSettingsDialogOpen] = useState(false)
 
   const { theme, themeMode, setThemeMode } = useTheme()
   const userProfile = useMemo(() => {
@@ -780,15 +811,17 @@ export function Sidebar({ className }: SidebarProps) {
     const r = await fetch("/api/posts/tenant/current", { headers: h }).catch(() => null)
     if (!r || !r.ok) return
     const j = (await r.json().catch(() => ({}))) as Record<string, unknown>
+    const id = typeof j.id === "string" ? String(j.id) : ""
     const type = typeof j.tenant_type === "string" ? String(j.tenant_type) : ""
     const name = typeof j.name === "string" ? String(j.name).trim() : ""
+    if (id) setTenantId(id)
     if (type) setTenantType(type)
     if (name) setTenantName(name)
-    if (type || name) {
+    if (id || type || name) {
       try {
         window.localStorage.setItem(
           TENANT_INFO_CACHE_KEY,
-          JSON.stringify({ tenant_type: type || "", name: name || "" })
+          JSON.stringify({ id: id || "", tenant_type: type || "", name: name || "" })
         )
       } catch {
         // ignore
@@ -1173,6 +1206,9 @@ export function Sidebar({ className }: SidebarProps) {
 
   const settingsDialog = <SettingsDialog open={isSettingsDialogOpen} onOpenChange={setIsSettingsDialogOpen} />
   const planDialog = <PlanDialog open={isPlanDialogOpen} onOpenChange={setIsPlanDialogOpen} />
+  const tenantSettingsDialog = (
+    <TenantSettingsDialog open={isTenantSettingsDialogOpen} onOpenChange={setIsTenantSettingsDialogOpen} />
+  )
 
   const reorder = async (args: { type: "personal" | "team"; orderedIds: string[] }) => {
     const h = authHeaders()
@@ -1205,6 +1241,18 @@ export function Sidebar({ className }: SidebarProps) {
     setIsProfileOpen(false)
     setIsMobileProfileOpen(false)
   }
+
+  const openTenantSettingsDialog = () => {
+    if (!canManageTenant) return
+    setIsTenantSettingsDialogOpen(true)
+    setIsProfileOpen(false)
+    setIsMobileProfileOpen(false)
+  }
+
+  useEffect(() => {
+    if (canManageTenant) return
+    if (isTenantSettingsDialogOpen) setIsTenantSettingsDialogOpen(false)
+  }, [canManageTenant, isTenantSettingsDialogOpen])
 
   // Profile Popover Content (Shared) - 프로필 팝오버 콘텐츠 (공유)
   const ProfilePopoverContent = () => (
@@ -1392,6 +1440,7 @@ export function Sidebar({ className }: SidebarProps) {
         {CreateCategoryDialog}
         {settingsDialog}
         {planDialog}
+        {tenantSettingsDialog}
       </div>
     )
   }
@@ -1550,26 +1599,42 @@ export function Sidebar({ className }: SidebarProps) {
            {/* 팀/그룹 페이지 */}
            {tenantType && tenantType !== "personal" ? (
            <div className="flex flex-col gap-1 mb-2">
-              <div className="flex items-center justify-between px-2 h-8 opacity-70">
-                 <span 
-                   className="text-sm text-foreground cursor-pointer select-none"
-                   onClick={() => setIsTeamOpen(prev => !prev)}
-                 >
-                   {tenantPageLabel}
-                 </span>
-                 <button
-                   type="button"
-                  className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
-                   title="카테고리 추가"
-                   onClick={(e) => {
-                     e.preventDefault()
-                     e.stopPropagation()
-                    openCreateCategoryDialog("team")
-                   }}
-                 >
-                   <Plus className="size-4" />
-                 </button>
-              </div>
+             <div className="flex items-center justify-between px-2 h-8 opacity-70">
+                <span 
+                  className="text-sm text-foreground cursor-pointer select-none"
+                  onClick={() => setIsTeamOpen(prev => !prev)}
+                >
+                  {tenantPageLabel}
+                </span>
+                <div className="flex items-center gap-1">
+                  {canManageTenant ? (
+                    <button
+                      type="button"
+                      className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                      title="테넌트 관리"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        openTenantSettingsDialog()
+                      }}
+                    >
+                      <Settings className="size-4" />
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                    title="카테고리 추가"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      openCreateCategoryDialog("team")
+                    }}
+                  >
+                    <Plus className="size-4" />
+                  </button>
+                </div>
+             </div>
               {isTeamOpen && (
                 <>
                   {teamCatsLoading ? (
@@ -1654,6 +1719,7 @@ export function Sidebar({ className }: SidebarProps) {
         {CreateCategoryDialog}
         {settingsDialog}
         {planDialog}
+        {tenantSettingsDialog}
       </div>
     )
   }
@@ -1774,10 +1840,10 @@ export function Sidebar({ className }: SidebarProps) {
         <>
           {/* Personal Pages - 개인 페이지 */}
           <div className="flex flex-col p-2 gap-1">
-             <div className="flex items-center gap-2 px-2 h-8 opacity-70 cursor-pointer select-none">
+             <div className="flex items-center gap-2 px-2 h-8 opacity-70 cursor-pointer select-none group">
                 <span className="flex-1 text-left text-xs text-sidebar-foreground" onClick={() => setIsPersonalOpen((prev) => !prev)}>개인 페이지</span>
                 <div
-                  className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground"
+                  className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
                   role="button"
                   title="카테고리 추가"
                   onClick={(e) => {
@@ -2083,14 +2149,14 @@ export function Sidebar({ className }: SidebarProps) {
 
                      <DropdownMenu>
                        <DropdownMenuTrigger asChild>
-                         <button
-                           type="button"
-                          className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300 dark:hover:bg-neutral-700"
+                        <button
+                          type="button"
+                          className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300 dark:hover:bg-neutral-700 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
                            onClick={(e) => e.stopPropagation()}
                            onPointerDown={(e) => e.stopPropagation()}
                            title="메뉴"
                          >
-                           <Ellipsis className="size-3" />
+                          <Ellipsis className="size-3" />
                          </button>
                        </DropdownMenuTrigger>
                       <DropdownMenuContent
@@ -2160,12 +2226,26 @@ export function Sidebar({ className }: SidebarProps) {
           {/* Team Pages - 팀 페이지 (Team + Enterprise; exclude Personal) */}
           {tenantType !== "personal" ? (
             <div className="flex flex-col p-2 gap-1">
-              <div className="flex items-center gap-2 px-2 h-8 opacity-70 cursor-pointer select-none">
+              <div className="flex items-center gap-2 px-2 h-8 opacity-70 cursor-pointer select-none group">
                 <span className="flex-1 text-left text-xs text-sidebar-foreground" onClick={() => setIsTeamOpen((prev) => !prev)}>
                   {tenantPageLabel}
                 </span>
+                {canManageTenant ? (
+                  <div
+                    className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
+                    role="button"
+                    title="테넌트 관리"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      openTenantSettingsDialog()
+                    }}
+                  >
+                    <Settings className="size-full" />
+                  </div>
+                ) : null}
                 <div
-                  className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground"
+                  className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
                   role="button"
                   title="카테고리 추가"
                   onClick={(e) => {
@@ -2467,9 +2547,9 @@ export function Sidebar({ className }: SidebarProps) {
 
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <button
-                            type="button"
-                            className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300 dark:hover:bg-neutral-700"
+                         <button
+                           type="button"
+                           className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300 dark:hover:bg-neutral-700 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
                             onClick={(e) => e.stopPropagation()}
                             onPointerDown={(e) => e.stopPropagation()}
                             title="메뉴"
@@ -2573,11 +2653,11 @@ export function Sidebar({ className }: SidebarProps) {
               </div>
             </HoverCardTrigger>
             <HoverCardContent side="right" align="start" className="w-[280px] p-2">
-              <div className="flex items-center justify-between px-1 pb-2">
+              <div className="flex items-center justify-between px-1 pb-2 group">
                 <div className="text-sm font-semibold">개인 페이지</div>
                 <button
                   type="button"
-                  className="size-8 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800 flex items-center justify-center"
+                  className="size-8 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800 flex items-center justify-center opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
                   title="카테고리 추가"
                   onClick={(e) => {
                     e.preventDefault()
@@ -2666,20 +2746,36 @@ export function Sidebar({ className }: SidebarProps) {
               <HoverCardContent side="right" align="start" className="w-[280px] p-2">
                 <div className="flex items-center justify-between px-1 pb-2">
                   <div className="text-sm font-semibold">{tenantPageLabel}</div>
-                  <button
-                    type="button"
-                    className="size-8 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800 flex items-center justify-center"
-                    title="카테고리 추가"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                    // Shared categories are allowed for team + group (exclude personal).
-                    if (tenantType === "personal") return
-                    openCreateCategoryDialog("team")
-                    }}
-                  >
-                    <Plus className="size-4" />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    {canManageTenant ? (
+                      <button
+                        type="button"
+                        className="size-8 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800 flex items-center justify-center"
+                        title="테넌트 관리"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          openTenantSettingsDialog()
+                        }}
+                      >
+                        <Settings className="size-4" />
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="size-8 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800 flex items-center justify-center"
+                      title="카테고리 추가"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        // Shared categories are allowed for team + group (exclude personal).
+                        if (tenantType === "personal") return
+                        openCreateCategoryDialog("team")
+                      }}
+                    >
+                      <Plus className="size-4" />
+                    </button>
+                  </div>
                 </div>
                 <Separator />
                 <ScrollArea className="h-[360px]">
@@ -2779,6 +2875,7 @@ export function Sidebar({ className }: SidebarProps) {
       {CreateCategoryDialog}
       {settingsDialog}
       {planDialog}
+      {tenantSettingsDialog}
     </div>
   )
 }

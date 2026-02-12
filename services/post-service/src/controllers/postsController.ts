@@ -815,9 +815,13 @@ export async function listTenantMemberships(req: Request, res: Response) {
         t.id,
         t.name,
         t.tenant_type,
-        COALESCE(utr.is_primary_tenant, FALSE) AS is_primary
+        COALESCE(utr.is_primary_tenant, FALSE) AS is_primary,
+        r.slug AS role_slug,
+        r.name AS role_name,
+        r.scope AS role_scope
       FROM user_tenant_roles utr
       JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+      LEFT JOIN roles r ON r.id = utr.role_id
       WHERE utr.user_id = $1
         AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
       ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC, utr.granted_at ASC
