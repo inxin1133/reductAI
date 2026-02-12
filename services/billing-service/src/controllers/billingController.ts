@@ -103,6 +103,68 @@ export async function listBillingPlans(req: Request, res: Response) {
   }
 }
 
+export async function listPublicBillingPlans(req: Request, res: Response) {
+  try {
+    const q = toStr(req.query.q)
+    const tier = toStr(req.query.tier)
+    const tenantType = toStr(req.query.tenant_type)
+
+    const limit = Math.min(toInt(req.query.limit, 50) ?? 50, 200)
+    const offset = toInt(req.query.offset, 0) ?? 0
+
+    const where: string[] = ["is_active = TRUE"]
+    const params: any[] = []
+
+    if (tier) {
+      where.push(`tier = $${params.length + 1}`)
+      params.push(tier)
+    }
+    if (tenantType) {
+      where.push(`tenant_type = $${params.length + 1}`)
+      params.push(tenantType)
+    }
+    if (q) {
+      where.push(
+        `(
+          slug ILIKE $${params.length + 1}
+          OR name ILIKE $${params.length + 1}
+        )`
+      )
+      params.push(`%${q}%`)
+    }
+
+    const whereSql = `WHERE ${where.join(" AND ")}`
+
+    const countRes = await query(`SELECT COUNT(*)::int AS total FROM billing_plans ${whereSql}`, params)
+
+    const listRes = await query(
+      `
+      SELECT
+        id, slug, name, tier, tenant_type, description,
+        included_seats, min_seats, max_seats,
+        extra_seat_price_usd, storage_limit_mb,
+        is_active, sort_order, metadata, created_at, updated_at
+      FROM billing_plans
+      ${whereSql}
+      ORDER BY sort_order ASC, created_at DESC
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `,
+      [...params, limit, offset]
+    )
+
+    return res.json({
+      ok: true,
+      total: countRes.rows[0]?.total ?? 0,
+      limit,
+      offset,
+      rows: listRes.rows,
+    })
+  } catch (e: any) {
+    console.error("listPublicBillingPlans error:", e)
+    return res.status(500).json({ message: "Failed to list public billing plans", details: String(e?.message || e) })
+  }
+}
+
 export async function createBillingPlan(req: Request, res: Response) {
   try {
     const slug = toStr(req.body?.slug)
@@ -399,6 +461,78 @@ export async function listBillingPlanPrices(req: Request, res: Response) {
   } catch (e: any) {
     console.error("listBillingPlanPrices error:", e)
     return res.status(500).json({ message: "Failed to list billing plan prices", details: String(e?.message || e) })
+  }
+}
+
+export async function listPublicBillingPlanPrices(req: Request, res: Response) {
+  try {
+    const q = toStr(req.query.q)
+    const planId = toStr(req.query.plan_id)
+    const billingCycle = toStr(req.query.billing_cycle)
+
+    const limit = Math.min(toInt(req.query.limit, 50) ?? 50, 200)
+    const offset = toInt(req.query.offset, 0) ?? 0
+
+    const where: string[] = ["p.status = 'active'", "b.is_active = TRUE", "p.effective_at <= NOW()"]
+    const params: any[] = []
+
+    if (planId) {
+      where.push(`p.plan_id = $${params.length + 1}`)
+      params.push(planId)
+    }
+    if (billingCycle) {
+      where.push(`p.billing_cycle = $${params.length + 1}`)
+      params.push(billingCycle)
+    }
+    if (q) {
+      where.push(
+        `(
+          b.slug ILIKE $${params.length + 1}
+          OR b.name ILIKE $${params.length + 1}
+        )`
+      )
+      params.push(`%${q}%`)
+    }
+
+    const whereSql = `WHERE ${where.join(" AND ")}`
+
+    const countRes = await query(
+      `
+      SELECT COUNT(*)::int AS total
+      FROM billing_plan_prices p
+      JOIN billing_plans b ON b.id = p.plan_id
+      ${whereSql}
+      `,
+      params
+    )
+
+    const listRes = await query(
+      `
+      SELECT
+        p.*,
+        b.slug AS plan_slug,
+        b.name AS plan_name,
+        b.tier AS plan_tier,
+        b.tenant_type AS plan_tenant_type
+      FROM billing_plan_prices p
+      JOIN billing_plans b ON b.id = p.plan_id
+      ${whereSql}
+      ORDER BY b.sort_order ASC, b.name ASC, p.billing_cycle ASC, p.version DESC, p.effective_at DESC
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `,
+      [...params, limit, offset]
+    )
+
+    return res.json({
+      ok: true,
+      total: countRes.rows[0]?.total ?? 0,
+      limit,
+      offset,
+      rows: listRes.rows,
+    })
+  } catch (e: any) {
+    console.error("listPublicBillingPlanPrices error:", e)
+    return res.status(500).json({ message: "Failed to list public billing plan prices", details: String(e?.message || e) })
   }
 }
 

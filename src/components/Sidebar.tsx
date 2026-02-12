@@ -1,27 +1,29 @@
 import {
-  Bot, 
-  Clock, 
-  Save, 
-  Plus, 
-  Trash2, 
-  PieChart, 
-  Settings,   
-  ChevronsUpDown,
-  PanelLeftClose,
+  BadgeDollarSign,
   BookOpen,
-  Share2,
-  User,
-  Wallet,
-  Sun,
-  Moon,
-  Monitor,
+  Bot,
   Check,
   ChevronRight,
-  Pencil,
+  ChevronsUpDown,
+  Clock,
+  Ellipsis,
   LogOut,
   Menu,
+  MessageSquareMore,
+  Monitor,
+  Moon,
+  PanelLeftClose,
+  Pencil,
+  PieChart,
+  Plus,
+  Save,
+  Settings,
+  Share2,
+  Sun,
+  Trash2,
+  User,
+  Wallet,
   X,
-  Ellipsis
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { handleSessionExpired, isSessionExpired, resetSessionExpiredGuard } from "@/lib/session"
@@ -61,6 +63,8 @@ import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
 import { useTheme } from "@/hooks/useTheme"
 import { IconReduct } from "@/components/icons/IconReduct"
+import { SettingsDialog } from "@/components/settings/SettingsDialog"
+import { PlanDialog } from "@/components/settings/PlanDialog"
 import EmojiPicker, { Theme } from "emoji-picker-react"
 import type { EmojiClickData } from "emoji-picker-react"
 
@@ -539,6 +543,8 @@ export function Sidebar({ className }: SidebarProps) {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [isMobile, setIsMobile] = useState(false)
   const [isMobileProfileOpen, setIsMobileProfileOpen] = useState(false)
+  const [isSettingsDialogOpen, setIsSettingsDialogOpen] = useState(false)
+  const [isPlanDialogOpen, setIsPlanDialogOpen] = useState(false)
 
   const { theme, themeMode, setThemeMode } = useTheme()
   const userProfile = useMemo(() => {
@@ -1165,6 +1171,9 @@ export function Sidebar({ className }: SidebarProps) {
     </AlertDialog>
   )
 
+  const settingsDialog = <SettingsDialog open={isSettingsDialogOpen} onOpenChange={setIsSettingsDialogOpen} />
+  const planDialog = <PlanDialog open={isPlanDialogOpen} onOpenChange={setIsPlanDialogOpen} />
+
   const reorder = async (args: { type: "personal" | "team"; orderedIds: string[] }) => {
     const h = authHeaders()
     if (!h.Authorization) return
@@ -1184,6 +1193,18 @@ export function Sidebar({ className }: SidebarProps) {
     }
     resetSessionExpiredGuard()
   }, [navigate])
+
+  const openSettingsDialog = () => {
+    setIsSettingsDialogOpen(true)
+    setIsProfileOpen(false)
+    setIsMobileProfileOpen(false)
+  }
+
+  const openPlanDialog = () => {
+    setIsPlanDialogOpen(true)
+    setIsProfileOpen(false)
+    setIsMobileProfileOpen(false)
+  }
 
   // Profile Popover Content (Shared) - 프로필 팝오버 콘텐츠 (공유)
   const ProfilePopoverContent = () => (
@@ -1228,10 +1249,22 @@ export function Sidebar({ className }: SidebarProps) {
 
       {/* Settings Section - 설정 섹션 */}
       <div className="flex flex-col gap-0 px-1">
-        <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
+        <button
+          type="button"
+          className="flex w-full gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors text-left"
+          onClick={openSettingsDialog}
+        >
           <Settings className="size-4 text-popover-foreground shrink-0" />
-          <p className="text-sm text-popover-foreground flex-1">개인정보 관리</p>
-        </div>
+          <p className="text-sm text-popover-foreground flex-1">개인 설정</p>
+        </button>
+        <button
+          type="button"
+          className="flex w-full gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors text-left"
+          onClick={openPlanDialog}
+        >
+          <BadgeDollarSign className="size-4 text-popover-foreground shrink-0" />
+          <p className="text-sm text-popover-foreground flex-1">요금제</p>
+        </button>
         <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
           <Wallet className="size-4 text-popover-foreground shrink-0" />
           <p className="text-sm text-popover-foreground flex-1">결제 관리</p>
@@ -1357,6 +1390,8 @@ export function Sidebar({ className }: SidebarProps) {
         </Popover>
         {CategoryDeleteDialog}
         {CreateCategoryDialog}
+        {settingsDialog}
+        {planDialog}
       </div>
     )
   }
@@ -1610,13 +1645,15 @@ export function Sidebar({ className }: SidebarProps) {
                  <span className="text-base text-foreground">대시보드</span>
               </div>
               <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800">
-                 <Settings className="size-5" />
-                 <span className="text-base text-foreground">서비스</span>
+                 <MessageSquareMore className="size-5" />
+                 <span className="text-base text-foreground">문의</span>
               </div>
            </div>
         </div>
         {CategoryDeleteDialog}
         {CreateCategoryDialog}
+        {settingsDialog}
+        {planDialog}
       </div>
     )
   }
@@ -2733,13 +2770,15 @@ export function Sidebar({ className }: SidebarProps) {
           )}
         >
            <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-             <Settings className="size-full" />
+             <MessageSquareMore className="size-full" />
            </div>
-           {isOpen && <span className="text-sm text-sidebar-foreground">팀/그룹 관리</span>}
+           {isOpen && <span className="text-sm text-sidebar-foreground">문의</span>}
          </div>
       </div>
       {CategoryDeleteDialog}
       {CreateCategoryDialog}
+      {settingsDialog}
+      {planDialog}
     </div>
   )
 }
