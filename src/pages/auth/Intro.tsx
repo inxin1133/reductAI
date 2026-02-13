@@ -170,7 +170,7 @@ export default function Intro() {
             <AlertDialogDescription>다시 로그인해 주세요.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogAction>확인</AlertDialogAction>
+            <AlertDialogAction autoFocus>확인</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

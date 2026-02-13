@@ -280,17 +280,13 @@ function TimelineSidebarList({
                 </div>
                 <div className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                   <DropdownMenu onOpenChange={(open) => onMenuOpenChange?.(open)}>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="size-4 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-700"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                        }}
-                      >
-                        <MoreHorizontal className="size-3" />
-                      </Button>
+                    <DropdownMenuTrigger
+                      className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-200 dark:hover:bg-neutral-700"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                      }}
+                    >
+                      <MoreHorizontal className="size-3" />
                     </DropdownMenuTrigger>
                     <DropdownMenuContent
                       align="end"
@@ -571,8 +567,7 @@ function TimelineAttachmentThumb({ src, alt }: { src: string; alt: string }) {
     )
   }
 
-  return (
-    // eslint-disable-next-line jsx-a11y/alt-text
+  return (  
     <img
       src={nextSrc}
       alt={alt || "attachment"}
@@ -768,6 +763,14 @@ export default function Timeline() {
   })
   const [isMobile, setIsMobile] = React.useState(false)
   const [sidebarWidth, setSidebarWidth] = React.useState<number>(() => readSidebarWidthFromStorage())
+  const userInitial = React.useMemo(() => {
+    if (typeof window === "undefined") return "U"
+    const rawName = String(localStorage.getItem("user_name") || "").trim()
+    const rawEmail = String(localStorage.getItem("user_email") || "").trim()
+    const nameFromEmail = rawEmail ? rawEmail.split("@")[0] : ""
+    const name = rawName || nameFromEmail || "U"
+    return Array.from(name.trim() || "U")[0] || "U"
+  }, [])
   const resizeStateRef = React.useRef<{ startX: number; startW: number; lastW: number; dragging: boolean }>({
     startX: 0,
     startW: SIDEBAR_WIDTH_DEFAULT,
@@ -2027,15 +2030,11 @@ export default function Timeline() {
               open={hoverCardOpen || hoverMenuOpen || hoverRenameOpen}
               onOpenChange={setHoverCardOpen}
             >
-              <HoverCardTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 shrink-0 hover:bg-accent"
-                  onClick={() => setIsSidebarOpen(true)}
-                >
-                  <GalleryVerticalEnd className="size-4" />
-                </Button>
+              <HoverCardTrigger
+                className="inline-flex items-center justify-center size-8 shrink-0 rounded-md hover:bg-accent cursor-pointer"
+                onClick={() => setIsSidebarOpen(true)}
+              >
+                <GalleryVerticalEnd className="size-4" />
               </HoverCardTrigger>
               <HoverCardContent side="right" align="start" className="w-[220px] h-[600px] pl-2 pr-1 flex flex-col">
                 <TimelineSidebarList
@@ -2298,8 +2297,8 @@ export default function Timeline() {
                             })()}
                             <p className="text-base text-primary whitespace-pre-wrap">{m.content}</p>
                           </div>
-                           <div className="size-6 bg-teal-500 rounded-[4px] flex items-center justify-center shrink-0">
-                             <span className="text-white text-sm font-bold">김</span>
+                          <div className="size-6 bg-teal-500 rounded-[4px] flex items-center justify-center shrink-0">
+                             <span className="text-white text-sm font-bold">{userInitial}</span>
                            </div>
                          </div>
                        </div>

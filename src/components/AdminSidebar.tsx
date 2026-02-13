@@ -29,6 +29,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useTheme } from "@/hooks/useTheme"
+import { adminFetch } from "@/lib/adminFetch"
 
 type AdminSidebarProps = {
   className?: string
@@ -112,13 +113,43 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
     }
   }, [isMobile, isOpen])
 
-  // 임시 사용자 데이터
-  const user = {
-    name: "김가나",
-    role: "관리자",
-    initial: "김",
-    email: "admin@reductai.com"
-  }
+  const [user, setUser] = useState(() => {
+    const name = String(localStorage.getItem("user_name") || "").trim() || "관리자"
+    const email = String(localStorage.getItem("user_email") || "").trim() || "-"
+    const initial = (name || email || "A").trim().charAt(0) || "A"
+    return {
+      name,
+      role: "관리자",
+      initial,
+      email,
+    }
+  })
+
+  useEffect(() => {
+    const id = String(localStorage.getItem("user_id") || "").trim()
+    if (!id) return
+    adminFetch(`/api/users/${encodeURIComponent(id)}`)
+      .then(async (res) => {
+        if (!res.ok) return
+        const data = (await res.json()) as {
+          email?: string | null
+          full_name?: string | null
+          role_name?: string | null
+          role_slug?: string | null
+        }
+        const name = String(data.full_name || "").trim() || "관리자"
+        const email = String(data.email || "").trim() || "-"
+        const role =
+          String(data.role_name || "").trim() ||
+          String(data.role_slug || "").trim() ||
+          "관리자"
+        const initial = (name || email || "A").trim().charAt(0) || "A"
+        setUser({ name, email, role, initial })
+      })
+      .catch(() => {
+        // ignore fetch errors; fallback to localStorage
+      })
+  }, [])
 
   const handleLogout = () => {
     // 세션 및 토큰 정리

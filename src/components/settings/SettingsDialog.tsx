@@ -1,8 +1,7 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Dialog, DialogClose, DialogContent } from "@/components/ui/dialog"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
-  Banknote,
   ChevronsUp,
   Coins,
   CreditCard,
@@ -15,15 +14,18 @@ import {
   SquareAsterisk,
   User,
   X,
+  ClipboardList,
+  NotebookPen,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 type SettingsDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
+  initialMenu?: SettingsMenuId
 }
 
-type SettingsMenuId =
+export type SettingsMenuId =
   | "profile"
   | "password"
   | "credits"
@@ -32,8 +34,9 @@ type SettingsMenuId =
   | "storage"
   | "subscription"
   | "invoices"
-  | "payments"
   | "billing"
+  | "payments"
+  | "transactions"
 
 const PERSONAL_MENUS = [
   { id: "profile" as const, label: "사용자 정보", icon: User },
@@ -47,8 +50,9 @@ const PERSONAL_MENUS = [
 const BILLING_MENUS = [
   { id: "subscription" as const, label: "구독 관리", icon: HandHelping },
   { id: "invoices" as const, label: "청구서", icon: ReceiptText },
+  { id: "billing" as const, label: "청구 관리", icon: NotebookPen },
   { id: "payments" as const, label: "결제 수단", icon: CreditCard },
-  { id: "billing" as const, label: "결제 관리", icon: Banknote },
+  { id: "transactions" as const, label: "결제 내역", icon: ClipboardList },
 ]
 
 const SettingsDialogSidebarMenu = ({
@@ -119,7 +123,7 @@ const SettingsDialogSidebarMenu = ({
   </>
 )
 
-export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
+export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDialogProps) {
   const [activeMenu, setActiveMenu] = useState<SettingsMenuId>("profile")
 
   const activeLabel = useMemo(() => {
@@ -128,6 +132,15 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       BILLING_MENUS.find((item) => item.id === activeMenu)
     return menu?.label ?? "사용자 정보"
   }, [activeMenu])
+
+  useEffect(() => {
+    if (!open) return
+    if (initialMenu) {
+      setActiveMenu(initialMenu)
+      return
+    }
+    setActiveMenu("profile")
+  }, [open, initialMenu])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -144,14 +157,11 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-2">
                 <Popover>
-                  <PopoverTrigger asChild>
-                    <button
-                      type="button"
-                      className="flex size-8 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:hidden"
-                      aria-label="메뉴"
-                    >
-                      <Menu className="size-4" />
-                    </button>
+                  <PopoverTrigger
+                    className="flex size-8 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:hidden"
+                    aria-label="메뉴"
+                  >
+                    <Menu className="size-4" />
                   </PopoverTrigger>
                   <PopoverContent align="start" side="bottom" sideOffset={8} className="w-56 p-0">
                     <div className="flex flex-col rounded-lg border border-sidebar-border bg-sidebar">
@@ -161,14 +171,11 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 </Popover>
                 <h2 className="text-base font-bold text-foreground">{activeLabel}</h2>
               </div>
-              <DialogClose asChild>
-                <button
-                  type="button"
-                  className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  aria-label="Close"
-                >
-                  <X className="size-4" />
-                </button>
+              <DialogClose
+                className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                aria-label="Close"
+              >
+                <X className="size-4" />
               </DialogClose>
             </div>
 
@@ -343,6 +350,22 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                   </div>
                 </div>
               ) : null}
+              {activeMenu === "billing" ? (
+                <div className="grid gap-4">
+                  <div className="rounded-lg border border-border p-4">
+                    <div className="text-sm font-semibold text-foreground">청구 정보</div>
+                    <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
+                      <div className="rounded-md border border-border px-3 py-2">회사명: Reduct AI</div>
+                      <div className="rounded-md border border-border px-3 py-2">결제 이메일: billing@reduct.ai</div>
+                      <div className="rounded-md border border-border px-3 py-2">세금 번호: KR-123-45-67890</div>
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border p-4">
+                    <div className="text-sm font-semibold text-foreground">청구 주소</div>
+                    <div className="mt-3 text-sm text-muted-foreground">서울시 강남구 테헤란로 123, 7층</div>
+                  </div>
+                </div>
+              ) : null}
 
               {activeMenu === "payments" ? (
                 <div className="grid gap-4">
@@ -365,22 +388,39 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 </div>
               ) : null}
 
-              {activeMenu === "billing" ? (
-                <div className="grid gap-4">
-                  <div className="rounded-lg border border-border p-4">
-                    <div className="text-sm font-semibold text-foreground">청구 정보</div>
-                    <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
-                      <div className="rounded-md border border-border px-3 py-2">회사명: Reduct AI</div>
-                      <div className="rounded-md border border-border px-3 py-2">결제 이메일: billing@reduct.ai</div>
-                      <div className="rounded-md border border-border px-3 py-2">세금 번호: KR-123-45-67890</div>
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-border p-4">
-                    <div className="text-sm font-semibold text-foreground">청구 주소</div>
-                    <div className="mt-3 text-sm text-muted-foreground">서울시 강남구 테헤란로 123, 7층</div>
+              {activeMenu === "transactions" ? (
+                <div className="rounded-lg border border-border p-4">
+                  <div className="text-sm font-semibold text-foreground">결제 내역</div>
+                  <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
+                    {[
+                      ["2026-02-01", "Premium 연간", "Visa · 1234", "$600.00", "결제 완료"],
+                      ["2025-02-01", "Premium 연간", "Visa · 1234", "$600.00", "결제 완료"],
+                      ["2024-02-01", "Premium 연간", "Mastercard · 5678", "$600.00", "결제 완료"],
+                    ].map((row) => (
+                      <div
+                        key={`${row[0]}-${row[1]}`}
+                        className="flex flex-col gap-1 rounded-md border border-border px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+                      >
+                        <div className="flex flex-col">
+                          <span className="text-foreground">{row[1]}</span>
+                          <span className="text-xs text-muted-foreground">{row[0]}</span>
+                        </div>
+                        <span className="text-xs text-muted-foreground">{row[2]}</span>
+                        <span className="text-foreground">{row[3]}</span>
+                        <button
+                          type="button"
+                          className="w-fit rounded-md border border-border px-2 py-1 text-xs hover:bg-accent"
+                        >
+                          영수증
+                        </button>
+                        <span className="text-xs text-emerald-600">{row[4]}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               ) : null}
+
+              
             </div>
           </div>
         </div>

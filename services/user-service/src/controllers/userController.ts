@@ -63,9 +63,24 @@ export const getUser = async (req: Request, res: Response) => {
     const { id } = req.params;
     const query = `
       SELECT 
-        id, email, full_name, status, email_verified, last_login_at, created_at, updated_at, metadata
-      FROM users 
-      WHERE id = $1 AND deleted_at IS NULL
+        u.id,
+        u.email,
+        u.full_name,
+        u.status,
+        u.email_verified,
+        u.last_login_at,
+        u.created_at,
+        u.updated_at,
+        u.metadata,
+        r.name as role_name,
+        r.slug as role_slug,
+        r.id as role_id
+      FROM users u
+      LEFT JOIN user_roles ur ON u.id = ur.user_id
+      LEFT JOIN roles r ON ur.role_id = r.id AND r.scope = 'platform'
+      WHERE u.id = $1 AND u.deleted_at IS NULL
+      ORDER BY ur.granted_at DESC NULLS LAST
+      LIMIT 1
     `;
     const { rows } = await pool.query(query, [id]);
 

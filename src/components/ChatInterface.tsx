@@ -2811,10 +2811,11 @@ export function ChatInterface({
 
                     <div className="flex flex-1 gap-2 items-center relative shrink-0">
                       <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button type="button" variant="ghost" size="icon" className="rounded-full">
-                            <Plus className="size-6" />
-                          </Button>
+                        <DropdownMenuTrigger
+                          type="button"
+                          className="inline-flex items-center justify-center size-8 rounded-full hover:bg-accent hover:text-accent-foreground"
+                        >
+                          <Plus className="size-6" />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="start" className="w-56">
                           <DropdownMenuLabel>첨부</DropdownMenuLabel>
@@ -2861,9 +2862,11 @@ export function ChatInterface({
                         </DropdownMenuContent>
                       </DropdownMenu>
                       <Tooltip>
-                        <TooltipTrigger asChild>
+                        <TooltipTrigger
+                          className={uiSelectedType === "text" ? "flex items-center gap-1" : "hidden"}
+                        >
                           {uiSelectedType === "text" ? (
-                            <div className="flex items-center gap-1">
+                            <>
                               <span className="text-sm hidden md:block text-muted-foreground">웹 허용</span>
                               <Globe className="size-4 md:hidden text-muted-foreground" />
                               <Switch
@@ -2871,10 +2874,8 @@ export function ChatInterface({
                                 disabled={!webSearchEnabled || !webSearchProviderAllowed}
                                 onCheckedChange={(v) => setWebAllowed(Boolean(v))}
                               />
-                            </div>
-                          ) : (
-                            <div className="hidden" />
-                          )}
+                            </>
+                          ) : null}
                         </TooltipTrigger>
                         <TooltipContent>
                           <p>
@@ -2950,11 +2951,16 @@ export function ChatInterface({
                     <div className="flex gap-[10px] items-center relative shrink-0" >
                       {/* 모델 선택 드롭다운 */}
                     <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant={isCompact ? "outline" : "ghost"} className={cn(isCompact ? "h-[36px] rounded-lg gap-2 px-3" : "h-[36px] rounded-[8px] gap-2 px-4")}>
-                          {String(uiSelectedModel?.display_name || "").trim() || "-"}
-                          <ChevronDown className="size-4" />
-                        </Button>
+                      <DropdownMenuTrigger
+                        className={cn(
+                          "inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
+                          isCompact
+                            ? "h-[36px] rounded-lg gap-2 px-3 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground"
+                            : "h-[36px] rounded-[8px] gap-2 px-4 hover:bg-accent hover:text-accent-foreground"
+                        )}
+                      >
+                        {String(uiSelectedModel?.display_name || "").trim() || "-"}
+                        <ChevronDown className="size-4" />
                       </DropdownMenuTrigger>
                       <DropdownMenuContent className="w-[160px]" align="start">
                         <DropdownMenuLabel>모델 선택</DropdownMenuLabel>
@@ -3206,12 +3212,10 @@ export function ChatInterface({
                           <div className="flex flex-1"></div>
                         </div>
                         <DrawerFooter>
-                          <DrawerClose asChild>
-                            <div className="w-full flex items-center justify-center">
-                              <Button variant="outline" className="w-full min-w-[360px] max-w-[360px]">
-                                닫기
-                              </Button>
-                            </div>
+                          <DrawerClose className="w-full flex items-center justify-center">
+                            <span className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2 w-full min-w-[360px] max-w-[360px]">
+                              닫기
+                            </span>
                           </DrawerClose>
                         </DrawerFooter>
                       </DrawerContent>
