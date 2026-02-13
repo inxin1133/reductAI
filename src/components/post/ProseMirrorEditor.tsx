@@ -1385,6 +1385,7 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
       },
       attributes: {
         class: "pm-editor ProseMirror",
+        "data-pdf-section": "body",
       },
     })
     viewRef.current = view

@@ -46,6 +46,14 @@ import {
 } from "@/components/ui/breadcrumb"
 import { Card } from "@/components/ui/card"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -58,7 +66,9 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { toast } from "sonner"
 import EmojiPicker, { Theme } from "emoji-picker-react"
@@ -122,6 +132,144 @@ type MyPageCategory = {
   name: string
   icon?: string | null
 }
+
+type PdfOptions = {
+  includePath: boolean
+  includeTitle: boolean
+  includeBody: boolean
+  includeMeta: boolean
+}
+
+const PDF_OPTIONS_KEY = "reductai:posts:pdfOptions"
+const DEFAULT_PDF_OPTIONS: PdfOptions = {
+  includePath: false,
+  includeTitle: false,
+  includeBody: true,
+  includeMeta: false,
+}
+
+function parsePdfOptions(raw: unknown): PdfOptions {
+  if (!raw || typeof raw !== "object") return { ...DEFAULT_PDF_OPTIONS }
+  const obj = raw as Record<string, unknown>
+  return {
+    includePath: Boolean(obj.includePath),
+    includeTitle: Boolean(obj.includeTitle),
+    includeBody: "includeBody" in obj ? Boolean(obj.includeBody) : DEFAULT_PDF_OPTIONS.includeBody,
+    includeMeta: "includeMeta" in obj ? Boolean(obj.includeMeta) : DEFAULT_PDF_OPTIONS.includeMeta,
+  }
+}
+
+function readPdfOptionsFromStorage(): PdfOptions {
+  try {
+    if (typeof window === "undefined") return { ...DEFAULT_PDF_OPTIONS }
+    const raw = window.localStorage.getItem(PDF_OPTIONS_KEY)
+    if (!raw) return { ...DEFAULT_PDF_OPTIONS }
+    return parsePdfOptions(JSON.parse(raw))
+  } catch {
+    return { ...DEFAULT_PDF_OPTIONS }
+  }
+}
+
+function writePdfOptionsToStorage(next: PdfOptions) {
+  try {
+    if (typeof window === "undefined") return
+    window.localStorage.setItem(PDF_OPTIONS_KEY, JSON.stringify(next))
+  } catch {
+    // ignore
+  }
+}
+
+function sanitizePdfFilename(input: string) {
+  const cleaned = String(input || "")
+    .replace(/\s+/g, " ")
+    .replace(/[\\/:*?"<>|]+/g, "_")
+    .trim()
+  return cleaned || "post"
+}
+
+function normalizePdfClone(root: HTMLElement) {
+  root.querySelectorAll("[contenteditable]").forEach((node) => {
+    if (node instanceof HTMLElement) node.removeAttribute("contenteditable")
+  })
+  root.querySelectorAll("input, textarea").forEach((node) => {
+    if (node instanceof HTMLInputElement) {
+      node.setAttribute("value", node.value)
+      node.removeAttribute("placeholder")
+    } else if (node instanceof HTMLTextAreaElement) {
+      node.textContent = node.value
+      node.removeAttribute("placeholder")
+    }
+  })
+}
+
+function getPdfAuthorName() {
+  try {
+    if (typeof window === "undefined") return "사용자"
+    const rawName = String(window.localStorage.getItem("user_name") || "").trim()
+    const rawEmail = String(window.localStorage.getItem("user_email") || "").trim()
+    const nameFromEmail = rawEmail ? rawEmail.split("@")[0] : ""
+    return rawName || nameFromEmail || "사용자"
+  } catch {
+    return "사용자"
+  }
+}
+
+function formatPdfDate(date: Date) {
+  try {
+    return new Intl.DateTimeFormat("ko-KR", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(date)
+  } catch {
+    return date.toLocaleString("ko-KR")
+  }
+}
+
+function buildPdfMetadata(authorName: string, createdAt: Date) {
+  const wrap = document.createElement("div")
+  wrap.style.display = "flex"
+  wrap.style.flexDirection = "column"
+  wrap.style.gap = "2px"
+  wrap.style.fontSize = "12px"
+  wrap.style.color = "rgb(107, 114, 128)"
+  wrap.style.marginBottom = "8px"
+
+  const author = document.createElement("div")
+  author.textContent = `작성자: ${authorName}`
+  const date = document.createElement("div")
+  date.textContent = `내보낸 날짜: ${formatPdfDate(createdAt)}`
+  wrap.appendChild(author)
+  wrap.appendChild(date)
+  return wrap
+}
+
+function normalizePdfTitleClone(clone: HTMLElement, source: HTMLElement) {
+  const input = clone.querySelector("input")
+  if (!(input instanceof HTMLInputElement)) return
+  const sourceInput = source.querySelector("input")
+  const rawText = sourceInput instanceof HTMLInputElement ? sourceInput.value : input.value
+  const text = String(rawText || input.getAttribute("value") || input.getAttribute("placeholder") || "").trim()
+  const span = document.createElement("span")
+  span.textContent = text || "Untitled"
+  span.className = input.className
+    .replace(/\btruncate\b/g, "")
+    .replace(/\boverflow-hidden\b/g, "")
+    .replace(/\bwhitespace-nowrap\b/g, "")
+    .trim()
+  span.style.display = "block"
+  span.style.lineHeight = "1.2"
+  span.style.margin = "0"
+  span.style.padding = "0"
+  span.style.whiteSpace = "pre-wrap"
+  span.style.wordBreak = "break-word"
+  span.style.maxWidth = "100%"
+  input.replaceWith(span)
+}
+
 
 const LUCIDE_PRESETS = [
   { key: "File", label: "File", Icon: File },
@@ -781,6 +929,156 @@ export default function PostEditorPage() {
       // ignore (storage might be blocked)
     }
   }, [pmToolbarOpen])
+
+  const [pdfDialogOpen, setPdfDialogOpen] = useState(false)
+  const [pdfOptions, setPdfOptions] = useState<PdfOptions>(() => readPdfOptionsFromStorage())
+  const [pdfExporting, setPdfExporting] = useState(false)
+  const pdfCanExport =
+    pdfOptions.includePath || pdfOptions.includeTitle || pdfOptions.includeBody || pdfOptions.includeMeta
+  useEffect(() => {
+    writePdfOptionsToStorage(pdfOptions)
+  }, [pdfOptions])
+
+  const handleExportPdf = useCallback(async () => {
+    if (!pdfCanExport || pdfExporting) return
+    let container: HTMLDivElement | null = null
+    try {
+      setPdfExporting(true)
+      const authorName = getPdfAuthorName()
+      const exportedAt = new Date()
+      const root = document.querySelector<HTMLElement>("[data-pdf-root]")
+      const rootWidth = Math.max(320, Math.round(root?.getBoundingClientRect().width || 0))
+      const rootStyle = root ? window.getComputedStyle(root) : null
+      const bodyStyle = window.getComputedStyle(document.body)
+      const backgroundColor = "#ffffff"
+      const foregroundColor = "#111827"
+
+      const sections: Array<HTMLElement> = []
+      if (pdfOptions.includePath) {
+        const el = document.querySelector<HTMLElement>('[data-pdf-section="path"]')
+        if (el) sections.push(el)
+      }
+      if (pdfOptions.includeTitle) {
+        const el = document.querySelector<HTMLElement>('[data-pdf-section="title"]')
+        if (el) sections.push(el)
+      }
+      if (pdfOptions.includeBody) {
+        const el = document.querySelector<HTMLElement>('[data-pdf-section="body"]')
+        if (el) sections.push(el)
+      }
+
+      if (sections.length === 0) {
+        toast.error("PDF에 포함할 영역을 찾지 못했습니다.")
+        return
+      }
+
+      container = document.createElement("div")
+      container.style.position = "fixed"
+      container.style.left = "-10000px"
+      container.style.top = "0"
+      container.style.width = `${rootWidth || 800}px`
+      container.style.boxSizing = "border-box"
+      container.style.display = "flex"
+      container.style.flexDirection = "column"
+      container.style.gap = "12px"
+      container.style.backgroundColor = backgroundColor || "#fff"
+      container.style.color = foregroundColor
+      container.style.fontFamily = bodyStyle.fontFamily
+      container.style.fontSize = bodyStyle.fontSize
+      container.style.colorScheme = "light"
+      if (rootStyle) {
+        const rootPaddingTop = Number.parseFloat(rootStyle.paddingTop || "0")
+        container.style.paddingTop = `${Math.max(rootPaddingTop, 24)}px`
+        container.style.paddingRight = rootStyle.paddingRight
+        container.style.paddingBottom = rootStyle.paddingBottom
+        container.style.paddingLeft = rootStyle.paddingLeft
+      }
+
+      container.setAttribute("data-pdf-container", "1")
+      if (pdfOptions.includeMeta) {
+        container.appendChild(buildPdfMetadata(authorName, exportedAt))
+      }
+
+      sections.forEach((section) => {
+        const clone = section.cloneNode(true) as HTMLElement
+        normalizePdfClone(clone)
+        const sectionId = section.dataset.pdfSection
+        if (sectionId === "path") {
+          clone.style.marginTop = "8px"
+          clone.style.marginBottom = "4px"
+        }
+        if (sectionId === "title") {
+          normalizePdfTitleClone(clone, section)
+          clone.style.marginTop = "4px"
+          clone.style.alignItems = "center"
+        }
+        container?.appendChild(clone)
+      })
+      document.body.appendChild(container)
+
+      if ("fonts" in document) {
+        try {
+          await (document as Document & { fonts?: FontFaceSet }).fonts?.ready
+        } catch {
+          // ignore
+        }
+      }
+
+      const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import("html2canvas-pro"), import("jspdf")])
+      const scale = Math.min(2, window.devicePixelRatio || 1)
+      const canvas = await html2canvas(container, {
+        scale,
+        useCORS: true,
+        backgroundColor: backgroundColor || "#fff",
+        onclone: (doc) => {
+          doc.documentElement.classList.remove("dark")
+          doc.body.classList.remove("dark")
+          const clonedRoot = doc.querySelector('[data-pdf-container="1"]') as HTMLElement | null
+          if (clonedRoot) {
+            clonedRoot.style.colorScheme = "light"
+            clonedRoot.style.backgroundColor = backgroundColor || "#fff"
+            clonedRoot.style.color = foregroundColor
+          }
+        },
+      })
+      const imgData = canvas.toDataURL("image/png")
+      const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" })
+      const pageWidth = pdf.internal.pageSize.getWidth()
+      const pageHeight = pdf.internal.pageSize.getHeight()
+      const imgWidth = pageWidth
+      const imgHeight = (canvas.height * imgWidth) / canvas.width
+      let heightLeft = imgHeight
+      let position = 0
+
+      pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight)
+      heightLeft -= pageHeight
+      while (heightLeft > 0) {
+        position = heightLeft - imgHeight
+        pdf.addPage()
+        pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight)
+        heightLeft -= pageHeight
+      }
+
+      const baseName = sanitizePdfFilename(pageTitle || postId || "post")
+      pdf.save(`${baseName}.pdf`)
+      toast.success("PDF 저장이 완료되었습니다.")
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "PDF 저장에 실패했습니다."
+      toast.error(message)
+    } finally {
+      if (container?.parentNode) container.parentNode.removeChild(container)
+      setPdfExporting(false)
+    }
+  }, [
+    pdfCanExport,
+    pdfExporting,
+    pdfOptions.includeBody,
+    pdfOptions.includeMeta,
+    pdfOptions.includePath,
+    pdfOptions.includeTitle,
+    pageTitle,
+    postId,
+  ])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -3240,7 +3538,7 @@ export default function PostEditorPage() {
             </HoverCard>
           ) : null}
 
-          <Breadcrumb className="min-w-0 overflow-hidden flex-1">
+          <Breadcrumb className="min-w-0 overflow-hidden flex-1" data-pdf-section="path">
             <BreadcrumbList className="min-w-0 overflow-hidden flex-nowrap flex-1">
               {breadcrumbData.visible.map((c, idx) => {
                 const isLast = idx === breadcrumbData.visible.length - 1
@@ -3354,6 +3652,10 @@ export default function PostEditorPage() {
               페이지 너비 토글
             </TooltipContent>
           </Tooltip>
+          <Button variant="ghost" size="sm" onClick={() => setPdfDialogOpen(true)} disabled={pdfExporting}>
+            <FileText className="size-4 mr-2" />
+            PDF 저장
+          </Button>
         </div>
       }
       leftPane={
@@ -3472,7 +3774,10 @@ export default function PostEditorPage() {
       {/* Editor (Main Body slot) */}
       <div className="flex h-full w-full">
         <div ref={editorScrollRef} className="flex-1 h-full overflow-auto pt-[60px]">
-          <div className={[isWideLayout ? "w-full" : "max-w-4xl", "mx-auto px-12 xl:pr-[96px]", "relative"].join(" ")}>
+          <div
+            className={[isWideLayout ? "w-full" : "max-w-4xl", "mx-auto px-12 xl:pr-[96px]", "relative"].join(" ")}
+            data-pdf-root
+          >
             <div className="mb-4">
               {/* 페이지 상단 부분 숨기기  - 페이지명, 페이지아이디, 저장버전 */}
               <div className="text-xl font-semibold hidden h-0">Post Editor</div>
@@ -3510,7 +3815,7 @@ export default function PostEditorPage() {
 
                     return (
                       <Popover open={titleIconOpen} onOpenChange={setTitleIconOpen}>
-                        <div className="relative group/title flex items-center gap-2">
+                        <div className="relative group/title flex items-center gap-2" data-pdf-section="title">
                           {hasCustom ? (
                             <PopoverTrigger asChild>
                               <button
@@ -3818,6 +4123,69 @@ export default function PostEditorPage() {
         </div>
       </div>
     </AppShell>
+
+    <Dialog open={pdfDialogOpen} onOpenChange={setPdfDialogOpen}>
+      <DialogContent className="sm:max-w-[480px]">
+        <DialogHeader>
+          <DialogTitle>PDF 저장</DialogTitle>
+          <DialogDescription>PDF에 포함할 영역을 선택하세요.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <Checkbox
+              id="pdf-include-path"
+              checked={pdfOptions.includePath}
+              onCheckedChange={(checked) =>
+                setPdfOptions((prev) => ({ ...prev, includePath: checked === true }))
+              }
+            />
+            <Label htmlFor="pdf-include-path">페이지 경로</Label>
+          </div>
+          <div className="flex items-center gap-3">
+            <Checkbox
+              id="pdf-include-title"
+              checked={pdfOptions.includeTitle}
+              onCheckedChange={(checked) =>
+                setPdfOptions((prev) => ({ ...prev, includeTitle: checked === true }))
+              }
+            />
+            <Label htmlFor="pdf-include-title">제목</Label>
+          </div>
+          <div className="flex items-center gap-3">
+            <Checkbox
+              id="pdf-include-body"
+              checked={pdfOptions.includeBody}
+              onCheckedChange={(checked) =>
+                setPdfOptions((prev) => ({ ...prev, includeBody: checked === true }))
+              }
+              disabled
+            />
+            <Label htmlFor="pdf-include-body">본문</Label>
+          </div>
+          <div className="flex items-center gap-3">
+            <Checkbox
+              id="pdf-include-meta"              
+              checked={pdfOptions.includeMeta}
+              onCheckedChange={(checked) =>
+                setPdfOptions((prev) => ({ ...prev, includeMeta: checked === true }))
+              }
+            />
+            <Label htmlFor="pdf-include-meta">메타데이터(작성자/내보낸 날짜)</Label>
+          </div>
+          {!pdfCanExport ? (
+            <div className="text-xs text-muted-foreground">하나 이상의 항목을 선택하세요.</div>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setPdfDialogOpen(false)}>
+            취소
+          </Button>
+          <Button onClick={() => void handleExportPdf()} disabled={!pdfCanExport || pdfExporting}>
+            {pdfExporting ? "저장 중..." : "PDF 저장"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     {/* Embed block icon picker popover */}
     <Popover
