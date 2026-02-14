@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Dialog, DialogClose, DialogContent } from "@/components/ui/dialog"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Box, Coins, Gauge, Menu, Users, X } from "lucide-react"
@@ -17,6 +17,29 @@ const MENU_ITEMS: Array<{ id: MenuId; label: string; icon: typeof Box }> = [
   { id: "credits", label: "크레딧 운영", icon: Coins },
   { id: "usage", label: "사용내역", icon: Gauge },
 ]
+
+const TENANT_MENU_STORAGE_KEY = "reductai:tenantSettings:activeMenu"
+const TENANT_MENU_IDS = new Set<MenuId>(MENU_ITEMS.map((item) => item.id))
+
+function readTenantMenuFromStorage(): MenuId | null {
+  try {
+    if (typeof window === "undefined") return null
+    const raw = window.localStorage.getItem(TENANT_MENU_STORAGE_KEY)
+    if (!raw) return null
+    return TENANT_MENU_IDS.has(raw as MenuId) ? (raw as MenuId) : null
+  } catch {
+    return null
+  }
+}
+
+function writeTenantMenuToStorage(value: MenuId) {
+  try {
+    if (typeof window === "undefined") return
+    window.localStorage.setItem(TENANT_MENU_STORAGE_KEY, value)
+  } catch {
+    // ignore
+  }
+}
 
 const TenantSettingsSidebarMenu = ({
   activeId,
@@ -50,18 +73,34 @@ const TenantSettingsSidebarMenu = ({
 )
 
 export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialogProps) {
-  const [activeMenu, setActiveMenu] = useState<MenuId>("info")
+  const [activeMenu, setActiveMenu] = useState<MenuId>(() => readTenantMenuFromStorage() ?? "info")
+  const wasOpenRef = useRef(false)
 
   const activeLabel = useMemo(
     () => MENU_ITEMS.find((item) => item.id === activeMenu)?.label ?? "테넌트 정보",
     [activeMenu]
   )
 
+  useEffect(() => {
+    if (!open) {
+      wasOpenRef.current = false
+      return
+    }
+    if (wasOpenRef.current) return
+    wasOpenRef.current = true
+    const stored = readTenantMenuFromStorage()
+    if (stored) setActiveMenu(stored)
+  }, [open])
+
+  useEffect(() => {
+    writeTenantMenuToStorage(activeMenu)
+  }, [activeMenu])
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
-        className="max-w-[calc(100%-2rem)] overflow-hidden rounded-xl border border-border p-0 shadow-lg sm:max-w-[1000px]"
+        className="max-w-[calc(100%-48px)] overflow-hidden rounded-xl border border-border p-0 shadow-lg sm:max-w-[min(1000px,calc(100%-48px))]"
       >
         <div className="flex h-[700px] max-h-[calc(100vh-2rem)] w-full bg-background">
           <div className="hidden w-[200px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">

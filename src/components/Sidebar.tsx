@@ -402,20 +402,20 @@ export function Sidebar({ className }: SidebarProps) {
         let changed = false
         const next = deleted
           ? prev.filter((c) => {
-              const keep = String(c.id) !== id
-              if (!keep) changed = true
-              return keep
-            })
+            const keep = String(c.id) !== id
+            if (!keep) changed = true
+            return keep
+          })
           : prev.map((c) => {
-              if (String(c.id) !== id) return c
-              const patched = {
-                ...c,
-                ...(nextName !== undefined ? { name: nextName } : null),
-                ...(nextIcon !== undefined ? { icon: nextIcon } : null),
-              }
-              changed = true
-              return patched
-            })
+            if (String(c.id) !== id) return c
+            const patched = {
+              ...c,
+              ...(nextName !== undefined ? { name: nextName } : null),
+              ...(nextIcon !== undefined ? { icon: nextIcon } : null),
+            }
+            changed = true
+            return patched
+          })
         if (changed) {
           try {
             window.localStorage.setItem(PERSONAL_CATS_CACHE_KEY, JSON.stringify(next))
@@ -431,20 +431,20 @@ export function Sidebar({ className }: SidebarProps) {
         let changed = false
         const next = deleted
           ? prev.filter((c) => {
-              const keep = String(c.id) !== id
-              if (!keep) changed = true
-              return keep
-            })
+            const keep = String(c.id) !== id
+            if (!keep) changed = true
+            return keep
+          })
           : prev.map((c) => {
-              if (String(c.id) !== id) return c
-              const patched = {
-                ...c,
-                ...(nextName !== undefined ? { name: nextName } : null),
-                ...(nextIcon !== undefined ? { icon: nextIcon } : null),
-              }
-              changed = true
-              return patched
-            })
+            if (String(c.id) !== id) return c
+            const patched = {
+              ...c,
+              ...(nextName !== undefined ? { name: nextName } : null),
+              ...(nextIcon !== undefined ? { icon: nextIcon } : null),
+            }
+            changed = true
+            return patched
+          })
         if (changed) {
           try {
             window.localStorage.setItem(TEAM_CATS_CACHE_KEY, JSON.stringify(next))
@@ -568,7 +568,7 @@ export function Sidebar({ className }: SidebarProps) {
       alert(msg || "카테고리 아이콘 변경에 실패했습니다.")
     }
   }
-  
+
   // Mobile menu state
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [isMobile, setIsMobile] = useState(false)
@@ -618,7 +618,7 @@ export function Sidebar({ className }: SidebarProps) {
         setIsMobileProfileOpen(false)
       }
     }
-    
+
     checkMobile()
     window.addEventListener('resize', checkMobile)
     return () => window.removeEventListener('resize', checkMobile)
@@ -1268,8 +1268,8 @@ export function Sidebar({ className }: SidebarProps) {
 
   // Profile Popover Content (Shared) - 프로필 팝오버 콘텐츠 (공유)
   const ProfilePopoverContent = () => (
-    <PopoverContent 
-      className="w-64 p-1 mx-2 z-[100]" 
+    <PopoverContent
+      className="w-64 p-1 mx-2 z-[100]"
       align="start"
       side="bottom"
       sideOffset={8}
@@ -1416,7 +1416,7 @@ export function Sidebar({ className }: SidebarProps) {
 
       {/* Logout Section - 로그아웃 섹션 */}
       <div className="flex flex-col gap-0 px-1 pb-1">
-        <div 
+        <div
           className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors"
           onClick={handleLogout}
         >
@@ -1432,22 +1432,22 @@ export function Sidebar({ className }: SidebarProps) {
     return (
       <div className="md:hidden fixed top-0 left-0 right-0 h-[56px] bg-background border-b border-border flex items-center justify-between px-3 z-50">
         <div className="flex items-center gap-3">
-          <div 
+          <div
             className="size-6 cursor-pointer flex items-center justify-center"
             onClick={() => setIsMobileMenuOpen(true)}
           >
-             <Menu className="size-6" />
+            <Menu className="size-6" />
           </div>
           <div className="flex items-center gap-2">
             <p className="font-black text-base text-foreground">reduct</p>
           </div>
         </div>
-        
+
         {/* Mobile Profile Popover Trigger */}
         <Popover open={isMobileProfileOpen} onOpenChange={setIsMobileProfileOpen}>
           <PopoverTrigger asChild>
             <div className="size-8 bg-teal-500 rounded-md flex items-center justify-center shrink-0 cursor-pointer">
-               <span className="text-white font-bold text-sm">김</span>
+              <span className="text-white font-bold text-sm">김</span>
             </div>
           </PopoverTrigger>
           <ProfilePopoverContent />
@@ -1467,61 +1467,61 @@ export function Sidebar({ className }: SidebarProps) {
       <div className="fixed inset-0 z-50 bg-background flex flex-col">
         {/* 모바일 메뉴 헤더 */}
         <div className="h-[56px] flex items-center justify-between px-3 border-b border-border shrink-0">
-           <div className="flex items-center gap-3">
-              <div 
-                className="size-6 cursor-pointer flex items-center justify-center"
-                onClick={() => setIsMobileMenuOpen(false)}
-              >
-                 <X className="size-6" />
+          <div className="flex items-center gap-3">
+            <div
+              className="size-6 cursor-pointer flex items-center justify-center"
+              onClick={() => setIsMobileMenuOpen(false)}
+            >
+              <X className="size-6" />
+            </div>
+            <p className="font-black text-base text-foreground">menu</p>
+          </div>
+
+          {/* Mobile Menu Profile Popover Trigger */}
+          <Popover open={isMobileProfileOpen} onOpenChange={setIsMobileProfileOpen}>
+            <PopoverTrigger asChild>
+              <div className="size-8 bg-teal-500 rounded-md flex items-center justify-center shrink-0 cursor-pointer">
+                <span className="text-white font-bold text-sm">김</span>
               </div>
-              <p className="font-black text-base text-foreground">menu</p>
-           </div>
-           
-           {/* Mobile Menu Profile Popover Trigger */}
-           <Popover open={isMobileProfileOpen} onOpenChange={setIsMobileProfileOpen}>
-             <PopoverTrigger asChild>
-               <div className="size-8 bg-teal-500 rounded-md flex items-center justify-center shrink-0 cursor-pointer">
-                   <span className="text-white font-bold text-sm">김</span>
-               </div>
-             </PopoverTrigger>
-             <ProfilePopoverContent />
-           </Popover>
+            </PopoverTrigger>
+            <ProfilePopoverContent />
+          </Popover>
         </div>
 
         {/* 모바일 메뉴 콘텐츠 (데스크탑과 동일한 구조지만 전체 너비) */}
         <div className="flex-1 overflow-y-auto p-2 bg-background">
-           {/* 메인 메뉴 */}
-           <div className="flex flex-col gap-1 mb-2">
-             <div 
-               className={cn(
-                 "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+          {/* 메인 메뉴 */}
+          <div className="flex flex-col gap-1 mb-2">
+            <div
+              className={cn(
+                "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
                 isFrontAIActive
                   ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10 dark:bg-neutral-800"
                   : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
-               )}
-               onClick={() => {
-                 setIsMobileMenuOpen(false)
-                 navigate('/front-ai')
-               }}
-             >
-               <div className="size-5 flex items-center justify-center"><Bot className="size-full" /></div>
-               <span className="text-base text-foreground">프론트AI</span>
-             </div>
-             <div 
-               className={cn(
-                 "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+              )}
+              onClick={() => {
+                setIsMobileMenuOpen(false)
+                navigate('/front-ai')
+              }}
+            >
+              <div className="size-5 flex items-center justify-center"><Bot className="size-full" /></div>
+              <span className="text-base text-foreground">프론트AI</span>
+            </div>
+            <div
+              className={cn(
+                "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
                 isTimelineActive
                   ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10 dark:bg-neutral-800"
                   : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
-               )}
-               onClick={() => {
-                 setIsMobileMenuOpen(false)
-                 navigate('/timeline')
-               }}
-             >
-               <div className="size-5 flex items-center justify-center"><Clock className="size-full" /></div>
-               <span className="text-base text-foreground">타임라인</span>
-             </div>
+              )}
+              onClick={() => {
+                setIsMobileMenuOpen(false)
+                navigate('/timeline')
+              }}
+            >
+              <div className="size-5 flex items-center justify-center"><Clock className="size-full" /></div>
+              <span className="text-base text-foreground">타임라인</span>
+            </div>
             <div
               className={cn(
                 "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
@@ -1537,86 +1537,86 @@ export function Sidebar({ className }: SidebarProps) {
               <div className="size-5 flex items-center justify-center"><Save className="size-full" /></div>
               <span className="text-base text-foreground">생성 파일</span>
             </div>
-           </div>
+          </div>
 
-           {/* 개인 페이지 */}
-           <div className="flex flex-col gap-1 mb-2">
+          {/* 개인 페이지 */}
+          <div className="flex flex-col gap-1 mb-2">
+            <div className="flex items-center justify-between px-2 h-8 opacity-70">
+              <span
+                className="text-sm text-foreground cursor-pointer select-none"
+                onClick={() => setIsPersonalOpen(prev => !prev)}
+              >
+                개인 페이지
+              </span>
+              <button
+                type="button"
+                className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                title="카테고리 추가"
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  openCreateCategoryDialog("personal")
+                }}
+              >
+                <Plus className="size-4" />
+              </button>
+            </div>
+            {isPersonalOpen && (
+              <>
+                {personalCatsLoading ? (
+                  <div className="px-2 py-1 text-xs text-muted-foreground">Loading…</div>
+                ) : null}
+                {personalCategories.map((c) => {
+                  const isActive = isPostsActive && activeCategoryId === String(c.id)
+                  const choice = decodeIcon(c.icon)
+                  const DefaultIcon = BookOpen
+                  const IconEl = (() => {
+                    if (!choice) return <DefaultIcon className="size-5" />
+                    if (choice.kind === "emoji") return <span className="text-[18px] leading-none">{choice.value}</span>
+                    const Preset = LUCIDE_PRESET_MAP[choice.value]
+                    const Dyn = Preset || catLucideAll?.[choice.value]
+                    if (!Dyn) return <DefaultIcon className="size-5" />
+                    return <Dyn className="size-5" />
+                  })()
+                  return (
+                    <div
+                      key={c.id}
+                      className={cn(
+                        "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                        isActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                      )}
+                      onClick={() => {
+                        setIsMobileMenuOpen(false)
+                        navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
+                      }}
+                    >
+                      <div className="size-5 flex items-center justify-center">{IconEl}</div>
+                      <span className="text-base text-foreground truncate">{c.name || "New category"}</span>
+                    </div>
+                  )
+                })}
+                <div
+                  className={cn(
+                    "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                    isPersonalFilesActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                  )}
+                  onClick={() => {
+                    setIsMobileMenuOpen(false)
+                    navigate("/files/personal")
+                  }}
+                >
+                  <Save className="size-5" />
+                  <span className="text-base text-foreground">개인 파일</span>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* 팀/그룹 페이지 */}
+          {tenantType && tenantType !== "personal" ? (
+            <div className="flex flex-col gap-1 mb-2">
               <div className="flex items-center justify-between px-2 h-8 opacity-70">
-                 <span 
-                   className="text-sm text-foreground cursor-pointer select-none"
-                   onClick={() => setIsPersonalOpen(prev => !prev)}
-                 >
-                   개인 페이지
-                 </span>
-                 <button
-                   type="button"
-                  className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
-                   title="카테고리 추가"
-                   onClick={(e) => {
-                     e.preventDefault()
-                     e.stopPropagation()
-                    openCreateCategoryDialog("personal")
-                   }}
-                 >
-                   <Plus className="size-4" />
-                 </button>
-              </div>
-              {isPersonalOpen && (
-                <>
-                  {personalCatsLoading ? (
-                    <div className="px-2 py-1 text-xs text-muted-foreground">Loading…</div>
-                  ) : null}
-                  {personalCategories.map((c) => {
-                    const isActive = isPostsActive && activeCategoryId === String(c.id)
-                    const choice = decodeIcon(c.icon)
-                    const DefaultIcon = BookOpen
-                    const IconEl = (() => {
-                      if (!choice) return <DefaultIcon className="size-5" />
-                      if (choice.kind === "emoji") return <span className="text-[18px] leading-none">{choice.value}</span>
-                      const Preset = LUCIDE_PRESET_MAP[choice.value]
-                      const Dyn = Preset || catLucideAll?.[choice.value]
-                      if (!Dyn) return <DefaultIcon className="size-5" />
-                      return <Dyn className="size-5" />
-                    })()
-                    return (
-                      <div
-                        key={c.id}
-                        className={cn(
-                          "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                          isActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
-                        )}
-                        onClick={() => {
-                          setIsMobileMenuOpen(false)
-                          navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
-                        }}
-                      >
-                        <div className="size-5 flex items-center justify-center">{IconEl}</div>
-                        <span className="text-base text-foreground truncate">{c.name || "New category"}</span>
-                      </div>
-                    )
-                  })}
-                  <div
-                    className={cn(
-                      "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                      isPersonalFilesActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
-                    )}
-                    onClick={() => {
-                      setIsMobileMenuOpen(false)
-                      navigate("/files/personal")
-                    }}
-                  >
-                    <Save className="size-5" />
-                    <span className="text-base text-foreground">개인 파일</span>
-                  </div>
-                </>
-              )}
-           </div>
-
-           {/* 팀/그룹 페이지 */}
-           {tenantType && tenantType !== "personal" ? (
-           <div className="flex flex-col gap-1 mb-2">
-             <div className="flex items-center justify-between px-2 h-8 opacity-70">
-                <span 
+                <span
                   className="text-sm text-foreground cursor-pointer select-none"
                   onClick={() => setIsTeamOpen(prev => !prev)}
                 >
@@ -1650,7 +1650,7 @@ export function Sidebar({ className }: SidebarProps) {
                     <Plus className="size-4" />
                   </button>
                 </div>
-             </div>
+              </div>
               {isTeamOpen && (
                 <>
                   {teamCatsLoading ? (
@@ -1700,36 +1700,36 @@ export function Sidebar({ className }: SidebarProps) {
                   </div>
                 </>
               )}
-           </div>
-           ) : null}
+            </div>
+          ) : null}
 
-           {/* 관리 섹션 */}
-           <div className="flex flex-col gap-1 mt-4">
-              <div className="px-2 h-8 opacity-70 flex items-center"><span className="text-sm text-foreground">관리</span></div>
-             <div
-               className={cn(
-                 "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+          {/* 관리 섹션 */}
+          <div className="flex flex-col gap-1 mt-4">
+            <div className="px-2 h-8 opacity-70 flex items-center"><span className="text-sm text-foreground">관리</span></div>
+            <div
+              className={cn(
+                "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
                 isTrashActive
                   ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10 dark:bg-neutral-800"
                   : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
-               )}
-               onClick={() => {
-                 setIsMobileMenuOpen(false)
-                 navigate("/trash")
-               }}
-             >
-                 <Trash2 className="size-5" />
-                 <span className="text-base text-foreground">휴지통</span>
-              </div>
-              <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800">
-                 <PieChart className="size-5" />
-                 <span className="text-base text-foreground">대시보드</span>
-              </div>
-              <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800">
-                 <MessageSquareMore className="size-5" />
-                 <span className="text-base text-foreground">문의</span>
-              </div>
-           </div>
+              )}
+              onClick={() => {
+                setIsMobileMenuOpen(false)
+                navigate("/trash")
+              }}
+            >
+              <Trash2 className="size-5" />
+              <span className="text-base text-foreground">휴지통</span>
+            </div>
+            <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800">
+              <PieChart className="size-5" />
+              <span className="text-base text-foreground">대시보드</span>
+            </div>
+            <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800">
+              <MessageSquareMore className="size-5" />
+              <span className="text-base text-foreground">문의</span>
+            </div>
+          </div>
         </div>
         {CategoryDeleteDialog}
         {CreateCategoryDialog}
@@ -1742,9 +1742,9 @@ export function Sidebar({ className }: SidebarProps) {
 
   // 데스크탑 뷰 (기존 구현)
   return (
-    <div 
+    <div
       className={cn(
-        "bg-sidebar border-r border-sidebar-border h-full flex flex-col shrink-0 transition-all duration-300 ease-in-out hidden md:flex", 
+        "bg-sidebar border-r border-sidebar-border h-full flex flex-col shrink-0 transition-all duration-300 ease-in-out hidden md:flex",
         isOpen ? "w-[200px]" : "w-[50px]",
         className
       )}
@@ -1752,16 +1752,16 @@ export function Sidebar({ className }: SidebarProps) {
       {/* Header - 헤더 */}
       <div className="flex flex-col gap-2 p-2 pt-3.5">
         <div className={cn("flex items-center h-8 px-2", isOpen ? "justify-between" : "justify-center")}>
-           {isOpen && <p className="font-black text-base leading-6 text-primary">reduct</p>}
-           <div 
+          {isOpen && <p className="font-black text-base leading-6 text-primary">reduct</p>}
+          <div
             className={cn(
               "cursor-pointer relative flex items-center justify-center text-sidebar-foreground",
               isOpen ? "size-4" : "size-8" // open: 16px container, closed: 32px container
             )}
-             onClick={() => setIsOpen(!isOpen)}
-             onMouseEnter={() => setIsHeaderHover(true)}
-             onMouseLeave={() => setIsHeaderHover(false)}
-           >
+            onClick={() => setIsOpen(!isOpen)}
+            onMouseEnter={() => setIsHeaderHover(true)}
+            onMouseLeave={() => setIsHeaderHover(false)}
+          >
             {isOpen ? (
               <PanelLeftClose className="w-4 h-4" />
             ) : isHeaderHover ? (
@@ -1769,8 +1769,8 @@ export function Sidebar({ className }: SidebarProps) {
             ) : (
               <IconReduct className="w-8 h-8" />
             )}
-             
-           </div>
+
+          </div>
         </div>
       </div>
 
@@ -1778,10 +1778,10 @@ export function Sidebar({ className }: SidebarProps) {
       <div className={cn("p-2", !isOpen && "flex justify-center")}>
         <Popover open={isProfileOpen} onOpenChange={setIsProfileOpen}>
           <PopoverTrigger asChild>
-            <div className={cn("flex items-center gap-2 p-2 cursor-pointer hover:bg-accent/50 rounded-md transition-colors", !isOpen && "justify-center p-0")}>            
+            <div className={cn("flex items-center gap-2 p-2 cursor-pointer hover:bg-accent/50 rounded-md transition-colors", !isOpen && "justify-center p-0")}>
               {isOpen ? (
                 <>
-                   <div className="size-10 bg-teal-500 rounded-lg flex items-center justify-center shrink-0">
+                  <div className="size-10 bg-teal-500 rounded-lg flex items-center justify-center shrink-0">
                     <span className="text-white font-semibold text-lg">{userProfile.initial}</span>
                   </div>
                   <div className="flex flex-col flex-1 min-w-0">
@@ -1795,7 +1795,7 @@ export function Sidebar({ className }: SidebarProps) {
                     </div>
                   </div>
                   <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-                      <ChevronsUpDown className="size-full" />
+                    <ChevronsUpDown className="size-full" />
                   </div>
                 </>
               ) : (
@@ -1811,32 +1811,32 @@ export function Sidebar({ className }: SidebarProps) {
 
       {/* Menu Items - 메뉴 아이템 */}
       <div className="flex flex-col p-2 gap-1">
-         <div 
-           className={cn(
-             "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-             !isOpen && "justify-center",
+        <div
+          className={cn(
+            "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+            !isOpen && "justify-center",
             isFrontAIActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
-           )}
-           onClick={() => navigate('/front-ai')}
-         >
-           <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-             <Bot className="size-full" />
-           </div>
-           {isOpen && <span className="text-sm text-sidebar-foreground">프론트AI</span>}
-         </div>
-         <div
+          )}
+          onClick={() => navigate('/front-ai')}
+        >
+          <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
+            <Bot className="size-full" />
+          </div>
+          {isOpen && <span className="text-sm text-sidebar-foreground">프론트AI</span>}
+        </div>
+        <div
           className={cn(
             "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
             !isOpen && "justify-center",
             isTimelineActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
           )}
           onClick={() => navigate('/timeline')}
-         >
-           <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-             <Clock className="size-full" />
-           </div>
-           {isOpen && <span className="text-sm text-sidebar-foreground">타임라인</span>}
-         </div>
+        >
+          <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
+            <Clock className="size-full" />
+          </div>
+          {isOpen && <span className="text-sm text-sidebar-foreground">타임라인</span>}
+        </div>
         <div
           className={cn(
             "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
@@ -1856,98 +1856,98 @@ export function Sidebar({ className }: SidebarProps) {
         <>
           {/* Personal Pages - 개인 페이지 */}
           <div className="flex flex-col p-2 gap-1">
-             <div className="flex items-center gap-2 px-2 h-8 opacity-70 cursor-pointer select-none group">
-                <span className="flex-1 text-left text-xs text-sidebar-foreground" onClick={() => setIsPersonalOpen((prev) => !prev)}>개인 페이지</span>
+            <div className="flex items-center gap-2 px-2 h-8 opacity-70 cursor-pointer select-none group">
+              <span className="flex-1 text-left text-xs text-sidebar-foreground" onClick={() => setIsPersonalOpen((prev) => !prev)}>개인 페이지</span>
+              <div
+                className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
+                role="button"
+                title="카테고리 추가"
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  openCreateCategoryDialog("personal")
+                }}
+              >
+                <Plus className="size-full" />
+              </div>
+            </div>
+            {isPersonalOpen && (
+              <>
                 <div
-                  className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
-                  role="button"
-                  title="카테고리 추가"
-                  onClick={(e) => {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    openCreateCategoryDialog("personal")
-                  }}
+                  className="px-2 py-1 text-xs text-sidebar-foreground/60 h-6 hidden"
+                  style={{ visibility: personalCatsLoading ? "visible" : "hidden" }}
                 >
-                    <Plus className="size-full" />
+                  Loading…
                 </div>
-             </div>
-             {isPersonalOpen && (
-               <>
-                  <div
-                    className="px-2 py-1 text-xs text-sidebar-foreground/60 h-6 hidden"
-                    style={{ visibility: personalCatsLoading ? "visible" : "hidden" }}
-                  >
-                    Loading…
-                  </div>
 
-                 {personalCategories.map((c) => {
-                   const isActive = isPostsActive && activeCategoryId === String(c.id)
-                   const isDropTarget =
-                     !!categoryDropIndicator &&
-                     categoryDropIndicator.type === "personal" &&
-                     categoryDropIndicator.id === String(c.id)
-                   const dropPosition = isDropTarget ? categoryDropIndicator!.position : null
-                   return (
-                     <div
-                       key={c.id}
-                       className={cn(
-                         "group relative flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer cursor-grab active:cursor-grabbing",
+                {personalCategories.map((c) => {
+                  const isActive = isPostsActive && activeCategoryId === String(c.id)
+                  const isDropTarget =
+                    !!categoryDropIndicator &&
+                    categoryDropIndicator.type === "personal" &&
+                    categoryDropIndicator.id === String(c.id)
+                  const dropPosition = isDropTarget ? categoryDropIndicator!.position : null
+                  return (
+                    <div
+                      key={c.id}
+                      className={cn(
+                        "group relative flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer cursor-grab active:cursor-grabbing",
                         isActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
-                       )}
-                       draggable
-                       onDragStart={(e) => startCategoryDrag("personal", c.id, e)}
-                       onDragEnd={endCategoryDrag}
-                       onClick={() => {
-                         if (Date.now() < dragBlockClickUntilRef.current) return
-                         if (editingCat && editingCat.type === "personal" && editingCat.id === c.id) return
-                         navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
-                       }}
-                       onDragOver={(e) => {
-                         if (!draggingCat || draggingCat.type !== "personal") return
-                         e.preventDefault()
-                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                          const before = e.clientY < rect.top + rect.height / 2
-                          setCategoryDropIndicator({
-                            type: "personal",
-                            id: String(c.id),
-                            position: before ? "before" : "after",
-                          })
-                       }}
-                        onDragLeave={(e) => {
-                          // Clear indicator when leaving this row (helps avoid stale line).
-                          const related = (e.relatedTarget as Node | null) || null
-                          if (related && (e.currentTarget as HTMLElement).contains(related)) return
-                          setCategoryDropIndicator((prev) => {
-                            if (!prev) return null
-                            if (prev.type !== "personal") return prev
-                            if (prev.id !== String(c.id)) return prev
-                            return null
-                          })
-                        }}
-                       onDrop={(e) => {
-                         if (!draggingCat || draggingCat.type !== "personal") return
-                         e.preventDefault()
-                         const fromId = draggingCat.id
-                         const toId = c.id
-                         if (!fromId || fromId === toId) return
-                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                          const before = e.clientY < rect.top + rect.height / 2
-                         setPersonalCategories((prev) => {
-                           const next = prev.slice()
-                           const fromIdx = next.findIndex((x) => x.id === fromId)
-                            if (fromIdx < 0) return prev
-                            const [moved] = next.splice(fromIdx, 1)
-                            const toIdx = next.findIndex((x) => x.id === toId)
-                            if (toIdx < 0) return prev
-                            const insertIdx = toIdx + (before ? 0 : 1)
-                            next.splice(insertIdx, 0, moved)
-                           void reorder({ type: "personal", orderedIds: next.map((x) => x.id) })
-                           return next
-                         })
-                         setDraggingCat(null)
-                          setCategoryDropIndicator(null)
-                       }}
-                     >
+                      )}
+                      draggable
+                      onDragStart={(e) => startCategoryDrag("personal", c.id, e)}
+                      onDragEnd={endCategoryDrag}
+                      onClick={() => {
+                        if (Date.now() < dragBlockClickUntilRef.current) return
+                        if (editingCat && editingCat.type === "personal" && editingCat.id === c.id) return
+                        navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
+                      }}
+                      onDragOver={(e) => {
+                        if (!draggingCat || draggingCat.type !== "personal") return
+                        e.preventDefault()
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                        const before = e.clientY < rect.top + rect.height / 2
+                        setCategoryDropIndicator({
+                          type: "personal",
+                          id: String(c.id),
+                          position: before ? "before" : "after",
+                        })
+                      }}
+                      onDragLeave={(e) => {
+                        // Clear indicator when leaving this row (helps avoid stale line).
+                        const related = (e.relatedTarget as Node | null) || null
+                        if (related && (e.currentTarget as HTMLElement).contains(related)) return
+                        setCategoryDropIndicator((prev) => {
+                          if (!prev) return null
+                          if (prev.type !== "personal") return prev
+                          if (prev.id !== String(c.id)) return prev
+                          return null
+                        })
+                      }}
+                      onDrop={(e) => {
+                        if (!draggingCat || draggingCat.type !== "personal") return
+                        e.preventDefault()
+                        const fromId = draggingCat.id
+                        const toId = c.id
+                        if (!fromId || fromId === toId) return
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                        const before = e.clientY < rect.top + rect.height / 2
+                        setPersonalCategories((prev) => {
+                          const next = prev.slice()
+                          const fromIdx = next.findIndex((x) => x.id === fromId)
+                          if (fromIdx < 0) return prev
+                          const [moved] = next.splice(fromIdx, 1)
+                          const toIdx = next.findIndex((x) => x.id === toId)
+                          if (toIdx < 0) return prev
+                          const insertIdx = toIdx + (before ? 0 : 1)
+                          next.splice(insertIdx, 0, moved)
+                          void reorder({ type: "personal", orderedIds: next.map((x) => x.id) })
+                          return next
+                        })
+                        setDraggingCat(null)
+                        setCategoryDropIndicator(null)
+                      }}
+                    >
                       {isDropTarget ? (
                         <div
                           className={cn(
@@ -1956,270 +1956,270 @@ export function Sidebar({ className }: SidebarProps) {
                           )}
                         />
                       ) : null}
-                    {(() => {
-                      const isDark = typeof document !== "undefined" && document.documentElement.classList.contains("dark")
-                      const open = !!catIconOpen && catIconOpen.type === "personal" && catIconOpen.id === String(c.id)
-                      const choice = decodeIcon(c.icon)
-                      const DefaultIcon = BookOpen
-                      const IconEl = (() => {
-                        if (!choice) return <DefaultIcon className="size-4" />
-                        if (choice.kind === "emoji") return <span className="text-[16px] leading-none">{choice.value}</span>
-                        const Preset = LUCIDE_PRESET_MAP[choice.value]
-                        const Dyn = Preset || catLucideAll?.[choice.value]
-                        if (!Dyn) return <DefaultIcon className="size-4" />
-                        return <Dyn className="size-4" />
-                      })()
+                      {(() => {
+                        const isDark = typeof document !== "undefined" && document.documentElement.classList.contains("dark")
+                        const open = !!catIconOpen && catIconOpen.type === "personal" && catIconOpen.id === String(c.id)
+                        const choice = decodeIcon(c.icon)
+                        const DefaultIcon = BookOpen
+                        const IconEl = (() => {
+                          if (!choice) return <DefaultIcon className="size-4" />
+                          if (choice.kind === "emoji") return <span className="text-[16px] leading-none">{choice.value}</span>
+                          const Preset = LUCIDE_PRESET_MAP[choice.value]
+                          const Dyn = Preset || catLucideAll?.[choice.value]
+                          if (!Dyn) return <DefaultIcon className="size-4" />
+                          return <Dyn className="size-4" />
+                        })()
 
-                      return (
-                        <Popover
-                          open={open}
-                          onOpenChange={(o) => setCatIconOpen(o ? { type: "personal", id: String(c.id) } : null)}
+                        return (
+                          <Popover
+                            open={open}
+                            onOpenChange={(o) => setCatIconOpen(o ? { type: "personal", id: String(c.id) } : null)}
+                          >
+                            <PopoverTrigger asChild>
+                              <button
+                                type="button"
+                                className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-300 dark:hover:bg-neutral-700 rounded-sm"
+                                title="아이콘 변경"
+                                draggable={false}
+                                onDragStart={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                }}
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {IconEl}
+                              </button>
+                            </PopoverTrigger>
+                            <PopoverContent
+                              align="start"
+                              sideOffset={6}
+                              className="w-[370px] p-3"
+                              onPointerDown={(e) => e.stopPropagation()}
+                            >
+                              <Tabs value={catIconTab} onValueChange={(v) => setCatIconTab(v === "icon" ? "icon" : "emoji")}>
+                                <TabsList>
+                                  <TabsTrigger value="emoji">이모지</TabsTrigger>
+                                  <TabsTrigger value="icon">아이콘</TabsTrigger>
+                                </TabsList>
+                                <TabsContent value="emoji">
+                                  <div className="max-h-[360px] overflow-auto pr-1">
+                                    <EmojiPicker
+                                      theme={isDark ? Theme.DARK : Theme.LIGHT}
+                                      previewConfig={{ showPreview: false }}
+                                      onEmojiClick={(emoji: EmojiClickData) => {
+                                        const native = emoji?.emoji ? String(emoji.emoji) : ""
+                                        if (!native) return
+                                        void saveCategoryIcon({ type: "personal", id: String(c.id), choice: { kind: "emoji", value: native } })
+                                        setCatIconOpen(null)
+                                      }}
+                                    />
+                                  </div>
+                                  <div className="mt-2 flex justify-end">
+                                    <button
+                                      type="button"
+                                      className="text-xs px-2 py-1 rounded hover:bg-accent"
+                                      onClick={() => {
+                                        void saveCategoryIcon({ type: "personal", id: String(c.id), choice: null })
+                                        setCatIconOpen(null)
+                                      }}
+                                    >
+                                      Reset
+                                    </button>
+                                  </div>
+                                </TabsContent>
+                                <TabsContent value="icon">
+                                  <div className="mb-2">
+                                    <Input
+                                      value={catLucideQuery}
+                                      onChange={(e) => setCatLucideQuery(e.target.value)}
+                                      placeholder="Search icons (e.g. calendar, bot, file...)"
+                                      className="h-8 text-sm"
+                                    />
+                                  </div>
+                                  {catLucideQuery.trim() ? (
+                                    <>
+                                      {catLucideLoading && !catLucideAll ? (
+                                        <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
+                                      ) : null}
+                                      <div className="max-h-[300px] overflow-auto pr-1">
+                                        <div className="grid grid-cols-7 gap-1">
+                                          {(() => {
+                                            const q = catLucideQuery.trim().toLowerCase()
+                                            const map = catLucideAll || {}
+                                            const keys = Object.keys(map)
+                                              .filter((k) => k.toLowerCase().includes(q))
+                                              .slice(0, 98)
+                                            if (!catLucideLoading && catLucideAll && keys.length === 0) {
+                                              return (
+                                                <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
+                                                  No matches. Try a different keyword.
+                                                </div>
+                                              )
+                                            }
+                                            return keys.map((k) => {
+                                              const Cmp = map[k]
+                                              return (
+                                                <button
+                                                  key={k}
+                                                  type="button"
+                                                  className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                                  onClick={() => {
+                                                    void saveCategoryIcon({
+                                                      type: "personal",
+                                                      id: String(c.id),
+                                                      choice: { kind: "lucide", value: k },
+                                                    })
+                                                    setCatIconOpen(null)
+                                                  }}
+                                                  title={k}
+                                                  aria-label={k}
+                                                >
+                                                  <Cmp className="size-4" />
+                                                </button>
+                                              )
+                                            })
+                                          })()}
+                                        </div>
+                                      </div>
+                                      <div className="mt-2 text-[11px] text-muted-foreground">
+                                        Showing up to 98 matches. Refine your search to narrow results.
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <div className="grid grid-cols-7 gap-1">
+                                      {LUCIDE_PRESETS.map((it) => (
+                                        <button
+                                          key={it.key}
+                                          type="button"
+                                          className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                          onClick={() => {
+                                            void saveCategoryIcon({
+                                              type: "personal",
+                                              id: String(c.id),
+                                              choice: { kind: "lucide", value: it.key },
+                                            })
+                                            setCatIconOpen(null)
+                                          }}
+                                          title={it.label}
+                                          aria-label={it.label}
+                                        >
+                                          <it.Icon className="size-4" />
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                  <div className="mt-2 flex justify-end">
+                                    <button
+                                      type="button"
+                                      className="text-xs px-2 py-1 rounded hover:bg-accent"
+                                      onClick={() => {
+                                        void saveCategoryIcon({ type: "personal", id: String(c.id), choice: null })
+                                        setCatIconOpen(null)
+                                      }}
+                                    >
+                                      Reset
+                                    </button>
+                                  </div>
+                                </TabsContent>
+                              </Tabs>
+                            </PopoverContent>
+                          </Popover>
+                        )
+                      })()}
+
+                      {editingCat && editingCat.type === "personal" && editingCat.id === c.id ? (
+                        <input
+                          autoFocus
+                          ref={editingInputRef}
+                          className="flex-1 min-w-0 text-sm bg-background outline-none rounded-sm px-2 py-1 border border-border"
+                          value={editingCat.name}
+                          onChange={(e) => setEditingCat({ ...editingCat, name: e.target.value })}
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault()
+                              void renameCategory({ type: "personal", id: c.id, name: editingCat.name })
+                              setEditingCat(null)
+                            } else if (e.key === "Escape") {
+                              e.preventDefault()
+                              setEditingCat(null)
+                            }
+                          }}
+                          onBlur={() => {
+                            if (Date.now() < renameFocusUntilRef.current) return
+                            void renameCategory({ type: "personal", id: c.id, name: editingCat.name })
+                            setEditingCat(null)
+                          }}
+                        />
+                      ) : (
+                        <span
+                          className="text-sm text-sidebar-foreground truncate flex-1 min-w-0"
+                          draggable
+                          onDragStart={(e) => startCategoryDrag("personal", c.id, e)}
+                          onDragEnd={endCategoryDrag}
                         >
-                          <PopoverTrigger asChild>
+                          {c.name || "New category"}
+                        </span>
+                      )}
+
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300 dark:hover:bg-neutral-700 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
+                            onClick={(e) => e.stopPropagation()}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            title="메뉴"
+                          >
+                            <Ellipsis className="size-3" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent
+                          align="end"
+                          className="w-40"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onCloseAutoFocus={(e) => {
+                            // Prevent Radix from restoring focus to the trigger button (it steals focus from our rename input).
+                            e.preventDefault()
+                          }}
+                        >
+                          <DropdownMenuItem asChild>
                             <button
                               type="button"
-                              className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-300 dark:hover:bg-neutral-700 rounded-sm"
-                              title="아이콘 변경"
-                              draggable={false}
-                              onDragStart={(e) => {
-                                e.preventDefault()
+                              className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent focus:bg-accent"
+                              onClick={(e) => {
                                 e.stopPropagation()
+                                setEditingCat({ type: "personal", id: c.id, name: c.name || "" })
+                                renameFocusUntilRef.current = Date.now() + 250
+                                window.setTimeout(() => {
+                                  editingInputRef.current?.focus()
+                                }, 0)
                               }}
-                              onPointerDown={(e) => e.stopPropagation()}
-                              onClick={(e) => e.stopPropagation()}
                             >
-                              {IconEl}
+                              <Pencil className="size-4 mr-2" />
+                              이름 바꾸기
                             </button>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            align="start"
-                            sideOffset={6}
-                            className="w-[370px] p-3"
-                            onPointerDown={(e) => e.stopPropagation()}
-                          >
-                            <Tabs value={catIconTab} onValueChange={(v) => setCatIconTab(v === "icon" ? "icon" : "emoji")}>
-                              <TabsList>
-                                <TabsTrigger value="emoji">이모지</TabsTrigger>
-                                <TabsTrigger value="icon">아이콘</TabsTrigger>
-                              </TabsList>
-                              <TabsContent value="emoji">
-                                <div className="max-h-[360px] overflow-auto pr-1">
-                                  <EmojiPicker
-                                    theme={isDark ? Theme.DARK : Theme.LIGHT}
-                                    previewConfig={{ showPreview: false }}
-                                    onEmojiClick={(emoji: EmojiClickData) => {
-                                      const native = emoji?.emoji ? String(emoji.emoji) : ""
-                                      if (!native) return
-                                      void saveCategoryIcon({ type: "personal", id: String(c.id), choice: { kind: "emoji", value: native } })
-                                      setCatIconOpen(null)
-                                    }}
-                                  />
-                                </div>
-                                <div className="mt-2 flex justify-end">
-                                  <button
-                                    type="button"
-                                    className="text-xs px-2 py-1 rounded hover:bg-accent"
-                                    onClick={() => {
-                                      void saveCategoryIcon({ type: "personal", id: String(c.id), choice: null })
-                                      setCatIconOpen(null)
-                                    }}
-                                  >
-                                    Reset
-                                  </button>
-                                </div>
-                              </TabsContent>
-                              <TabsContent value="icon">
-                                <div className="mb-2">
-                                  <Input
-                                    value={catLucideQuery}
-                                    onChange={(e) => setCatLucideQuery(e.target.value)}
-                                    placeholder="Search icons (e.g. calendar, bot, file...)"
-                                    className="h-8 text-sm"
-                                  />
-                                </div>
-                                {catLucideQuery.trim() ? (
-                                  <>
-                                    {catLucideLoading && !catLucideAll ? (
-                                      <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
-                                    ) : null}
-                                    <div className="max-h-[300px] overflow-auto pr-1">
-                                      <div className="grid grid-cols-7 gap-1">
-                                        {(() => {
-                                          const q = catLucideQuery.trim().toLowerCase()
-                                          const map = catLucideAll || {}
-                                          const keys = Object.keys(map)
-                                            .filter((k) => k.toLowerCase().includes(q))
-                                            .slice(0, 98)
-                                          if (!catLucideLoading && catLucideAll && keys.length === 0) {
-                                            return (
-                                              <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
-                                                No matches. Try a different keyword.
-                                              </div>
-                                            )
-                                          }
-                                          return keys.map((k) => {
-                                            const Cmp = map[k]
-                                            return (
-                                              <button
-                                                key={k}
-                                                type="button"
-                                                className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
-                                                onClick={() => {
-                                                  void saveCategoryIcon({
-                                                    type: "personal",
-                                                    id: String(c.id),
-                                                    choice: { kind: "lucide", value: k },
-                                                  })
-                                                  setCatIconOpen(null)
-                                                }}
-                                                title={k}
-                                                aria-label={k}
-                                              >
-                                                <Cmp className="size-4" />
-                                              </button>
-                                            )
-                                          })
-                                        })()}
-                                      </div>
-                                    </div>
-                                    <div className="mt-2 text-[11px] text-muted-foreground">
-                                      Showing up to 98 matches. Refine your search to narrow results.
-                                    </div>
-                                  </>
-                                ) : (
-                                  <div className="grid grid-cols-7 gap-1">
-                                    {LUCIDE_PRESETS.map((it) => (
-                                      <button
-                                        key={it.key}
-                                        type="button"
-                                        className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
-                                        onClick={() => {
-                                          void saveCategoryIcon({
-                                            type: "personal",
-                                            id: String(c.id),
-                                            choice: { kind: "lucide", value: it.key },
-                                          })
-                                          setCatIconOpen(null)
-                                        }}
-                                        title={it.label}
-                                        aria-label={it.label}
-                                      >
-                                        <it.Icon className="size-4" />
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
-                                <div className="mt-2 flex justify-end">
-                                  <button
-                                    type="button"
-                                    className="text-xs px-2 py-1 rounded hover:bg-accent"
-                                    onClick={() => {
-                                      void saveCategoryIcon({ type: "personal", id: String(c.id), choice: null })
-                                      setCatIconOpen(null)
-                                    }}
-                                  >
-                                    Reset
-                                  </button>
-                                </div>
-                              </TabsContent>
-                            </Tabs>
-                          </PopoverContent>
-                        </Popover>
-                      )
-                    })()}
-
-                     {editingCat && editingCat.type === "personal" && editingCat.id === c.id ? (
-                       <input
-                         autoFocus
-                        ref={editingInputRef}
-                         className="flex-1 min-w-0 text-sm bg-background outline-none rounded-sm px-2 py-1 border border-border"
-                         value={editingCat.name}
-                         onChange={(e) => setEditingCat({ ...editingCat, name: e.target.value })}
-                         onClick={(e) => e.stopPropagation()}
-                         onKeyDown={(e) => {
-                           if (e.key === "Enter") {
-                             e.preventDefault()
-                             void renameCategory({ type: "personal", id: c.id, name: editingCat.name })
-                             setEditingCat(null)
-                           } else if (e.key === "Escape") {
-                             e.preventDefault()
-                             setEditingCat(null)
-                           }
-                         }}
-                         onBlur={() => {
-                          if (Date.now() < renameFocusUntilRef.current) return
-                           void renameCategory({ type: "personal", id: c.id, name: editingCat.name })
-                           setEditingCat(null)
-                         }}
-                       />
-                     ) : (
-                      <span
-                        className="text-sm text-sidebar-foreground truncate flex-1 min-w-0"
-                        draggable
-                        onDragStart={(e) => startCategoryDrag("personal", c.id, e)}
-                        onDragEnd={endCategoryDrag}
-                      >
-                        {c.name || "New category"}
-                      </span>
-                     )}
-
-                     <DropdownMenu>
-                       <DropdownMenuTrigger asChild>
-                        <button
-                          type="button"
-                          className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300 dark:hover:bg-neutral-700 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
-                           onClick={(e) => e.stopPropagation()}
-                           onPointerDown={(e) => e.stopPropagation()}
-                           title="메뉴"
-                         >
-                          <Ellipsis className="size-3" />
-                         </button>
-                       </DropdownMenuTrigger>
-                      <DropdownMenuContent
-                        align="end"
-                        className="w-40"
-                        onPointerDown={(e) => e.stopPropagation()}
-                        onCloseAutoFocus={(e) => {
-                          // Prevent Radix from restoring focus to the trigger button (it steals focus from our rename input).
-                          e.preventDefault()
-                        }}
-                      >
-                        <DropdownMenuItem asChild>
-                          <button
-                            type="button"
-                            className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent focus:bg-accent"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setEditingCat({ type: "personal", id: c.id, name: c.name || "" })
-                              renameFocusUntilRef.current = Date.now() + 250
-                              window.setTimeout(() => {
-                                editingInputRef.current?.focus()
-                              }, 0)
-                            }}
-                          >
-                            <Pencil className="size-4 mr-2" />
-                            이름 바꾸기
-                          </button>
-                        </DropdownMenuItem>
-                         <DropdownMenuSeparator />
-                        <DropdownMenuItem asChild>
-                          <button
-                            type="button"
-                            className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm text-destructive outline-none hover:bg-accent focus:bg-accent"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setDeleteCategoryTarget({ type: "personal", id: String(c.id), name: String(c.name || "") })
-                            }}
-                          >
-                            <Trash2 className="size-4 mr-2" />
-                            삭제
-                          </button>
-                        </DropdownMenuItem>
-                       </DropdownMenuContent>
-                     </DropdownMenu>
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem asChild>
+                            <button
+                              type="button"
+                              className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm text-destructive outline-none hover:bg-accent focus:bg-accent"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setDeleteCategoryTarget({ type: "personal", id: String(c.id), name: String(c.name || "") })
+                              }}
+                            >
+                              <Trash2 className="size-4 mr-2" />
+                              삭제
+                            </button>
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
-                   )
-                 })}
+                  )
+                })}
                 <div
                   className={cn(
                     "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
@@ -2235,8 +2235,8 @@ export function Sidebar({ className }: SidebarProps) {
                   </div>
                   <span className="text-sm text-sidebar-foreground">개인 파일</span>
                 </div>
-               </>
-             )}
+              </>
+            )}
           </div>
 
           {/* Team Pages - 팀 페이지 (Team + Enterprise; exclude Personal) */}
@@ -2275,12 +2275,12 @@ export function Sidebar({ className }: SidebarProps) {
               </div>
               {isTeamOpen && (
                 <>
-                   <div
-                     className="px-2 py-1 text-xs text-sidebar-foreground/60 h-6 hidden"
-                     style={{ visibility: teamCatsLoading ? "visible" : "hidden" }}
-                   >
-                     Loading…
-                   </div>
+                  <div
+                    className="px-2 py-1 text-xs text-sidebar-foreground/60 h-6 hidden"
+                    style={{ visibility: teamCatsLoading ? "visible" : "hidden" }}
+                  >
+                    Loading…
+                  </div>
 
                   {teamCategories.map((c) => {
                     const isActive = isPostsActive && activeCategoryId === String(c.id)
@@ -2349,272 +2349,272 @@ export function Sidebar({ className }: SidebarProps) {
                           setCategoryDropIndicator(null)
                         }}
                       >
-                      {isDropTarget ? (
-                        <div
-                          className={cn(
-                            "pointer-events-none absolute left-6 right-2 h-0.5 rounded bg-primary/80",
-                            dropPosition === "before" ? "top-0" : "bottom-0"
-                          )}
-                        />
-                      ) : null}
-                      {(() => {
-                        const isDark = typeof document !== "undefined" && document.documentElement.classList.contains("dark")
-                        const open = !!catIconOpen && catIconOpen.type === "team" && catIconOpen.id === String(c.id)
-                        const choice = decodeIcon(c.icon)
-                        const DefaultIcon = Share2
-                        const IconEl = (() => {
-                          if (!choice) return <DefaultIcon className="size-4" />
-                          if (choice.kind === "emoji") return <span className="text-[16px] leading-none">{choice.value}</span>
-                          const Preset = LUCIDE_PRESET_MAP[choice.value]
-                          const Dyn = Preset || catLucideAll?.[choice.value]
-                          if (!Dyn) return <DefaultIcon className="size-4" />
-                          return <Dyn className="size-4" />
-                        })()
+                        {isDropTarget ? (
+                          <div
+                            className={cn(
+                              "pointer-events-none absolute left-6 right-2 h-0.5 rounded bg-primary/80",
+                              dropPosition === "before" ? "top-0" : "bottom-0"
+                            )}
+                          />
+                        ) : null}
+                        {(() => {
+                          const isDark = typeof document !== "undefined" && document.documentElement.classList.contains("dark")
+                          const open = !!catIconOpen && catIconOpen.type === "team" && catIconOpen.id === String(c.id)
+                          const choice = decodeIcon(c.icon)
+                          const DefaultIcon = Share2
+                          const IconEl = (() => {
+                            if (!choice) return <DefaultIcon className="size-4" />
+                            if (choice.kind === "emoji") return <span className="text-[16px] leading-none">{choice.value}</span>
+                            const Preset = LUCIDE_PRESET_MAP[choice.value]
+                            const Dyn = Preset || catLucideAll?.[choice.value]
+                            if (!Dyn) return <DefaultIcon className="size-4" />
+                            return <Dyn className="size-4" />
+                          })()
 
-                        return (
-                          <Popover open={open} onOpenChange={(o) => setCatIconOpen(o ? { type: "team", id: String(c.id) } : null)}>
-                            <PopoverTrigger asChild>
-                              <button
-                                type="button"
-                                className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-300 dark:hover:bg-neutral-700 rounded-sm"
-                                title="아이콘 변경"
-                                draggable={false}
-                                onDragStart={(e) => {
-                                  e.preventDefault()
-                                  e.stopPropagation()
-                                }}
+                          return (
+                            <Popover open={open} onOpenChange={(o) => setCatIconOpen(o ? { type: "team", id: String(c.id) } : null)}>
+                              <PopoverTrigger asChild>
+                                <button
+                                  type="button"
+                                  className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-300 dark:hover:bg-neutral-700 rounded-sm"
+                                  title="아이콘 변경"
+                                  draggable={false}
+                                  onDragStart={(e) => {
+                                    e.preventDefault()
+                                    e.stopPropagation()
+                                  }}
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  {IconEl}
+                                </button>
+                              </PopoverTrigger>
+                              <PopoverContent
+                                align="start"
+                                sideOffset={6}
+                                className="w-[370px] p-3"
                                 onPointerDown={(e) => e.stopPropagation()}
-                                onClick={(e) => e.stopPropagation()}
                               >
-                                {IconEl}
-                              </button>
-                            </PopoverTrigger>
-                            <PopoverContent
-                              align="start"
-                              sideOffset={6}
-                              className="w-[370px] p-3"
-                              onPointerDown={(e) => e.stopPropagation()}
-                            >
-                              <Tabs value={catIconTab} onValueChange={(v) => setCatIconTab(v === "icon" ? "icon" : "emoji")}>
-                                <TabsList>
-                                  <TabsTrigger value="emoji">이모지</TabsTrigger>
-                                  <TabsTrigger value="icon">아이콘</TabsTrigger>
-                                </TabsList>
-                                <TabsContent value="emoji">
-                                  <div className="max-h-[360px] overflow-auto pr-1">
-                                    <EmojiPicker
-                                      theme={isDark ? Theme.DARK : Theme.LIGHT}
-                                      previewConfig={{ showPreview: false }}
-                                      onEmojiClick={(emoji: EmojiClickData) => {
-                                        const native = emoji?.emoji ? String(emoji.emoji) : ""
-                                        if (!native) return
-                                        void saveCategoryIcon({ type: "team", id: String(c.id), choice: { kind: "emoji", value: native } })
-                                        setCatIconOpen(null)
-                                      }}
-                                    />
-                                  </div>
-                                  <div className="mt-2 flex justify-end">
-                                    <button
-                                      type="button"
-                                      className="text-xs px-2 py-1 rounded hover:bg-accent"
-                                      onClick={() => {
-                                        void saveCategoryIcon({ type: "team", id: String(c.id), choice: null })
-                                        setCatIconOpen(null)
-                                      }}
-                                    >
-                                      Reset
-                                    </button>
-                                  </div>
-                                </TabsContent>
-                                <TabsContent value="icon">
-                                  <div className="mb-2">
-                                    <Input
-                                      value={catLucideQuery}
-                                      onChange={(e) => setCatLucideQuery(e.target.value)}
-                                      placeholder="Search icons (e.g. calendar, bot, file...)"
-                                      className="h-8 text-sm"
-                                    />
-                                  </div>
-                                  {catLucideQuery.trim() ? (
-                                    <>
-                                      {catLucideLoading && !catLucideAll ? (
-                                        <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
-                                      ) : null}
-                                      <div className="max-h-[300px] overflow-auto pr-1">
-                                        <div className="grid grid-cols-7 gap-1">
-                                          {(() => {
-                                            const q = catLucideQuery.trim().toLowerCase()
-                                            const map = catLucideAll || {}
-                                            const keys = Object.keys(map)
-                                              .filter((k) => k.toLowerCase().includes(q))
-                                              .slice(0, 98)
-                                            if (!catLucideLoading && catLucideAll && keys.length === 0) {
-                                              return (
-                                                <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
-                                                  No matches. Try a different keyword.
-                                                </div>
-                                              )
-                                            }
-                                            return keys.map((k) => {
-                                              const Cmp = map[k]
-                                              return (
-                                                <button
-                                                  key={k}
-                                                  type="button"
-                                                  className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
-                                                  onClick={() => {
-                                                    void saveCategoryIcon({
-                                                      type: "team",
-                                                      id: String(c.id),
-                                                      choice: { kind: "lucide", value: k },
-                                                    })
-                                                    setCatIconOpen(null)
-                                                  }}
-                                                  title={k}
-                                                  aria-label={k}
-                                                >
-                                                  <Cmp className="size-4" />
-                                                </button>
-                                              )
-                                            })
-                                          })()}
-                                        </div>
-                                      </div>
-                                      <div className="mt-2 text-[11px] text-muted-foreground">
-                                        Showing up to 98 matches. Refine your search to narrow results.
-                                      </div>
-                                    </>
-                                  ) : (
-                                    <div className="grid grid-cols-7 gap-1">
-                                      {LUCIDE_PRESETS.map((it) => (
-                                        <button
-                                          key={it.key}
-                                          type="button"
-                                          className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
-                                          onClick={() => {
-                                            void saveCategoryIcon({
-                                              type: "team",
-                                              id: String(c.id),
-                                              choice: { kind: "lucide", value: it.key },
-                                            })
-                                            setCatIconOpen(null)
-                                          }}
-                                          title={it.label}
-                                          aria-label={it.label}
-                                        >
-                                          <it.Icon className="size-4" />
-                                        </button>
-                                      ))}
+                                <Tabs value={catIconTab} onValueChange={(v) => setCatIconTab(v === "icon" ? "icon" : "emoji")}>
+                                  <TabsList>
+                                    <TabsTrigger value="emoji">이모지</TabsTrigger>
+                                    <TabsTrigger value="icon">아이콘</TabsTrigger>
+                                  </TabsList>
+                                  <TabsContent value="emoji">
+                                    <div className="max-h-[360px] overflow-auto pr-1">
+                                      <EmojiPicker
+                                        theme={isDark ? Theme.DARK : Theme.LIGHT}
+                                        previewConfig={{ showPreview: false }}
+                                        onEmojiClick={(emoji: EmojiClickData) => {
+                                          const native = emoji?.emoji ? String(emoji.emoji) : ""
+                                          if (!native) return
+                                          void saveCategoryIcon({ type: "team", id: String(c.id), choice: { kind: "emoji", value: native } })
+                                          setCatIconOpen(null)
+                                        }}
+                                      />
                                     </div>
-                                  )}
-                                  <div className="mt-2 flex justify-end">
-                                    <button
-                                      type="button"
-                                      className="text-xs px-2 py-1 rounded hover:bg-accent"
-                                      onClick={() => {
-                                        void saveCategoryIcon({ type: "team", id: String(c.id), choice: null })
-                                        setCatIconOpen(null)
-                                      }}
-                                    >
-                                      Reset
-                                    </button>
-                                  </div>
-                                </TabsContent>
-                              </Tabs>
-                            </PopoverContent>
-                          </Popover>
-                        )
-                      })()}
+                                    <div className="mt-2 flex justify-end">
+                                      <button
+                                        type="button"
+                                        className="text-xs px-2 py-1 rounded hover:bg-accent"
+                                        onClick={() => {
+                                          void saveCategoryIcon({ type: "team", id: String(c.id), choice: null })
+                                          setCatIconOpen(null)
+                                        }}
+                                      >
+                                        Reset
+                                      </button>
+                                    </div>
+                                  </TabsContent>
+                                  <TabsContent value="icon">
+                                    <div className="mb-2">
+                                      <Input
+                                        value={catLucideQuery}
+                                        onChange={(e) => setCatLucideQuery(e.target.value)}
+                                        placeholder="Search icons (e.g. calendar, bot, file...)"
+                                        className="h-8 text-sm"
+                                      />
+                                    </div>
+                                    {catLucideQuery.trim() ? (
+                                      <>
+                                        {catLucideLoading && !catLucideAll ? (
+                                          <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
+                                        ) : null}
+                                        <div className="max-h-[300px] overflow-auto pr-1">
+                                          <div className="grid grid-cols-7 gap-1">
+                                            {(() => {
+                                              const q = catLucideQuery.trim().toLowerCase()
+                                              const map = catLucideAll || {}
+                                              const keys = Object.keys(map)
+                                                .filter((k) => k.toLowerCase().includes(q))
+                                                .slice(0, 98)
+                                              if (!catLucideLoading && catLucideAll && keys.length === 0) {
+                                                return (
+                                                  <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
+                                                    No matches. Try a different keyword.
+                                                  </div>
+                                                )
+                                              }
+                                              return keys.map((k) => {
+                                                const Cmp = map[k]
+                                                return (
+                                                  <button
+                                                    key={k}
+                                                    type="button"
+                                                    className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                                    onClick={() => {
+                                                      void saveCategoryIcon({
+                                                        type: "team",
+                                                        id: String(c.id),
+                                                        choice: { kind: "lucide", value: k },
+                                                      })
+                                                      setCatIconOpen(null)
+                                                    }}
+                                                    title={k}
+                                                    aria-label={k}
+                                                  >
+                                                    <Cmp className="size-4" />
+                                                  </button>
+                                                )
+                                              })
+                                            })()}
+                                          </div>
+                                        </div>
+                                        <div className="mt-2 text-[11px] text-muted-foreground">
+                                          Showing up to 98 matches. Refine your search to narrow results.
+                                        </div>
+                                      </>
+                                    ) : (
+                                      <div className="grid grid-cols-7 gap-1">
+                                        {LUCIDE_PRESETS.map((it) => (
+                                          <button
+                                            key={it.key}
+                                            type="button"
+                                            className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                            onClick={() => {
+                                              void saveCategoryIcon({
+                                                type: "team",
+                                                id: String(c.id),
+                                                choice: { kind: "lucide", value: it.key },
+                                              })
+                                              setCatIconOpen(null)
+                                            }}
+                                            title={it.label}
+                                            aria-label={it.label}
+                                          >
+                                            <it.Icon className="size-4" />
+                                          </button>
+                                        ))}
+                                      </div>
+                                    )}
+                                    <div className="mt-2 flex justify-end">
+                                      <button
+                                        type="button"
+                                        className="text-xs px-2 py-1 rounded hover:bg-accent"
+                                        onClick={() => {
+                                          void saveCategoryIcon({ type: "team", id: String(c.id), choice: null })
+                                          setCatIconOpen(null)
+                                        }}
+                                      >
+                                        Reset
+                                      </button>
+                                    </div>
+                                  </TabsContent>
+                                </Tabs>
+                              </PopoverContent>
+                            </Popover>
+                          )
+                        })()}
 
-                      {editingCat && editingCat.type === "team" && editingCat.id === c.id ? (
-                        <input
-                          autoFocus
-                          ref={editingInputRef}
-                          className="flex-1 min-w-0 text-sm bg-background outline-none rounded-sm px-2 py-1 border border-border"
-                          value={editingCat.name}
-                          onChange={(e) => setEditingCat({ ...editingCat, name: e.target.value })}
-                          onClick={(e) => e.stopPropagation()}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault()
+                        {editingCat && editingCat.type === "team" && editingCat.id === c.id ? (
+                          <input
+                            autoFocus
+                            ref={editingInputRef}
+                            className="flex-1 min-w-0 text-sm bg-background outline-none rounded-sm px-2 py-1 border border-border"
+                            value={editingCat.name}
+                            onChange={(e) => setEditingCat({ ...editingCat, name: e.target.value })}
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault()
+                                void renameCategory({ type: "team", id: c.id, name: editingCat.name })
+                                setEditingCat(null)
+                              } else if (e.key === "Escape") {
+                                e.preventDefault()
+                                setEditingCat(null)
+                              }
+                            }}
+                            onBlur={() => {
+                              if (Date.now() < renameFocusUntilRef.current) return
                               void renameCategory({ type: "team", id: c.id, name: editingCat.name })
                               setEditingCat(null)
-                            } else if (e.key === "Escape") {
-                              e.preventDefault()
-                              setEditingCat(null)
-                            }
-                          }}
-                          onBlur={() => {
-                            if (Date.now() < renameFocusUntilRef.current) return
-                            void renameCategory({ type: "team", id: c.id, name: editingCat.name })
-                            setEditingCat(null)
-                          }}
-                        />
-                      ) : (
-                        <span
-                          className="text-sm text-sidebar-foreground truncate flex-1 min-w-0"
-                          draggable
-                          onDragStart={(e) => startCategoryDrag("team", c.id, e)}
-                          onDragEnd={endCategoryDrag}
-                        >
-                          {c.name || "New category"}
-                        </span>
-                      )}
-
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                         <button
-                           type="button"
-                           className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300 dark:hover:bg-neutral-700 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
-                            onClick={(e) => e.stopPropagation()}
-                            onPointerDown={(e) => e.stopPropagation()}
-                            title="메뉴"
+                            }}
+                          />
+                        ) : (
+                          <span
+                            className="text-sm text-sidebar-foreground truncate flex-1 min-w-0"
+                            draggable
+                            onDragStart={(e) => startCategoryDrag("team", c.id, e)}
+                            onDragEnd={endCategoryDrag}
                           >
-                            <Ellipsis className="size-3" />
-                          </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent
-                          align="end"
-                          className="w-40"
-                          onPointerDown={(e) => e.stopPropagation()}
-                          onCloseAutoFocus={(e) => {
-                            // Prevent Radix from restoring focus to the trigger button (it steals focus from our rename input).
-                            e.preventDefault()
-                          }}
-                        >
-                          <DropdownMenuItem asChild>
+                            {c.name || "New category"}
+                          </span>
+                        )}
+
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
                             <button
                               type="button"
-                              className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent focus:bg-accent"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                setEditingCat({ type: "team", id: c.id, name: c.name || "" })
-                                renameFocusUntilRef.current = Date.now() + 250
-                                window.setTimeout(() => {
-                                  editingInputRef.current?.focus()
-                                }, 0)
-                              }}
+                              className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300 dark:hover:bg-neutral-700 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
+                              onClick={(e) => e.stopPropagation()}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              title="메뉴"
                             >
-                              <Pencil className="size-4 mr-2" />
-                              이름 바꾸기
+                              <Ellipsis className="size-3" />
                             </button>
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem asChild>
-                            <button
-                              type="button"
-                              className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm text-destructive outline-none hover:bg-accent focus:bg-accent"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                setDeleteCategoryTarget({ type: "team", id: String(c.id), name: String(c.name || "") })
-                              }}
-                            >
-                              <Trash2 className="size-4 mr-2" />
-                              삭제
-                            </button>
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent
+                            align="end"
+                            className="w-40"
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onCloseAutoFocus={(e) => {
+                              // Prevent Radix from restoring focus to the trigger button (it steals focus from our rename input).
+                              e.preventDefault()
+                            }}
+                          >
+                            <DropdownMenuItem asChild>
+                              <button
+                                type="button"
+                                className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent focus:bg-accent"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setEditingCat({ type: "team", id: c.id, name: c.name || "" })
+                                  renameFocusUntilRef.current = Date.now() + 250
+                                  window.setTimeout(() => {
+                                    editingInputRef.current?.focus()
+                                  }, 0)
+                                }}
+                              >
+                                <Pencil className="size-4 mr-2" />
+                                이름 바꾸기
+                              </button>
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem asChild>
+                              <button
+                                type="button"
+                                className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm text-destructive outline-none hover:bg-accent focus:bg-accent"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setDeleteCategoryTarget({ type: "team", id: String(c.id), name: String(c.name || "") })
+                                }}
+                              >
+                                <Trash2 className="size-4 mr-2" />
+                                삭제
+                              </button>
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     )
                   })}
@@ -2844,48 +2844,48 @@ export function Sidebar({ className }: SidebarProps) {
         </div>
       )}
 
-       {/* Management - 관리 */}
-       <div className="flex flex-col p-2 gap-1 mt-auto">
-         {isOpen && (
-           <div className="flex items-center gap-2 px-2 h-8 opacity-70">
-              <span className="text-xs text-sidebar-foreground">관리</span>
-           </div>
-         )}
-         <div
-           className={cn(
-             "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-             !isOpen && "justify-center",
+      {/* Management - 관리 */}
+      <div className="flex flex-col p-2 gap-1 mt-auto">
+        {isOpen && (
+          <div className="flex items-center gap-2 px-2 h-8 opacity-70">
+            <span className="text-xs text-sidebar-foreground">관리</span>
+          </div>
+        )}
+        <div
+          className={cn(
+            "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+            !isOpen && "justify-center",
             isTrashActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
-           )}
-           onClick={() => navigate("/trash")}
-         >
-           <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-             <Trash2 className="size-full" />
-           </div>
-           {isOpen && <span className="text-sm text-sidebar-foreground">휴지통</span>}
-         </div>
+          )}
+          onClick={() => navigate("/trash")}
+        >
+          <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
+            <Trash2 className="size-full" />
+          </div>
+          {isOpen && <span className="text-sm text-sidebar-foreground">휴지통</span>}
+        </div>
         <div
           className={cn(
             "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800",
             !isOpen && "justify-center"
           )}
         >
-           <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-             <PieChart className="size-full" />
-           </div>
-           {isOpen && <span className="text-sm text-sidebar-foreground">대시보드</span>}
-         </div>
+          <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
+            <PieChart className="size-full" />
+          </div>
+          {isOpen && <span className="text-sm text-sidebar-foreground">대시보드</span>}
+        </div>
         <div
           className={cn(
             "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800",
             !isOpen && "justify-center"
           )}
         >
-           <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-             <MessageSquareMore className="size-full" />
-           </div>
-           {isOpen && <span className="text-sm text-sidebar-foreground">문의</span>}
-         </div>
+          <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
+            <MessageSquareMore className="size-full" />
+          </div>
+          {isOpen && <span className="text-sm text-sidebar-foreground">문의</span>}
+        </div>
       </div>
       {CategoryDeleteDialog}
       {CreateCategoryDialog}

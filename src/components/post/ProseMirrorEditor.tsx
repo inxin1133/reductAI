@@ -2716,12 +2716,12 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
             // Sticky toolbar: when the page title scrolls away, pin this toolbar to the top of the scroll container.
             "sticky top-0 z-20",
             // Layout + styling
-            "hidden sm:flex flex-wrap items-center",
+            "overflow-x-auto scrollbar-thin scrollbar-thumb-rounded-full scrollbar-thumb-border scrollbar-thumb-border-border flex-wrap items-center w-full max-w-full",
             "bg-accent/75 backdrop-blur supports-[backdrop-filter]:bg-accent/75",
             "rounded-md",
           ].join(" ")}
         >
-          <div className="flex flex-wrap items-center gap-2 p-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-2 p-1 w-full max-w-full">
           {/* 텍스트 형식 */}
           <ButtonGroup>
             <ToolbarTooltip label="Bold" shortcut={modBoldShortcutLabel}>

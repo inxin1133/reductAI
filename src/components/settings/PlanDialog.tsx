@@ -44,7 +44,7 @@ function tierColor(tier: string): string {
     case "pro":
       return "border-teal-500"
     case "premium":
-      return "border-violet-500"
+      return "border-indigo-500"
     case "business":
       return "border-amber-500"
     case "enterprise":
@@ -59,13 +59,13 @@ function tierBadgeBg(tier: string): string {
     case "free":
       return "bg-muted text-muted-foreground"
     case "pro":
-      return "bg-teal-500/10 text-teal-600 dark:text-teal-400"
+      return "bg-teal-50 text-teal-600 dark:text-teal-400"
     case "premium":
-      return "bg-violet-500/10 text-violet-600 dark:text-violet-400"
+      return "bg-indigo-50 text-indigo-600 dark:text-indigo-400"
     case "business":
-      return "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+      return "bg-amber-50 text-amber-600 dark:text-amber-400"
     case "enterprise":
-      return "bg-rose-500/10 text-rose-600 dark:text-rose-400"
+      return "bg-rose-50 text-rose-600 dark:text-rose-400"
     default:
       return "bg-muted text-muted-foreground"
   }

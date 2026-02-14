@@ -31,6 +31,7 @@ import {
   Globe,
   Bot,
   Share2,
+  FileDown,
 } from "lucide-react"
 
 import { AppShell } from "@/components/layout/AppShell"
@@ -921,6 +922,8 @@ export default function PostEditorPage() {
     }
   }, [])
 
+
+
   useEffect(() => {
     try {
       if (typeof window === "undefined") return
@@ -1087,11 +1090,19 @@ export default function PostEditorPage() {
       if (!event.metaKey && !event.ctrlKey) return
       if (event.key.toLowerCase() !== "k") return
       event.preventDefault()
+      if (event.shiftKey) {
+        if (isMobile) {
+          setIsNavDrawerOpen((prev) => !prev)
+        } else {
+          setNavOpen((prev) => !prev)
+        }
+        return
+      }
       setPmToolbarOpen((prev) => !prev)
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [])
+  }, [isMobile])
 
   useEffect(() => {
     try {
@@ -1337,7 +1348,7 @@ export default function PostEditorPage() {
       const pageId = ce.detail?.postId
       const anchorRect = ce.detail?.anchorRect
       if (!pageId) return
-      
+
       setEmbedIconPickerId(pageId)
       if (anchorRect) {
         setEmbedIconPickerAnchor({ left: anchorRect.left, top: anchorRect.top })
@@ -1823,16 +1834,16 @@ export default function PostEditorPage() {
           const title =
             pr && pr.ok
               ? await pr
-                  .json()
-                  .then((j) =>
-                    j &&
+                .json()
+                .then((j) =>
+                  j &&
                     typeof j === "object" &&
                     "title" in j &&
                     typeof (j as Record<string, unknown>).title === "string"
-                      ? String((j as Record<string, unknown>).title)
-                      : "New page"
-                  )
-                  .catch(() => "New page")
+                    ? String((j as Record<string, unknown>).title)
+                    : "New page"
+                )
+                .catch(() => "New page")
               : "New page"
 
           setMyPages((prev) => {
@@ -2259,13 +2270,13 @@ export default function PostEditorPage() {
         const shouldPurgeImmediately = pageHasContent[targetId] === false
         const snapshot: MyPage | null = target
           ? {
-              id: String(target.id),
-              parent_id: target.parent_id ? String(target.parent_id) : null,
-              title: target.title,
-              child_count: target.child_count,
-              page_order: target.page_order,
-              updated_at: target.updated_at,
-            }
+            id: String(target.id),
+            parent_id: target.parent_id ? String(target.parent_id) : null,
+            title: target.title,
+            child_count: target.child_count,
+            page_order: target.page_order,
+            updated_at: target.updated_at,
+          }
           : null
 
         // Compute subtree ids (target + descendants) from the current tree snapshot.
@@ -2392,48 +2403,48 @@ export default function PostEditorPage() {
           toast("페이지가 삭제되어 휴지통으로 이동되었습니다.", {
             action: snapshot
               ? {
-                  label: "undo",
-                  onClick: () => {
-                    void (async () => {
-                      const t = localStorage.getItem("token")
-                      if (!t) return
-                      // Restore server status for whole subtree
-                      for (const s of subtreeSnapshots) {
-                        await fetch(`/api/posts/${String(s.id)}`, {
-                          method: "PATCH",
-                          headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" },
-                          body: JSON.stringify({ status: "draft" }),
-                        }).catch(() => null)
-                      }
+                label: "undo",
+                onClick: () => {
+                  void (async () => {
+                    const t = localStorage.getItem("token")
+                    if (!t) return
+                    // Restore server status for whole subtree
+                    for (const s of subtreeSnapshots) {
+                      await fetch(`/api/posts/${String(s.id)}`, {
+                        method: "PATCH",
+                        headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" },
+                        body: JSON.stringify({ status: "draft" }),
+                      }).catch(() => null)
+                    }
 
-                      // Restore tree entry (best-effort)
-                      setMyPages((prev) => {
-                        const existing = new Set(prev.map((p) => String(p.id)))
-                        const toAdd = subtreeSnapshots.filter((s) => !existing.has(String(s.id)))
-                        if (!toAdd.length) return prev
-                        const next = prev.slice()
-                        for (const s of toAdd) next.push(s)
-                        return next
-                      })
+                    // Restore tree entry (best-effort)
+                    setMyPages((prev) => {
+                      const existing = new Set(prev.map((p) => String(p.id)))
+                      const toAdd = subtreeSnapshots.filter((s) => !existing.has(String(s.id)))
+                      if (!toAdd.length) return prev
+                      const next = prev.slice()
+                      for (const s of toAdd) next.push(s)
+                      return next
+                    })
 
-                      // Restore link into parent content (best-effort)
-                      if (snapshot.parent_id) {
-                        const par = String(snapshot.parent_id)
-                        if (String(postId || "") === par) {
-                          window.dispatchEvent(
-                            new CustomEvent("reductai:append-page-link", {
-                              detail: { pageId: String(snapshot.id), title: snapshot.title || "New page", display: "embed" },
-                            })
-                          )
-                        } else {
-                          void updatePostContent(par, (doc) =>
-                            appendPageLinkToDocJson(doc, { pageId: String(snapshot.id), title: snapshot.title || "New page", display: "embed" })
-                          )
-                        }
+                    // Restore link into parent content (best-effort)
+                    if (snapshot.parent_id) {
+                      const par = String(snapshot.parent_id)
+                      if (String(postId || "") === par) {
+                        window.dispatchEvent(
+                          new CustomEvent("reductai:append-page-link", {
+                            detail: { pageId: String(snapshot.id), title: snapshot.title || "New page", display: "embed" },
+                          })
+                        )
+                      } else {
+                        void updatePostContent(par, (doc) =>
+                          appendPageLinkToDocJson(doc, { pageId: String(snapshot.id), title: snapshot.title || "New page", display: "embed" })
+                        )
                       }
-                    })()
-                  },
-                }
+                    }
+                  })()
+                },
+              }
               : undefined,
           })
         }
@@ -2644,7 +2655,7 @@ export default function PostEditorPage() {
       endPageDrag()
       return
     }
-    
+
     // Get the page being moved and its current parent
     const fromPage = pageById.get(fromId)
     const oldParentId = fromPage?.parent_id || null
@@ -2673,7 +2684,7 @@ export default function PostEditorPage() {
       if (!fromPage) return prev
       const next = prev.filter((p) => String(p.id) !== fromId)
       const updatedPage: MyPage = { ...fromPage, parent_id: targetParentId }
-      
+
       if (indicator.position === "inside") {
         // Add as child of target (at end)
         next.push(updatedPage)
@@ -2704,14 +2715,14 @@ export default function PostEditorPage() {
     // Call server API
     const h = authHeaders()
     if (!h.Authorization) return
-    
+
     try {
       const moveRes = await fetch(`/api/posts/${fromId}/move`, {
         method: "POST",
         headers: { ...h, "Content-Type": "application/json" },
         body: JSON.stringify({ targetParentId, afterPageId, beforePageId }),
       })
-      
+
       if (!moveRes.ok) {
         console.error("Move API failed:", await moveRes.text())
         // Refresh to restore correct state
@@ -2755,7 +2766,7 @@ export default function PostEditorPage() {
 
           // Check if we're currently viewing the parent page
           const isViewingParent = String(postId) === String(targetParentId)
-          
+
           // Generate unique blockId
           const blockId = crypto.randomUUID()
 
@@ -2783,7 +2794,7 @@ export default function PostEditorPage() {
             const currentVersion = contentData.version || 0
 
             // 2. Check if embed link already exists (by pageId)
-            const alreadyExists = (docJson.content || []).some((node: { type?: string; attrs?: { pageId?: string } }) => 
+            const alreadyExists = (docJson.content || []).some((node: { type?: string; attrs?: { pageId?: string } }) =>
               node.type === "page_link" && node.attrs?.pageId === fromId
             )
 
@@ -2825,7 +2836,7 @@ export default function PostEditorPage() {
       if (oldParentId && oldParentId !== targetParentId) {
         try {
           const isViewingOldParent = String(postId) === String(oldParentId)
-          
+
           if (isViewingOldParent) {
             // Dispatch event to remove embed from editor
             window.dispatchEvent(new CustomEvent("reductai:remove-page-embed", {
@@ -2838,13 +2849,13 @@ export default function PostEditorPage() {
               const contentData = await contentRes.json()
               const docJson = contentData.docJson || { type: "doc", content: [] }
               const currentVersion = contentData.version || 0
-              
+
               // Filter out the page_link for the moved page
               const filteredContent = (docJson.content || []).filter(
                 (node: { type?: string; attrs?: { pageId?: string } }) =>
                   !(node.type === "page_link" && node.attrs?.pageId === fromId)
               )
-              
+
               // Only save if content changed
               if (filteredContent.length !== (docJson.content || []).length) {
                 const updatedDocJson = { ...docJson, content: filteredContent }
@@ -3168,9 +3179,9 @@ export default function PostEditorPage() {
               />
             ) : (
               <div className="flex flex-1 min-w-0 overflow-hidden" title={p.title || "New page"}>
-                <p className="line-clamp-1 break-all">{p.title || "New page"}</p>   
+                <p className="line-clamp-1 break-all">{p.title || "New page"}</p>
               </div>
-            )}   
+            )}
             <div className="flex items-center gap-1 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto transition-opacity">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -3493,846 +3504,859 @@ export default function PostEditorPage() {
 
   return (
     <>
-    <AppShell
-      headerLeftContent={
-        <div className="flex items-center gap-2 min-w-0 overflow-hidden flex-nowrap">
-          {/* When collapsed, show ListTree icon + breadcrumb - 목록 트리 아이콘 + 브레드크럼 표시 */}
-          {(isMobile ? !isNavDrawerOpen : !navOpen) ? (
-            <HoverCard openDelay={0} closeDelay={120}>
-              <HoverCardTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-8 shrink-0 hover:bg-neutral-100 dark:hover:bg-neutral-800" onClick={openNav} title="페이지 트리">
-                  <ListTree className="size-4" />
-                </Button>
-              </HoverCardTrigger>
-              {!isMobile ? (
-                <HoverCardContent side="right" align="start" className="w-[280px] p-2">
-                  <div className="flex items-center justify-between px-1 pb-2">
-                    {renderCategoryHeader("text-sm font-semibold")}
-                    <div className="flex items-center gap-1">
-                      <Button
-                        variant="ghost"
-                        size="sm"                        
-                        onClick={isAllExpanded ? collapseAll : expandAll}
-                        title={isAllExpanded ? "목록 최소화" : "목록 펼치기"}                        
-                      >
-                        {isAllExpanded ? <ListChevronsDownUp className="size-4" /> : <ListChevronsUpDown className="size-4" />}
-                      </Button>
-
-                      <Button variant="ghost" size="sm" onClick={createNewFromNav} title="새 페이지" className="size-8">
-                        <Plus />
-                      </Button>
-                    </div>
-                  </div>
-                  <Separator />
-                  <ScrollArea className="h-[600px]">
-                    <div className="pt-2">
-                      {roots.length === 0 ? (
-                        <div className="text-sm text-muted-foreground px-2 py-2">아직 페이지가 없습니다.</div>
-                      ) : (
-                        <div className="flex flex-col gap-1">{roots.map((p) => renderTreeNode(p, 0))}</div>
-                      )}
-                    </div>
-                  </ScrollArea>
-                </HoverCardContent>
-              ) : null}
-            </HoverCard>
-          ) : null}
-
-          <Breadcrumb className="min-w-0 overflow-hidden flex-1" data-pdf-section="path">
-            <BreadcrumbList className="min-w-0 overflow-hidden flex-nowrap flex-1">
-              {breadcrumbData.visible.map((c, idx) => {
-                const isLast = idx === breadcrumbData.visible.length - 1
-                if (c.id === "__ellipsis__") {
-                  return (
-                    <BreadcrumbItem key={`ellipsis_${idx}`} className="shrink-0">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild className="gap-0">
-                          <Button                            
-                            variant="ghost"
-                            size="icon"
-                            className="size-8 shrink-0"                            
-                            title="숨겨진 경로 보기"
-                          >
-                            <BreadcrumbEllipsis />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="start" className="w-64">
-                          {breadcrumbData.hidden.map((h) => (
-                            <DropdownMenuItem
-                              key={h.id}
-                              onSelect={() => {
-                                if (isMobile) setIsNavDrawerOpen(false)
-                                navigate(`/posts/${h.id}/edit${categoryQS}`)
-                              }}
-                            >
-                              <span className="flex min-w-0 items-center gap-2">
-                                <span className="shrink-0">{renderHeaderIcon(h.id)}</span>
-                                <span className="truncate">{h.title || "New page"}</span>
-                              </span>
-                            </DropdownMenuItem>
-                          ))}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                      {!isLast ? <BreadcrumbSeparator className="shrink-0" /> : null}
-                    </BreadcrumbItem>
-                  )
-                }
-                const iconEl = renderHeaderIcon(c.id)
-                const label = (
-                  <span className="flex items-center gap-1.5 min-w-[40px] max-w-full overflow-hidden">
-                    {iconEl ? <span className="shrink-0">{iconEl}</span> : null}
-                    <span className="truncate">{c.title || "New page"}</span>
-                  </span>
-                )
-                return (
-                  <BreadcrumbItem key={c.id} className="min-w-0 shrink overflow-hidden">
-                    {isLast ? (
-                      <BreadcrumbPage className="min-w-0 overflow-hidden block">{label}</BreadcrumbPage>
-                    ) : (
-                      <BreadcrumbLink
-                        asChild
-                        className="min-w-0 overflow-hidden cursor-pointer block"
-                        onClick={(e) => {
-                          e.preventDefault()
-                          if (isMobile) setIsNavDrawerOpen(false)
-                          navigate(`/posts/${c.id}/edit${categoryQS}`)
-                        }}
-                      >
-                        <span className="min-w-0 overflow-hidden block">{label}</span>
-                      </BreadcrumbLink>
-                    )}
-                    {!isLast ? <BreadcrumbSeparator className="shrink-0" /> : null}
-                  </BreadcrumbItem>
-                )
-              })}
-            </BreadcrumbList>
-          </Breadcrumb>
-        </div>
-      }
-      headerContent={
-        // 상단 해드 버튼 들
-        <div className="flex items-center gap-2">
-          {/* <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
-            <RefreshCw className="size-4 mr-2" />
-            Reload
-          </Button> */}
-          <Button className="hidden" size="sm" disabled={!canSave} onClick={() => void saveNow()}>
-            <Save className="size-4 mr-2" />
-            Save{dirty ? "*" : ""}
-          </Button>
-          <Button variant="ghost" size="sm" className="sm:hidden" onClick={createNewFromNav} title="새 페이지">
-            <Plus className="size-4" />
-          </Button>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="hidden sm:block"
-                onClick={() => setPmToolbarOpen((v) => !v)}
-                aria-pressed={pmToolbarOpen}
-              >
-                {pmToolbarOpen ? <SquareChevronUp /> : <Settings2 />}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              <div className="flex flex-col gap-0.5">
-                <span>툴바</span>
-                <span className="text-[11px] text-muted-foreground">단축키: {pmToolbarShortcutLabel}</span>
-              </div>
-            </TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="sm" onClick={() => setIsWideLayout((v) => !v)}>
-                {isWideLayout ? <ChevronsRightLeft /> : <ChevronsLeftRight />}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              페이지 너비 토글
-            </TooltipContent>
-          </Tooltip>
-          <Button variant="ghost" size="sm" onClick={() => setPdfDialogOpen(true)} disabled={pdfExporting}>
-            <FileText className="size-4 mr-2" />
-            PDF 저장
-          </Button>
-        </div>
-      }
-      leftPane={
-        <>
-          {/* Left page tree (local) - 왼쪽 페이지 트리 */}
-          {isMobile ? (
-            <>
-              {/* Mobile: NavDrawer - 모바일 왼쪽 페이지 트리 */}
-              {isNavDrawerOpen ? (
-                <>
-                  <div
-                    className="fixed inset-0 top-[56px] z-50 bg-black/30"
-                    onClick={() => {
-                      if (Date.now() < navOverlayBlockUntilRef.current) return
-                      setIsNavDrawerOpen(false)
-                    }}
-                  />
-                  <div className="fixed top-[56px] left-0 bottom-0 z-60 w-[320px] border-r border-border bg-background shadow-lg">
-                    <div className="h-12 flex items-center justify-between px-3">
-                      {renderCategoryHeader("font-semibold")}
-                      <div className="flex items-center gap-2">
+      <AppShell
+        headerLeftContent={
+          <div className="flex items-center gap-2 min-w-0 overflow-hidden flex-nowrap">
+            {/* When collapsed, show ListTree icon + breadcrumb - 목록 트리 아이콘 + 브레드크럼 표시 */}
+            {(isMobile ? !isNavDrawerOpen : !navOpen) ? (
+              <HoverCard openDelay={0} closeDelay={120}>
+                <HoverCardTrigger asChild>                
+                  <Button variant="ghost" size="icon" className="size-8 shrink-0 hover:bg-neutral-100 dark:hover:bg-neutral-800" onClick={openNav} title="페이지 트리">
+                    <ListTree className="size-4" />
+                  </Button>
+                </HoverCardTrigger>
+                {!isMobile ? (
+                  <HoverCardContent side="right" align="start" className="w-[280px] p-2">
+                    <div className="flex items-center justify-between px-1 pb-2">
+                      {renderCategoryHeader("text-sm font-semibold")}
+                      <div className="flex items-center gap-1">
                         <Button
                           variant="ghost"
-                          className="size-8 shrink-0"
-                          title={isAllExpanded ? "목록 최소화" : "목록 펼치기"}
+                          size="sm"
                           onClick={isAllExpanded ? collapseAll : expandAll}
+                          title={isAllExpanded ? "목록 최소화" : "목록 펼치기"}
                         >
                           {isAllExpanded ? <ListChevronsDownUp className="size-4" /> : <ListChevronsUpDown className="size-4" />}
                         </Button>
-                        <Button variant="ghost" className="size-8 shrink-0" onClick={createNewFromNav} title="새 페이지">
-                          <Plus className="size-4" />
-                        </Button>
-                        <Button variant="ghost" className="size-8 shrink-0" onClick={() => setIsNavDrawerOpen(false)} title="닫기">
-                          <ChevronsLeft className="size-4" />
+
+                        <Button variant="ghost" size="sm" onClick={createNewFromNav} title="새 페이지" className="size-8">
+                          <Plus />
                         </Button>
                       </div>
                     </div>
                     <Separator />
-                    <ScrollArea className="h-[calc(100%-48px)]">
-                      <div className="p-2 pb-6">
+                    <ScrollArea className="h-[600px]">
+                      <div className="pt-2">
                         {roots.length === 0 ? (
-                          <div className="text-sm opacity-70 px-2 py-2">아직 페이지가 없습니다.</div>
+                          <div className="text-sm text-muted-foreground px-2 py-2">아직 페이지가 없습니다.</div>
                         ) : (
                           <div className="flex flex-col gap-1">{roots.map((p) => renderTreeNode(p, 0))}</div>
                         )}
                       </div>
                     </ScrollArea>
-                  </div>
-                </>
-              ) : null}
-              {/* Mobile: keep leftPane width zero so main content doesn't shift - 왼쪽 페이지 트리 너비를 0으로 유지하여 메인 콘텐츠가 이동하지 않도록 함 */}
-              <div className="w-0" />
-            </>
-          ) : navOpen ? (
-            <>
-              {/* Desktop: NavDrawer - 데스크탑 왼쪽 페이지 트리 */}    
-              <div
-                className={[
-                  "relative h-full shrink-0 border-r border-border text-sidebar-foreground bg-background",
-                  "min-w-[220px] max-w-[380px]",
-                  navResizing ? "transition-none" : "transition-[width] duration-200",
-                ].join(" ")}
-                style={{ width: navWidth }}
-              >
-                <div className="h-14 flex items-center justify-between px-3">
-                  {renderCategoryHeader("text-sm font-semibold")}
-                  <div className="flex items-center gap-0">
-                    <Button
-                      variant="ghost"
-                      size="sm"                      
-                      title={isAllExpanded ? "목록 최소화" : "목록 펼치기"}
-                      onClick={isAllExpanded ? collapseAll : expandAll}
-                    >
-                      {isAllExpanded ? <ListChevronsDownUp /> : <ListChevronsUpDown />}
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={createNewFromNav} title="새 페이지">
-                      <Plus />
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => setNavOpen(false)} title="닫기">
-                      <ChevronsLeft />
-                    </Button>
-                  </div>
-                </div>
-                <Separator />
+                  </HoverCardContent>
+                ) : null}
+              </HoverCard>
+            ) : null}
 
-                <ScrollArea className="h-[calc(100%-48px)]">
-                  <div className="p-1 pb-6 w-full">
-                    {roots.length === 0 ? <div className="text-sm opacity-70 px-2 py-2">아직 페이지가 없습니다.</div> : null}
-                     <div className="flex min-w-0 flex-col gap-1">{roots.map((p) => renderTreeNode(p, 0))}</div>
-                  </div>
-                </ScrollArea>
-
-                {/* Right-edge resize handle (full height, above all sidebar content) */}
-                <div
-                  role="separator"
-                  aria-orientation="vertical"
-                  aria-label="Resize page tree"
-                  className={[
-                    "absolute inset-y-0 right-0 w-2",
-                    "cursor-col-resize",
-                    "z-50",
-                    "hover:bg-border/60",
-                    navResizing ? "bg-border/70" : "bg-transparent",
-                  ].join(" ")}
-                  onPointerDown={startNavResize}
-                />
-              </div>
-            </>
-          ) : (
-            // Desktop: keep leftPane width zero so main content doesn't shift
-            <div className="w-0" />
-          )}
-        </>
-      }
-    >
-      {/* Editor (Main Body slot) */}
-      <div className="flex h-full w-full">
-        <div ref={editorScrollRef} className="flex-1 h-full overflow-auto pt-[60px]">
-          <div
-            className={[isWideLayout ? "w-full" : "max-w-4xl", "mx-auto px-12 xl:pr-[96px]", "relative"].join(" ")}
-            data-pdf-root
-          >
-            <div className="mb-4">
-              {/* 페이지 상단 부분 숨기기  - 페이지명, 페이지아이디, 저장버전 */}
-              <div className="text-xl font-semibold hidden h-0">Post Editor</div>
-              <div className="text-sm text-muted-foreground hidden h-0">
-                postId: <span className="font-mono">{postId}</span> · version: {serverVersion}
-              </div>
-
-              {isEmptyPagePlaceholder ? (
-                <div className="mt-3">
-                  <div className="relative flex items-center gap-2 select-none">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-muted/30 opacity-70">
-                      <File className="size-5 text-muted-foreground" />
-                    </div>
-                    <div className="w-full text-3xl font-bold text-muted-foreground truncate" aria-label="빈 페이지 제목">
-                      New page
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-3">
-                  {isDeletedPage ? <div className="mb-2 text-sm font-semibold text-red-600">Deleted Page</div> : null}
-                  {(() => {
-                    const chosen = decodePageIcon(pageIconRaw)
-                    const hasCustom = Boolean(chosen)
-                    const hasTitleContent = docJsonHasMeaningfulContent(draftDocJson)
-                    const InsertIcon = hasTitleContent ? FileText : File
-                    const iconEl = (() => {
-                      if (!chosen) return null
-                      if (chosen.kind === "emoji") return <span className="text-[28px] leading-none">{chosen.value}</span>
-                      const Preset = LUCIDE_PRESET_MAP[chosen.value]
-                      const Dyn = Preset || lucideAll?.[chosen.value]
-                      if (!Dyn) return <span className="text-[18px] leading-none opacity-60">□</span>
-                      return <Dyn className="size-7" />
-                    })()
-
+            <Breadcrumb className="min-w-0 overflow-hidden flex-1" data-pdf-section="path">
+              <BreadcrumbList className="min-w-0 overflow-hidden flex-nowrap flex-1">
+                {breadcrumbData.visible.map((c, idx) => {
+                  const isLast = idx === breadcrumbData.visible.length - 1
+                  if (c.id === "__ellipsis__") {
                     return (
-                      <Popover open={titleIconOpen} onOpenChange={setTitleIconOpen}>
-                        <div className="relative group/title flex items-center gap-2" data-pdf-section="title">
-                          {hasCustom ? (
-                            <PopoverTrigger asChild>
-                              <button
-                                type="button"
-                                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md hover:bg-accent"
-                                title="아이콘 변경"
-                                onPointerDown={(e) => e.stopPropagation()}
+                      <BreadcrumbItem key={`ellipsis_${idx}`} className="shrink-0">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild className="gap-0">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-8 shrink-0"
+                              title="숨겨진 경로 보기"
+                            >
+                              <BreadcrumbEllipsis />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" className="w-64">
+                            {breadcrumbData.hidden.map((h) => (
+                              <DropdownMenuItem
+                                key={h.id}
+                                onSelect={() => {
+                                  if (isMobile) setIsNavDrawerOpen(false)
+                                  navigate(`/posts/${h.id}/edit${categoryQS}`)
+                                }}
                               >
-                                {iconEl}
-                              </button>
-                            </PopoverTrigger>
-                          ) : (
-                            <PopoverTrigger asChild>
-                              <button
-                                type="button"
-                                className={[
-                                  "absolute top-1 -left-10",
-                                  "h-8 w-8",
-                                  "rounded-md border border-border bg-background shadow-sm flex items-center justify-center",
-                                  "z-[100]",
-                                  "opacity-0 invisible pointer-events-none",
-                                  "group-hover/title:opacity-100 group-hover/title:visible group-hover/title:pointer-events-auto",
-                                  "transition-opacity",
-                                ].join(" ")}
-                                onPointerDown={(e) => e.stopPropagation()}
-                              >
-                                <InsertIcon className="size-4" />
-                              </button>
-                            </PopoverTrigger>
-                          )}
-
-                          {/* Hover bridge: extends the group's hover hitbox to the floating button area so it doesn't disappear while moving the mouse. */}
-                          {!hasCustom ? (
-                            <span
-                              aria-hidden
-                              className={["absolute top-0 -left-10 h-full w-10", "bg-transparent"].join(" ")}
-                            />
-                          ) : null}
-
-                          <input
-                            ref={titleInputRef}
-                            className="w-full text-3xl font-bold outline-none placeholder:text-muted-foreground truncate"
-                            title={pageTitle}
-                            value={pageTitle}
-                            placeholder="New page"
-                            onChange={(e) => setPageTitle(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key !== "Enter") return
-                              // Enter: move focus into the ProseMirror editor.
-                              e.preventDefault()
-                              e.stopPropagation()
-                              try {
-                                window.dispatchEvent(new CustomEvent("reductai:pm-editor:focus"))
-                              } catch {
-                                // ignore
-                              }
-                            }}
-                          />
-                        </div>
-
-                        <PopoverContent align="start" sideOffset={8} className="w-[370px] p-3 z-[90]">
-                          <Tabs value={iconPickerTab} onValueChange={(v) => setIconPickerTab(v === "icon" ? "icon" : "emoji")}>
-                            <TabsList>
-                              <TabsTrigger value="emoji">이모지</TabsTrigger>
-                              <TabsTrigger value="icon">아이콘</TabsTrigger>
-                            </TabsList>
-                            <TabsContent value="emoji">
-                              <div className="max-h-[360px] overflow-auto pr-1">
-                                <EmojiPicker
-                                  theme={document.documentElement.classList.contains("dark") ? Theme.DARK : Theme.LIGHT}
-                                  previewConfig={{ showPreview: false }}
-                                  onEmojiClick={(emoji: EmojiClickData) => {
-                                    const native = emoji?.emoji ? String(emoji.emoji) : ""
-                                    if (!native || !postId) return
-                                    void savePageIcon(postId, { kind: "emoji", value: native })
-                                    setTitleIconOpen(false)
-                                  }}
-                                />
-                              </div>
-                              <div className="mt-2 flex justify-end">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => {
-                                    if (!postId) return
-                                    void savePageIcon(postId, null)
-                                    setTitleIconOpen(false)
-                                  }}
-                                >
-                                  Reset
-                                </Button>
-                              </div>
-                            </TabsContent>
-                            <TabsContent value="icon">
-                              <div className="mb-2">
-                                <Input
-                                  value={lucideQuery}
-                                  onChange={(e) => setLucideQuery(e.target.value)}
-                                  placeholder="Search icons (e.g. calendar, bot, file...)"
-                                  className="h-8 text-sm"
-                                />
-                              </div>
-
-                              {lucideQuery.trim() ? (
-                                <>
-                                  {lucideLoading && !lucideAll ? (
-                                    <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
-                                  ) : null}
-                                  <div className="max-h-[300px] overflow-auto pr-1">
-                                    <div className="grid grid-cols-7 gap-1">
-                                      {(() => {
-                                        const q = lucideQuery.trim().toLowerCase()
-                                        const map = lucideAll || {}
-                                        const keys = Object.keys(map)
-                                          .filter((k) => k.toLowerCase().includes(q))
-                                          .slice(0, 98)
-                                        if (!lucideLoading && lucideAll && keys.length === 0) {
-                                          return (
-                                            <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
-                                              No matches. Try a different keyword.
-                                            </div>
-                                          )
-                                        }
-                                        return keys.map((k) => {
-                                          const Cmp = map[k]
-                                          return (
-                                            <button
-                                              key={k}
-                                              type="button"
-                                              className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
-                                              onClick={() => {
-                                                if (!postId) return
-                                                void savePageIcon(postId, { kind: "lucide", value: k })
-                                                setTitleIconOpen(false)
-                                              }}
-                                              title={k}
-                                              aria-label={k}
-                                            >
-                                              <Cmp className="size-4" />
-                                            </button>
-                                          )
-                                        })
-                                      })()}
-                                    </div>
-                                  </div>
-                                </>
-                              ) : (
-                                <>
-                                  <div className="grid grid-cols-7 gap-1">
-                                    {LUCIDE_PRESETS.map((it) => (
-                                      <button
-                                        key={it.key}
-                                        type="button"
-                                        className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
-                                        onClick={() => {
-                                          if (!postId) return
-                                          void savePageIcon(postId, { kind: "lucide", value: it.key })
-                                          setTitleIconOpen(false)
-                                        }}
-                                        title={it.label}
-                                        aria-label={it.label}
-                                      >
-                                        <it.Icon className="size-4" />
-                                      </button>
-                                    ))}
-                                  </div>
-                                  <div className="mt-2 text-[11px] text-muted-foreground px-0.5">
-                                    검색어를 입력하면 전체 아이콘 목록을 불러옵니다.
-                                  </div>
-                                </>
-                              )}
-                              <div className="mt-2 flex justify-end">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => {
-                                    if (!postId) return
-                                    void savePageIcon(postId, null)
-                                    setTitleIconOpen(false)
-                                  }}
-                                >
-                                  Reset
-                                </Button>
-                              </div>
-                            </TabsContent>
-                          </Tabs>
-                        </PopoverContent>
-                      </Popover>
+                                <span className="flex min-w-0 items-center gap-2">
+                                  <span className="shrink-0">{renderHeaderIcon(h.id)}</span>
+                                  <span className="truncate">{h.title || "New page"}</span>
+                                </span>
+                              </DropdownMenuItem>
+                            ))}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                        {!isLast ? <BreadcrumbSeparator className="shrink-0" /> : null}
+                      </BreadcrumbItem>
                     )
-                  })()}
-                </div>
-              )}
-            </div>
-
-            {error ? (
-              <Card className="mb-4 p-3 border-destructive/30 bg-destructive/5">
-                <div className="text-sm text-destructive whitespace-pre-wrap">{error}</div>
-              </Card>
-            ) : null}
-            {error?.includes("로그인이 필요") ? (
-              <div className="mb-4">
-                <Button variant="outline" onClick={() => navigate("/")}>
-                  로그인하러 가기
+                  }
+                  const iconEl = renderHeaderIcon(c.id)
+                  const label = (
+                    <span className="flex items-center gap-1.5 min-w-[40px] max-w-full overflow-hidden">
+                      {iconEl ? <span className="shrink-0">{iconEl}</span> : null}
+                      <span className="truncate">{c.title || "New page"}</span>
+                    </span>
+                  )
+                  return (
+                    <BreadcrumbItem key={c.id} className="min-w-0 shrink overflow-hidden">
+                      {isLast ? (
+                        <BreadcrumbPage className="min-w-0 overflow-hidden block">{label}</BreadcrumbPage>
+                      ) : (
+                        <BreadcrumbLink
+                          asChild
+                          className="min-w-0 overflow-hidden cursor-pointer block"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            if (isMobile) setIsNavDrawerOpen(false)
+                            navigate(`/posts/${c.id}/edit${categoryQS}`)
+                          }}
+                        >
+                          <span className="min-w-0 overflow-hidden block">{label}</span>
+                        </BreadcrumbLink>
+                      )}
+                      {!isLast ? <BreadcrumbSeparator className="shrink-0" /> : null}
+                    </BreadcrumbItem>
+                  )
+                })}
+              </BreadcrumbList>
+            </Breadcrumb>
+          </div>
+        }
+        headerContent={
+          // 상단 해드 버튼 들
+          <div className="flex items-center gap-2">
+            {/* <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
+            <RefreshCw className="size-4 mr-2" />
+            Reload
+          </Button> */}
+            <Button className="hidden" size="sm" disabled={!canSave} onClick={() => void saveNow()}>
+              <Save className="size-4 mr-2" />
+              Save{dirty ? "*" : ""}
+            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+            <Button variant="ghost" size="sm" className="sm:hidden" onClick={createNewFromNav} title="새 페이지">
+              <Plus className="size-4" />
+            </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              새 페이지
+            </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"                  
+                  onClick={() => setPmToolbarOpen((v) => !v)}
+                  aria-pressed={pmToolbarOpen}
+                >
+                  {pmToolbarOpen ? <SquareChevronUp /> : <Settings2 />}
                 </Button>
-              </div>
-            ) : null}
-            {loading ? (
-              <div className="space-y-3">
-                <Skeleton className="h-8 w-48" />
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-[420px] w-full" />
-              </div>
-            ) : (
-              <div className="pb-[300px]">
-                {isEmptyPagePlaceholder ? (
-                  <div className="space-y-3">
-                    <div className="text-sm text-muted-foreground">
-                      페이지가 없습니다. 왼쪽에서 “+”로 새 페이지를 만들거나, 페이지를 선택하세요.
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={6}>
+                <div className="flex flex-col gap-0.5">
+                  <span>툴바</span>
+                  <span className="text-[11px] text-muted-foreground">단축키: {pmToolbarShortcutLabel}</span>
+                </div>
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="sm" onClick={() => setIsWideLayout((v) => !v)}>
+                  {isWideLayout ? <ChevronsRightLeft /> : <ChevronsLeftRight />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={6}>
+                페이지 너비 토글
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="sm" onClick={() => setPdfDialogOpen(true)} disabled={pdfExporting}>
+                  <FileDown className="size-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={6}>
+                PDF 저장
+              </TooltipContent>
+            </Tooltip>
+
+          </div>
+        }
+        leftPane={
+          <>
+            {/* Left page tree (local) - 왼쪽 페이지 트리 */}
+            {isMobile ? (
+              <>
+                {/* Mobile: NavDrawer - 모바일 왼쪽 페이지 트리 */}
+                {isNavDrawerOpen ? (
+                  <>
+                    <div
+                      className="fixed inset-0 top-[56px] z-50 bg-black/30"
+                      onClick={() => {
+                        if (Date.now() < navOverlayBlockUntilRef.current) return
+                        setIsNavDrawerOpen(false)
+                      }}
+                    />
+                    <div className="fixed top-[56px] left-0 bottom-0 z-60 w-[320px] border-r border-border bg-background shadow-lg">
+                      <div className="h-12 flex items-center justify-between px-3">
+                        {renderCategoryHeader("font-semibold")}
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="ghost"
+                            className="size-8 shrink-0"
+                            title={isAllExpanded ? "목록 최소화" : "목록 펼치기"}
+                            onClick={isAllExpanded ? collapseAll : expandAll}
+                          >
+                            {isAllExpanded ? <ListChevronsDownUp className="size-4" /> : <ListChevronsUpDown className="size-4" />}
+                          </Button>
+                          <Button variant="ghost" className="size-8 shrink-0" onClick={createNewFromNav} title="새 페이지">
+                            <Plus className="size-4" />
+                          </Button>
+                          <Button variant="ghost" className="size-8 shrink-0" onClick={() => setIsNavDrawerOpen(false)} title="닫기">
+                            <ChevronsLeft className="size-4" />
+                          </Button>
+                        </div>
+                      </div>
+                      <Separator />
+                      <ScrollArea className="h-[calc(100%-48px)]">
+                        <div className="p-2 pb-6">
+                          {roots.length === 0 ? (
+                            <div className="text-sm opacity-70 px-2 py-2">아직 페이지가 없습니다.</div>
+                          ) : (
+                            <div className="flex flex-col gap-1">{roots.map((p) => renderTreeNode(p, 0))}</div>
+                          )}
+                        </div>
+                      </ScrollArea>
                     </div>
-                    <div className="space-y-3 opacity-60 pointer-events-none select-none">
-                      <Skeleton className="h-8 w-48" />
-                      <Skeleton className="h-10 w-full" />
-                      <Skeleton className="h-[420px] w-full" />
-                    </div>
-                    <div className="pt-2">
-                      <Button onClick={createNewFromNav}>
-                        <Plus className="size-4 mr-2" />
-                        새 페이지 만들기
+                  </>
+                ) : null}
+                {/* Mobile: keep leftPane width zero so main content doesn't shift - 왼쪽 페이지 트리 너비를 0으로 유지하여 메인 콘텐츠가 이동하지 않도록 함 */}
+                <div className="w-0" />
+              </>
+            ) : navOpen ? (
+              <>
+                {/* Desktop: NavDrawer - 데스크탑 왼쪽 페이지 트리 */}
+                <div
+                  className={[
+                    "relative h-full shrink-0 border-r border-border text-sidebar-foreground bg-background",
+                    "min-w-[220px] max-w-[380px]",
+                    navResizing ? "transition-none" : "transition-[width] duration-200",
+                  ].join(" ")}
+                  style={{ width: navWidth }}
+                >
+                  <div className="h-14 flex items-center justify-between px-3">
+                    {renderCategoryHeader("text-sm font-semibold")}
+                    <div className="flex items-center gap-0">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title={isAllExpanded ? "목록 최소화" : "목록 펼치기"}
+                        onClick={isAllExpanded ? collapseAll : expandAll}
+                      >
+                        {isAllExpanded ? <ListChevronsDownUp /> : <ListChevronsUpDown />}
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={createNewFromNav} title="새 페이지">
+                        <Plus />
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => setNavOpen(false)} title="닫기">
+                        <ChevronsLeft />
                       </Button>
                     </div>
                   </div>
-                ) : (
-                  <ProseMirrorEditor
-                    initialDocJson={initialDocJson}
-                    toolbarOpen={pmToolbarOpen}
-                    postId={postId || undefined}
-                    onChange={(j) => {
-                      // Keep draftRef in sync immediately so "save-before-navigate" never misses the latest embed link.
-                      draftRef.current = j
-                      // Debounce the state update to avoid triggering expensive useEffects on every keystroke.
-                      // The draftRef.current is always up-to-date for immediate operations like save.
-                      if (draftStateTimerRef.current) window.clearTimeout(draftStateTimerRef.current)
-                      draftStateTimerRef.current = window.setTimeout(() => {
-                        draftStateTimerRef.current = null
-                        setDraftDocJson(j)
-                      }, 100)
-                    }}
+                  <Separator />
+
+                  <ScrollArea className="h-[calc(100%-48px)]">
+                    <div className="p-1 pb-6 w-full">
+                      {roots.length === 0 ? <div className="text-sm opacity-70 px-2 py-2">아직 페이지가 없습니다.</div> : null}
+                      <div className="flex min-w-0 flex-col gap-1">{roots.map((p) => renderTreeNode(p, 0))}</div>
+                    </div>
+                  </ScrollArea>
+
+                  {/* Right-edge resize handle (full height, above all sidebar content) */}
+                  <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize page tree"
+                    className={[
+                      "absolute inset-y-0 right-0 w-2",
+                      "cursor-col-resize",
+                      "z-50",
+                      "hover:bg-border/60",
+                      navResizing ? "bg-border/70" : "bg-transparent",
+                    ].join(" ")}
+                    onPointerDown={startNavResize}
                   />
-                )}
-              </div>
-            )}
-
-            {tocItems.length > 0 ? (
-              <div className="hidden xl:block absolute top-0 right-0 h-full">
-                <div className="sticky top-[84px] pr-4">
-                  <HoverCard openDelay={0} closeDelay={120}>
-                    <HoverCardTrigger asChild>
-                      <div className="h-[calc(100vh-180px)] w-4 flex items-start justify-center">
-                        <div className="relative w-3 h-full flex items-start justify-center">
-                          <div className="relative mt-1 flex flex-col items-center gap-2">
-                            {tocItems.map((item) => {
-                              const isActive = activeTocId === item.id
-                              return (
-                                <span
-                                  key={item.id}
-                                  className={cn(
-                                    "rounded-full transition-colors",
-                                    isActive ? "bg-primary" : "bg-muted-foreground/60",
-                                    item.level === 1 ? "size-2" : item.level === 2 ? "size-1.5" : "size-1"
-                                  )}
-                                />
-                              )
-                            })}
-                          </div>
-                        </div>
-                      </div>
-                    </HoverCardTrigger>
-                    <HoverCardContent side="left" align="start" sideOffset={-6} className="w-[260px] p-2 -mr-3">
-                      <div className="px-2 py-1 text-xs font-semibold text-muted-foreground">목차</div>
-                      <div className="max-h-[360px] overflow-auto">
-                        {tocItems.map((item) => {
-                          const isActive = activeTocId === item.id
-                          return (
-                            <button
-                              key={item.id}
-                              type="button"
-                              className={cn(
-                                "w-full text-left text-sm px-2 py-1 rounded-md transition-colors",
-                                isActive ? "bg-accent text-foreground" : "hover:bg-accent"
-                              )}
-                              style={{ paddingLeft: `${8 + (item.level - 1) * 12}px` }}
-                              onClick={() => scrollToHeading(item)}
-                            >
-                              <span className="truncate block">{item.text}</span>
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </HoverCardContent>
-                  </HoverCard>
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      </div>
-    </AppShell>
-
-    <Dialog open={pdfDialogOpen} onOpenChange={setPdfDialogOpen}>
-      <DialogContent className="sm:max-w-[480px]">
-        <DialogHeader>
-          <DialogTitle>PDF 저장</DialogTitle>
-          <DialogDescription>PDF에 포함할 영역을 선택하세요.</DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <Checkbox
-              id="pdf-include-path"
-              checked={pdfOptions.includePath}
-              onCheckedChange={(checked) =>
-                setPdfOptions((prev) => ({ ...prev, includePath: checked === true }))
-              }
-            />
-            <Label htmlFor="pdf-include-path">페이지 경로</Label>
-          </div>
-          <div className="flex items-center gap-3">
-            <Checkbox
-              id="pdf-include-title"
-              checked={pdfOptions.includeTitle}
-              onCheckedChange={(checked) =>
-                setPdfOptions((prev) => ({ ...prev, includeTitle: checked === true }))
-              }
-            />
-            <Label htmlFor="pdf-include-title">제목</Label>
-          </div>
-          <div className="flex items-center gap-3">
-            <Checkbox
-              id="pdf-include-body"
-              checked={pdfOptions.includeBody}
-              onCheckedChange={(checked) =>
-                setPdfOptions((prev) => ({ ...prev, includeBody: checked === true }))
-              }
-              disabled
-            />
-            <Label htmlFor="pdf-include-body">본문</Label>
-          </div>
-          <div className="flex items-center gap-3">
-            <Checkbox
-              id="pdf-include-meta"              
-              checked={pdfOptions.includeMeta}
-              onCheckedChange={(checked) =>
-                setPdfOptions((prev) => ({ ...prev, includeMeta: checked === true }))
-              }
-            />
-            <Label htmlFor="pdf-include-meta">메타데이터(작성자/내보낸 날짜)</Label>
-          </div>
-          {!pdfCanExport ? (
-            <div className="text-xs text-muted-foreground">하나 이상의 항목을 선택하세요.</div>
-          ) : null}
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setPdfDialogOpen(false)}>
-            취소
-          </Button>
-          <Button onClick={() => void handleExportPdf()} disabled={!pdfCanExport || pdfExporting}>
-            {pdfExporting ? "저장 중..." : "PDF 저장"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-
-    {/* Embed block icon picker popover */}
-    <Popover
-      open={!!embedIconPickerId}
-      onOpenChange={(open) => {
-        if (!open) {
-          setEmbedIconPickerId(null)
-          setEmbedIconPickerAnchor(null)
-        }
-      }}
-    >
-      <PopoverAnchor
-        style={{
-          position: "fixed",
-          left: embedIconPickerAnchor?.left ?? 0,
-          top: embedIconPickerAnchor?.top ?? 0,
-          width: 0,
-          height: 0,
-        }}
-      />
-      <PopoverContent align="start" sideOffset={6} className="w-[370px] p-3 z-[100]">
-        <Tabs value={iconPickerTab} onValueChange={(v) => setIconPickerTab(v === "icon" ? "icon" : "emoji")}>
-          <TabsList>
-            <TabsTrigger value="emoji">이모지</TabsTrigger>
-            <TabsTrigger value="icon">아이콘</TabsTrigger>
-          </TabsList>
-          <TabsContent value="emoji">
-            <div className="max-h-[360px] overflow-auto pr-1">
-              <EmojiPicker
-                theme={typeof document !== "undefined" && document.documentElement.classList.contains("dark") ? Theme.DARK : Theme.LIGHT}
-                previewConfig={{ showPreview: false }}
-                onEmojiClick={(emoji: EmojiClickData) => {
-                  const native = emoji?.emoji ? String(emoji.emoji) : ""
-                  if (!native || !embedIconPickerId) return
-                  void savePageIcon(embedIconPickerId, { kind: "emoji", value: native })
-                  setEmbedIconPickerId(null)
-                  setEmbedIconPickerAnchor(null)
-                }}
-              />
-            </div>
-            <div className="mt-2 flex justify-end">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  if (embedIconPickerId) void savePageIcon(embedIconPickerId, null)
-                  setEmbedIconPickerId(null)
-                  setEmbedIconPickerAnchor(null)
-                }}
-              >
-                Reset
-              </Button>
-            </div>
-          </TabsContent>
-          <TabsContent value="icon">
-            <div className="mb-2">
-              <Input
-                value={lucideQuery}
-                onChange={(e) => setLucideQuery(e.target.value)}
-                placeholder="Search icons (e.g. calendar, bot, file...)"
-                className="h-8 text-sm"
-              />
-            </div>
-
-            {lucideQuery.trim() ? (
-              <>
-                {lucideLoading && !lucideAll ? (
-                  <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
-                ) : null}
-                <div className="max-h-[300px] overflow-auto pr-1">
-                  <div className="grid grid-cols-7 gap-1">
-                    {(() => {
-                      const q = lucideQuery.trim().toLowerCase()
-                      const map = lucideAll || {}
-                      const keys = Object.keys(map)
-                        .filter((k) => k.toLowerCase().includes(q))
-                        .slice(0, 98)
-                      if (!lucideLoading && lucideAll && keys.length === 0) {
-                        return (
-                          <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
-                            No matches. Try a different keyword.
-                          </div>
-                        )
-                      }
-                      return keys.map((k) => {
-                        const Cmp = map[k]
-                        return (
-                          <button
-                            key={k}
-                            type="button"
-                            className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
-                            onClick={() => {
-                              if (embedIconPickerId) void savePageIcon(embedIconPickerId, { kind: "lucide", value: k })
-                              setEmbedIconPickerId(null)
-                              setEmbedIconPickerAnchor(null)
-                            }}
-                            title={k}
-                            aria-label={k}
-                          >
-                            <Cmp className="size-4" />
-                          </button>
-                        )
-                      })
-                    })()}
-                  </div>
-                </div>
-                <div className="mt-2 text-[11px] text-muted-foreground">
-                  Showing up to 98 matches. Refine your search to narrow results.
                 </div>
               </>
             ) : (
-              <div className="grid grid-cols-7 gap-1">
-                {LUCIDE_PRESETS.map((it) => (
-                  <button
-                    key={it.key}
-                    type="button"
-                    className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
-                    onClick={() => {
-                      if (embedIconPickerId) void savePageIcon(embedIconPickerId, { kind: "lucide", value: it.key })
-                      setEmbedIconPickerId(null)
-                      setEmbedIconPickerAnchor(null)
-                    }}
-                    title={it.label}
-                    aria-label={it.label}
-                  >
-                    <it.Icon className="size-4" />
-                  </button>
-                ))}
-              </div>
+              // Desktop: keep leftPane width zero so main content doesn't shift
+              <div className="w-0" />
             )}
-            <div className="mt-2 flex justify-end">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  if (embedIconPickerId) void savePageIcon(embedIconPickerId, null)
-                  setEmbedIconPickerId(null)
-                  setEmbedIconPickerAnchor(null)
-                }}
-              >
-                Reset
-              </Button>
+          </>
+        }
+      >
+        {/* Editor (Main Body slot) */}
+        <div className="flex h-full w-full">
+          <div ref={editorScrollRef} className="flex-1 h-full overflow-auto pt-[60px]">
+            <div
+              className={[isWideLayout ? "w-full" : "max-w-4xl", "mx-auto px-12 xl:pr-[96px]", "relative"].join(" ")}
+              data-pdf-root
+            >
+              <div className="mb-4">
+                {/* 페이지 상단 부분 숨기기  - 페이지명, 페이지아이디, 저장버전 */}
+                <div className="text-xl font-semibold hidden h-0">Post Editor</div>
+                <div className="text-sm text-muted-foreground hidden h-0">
+                  postId: <span className="font-mono">{postId}</span> · version: {serverVersion}
+                </div>
+
+                {isEmptyPagePlaceholder ? (
+                  <div className="mt-3">
+                    <div className="relative flex items-center gap-2 select-none">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-muted/30 opacity-70">
+                        <File className="size-5 text-muted-foreground" />
+                      </div>
+                      <div className="w-full text-3xl font-bold text-muted-foreground truncate" aria-label="빈 페이지 제목">
+                        New page
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-3">
+                    {isDeletedPage ? <div className="mb-2 text-sm font-semibold text-red-600">Deleted Page</div> : null}
+                    {(() => {
+                      const chosen = decodePageIcon(pageIconRaw)
+                      const hasCustom = Boolean(chosen)
+                      const hasTitleContent = docJsonHasMeaningfulContent(draftDocJson)
+                      const InsertIcon = hasTitleContent ? FileText : File
+                      const iconEl = (() => {
+                        if (!chosen) return null
+                        if (chosen.kind === "emoji") return <span className="text-[28px] leading-none">{chosen.value}</span>
+                        const Preset = LUCIDE_PRESET_MAP[chosen.value]
+                        const Dyn = Preset || lucideAll?.[chosen.value]
+                        if (!Dyn) return <span className="text-[18px] leading-none opacity-60">□</span>
+                        return <Dyn className="size-7" />
+                      })()
+
+                      return (
+                        <Popover open={titleIconOpen} onOpenChange={setTitleIconOpen}>
+                          <div className="relative group/title flex items-center gap-2" data-pdf-section="title">
+                            {hasCustom ? (
+                              <PopoverTrigger asChild>
+                                <button
+                                  type="button"
+                                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md hover:bg-accent"
+                                  title="아이콘 변경"
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                >
+                                  {iconEl}
+                                </button>
+                              </PopoverTrigger>
+                            ) : (
+                              <PopoverTrigger asChild>
+                                <button
+                                  type="button"
+                                  className={[
+                                    "absolute top-1 -left-10",
+                                    "h-8 w-8",
+                                    "rounded-md border border-border bg-background shadow-sm flex items-center justify-center",
+                                    "z-[100]",
+                                    "opacity-0 invisible pointer-events-none",
+                                    "group-hover/title:opacity-100 group-hover/title:visible group-hover/title:pointer-events-auto",
+                                    "transition-opacity",
+                                  ].join(" ")}
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                >
+                                  <InsertIcon className="size-4" />
+                                </button>
+                              </PopoverTrigger>
+                            )}
+
+                            {/* Hover bridge: extends the group's hover hitbox to the floating button area so it doesn't disappear while moving the mouse. */}
+                            {!hasCustom ? (
+                              <span
+                                aria-hidden
+                                className={["absolute top-0 -left-10 h-full w-10", "bg-transparent"].join(" ")}
+                              />
+                            ) : null}
+
+                            <input
+                              ref={titleInputRef}
+                              className="w-full text-3xl font-bold outline-none placeholder:text-muted-foreground truncate"
+                              title={pageTitle}
+                              value={pageTitle}
+                              placeholder="New page"
+                              onChange={(e) => setPageTitle(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key !== "Enter") return
+                                // Enter: move focus into the ProseMirror editor.
+                                e.preventDefault()
+                                e.stopPropagation()
+                                try {
+                                  window.dispatchEvent(new CustomEvent("reductai:pm-editor:focus"))
+                                } catch {
+                                  // ignore
+                                }
+                              }}
+                            />
+                          </div>
+
+                          <PopoverContent align="start" sideOffset={8} className="w-[370px] p-3 z-[90]">
+                            <Tabs value={iconPickerTab} onValueChange={(v) => setIconPickerTab(v === "icon" ? "icon" : "emoji")}>
+                              <TabsList>
+                                <TabsTrigger value="emoji">이모지</TabsTrigger>
+                                <TabsTrigger value="icon">아이콘</TabsTrigger>
+                              </TabsList>
+                              <TabsContent value="emoji">
+                                <div className="max-h-[360px] overflow-auto pr-1">
+                                  <EmojiPicker
+                                    theme={document.documentElement.classList.contains("dark") ? Theme.DARK : Theme.LIGHT}
+                                    previewConfig={{ showPreview: false }}
+                                    onEmojiClick={(emoji: EmojiClickData) => {
+                                      const native = emoji?.emoji ? String(emoji.emoji) : ""
+                                      if (!native || !postId) return
+                                      void savePageIcon(postId, { kind: "emoji", value: native })
+                                      setTitleIconOpen(false)
+                                    }}
+                                  />
+                                </div>
+                                <div className="mt-2 flex justify-end">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => {
+                                      if (!postId) return
+                                      void savePageIcon(postId, null)
+                                      setTitleIconOpen(false)
+                                    }}
+                                  >
+                                    Reset
+                                  </Button>
+                                </div>
+                              </TabsContent>
+                              <TabsContent value="icon">
+                                <div className="mb-2">
+                                  <Input
+                                    value={lucideQuery}
+                                    onChange={(e) => setLucideQuery(e.target.value)}
+                                    placeholder="Search icons (e.g. calendar, bot, file...)"
+                                    className="h-8 text-sm"
+                                  />
+                                </div>
+
+                                {lucideQuery.trim() ? (
+                                  <>
+                                    {lucideLoading && !lucideAll ? (
+                                      <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
+                                    ) : null}
+                                    <div className="max-h-[300px] overflow-auto pr-1">
+                                      <div className="grid grid-cols-7 gap-1">
+                                        {(() => {
+                                          const q = lucideQuery.trim().toLowerCase()
+                                          const map = lucideAll || {}
+                                          const keys = Object.keys(map)
+                                            .filter((k) => k.toLowerCase().includes(q))
+                                            .slice(0, 98)
+                                          if (!lucideLoading && lucideAll && keys.length === 0) {
+                                            return (
+                                              <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
+                                                No matches. Try a different keyword.
+                                              </div>
+                                            )
+                                          }
+                                          return keys.map((k) => {
+                                            const Cmp = map[k]
+                                            return (
+                                              <button
+                                                key={k}
+                                                type="button"
+                                                className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                                onClick={() => {
+                                                  if (!postId) return
+                                                  void savePageIcon(postId, { kind: "lucide", value: k })
+                                                  setTitleIconOpen(false)
+                                                }}
+                                                title={k}
+                                                aria-label={k}
+                                              >
+                                                <Cmp className="size-4" />
+                                              </button>
+                                            )
+                                          })
+                                        })()}
+                                      </div>
+                                    </div>
+                                  </>
+                                ) : (
+                                  <>
+                                    <div className="grid grid-cols-7 gap-1">
+                                      {LUCIDE_PRESETS.map((it) => (
+                                        <button
+                                          key={it.key}
+                                          type="button"
+                                          className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                          onClick={() => {
+                                            if (!postId) return
+                                            void savePageIcon(postId, { kind: "lucide", value: it.key })
+                                            setTitleIconOpen(false)
+                                          }}
+                                          title={it.label}
+                                          aria-label={it.label}
+                                        >
+                                          <it.Icon className="size-4" />
+                                        </button>
+                                      ))}
+                                    </div>
+                                    <div className="mt-2 text-[11px] text-muted-foreground px-0.5">
+                                      검색어를 입력하면 전체 아이콘 목록을 불러옵니다.
+                                    </div>
+                                  </>
+                                )}
+                                <div className="mt-2 flex justify-end">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => {
+                                      if (!postId) return
+                                      void savePageIcon(postId, null)
+                                      setTitleIconOpen(false)
+                                    }}
+                                  >
+                                    Reset
+                                  </Button>
+                                </div>
+                              </TabsContent>
+                            </Tabs>
+                          </PopoverContent>
+                        </Popover>
+                      )
+                    })()}
+                  </div>
+                )}
+              </div>
+
+              {error ? (
+                <Card className="mb-4 p-3 border-destructive/30 bg-destructive/5">
+                  <div className="text-sm text-destructive whitespace-pre-wrap">{error}</div>
+                </Card>
+              ) : null}
+              {error?.includes("로그인이 필요") ? (
+                <div className="mb-4">
+                  <Button variant="outline" onClick={() => navigate("/")}>
+                    로그인하러 가기
+                  </Button>
+                </div>
+              ) : null}
+              {loading ? (
+                <div className="space-y-3">
+                  <Skeleton className="h-8 w-48" />
+                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-[420px] w-full" />
+                </div>
+              ) : (
+                <div className="pb-[300px]">
+                  {isEmptyPagePlaceholder ? (
+                    <div className="space-y-3">
+                      <div className="text-sm text-muted-foreground">
+                        페이지가 없습니다. 왼쪽에서 “+”로 새 페이지를 만들거나, 페이지를 선택하세요.
+                      </div>
+                      <div className="space-y-3 opacity-60 pointer-events-none select-none">
+                        <Skeleton className="h-8 w-48" />
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-[420px] w-full" />
+                      </div>
+                      <div className="pt-2">
+                        <Button onClick={createNewFromNav}>
+                          <Plus className="size-4 mr-2" />
+                          새 페이지 만들기
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <ProseMirrorEditor
+                      initialDocJson={initialDocJson}
+                      toolbarOpen={pmToolbarOpen}
+                      postId={postId || undefined}
+                      onChange={(j) => {
+                        // Keep draftRef in sync immediately so "save-before-navigate" never misses the latest embed link.
+                        draftRef.current = j
+                        // Debounce the state update to avoid triggering expensive useEffects on every keystroke.
+                        // The draftRef.current is always up-to-date for immediate operations like save.
+                        if (draftStateTimerRef.current) window.clearTimeout(draftStateTimerRef.current)
+                        draftStateTimerRef.current = window.setTimeout(() => {
+                          draftStateTimerRef.current = null
+                          setDraftDocJson(j)
+                        }, 100)
+                      }}
+                    />
+                  )}
+                </div>
+              )}
+
+              {tocItems.length > 0 ? (
+                <div className="hidden xl:block absolute top-0 right-0 h-full">
+                  <div className="sticky top-[84px] pr-4">
+                    <HoverCard openDelay={0} closeDelay={120}>
+                      <HoverCardTrigger asChild>
+                        <div className="h-[calc(100vh-180px)] w-4 flex items-start justify-center">
+                          <div className="relative w-3 h-full flex items-start justify-center">
+                            <div className="relative mt-1 flex flex-col items-center gap-2">
+                              {tocItems.map((item) => {
+                                const isActive = activeTocId === item.id
+                                return (
+                                  <span
+                                    key={item.id}
+                                    className={cn(
+                                      "rounded-full transition-colors",
+                                      isActive ? "bg-primary" : "bg-muted-foreground/60",
+                                      item.level === 1 ? "size-2" : item.level === 2 ? "size-1.5" : "size-1"
+                                    )}
+                                  />
+                                )
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      </HoverCardTrigger>
+                      <HoverCardContent side="left" align="start" sideOffset={-6} className="w-[260px] p-2 -mr-3">
+                        <div className="px-2 py-1 text-xs font-semibold text-muted-foreground">목차</div>
+                        <div className="max-h-[360px] overflow-auto">
+                          {tocItems.map((item) => {
+                            const isActive = activeTocId === item.id
+                            return (
+                              <button
+                                key={item.id}
+                                type="button"
+                                className={cn(
+                                  "w-full text-left text-sm px-2 py-1 rounded-md transition-colors",
+                                  isActive ? "bg-accent text-foreground" : "hover:bg-accent"
+                                )}
+                                style={{ paddingLeft: `${8 + (item.level - 1) * 12}px` }}
+                                onClick={() => scrollToHeading(item)}
+                              >
+                                <span className="truncate block">{item.text}</span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </HoverCardContent>
+                    </HoverCard>
+                  </div>
+                </div>
+              ) : null}
             </div>
-          </TabsContent>
-        </Tabs>
-      </PopoverContent>
-    </Popover>
+          </div>
+        </div>
+      </AppShell>
+
+      <Dialog open={pdfDialogOpen} onOpenChange={setPdfDialogOpen}>
+        <DialogContent className="sm:max-w-[480px]">
+          <DialogHeader>
+            <DialogTitle>PDF 저장</DialogTitle>
+            <DialogDescription>PDF에 포함할 영역을 선택하세요.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <Checkbox
+                id="pdf-include-path"
+                checked={pdfOptions.includePath}
+                onCheckedChange={(checked) =>
+                  setPdfOptions((prev) => ({ ...prev, includePath: checked === true }))
+                }
+              />
+              <Label htmlFor="pdf-include-path">페이지 경로</Label>
+            </div>
+            <div className="flex items-center gap-3">
+              <Checkbox
+                id="pdf-include-title"
+                checked={pdfOptions.includeTitle}
+                onCheckedChange={(checked) =>
+                  setPdfOptions((prev) => ({ ...prev, includeTitle: checked === true }))
+                }
+              />
+              <Label htmlFor="pdf-include-title">제목</Label>
+            </div>
+            <div className="flex items-center gap-3">
+              <Checkbox
+                id="pdf-include-body"
+                checked={pdfOptions.includeBody}
+                onCheckedChange={(checked) =>
+                  setPdfOptions((prev) => ({ ...prev, includeBody: checked === true }))
+                }
+                disabled
+              />
+              <Label htmlFor="pdf-include-body">본문</Label>
+            </div>
+            <div className="flex items-center gap-3">
+              <Checkbox
+                id="pdf-include-meta"
+                checked={pdfOptions.includeMeta}
+                onCheckedChange={(checked) =>
+                  setPdfOptions((prev) => ({ ...prev, includeMeta: checked === true }))
+                }
+              />
+              <Label htmlFor="pdf-include-meta">메타데이터(작성자/내보낸 날짜)</Label>
+            </div>
+            {!pdfCanExport ? (
+              <div className="text-xs text-muted-foreground">하나 이상의 항목을 선택하세요.</div>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPdfDialogOpen(false)}>
+              취소
+            </Button>
+            <Button onClick={() => void handleExportPdf()} disabled={!pdfCanExport || pdfExporting}>
+              {pdfExporting ? "저장 중..." : "PDF 저장"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Embed block icon picker popover */}
+      <Popover
+        open={!!embedIconPickerId}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEmbedIconPickerId(null)
+            setEmbedIconPickerAnchor(null)
+          }
+        }}
+      >
+        <PopoverAnchor
+          style={{
+            position: "fixed",
+            left: embedIconPickerAnchor?.left ?? 0,
+            top: embedIconPickerAnchor?.top ?? 0,
+            width: 0,
+            height: 0,
+          }}
+        />
+        <PopoverContent align="start" sideOffset={6} className="w-[370px] p-3 z-[100]">
+          <Tabs value={iconPickerTab} onValueChange={(v) => setIconPickerTab(v === "icon" ? "icon" : "emoji")}>
+            <TabsList>
+              <TabsTrigger value="emoji">이모지</TabsTrigger>
+              <TabsTrigger value="icon">아이콘</TabsTrigger>
+            </TabsList>
+            <TabsContent value="emoji">
+              <div className="max-h-[360px] overflow-auto pr-1">
+                <EmojiPicker
+                  theme={typeof document !== "undefined" && document.documentElement.classList.contains("dark") ? Theme.DARK : Theme.LIGHT}
+                  previewConfig={{ showPreview: false }}
+                  onEmojiClick={(emoji: EmojiClickData) => {
+                    const native = emoji?.emoji ? String(emoji.emoji) : ""
+                    if (!native || !embedIconPickerId) return
+                    void savePageIcon(embedIconPickerId, { kind: "emoji", value: native })
+                    setEmbedIconPickerId(null)
+                    setEmbedIconPickerAnchor(null)
+                  }}
+                />
+              </div>
+              <div className="mt-2 flex justify-end">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    if (embedIconPickerId) void savePageIcon(embedIconPickerId, null)
+                    setEmbedIconPickerId(null)
+                    setEmbedIconPickerAnchor(null)
+                  }}
+                >
+                  Reset
+                </Button>
+              </div>
+            </TabsContent>
+            <TabsContent value="icon">
+              <div className="mb-2">
+                <Input
+                  value={lucideQuery}
+                  onChange={(e) => setLucideQuery(e.target.value)}
+                  placeholder="Search icons (e.g. calendar, bot, file...)"
+                  className="h-8 text-sm"
+                />
+              </div>
+
+              {lucideQuery.trim() ? (
+                <>
+                  {lucideLoading && !lucideAll ? (
+                    <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
+                  ) : null}
+                  <div className="max-h-[300px] overflow-auto pr-1">
+                    <div className="grid grid-cols-7 gap-1">
+                      {(() => {
+                        const q = lucideQuery.trim().toLowerCase()
+                        const map = lucideAll || {}
+                        const keys = Object.keys(map)
+                          .filter((k) => k.toLowerCase().includes(q))
+                          .slice(0, 98)
+                        if (!lucideLoading && lucideAll && keys.length === 0) {
+                          return (
+                            <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
+                              No matches. Try a different keyword.
+                            </div>
+                          )
+                        }
+                        return keys.map((k) => {
+                          const Cmp = map[k]
+                          return (
+                            <button
+                              key={k}
+                              type="button"
+                              className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                              onClick={() => {
+                                if (embedIconPickerId) void savePageIcon(embedIconPickerId, { kind: "lucide", value: k })
+                                setEmbedIconPickerId(null)
+                                setEmbedIconPickerAnchor(null)
+                              }}
+                              title={k}
+                              aria-label={k}
+                            >
+                              <Cmp className="size-4" />
+                            </button>
+                          )
+                        })
+                      })()}
+                    </div>
+                  </div>
+                  <div className="mt-2 text-[11px] text-muted-foreground">
+                    Showing up to 98 matches. Refine your search to narrow results.
+                  </div>
+                </>
+              ) : (
+                <div className="grid grid-cols-7 gap-1">
+                  {LUCIDE_PRESETS.map((it) => (
+                    <button
+                      key={it.key}
+                      type="button"
+                      className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                      onClick={() => {
+                        if (embedIconPickerId) void savePageIcon(embedIconPickerId, { kind: "lucide", value: it.key })
+                        setEmbedIconPickerId(null)
+                        setEmbedIconPickerAnchor(null)
+                      }}
+                      title={it.label}
+                      aria-label={it.label}
+                    >
+                      <it.Icon className="size-4" />
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="mt-2 flex justify-end">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    if (embedIconPickerId) void savePageIcon(embedIconPickerId, null)
+                    setEmbedIconPickerId(null)
+                    setEmbedIconPickerAnchor(null)
+                  }}
+                >
+                  Reset
+                </Button>
+              </div>
+            </TabsContent>
+          </Tabs>
+        </PopoverContent>
+      </Popover>
     </>
   )
 }
