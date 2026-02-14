@@ -8,6 +8,7 @@ import {
   getPostContent,
   getPostPreview,
   getCurrentTenant,
+  getCurrentUser,
   listTenantMemberships,
   listDeletedPages,
   listMyPageCategories,
@@ -20,6 +21,8 @@ import {
   updateCategory,
   updatePost,
   updatePostCategory,
+  updateCurrentUser,
+  updateTenantName,
 } from "../controllers/postsController"
 
 const router = express.Router()
@@ -32,8 +35,11 @@ router.delete("/categories/:id", requireAuth, deleteCategory)
 router.post("/categories/reorder", requireAuth, reorderCategories)
 
 // Tenant (current)
+router.get("/user/me", requireAuth, getCurrentUser)
+router.patch("/user/me", requireAuth, updateCurrentUser)
 router.get("/tenant/current", requireAuth, getCurrentTenant)
 router.get("/tenant/memberships", requireAuth, listTenantMemberships)
+router.patch("/tenant/:id", requireAuth, updateTenantName)
 
 // Trash (deleted posts)
 router.get("/trash", requireAuth, listDeletedPages)

@@ -797,9 +797,30 @@ export async function reorderCategories(req: Request, res: Response) {
 export async function getCurrentTenant(req: Request, res: Response) {
   try {
     const tenantId = await resolveTenantId(req as AuthedRequest)
-    const r = await query(`SELECT id, name, tenant_type FROM tenants WHERE id = $1 AND deleted_at IS NULL LIMIT 1`, [tenantId])
+    const r = await query(
+      `
+      SELECT
+        id,
+        name,
+        tenant_type,
+        COALESCE(
+          NULLIF(metadata->>'plan_tier',''),
+          NULLIF(metadata->>'service_tier',''),
+          NULLIF(metadata->>'tier','')
+        ) AS plan_tier
+      FROM tenants
+      WHERE id = $1 AND deleted_at IS NULL
+      LIMIT 1
+      `,
+      [tenantId]
+    )
     if (r.rows.length === 0) return res.status(404).json({ message: "Tenant not found" })
-    return res.json({ id: r.rows[0].id, name: r.rows[0].name, tenant_type: r.rows[0].tenant_type })
+    return res.json({
+      id: r.rows[0].id,
+      name: r.rows[0].name,
+      tenant_type: r.rows[0].tenant_type,
+      plan_tier: r.rows[0].plan_tier,
+    })
   } catch (e) {
     console.error("post-service getCurrentTenant error:", e)
     return res.status(500).json({ message: "Failed to load tenant" })
@@ -818,10 +839,26 @@ export async function listTenantMemberships(req: Request, res: Response) {
         COALESCE(utr.is_primary_tenant, FALSE) AS is_primary,
         r.slug AS role_slug,
         r.name AS role_name,
-        r.scope AS role_scope
+        r.scope AS role_scope,
+        COALESCE(mc.member_count, 0) AS member_count,
+        COALESCE(
+          NULLIF(t.metadata->>'plan_tier',''),
+          NULLIF(t.metadata->>'service_tier',''),
+          NULLIF(t.metadata->>'tier','')
+        ) AS plan_tier
       FROM user_tenant_roles utr
       JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
       LEFT JOIN roles r ON r.id = utr.role_id
+      LEFT JOIN (
+        SELECT
+          utr2.tenant_id,
+          COUNT(DISTINCT utr2.user_id) AS member_count
+        FROM user_tenant_roles utr2
+        JOIN roles r2 ON r2.id = utr2.role_id
+        WHERE (utr2.membership_status IS NULL OR utr2.membership_status = 'active')
+          AND r2.slug IN ('owner', 'admin', 'member')
+        GROUP BY utr2.tenant_id
+      ) mc ON mc.tenant_id = t.id
       WHERE utr.user_id = $1
         AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
       ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC, utr.granted_at ASC
@@ -832,6 +869,78 @@ export async function listTenantMemberships(req: Request, res: Response) {
   } catch (e) {
     console.error("post-service listTenantMemberships error:", e)
     return res.status(500).json({ message: "Failed to load tenant memberships" })
+  }
+}
+
+export async function getCurrentUser(req: Request, res: Response) {
+  try {
+    const userId = (req as AuthedRequest).userId
+    const r = await query(
+      `SELECT id, email, full_name FROM users WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+      [userId]
+    )
+    if (r.rows.length === 0) return res.status(404).json({ message: "User not found" })
+    return res.json(r.rows[0])
+  } catch (e) {
+    console.error("post-service getCurrentUser error:", e)
+    return res.status(500).json({ message: "Failed to load user" })
+  }
+}
+
+export async function updateCurrentUser(req: Request, res: Response) {
+  try {
+    const userId = (req as AuthedRequest).userId
+    const fullNameRaw = (req.body || {})?.full_name
+    const fullName = typeof fullNameRaw === "string" ? fullNameRaw.trim() : ""
+    if (!fullName) return res.status(400).json({ message: "full_name is required" })
+
+    const r = await query(
+      `UPDATE users SET full_name = $1, updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL RETURNING id, email, full_name`,
+      [fullName, userId]
+    )
+    if (r.rows.length === 0) return res.status(404).json({ message: "User not found" })
+    return res.json(r.rows[0])
+  } catch (e) {
+    console.error("post-service updateCurrentUser error:", e)
+    return res.status(500).json({ message: "Failed to update user" })
+  }
+}
+
+export async function updateTenantName(req: Request, res: Response) {
+  try {
+    const userId = (req as AuthedRequest).userId
+    const tenantId = String(req.params.id || "").trim()
+    const nameRaw = (req.body || {})?.name
+    const nextName = typeof nameRaw === "string" ? nameRaw.trim() : ""
+    if (!tenantId || !isUuid(tenantId)) return res.status(400).json({ message: "Invalid tenant id" })
+    if (!nextName) return res.status(400).json({ message: "name is required" })
+
+    const roleRes = await query(
+      `
+      SELECT r.slug
+      FROM user_tenant_roles utr
+      JOIN roles r ON r.id = utr.role_id
+      WHERE utr.user_id = $1
+        AND utr.tenant_id = $2
+        AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+      ORDER BY utr.granted_at DESC NULLS LAST
+      LIMIT 1
+      `,
+      [userId, tenantId]
+    )
+    const roleSlug = String(roleRes.rows?.[0]?.slug || "").toLowerCase()
+    const canManage = roleSlug === "owner" || roleSlug === "admin" || roleSlug === "tenant_owner" || roleSlug === "tenant_admin"
+    if (!canManage) return res.status(403).json({ message: "Forbidden" })
+
+    const r = await query(
+      `UPDATE tenants SET name = $1, updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL RETURNING id, name, tenant_type`,
+      [nextName, tenantId]
+    )
+    if (r.rows.length === 0) return res.status(404).json({ message: "Tenant not found" })
+    return res.json(r.rows[0])
+  } catch (e) {
+    console.error("post-service updateTenantName error:", e)
+    return res.status(500).json({ message: "Failed to update tenant" })
   }
 }
 

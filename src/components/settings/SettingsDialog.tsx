@@ -84,6 +84,7 @@ const SETTINGS_MENU_STORAGE_KEY = "reductai:settings:activeMenu"
 const SETTINGS_DIALOG_OPEN_KEY = "reductai:settings:isOpen"
 const SETTINGS_MENU_IDS = new Set<SettingsMenuId>([...PERSONAL_MENUS, ...BILLING_MENUS].map((item) => item.id))
 const DAUM_POSTCODE_SCRIPT_ID = "daum-postcode-script"
+const AUTH_API_BASE = "http://localhost:3001/auth"
 
 function readSettingsMenuFromStorage(): SettingsMenuId | null {
   try {
@@ -133,6 +134,33 @@ type BillingFormState = {
   phone: string
 }
 
+type PlanTier = "free" | "pro" | "premium" | "business" | "enterprise"
+
+type CurrentUserProfile = {
+  id: string
+  email: string
+  full_name?: string | null
+}
+
+type CurrentTenantProfile = {
+  id: string
+  name?: string | null
+  tenant_type?: string | null
+  plan_tier?: string | null
+}
+
+type TenantMembership = {
+  id: string
+  name?: string | null
+  tenant_type?: string | null
+  is_primary?: boolean
+  role_slug?: string | null
+  role_name?: string | null
+  role_scope?: string | null
+  member_count?: number | null
+  plan_tier?: string | null
+}
+
 const INITIAL_BILLING_FORM: BillingFormState = {
   name: "홍길동",
   email: "hong@example.com",
@@ -141,6 +169,47 @@ const INITIAL_BILLING_FORM: BillingFormState = {
   address2: "",
   extraAddress: "",
   phone: "",
+}
+
+const PLAN_TIER_ORDER: PlanTier[] = ["free", "pro", "premium", "business", "enterprise"]
+const PLAN_TIER_LABELS: Record<PlanTier, string> = {
+  free: "Free",
+  pro: "Pro",
+  premium: "Premium",
+  business: "Business",
+  enterprise: "Enterprise",
+}
+const PLAN_TIER_STYLES: Record<PlanTier, { badge: string; avatar: string }> = {
+  free: { badge: "bg-muted text-muted-foreground ring-1 ring-border", avatar: "bg-muted-foreground" },
+  pro: { badge: "bg-teal-50 text-teal-600 ring-1 ring-teal-500", avatar: "bg-teal-500" },
+  premium: { badge: "bg-indigo-50 text-indigo-600 ring-1 ring-indigo-500", avatar: "bg-indigo-500" },
+  business: { badge: "bg-amber-50 text-amber-600 ring-1 ring-amber-500", avatar: "bg-amber-500" },
+  enterprise: { badge: "bg-rose-50 text-rose-600 ring-1 ring-rose-500", avatar: "bg-rose-500" },
+}
+
+const TENANT_TYPE_LABELS: Record<string, string> = {
+  personal: "Personal",
+  team: "Team",
+  group: "Group",
+}
+
+const ROLE_LABELS: Record<string, string> = {
+  owner: "소유자",
+  admin: "관리자",
+  member: "멤버",
+  viewer: "뷰어",
+}
+
+function normalizePlanTier(value: unknown): PlanTier | null {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
+  if (!raw) return null
+  if (PLAN_TIER_ORDER.includes(raw as PlanTier)) return raw as PlanTier
+  return null
+}
+
+function pickHighestTier(tiers: PlanTier[]): PlanTier {
+  if (!tiers.length) return "free"
+  return tiers.reduce((best, tier) => (PLAN_TIER_ORDER.indexOf(tier) > PLAN_TIER_ORDER.indexOf(best) ? tier : best), "free")
 }
 
 const SettingsDialogSidebarMenu = ({
@@ -222,6 +291,31 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
   const [usagePage, setUsagePage] = useState(1)
   const wasOpenRef = useRef(false)
   const detailAddressRef = useRef<HTMLInputElement | null>(null)
+  const userNameInputRef = useRef<HTMLInputElement | null>(null)
+  const tenantNameInputRef = useRef<HTMLInputElement | null>(null)
+
+  const [profileLoading, setProfileLoading] = useState(false)
+  const [profileError, setProfileError] = useState<string | null>(null)
+  const [currentUser, setCurrentUser] = useState<CurrentUserProfile | null>(null)
+  const [currentTenant, setCurrentTenant] = useState<CurrentTenantProfile | null>(null)
+  const [tenantMemberships, setTenantMemberships] = useState<TenantMembership[]>([])
+
+  const [isEditingUserName, setIsEditingUserName] = useState(false)
+  const [isSavingUserName, setIsSavingUserName] = useState(false)
+  const [userNameDraft, setUserNameDraft] = useState("")
+
+  const [isEditingTenantName, setIsEditingTenantName] = useState(false)
+  const [isSavingTenantName, setIsSavingTenantName] = useState(false)
+  const [tenantNameDraft, setTenantNameDraft] = useState("")
+
+  const [passwordForm, setPasswordForm] = useState({
+    current: "",
+    next: "",
+    confirm: "",
+  })
+  const [passwordError, setPasswordError] = useState<string | null>(null)
+  const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null)
+  const [passwordSaving, setPasswordSaving] = useState(false)
   const usageRows = useMemo(
     () => [
       ["2026-02-10 10:12", "GPT-5.2", "입력 12K / 출력 4K", "3.20"],
@@ -244,6 +338,346 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
       BILLING_MENUS.find((item) => item.id === activeMenu)
     return menu?.label ?? "사용자 정보"
   }, [activeMenu])
+
+  const authHeaders = useCallback(() => {
+    if (typeof window === "undefined") return {}
+    const token = window.localStorage.getItem("token")
+    const headers: Record<string, string> = {}
+    if (token) headers.Authorization = `Bearer ${token}`
+    return headers
+  }, [])
+
+  const resolvedUserName = useMemo(() => {
+    const name = String(currentUser?.full_name || "").trim()
+    if (name) return name
+    if (typeof window === "undefined") return "사용자"
+    const storedName = String(window.localStorage.getItem("user_name") || "").trim()
+    if (storedName) return storedName
+    const storedEmail = String(window.localStorage.getItem("user_email") || "").trim()
+    if (storedEmail) return storedEmail.split("@")[0] || "사용자"
+    return "사용자"
+  }, [currentUser?.full_name])
+
+  const resolvedUserEmail = useMemo(() => {
+    const email = String(currentUser?.email || "").trim()
+    if (email) return email
+    if (typeof window === "undefined") return "-"
+    return String(window.localStorage.getItem("user_email") || "").trim() || "-"
+  }, [currentUser?.email])
+
+  const userInitial = useMemo(() => {
+    const base = resolvedUserName || resolvedUserEmail
+    const trimmed = String(base || "").trim()
+    if (!trimmed) return "?"
+    return trimmed.slice(0, 1).toUpperCase()
+  }, [resolvedUserEmail, resolvedUserName])
+
+  const tierCandidates = useMemo(() => {
+    const tiers: PlanTier[] = []
+    const fromTenant = normalizePlanTier(currentTenant?.plan_tier)
+    if (fromTenant) tiers.push(fromTenant)
+    for (const item of tenantMemberships) {
+      const tier = normalizePlanTier(item.plan_tier)
+      if (tier) tiers.push(tier)
+    }
+    return tiers
+  }, [currentTenant?.plan_tier, tenantMemberships])
+
+  const highestTier = useMemo(() => pickHighestTier(tierCandidates), [tierCandidates])
+
+  const tiersToDisplay = useMemo(() => {
+    const set = new Set<PlanTier>()
+    tierCandidates.forEach((tier) => set.add(tier))
+    if (!set.size) set.add("free")
+    return Array.from(set).sort((a, b) => PLAN_TIER_ORDER.indexOf(a) - PLAN_TIER_ORDER.indexOf(b))
+  }, [tierCandidates])
+
+  const displayTenantType = useMemo(() => {
+    const raw = String(currentTenant?.tenant_type || "").trim().toLowerCase()
+    return TENANT_TYPE_LABELS[raw] || "-"
+  }, [currentTenant?.tenant_type])
+
+  const passwordChecks = useMemo(() => {
+    const next = passwordForm.next
+    return {
+      length: next.length >= 8,
+      letter: /[A-Za-z]/.test(next),
+      number: /\d/.test(next),
+      special: /[^A-Za-z0-9]/.test(next),
+    }
+  }, [passwordForm.next])
+
+  const isPasswordValid = useMemo(() => {
+    return passwordChecks.length && passwordChecks.letter && passwordChecks.number && passwordChecks.special
+  }, [passwordChecks])
+
+  const isPasswordMatch = useMemo(() => {
+    if (!passwordForm.next || !passwordForm.confirm) return false
+    return passwordForm.next === passwordForm.confirm
+  }, [passwordForm.confirm, passwordForm.next])
+
+  const canSubmitPassword = useMemo(() => {
+    if (passwordSaving) return false
+    if (!passwordForm.current || !passwordForm.next || !passwordForm.confirm) return false
+    if (!isPasswordValid) return false
+    if (!isPasswordMatch) return false
+    if (passwordForm.current === passwordForm.next) return false
+    return true
+  }, [isPasswordMatch, isPasswordValid, passwordForm, passwordSaving])
+
+  const loadProfile = useCallback(async () => {
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      setProfileError("로그인이 필요합니다.")
+      return
+    }
+
+    setProfileLoading(true)
+    setProfileError(null)
+    try {
+      const [userRes, tenantRes, membershipsRes] = await Promise.all([
+        fetch("/api/posts/user/me", { headers }),
+        fetch("/api/posts/tenant/current", { headers }),
+        fetch("/api/posts/tenant/memberships", { headers }),
+      ])
+
+      if (userRes.ok) {
+        const userJson = (await userRes.json().catch(() => null)) as CurrentUserProfile | null
+        if (userJson?.id) {
+          setCurrentUser({
+            id: String(userJson.id),
+            email: String(userJson.email || ""),
+            full_name: userJson.full_name ?? null,
+          })
+          setUserNameDraft(String(userJson.full_name || ""))
+          if (typeof window !== "undefined") {
+            if (userJson.email) window.localStorage.setItem("user_email", String(userJson.email))
+            if (userJson.full_name) window.localStorage.setItem("user_name", String(userJson.full_name))
+            if (userJson.id) window.localStorage.setItem("user_id", String(userJson.id))
+          }
+        }
+      }
+
+      if (tenantRes.ok) {
+        const tenantJson = (await tenantRes.json().catch(() => null)) as CurrentTenantProfile | null
+        if (tenantJson?.id) {
+          const nextTenant = {
+            id: String(tenantJson.id),
+            name: tenantJson.name ?? null,
+            tenant_type: tenantJson.tenant_type ?? null,
+            plan_tier: tenantJson.plan_tier ?? null,
+          }
+          setCurrentTenant(nextTenant)
+          setTenantNameDraft(String(tenantJson.name || ""))
+          if (typeof window !== "undefined") {
+            try {
+              window.localStorage.setItem(
+                "reductai:sidebar:tenantInfo:v1",
+                JSON.stringify({
+                  id: nextTenant.id,
+                  tenant_type: nextTenant.tenant_type || "",
+                  name: nextTenant.name || "",
+                })
+              )
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
+
+      if (membershipsRes.ok) {
+        const membershipsJson = (await membershipsRes.json().catch(() => [])) as TenantMembership[]
+        setTenantMemberships(Array.isArray(membershipsJson) ? membershipsJson : [])
+      }
+    } catch (error) {
+      console.error(error)
+      setProfileError("사용자 정보를 불러오지 못했습니다.")
+    } finally {
+      setProfileLoading(false)
+    }
+  }, [authHeaders])
+
+  const startEditUserName = useCallback(() => {
+    if (isSavingUserName) return
+    setUserNameDraft(resolvedUserName)
+    setIsEditingUserName(true)
+  }, [isSavingUserName, resolvedUserName])
+
+  const cancelEditUserName = useCallback(() => {
+    if (isSavingUserName) return
+    setIsEditingUserName(false)
+    setUserNameDraft(resolvedUserName)
+  }, [isSavingUserName, resolvedUserName])
+
+  const commitUserName = useCallback(async () => {
+    if (isSavingUserName) return
+    const nextName = userNameDraft.trim()
+    if (!nextName || nextName === resolvedUserName) {
+      setIsEditingUserName(false)
+      setUserNameDraft(resolvedUserName)
+      return
+    }
+
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      alert("로그인이 필요합니다.")
+      return
+    }
+
+    setIsSavingUserName(true)
+    try {
+      const res = await fetch("/api/posts/user/me", {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ full_name: nextName }),
+      })
+      if (!res.ok) {
+        const msg = await res.text().catch(() => "")
+        alert(msg || "이름 변경에 실패했습니다.")
+        return
+      }
+      const updated = (await res.json().catch(() => null)) as CurrentUserProfile | null
+      if (updated?.id) {
+        setCurrentUser({
+          id: String(updated.id),
+          email: String(updated.email || ""),
+          full_name: updated.full_name ?? null,
+        })
+        setUserNameDraft(String(updated.full_name || ""))
+        if (typeof window !== "undefined") {
+          if (updated.full_name) window.localStorage.setItem("user_name", String(updated.full_name))
+        }
+      }
+      setIsEditingUserName(false)
+    } finally {
+      setIsSavingUserName(false)
+    }
+  }, [authHeaders, isSavingUserName, resolvedUserName, userNameDraft])
+
+  const startEditTenantName = useCallback(() => {
+    if (isSavingTenantName) return
+    setTenantNameDraft(String(currentTenant?.name || ""))
+    setIsEditingTenantName(true)
+  }, [currentTenant?.name, isSavingTenantName])
+
+  const cancelEditTenantName = useCallback(() => {
+    if (isSavingTenantName) return
+    setIsEditingTenantName(false)
+    setTenantNameDraft(String(currentTenant?.name || ""))
+  }, [currentTenant?.name, isSavingTenantName])
+
+  const commitTenantName = useCallback(async () => {
+    if (isSavingTenantName) return
+    const nextName = tenantNameDraft.trim()
+    if (!currentTenant?.id || !nextName || nextName === String(currentTenant?.name || "")) {
+      setIsEditingTenantName(false)
+      setTenantNameDraft(String(currentTenant?.name || ""))
+      return
+    }
+
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      alert("로그인이 필요합니다.")
+      return
+    }
+
+    setIsSavingTenantName(true)
+    try {
+      const res = await fetch(`/api/posts/tenant/${encodeURIComponent(currentTenant.id)}`, {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: nextName }),
+      })
+      if (!res.ok) {
+        const msg = await res.text().catch(() => "")
+        alert(msg || "테넌트 이름 변경에 실패했습니다.")
+        return
+      }
+      const updated = (await res.json().catch(() => null)) as CurrentTenantProfile | null
+      if (updated?.id) {
+        const nextTenant = {
+          id: String(updated.id),
+          name: updated.name ?? null,
+          tenant_type: updated.tenant_type ?? currentTenant.tenant_type ?? null,
+          plan_tier: currentTenant.plan_tier ?? null,
+        }
+        setCurrentTenant(nextTenant)
+        setTenantNameDraft(String(updated.name || ""))
+        setTenantMemberships((prev) =>
+          prev.map((item) => (String(item.id) === String(updated.id) ? { ...item, name: updated.name } : item))
+        )
+        if (typeof window !== "undefined") {
+          try {
+            window.localStorage.setItem(
+              "reductai:sidebar:tenantInfo:v1",
+              JSON.stringify({
+                id: nextTenant.id,
+                tenant_type: nextTenant.tenant_type || "",
+                name: nextTenant.name || "",
+              })
+            )
+          } catch {
+            // ignore
+          }
+        }
+      }
+      setIsEditingTenantName(false)
+    } finally {
+      setIsSavingTenantName(false)
+    }
+  }, [authHeaders, currentTenant, isSavingTenantName, tenantNameDraft])
+
+  const handleChangePassword = useCallback(async () => {
+    if (passwordSaving) return
+    setPasswordError(null)
+    setPasswordSuccess(null)
+
+    if (!passwordForm.current || !passwordForm.next || !passwordForm.confirm) {
+      setPasswordError("모든 비밀번호 항목을 입력해 주세요.")
+      return
+    }
+    if (passwordForm.current === passwordForm.next) {
+      setPasswordError("새 비밀번호는 현재 비밀번호와 달라야 합니다.")
+      return
+    }
+    if (!isPasswordValid) {
+      setPasswordError("새 비밀번호 조건을 충족해 주세요.")
+      return
+    }
+    if (!isPasswordMatch) {
+      setPasswordError("새 비밀번호가 일치하지 않습니다.")
+      return
+    }
+
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      setPasswordError("로그인이 필요합니다.")
+      return
+    }
+
+    setPasswordSaving(true)
+    try {
+      const res = await fetch(`${AUTH_API_BASE}/change-password`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          currentPassword: passwordForm.current,
+          newPassword: passwordForm.next,
+          confirmPassword: passwordForm.confirm,
+        }),
+      })
+      if (!res.ok) {
+        const msg = await res.text().catch(() => "")
+        setPasswordError(msg || "비밀번호 변경에 실패했습니다.")
+        return
+      }
+      setPasswordSuccess("비밀번호가 변경되었습니다.")
+      setPasswordForm({ current: "", next: "", confirm: "" })
+    } finally {
+      setPasswordSaving(false)
+    }
+  }, [authHeaders, isPasswordMatch, isPasswordValid, passwordForm, passwordSaving])
 
   useEffect(() => {
     if (!open) {
@@ -268,6 +702,30 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
   useEffect(() => {
     if (activeMenu !== "billing") setBillingEditOpen(false)
   }, [activeMenu])
+
+  useEffect(() => {
+    if (open && activeMenu === "profile") return
+    setIsEditingUserName(false)
+    setIsEditingTenantName(false)
+  }, [activeMenu, open])
+
+  useEffect(() => {
+    if (!open) return
+    if (activeMenu !== "profile") return
+    void loadProfile()
+  }, [activeMenu, loadProfile, open])
+
+  useEffect(() => {
+    if (!open) return
+    if (activeMenu !== "profile") return
+    if (isEditingUserName) userNameInputRef.current?.focus()
+  }, [activeMenu, isEditingUserName, open])
+
+  useEffect(() => {
+    if (!open) return
+    if (activeMenu !== "profile") return
+    if (isEditingTenantName) tenantNameInputRef.current?.focus()
+  }, [activeMenu, isEditingTenantName, open])
 
   const loadDaumPostcode = useCallback(() => {
     if (typeof window === "undefined") return Promise.reject(new Error("no-window"))
@@ -393,15 +851,61 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
               {activeMenu === "profile" ? (
                 // 사용자 정보
                 <div className="grid gap-3">
+                  {profileError ? (
+                    <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                      {profileError}
+                    </div>
+                  ) : null}
 
                   <div className="p-4">
                     <div className="flex items-center gap-3">
-                      <div className="size-10 bg-teal-500 rounded-lg flex items-center justify-center shrink-0">
-                        <span className="text-white font-semibold text-lg">김</span>
+                      <div
+                        className={cn(
+                          "size-10 rounded-lg flex items-center justify-center shrink-0",
+                          PLAN_TIER_STYLES[highestTier].avatar
+                        )}
+                      >
+                        <span className="text-white font-semibold text-lg">{userInitial}</span>
                       </div>
                       <div className="flex flex-col flex-1 min-w-0">
-                        <p className="text-base text-left font-semibold text-sidebar-foreground truncate">김가나</p>
-                        <p className="text-xs text-left text-blue-500 truncate">이름변경</p>
+                        {isEditingUserName ? (
+                          <Input
+                            ref={userNameInputRef}
+                            value={userNameDraft}
+                            onChange={(e) => setUserNameDraft(e.target.value)}
+                            onBlur={() => void commitUserName()}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault()
+                                void commitUserName()
+                                return
+                              }
+                              if (e.key === "Escape") {
+                                e.preventDefault()
+                                cancelEditUserName()
+                              }
+                            }}
+                            className="h-8 text-base font-semibold text-sidebar-foreground"
+                            disabled={isSavingUserName}
+                          />
+                        ) : (
+                          <p className="text-base text-left font-semibold text-sidebar-foreground truncate">
+                            {resolvedUserName}
+                          </p>
+                        )}
+                        {isEditingUserName ? (
+                          <p className="pt-1 pl-2  text-xs text-left text-muted-foreground truncate">
+                            {isSavingUserName ? "저장 중..." : "Enter로 저장 · 인풋 밖 클릭으로 취소"}
+                          </p>
+                        ) : (
+                          <button
+                            type="button"
+                            className="text-xs text-left text-blue-500 truncate hover:text-blue-600"
+                            onClick={startEditUserName}
+                          >
+                            이름변경
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -411,34 +915,67 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
                     <div className="mt-3 grid gap-3 text-sm text-muted-foreground">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">이메일</div>
-                        <div className="flex items-center gap-2 text-foreground">hong@example.com</div>
+                        <div className="flex items-center gap-2 text-foreground">{resolvedUserEmail}</div>
                       </div>
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">테넌트 유형</div>
-                        <div className="flex items-center gap-2 text-foreground">Team</div>
+                        <div className="flex items-center gap-2 text-foreground">{displayTenantType}</div>
                       </div>
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">테넌트 이름</div>
-                        <div className="flex items-center gap-2 text-foreground">AA
+                        <div className="flex items-center gap-2 text-foreground min-w-0">
+                          {isEditingTenantName ? (
+                            <Input
+                              ref={tenantNameInputRef}
+                              value={tenantNameDraft}
+                              onChange={(e) => setTenantNameDraft(e.target.value)}
+                              onBlur={() => void commitTenantName()}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault()
+                                  void commitTenantName()
+                                  return
+                                }
+                                if (e.key === "Escape") {
+                                  e.preventDefault()
+                                  cancelEditTenantName()
+                                }
+                              }}
+                              className="h-7 text-sm"
+                              disabled={isSavingTenantName}
+                            />
+                          ) : (
+                            <span className="truncate">{currentTenant?.name || "-"}</span>
+                          )}
                           <Tooltip>
-                            <TooltipTrigger>
-                              <SquarePen className="size-3 text-blue-500" />
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                className="shrink-0"
+                                onClick={startEditTenantName}
+                                disabled={isSavingTenantName}
+                                aria-label="테넌트 이름 변경"
+                              >
+                                <SquarePen className="size-3 text-blue-500" />
+                              </button>
                             </TooltipTrigger>
                             <TooltipContent>
                               <p>이름 변경</p>
                             </TooltipContent>
                           </Tooltip>
-
                         </div>
                       </div>
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">서비스 등급</div>
-                        <div className="flex items-center gap-2">
-                          <span className="rounded-full px-3 py-1 text-xs font-semibold bg-muted text-muted-foreground ring-1 ring-border">Free</span>
-                          <span className="rounded-full px-3 py-1 text-xs font-semibold bg-teal-50 text-teal-600 ring-1 ring-teal-500">Pro</span>
-                          <span className="rounded-full px-3 py-1 text-xs font-semibold bg-indigo-50 text-indigo-600 ring-1 ring-indigo-500">Premium</span>
-                          <span className="rounded-full px-3 py-1 text-xs font-semibold bg-amber-50 text-amber-600 ring-1 ring-amber-500">Business</span>
-                          <span className="rounded-full px-3 py-1 text-xs font-semibold bg-rose-50 text-rose-600 ring-1 ring-rose-500">Enterprise</span>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {tiersToDisplay.map((tier) => (
+                            <span
+                              key={tier}
+                              className={cn("rounded-full px-3 py-1 text-xs font-semibold", PLAN_TIER_STYLES[tier].badge)}
+                            >
+                              {PLAN_TIER_LABELS[tier]}
+                            </span>
+                          ))}
                           {/* <Button
                             variant="ghost"                            
                             className="text-emerald-500 hover:text-emerald-600 text-xs px-2 py-0.5"
@@ -454,36 +991,41 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
                   <div className="p-4">
                     <div className="text-sm font-semibold text-foreground border-b border-border pb-2">테넌트 정보</div>
                     <div className="mt-3 grid gap-3 text-sm text-muted-foreground">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1">AA 팀 <span className="text-xs">(소유자)</span></div>
-                        <div className="flex items-center gap-2 text-foreground">멤버 4명
-                          <Tooltip>
-                            <TooltipTrigger>
-                              <Settings2 className="size-3 text-muted-foreground" />
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              <p>설정 바로가기</p>
-                            </TooltipContent>
-                          </Tooltip>
+                      {tenantMemberships.length ? (
+                        tenantMemberships.map((item) => {
+                          const roleSlug = String(item.role_slug || "").toLowerCase()
+                          const roleLabel = item.role_name || ROLE_LABELS[roleSlug] || "멤버"
+                          const memberCount =
+                            typeof item.member_count === "number" && Number.isFinite(item.member_count)
+                              ? item.member_count
+                              : null
+                          const canManage = roleSlug === "owner" || roleSlug === "admin"
+                          return (
+                            <div key={item.id} className="flex items-center justify-between">
+                              <div className="flex items-center gap-1">
+                                {item.name || "-"} <span className="text-xs">({roleLabel})</span>
+                              </div>
+                              <div className="flex items-center gap-2 text-foreground">
+                                멤버 {memberCount ?? "-"}명
+                                {canManage ? (
+                                  <Tooltip>
+                                    <TooltipTrigger>
+                                      <Settings2 className="size-3 text-muted-foreground" />
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      <p>설정 바로가기</p>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                ) : null}
+                              </div>
+                            </div>
+                          )
+                        })
+                      ) : (
+                        <div className="text-xs text-muted-foreground">
+                          {profileLoading ? "불러오는 중..." : "가입된 테넌트가 없습니다."}
                         </div>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1">BB 팀 <span className="text-xs">(멤버)</span></div>
-                        <div className="flex items-center gap-2 text-foreground">멤버 7명</div>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1">CC 그룹 <span className="text-xs">(관리자)</span></div>
-                        <div className="flex items-center gap-2 text-foreground">멤버 40명
-                          <Tooltip>
-                            <TooltipTrigger>
-                              <Settings2 className="size-3 text-muted-foreground" />
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              <p>설정 바로가기</p>
-                            </TooltipContent>
-                          </Tooltip>
-                        </div>
-                      </div>
+                      )}
                     </div>
                   </div>
 
@@ -515,15 +1057,81 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
                   <div className="p-4">
                     <div className="text-sm font-semibold text-foreground border-b border-border pb-2">비밀번호 변경</div>
                     <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
-                      <div className="rounded-md border border-border px-3 py-2">현재 비밀번호</div>
-                      <div className="rounded-md border border-border px-3 py-2">새 비밀번호</div>
-                      <div className="rounded-md border border-border px-3 py-2">새 비밀번호 확인</div>
+                      <div className="grid gap-1">
+                        <Label className="text-xs">현재 비밀번호</Label>
+                        <Input
+                          type="password"
+                          value={passwordForm.current}
+                          onChange={(e) => {
+                            setPasswordForm((prev) => ({ ...prev, current: e.target.value }))
+                            setPasswordError(null)
+                            setPasswordSuccess(null)
+                          }}
+                          placeholder="현재 비밀번호"
+                        />
+                      </div>
+                      <div className="grid gap-1">
+                        <Label className="text-xs">새 비밀번호</Label>
+                        <Input
+                          type="password"
+                          value={passwordForm.next}
+                          onChange={(e) => {
+                            setPasswordForm((prev) => ({ ...prev, next: e.target.value }))
+                            setPasswordError(null)
+                            setPasswordSuccess(null)
+                          }}
+                          placeholder="새 비밀번호"
+                        />
+                      </div>
+                      <div className="grid gap-1">
+                        <Label className="text-xs">새 비밀번호 확인</Label>
+                        <Input
+                          type="password"
+                          value={passwordForm.confirm}
+                          onChange={(e) => {
+                            setPasswordForm((prev) => ({ ...prev, confirm: e.target.value }))
+                            setPasswordError(null)
+                            setPasswordSuccess(null)
+                          }}
+                          placeholder="새 비밀번호 확인"
+                        />
+                      </div>
                     </div>
-                    <div className="mt-3 text-xs text-muted-foreground">
-                      8자 이상, 영문/숫자/특수문자를 포함해 주세요.
+                    <div className="mt-3 text-xs text-muted-foreground grid gap-1">
+                      <div className={cn(passwordChecks.length ? "text-emerald-500" : "text-muted-foreground")}>
+                        8자 이상
+                      </div>
+                      <div className={cn(passwordChecks.letter ? "text-emerald-500" : "text-muted-foreground")}>
+                        영문 포함
+                      </div>
+                      <div className={cn(passwordChecks.number ? "text-emerald-500" : "text-muted-foreground")}>
+                        숫자 포함
+                      </div>
+                      <div className={cn(passwordChecks.special ? "text-emerald-500" : "text-muted-foreground")}>
+                        특수문자 포함
+                      </div>
+                      {passwordForm.confirm ? (
+                        <div className={cn(isPasswordMatch ? "text-emerald-500" : "text-destructive")}>
+                          {isPasswordMatch ? "새 비밀번호 일치" : "새 비밀번호 불일치"}
+                        </div>
+                      ) : null}
                     </div>
-                    <button className="mt-4 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground">
-                      비밀번호 변경
+                    {passwordError ? (
+                      <div className="mt-3 text-xs text-destructive">{passwordError}</div>
+                    ) : null}
+                    {passwordSuccess ? (
+                      <div className="mt-3 text-xs text-emerald-500">{passwordSuccess}</div>
+                    ) : null}
+                    <button
+                      className={cn(
+                        "mt-4 rounded-md px-4 py-2 text-sm text-primary-foreground",
+                        canSubmitPassword ? "bg-primary hover:bg-primary/90" : "bg-muted text-muted-foreground"
+                      )}
+                      type="button"
+                      disabled={!canSubmitPassword}
+                      onClick={handleChangePassword}
+                    >
+                      {passwordSaving ? "변경 중..." : "비밀번호 변경"}
                     </button>
                   </div>
                 </div>

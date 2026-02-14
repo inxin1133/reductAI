@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import * as db from '../config/db';
 import { sendVerificationEmail } from '../services/emailService';
+import type { AuthedRequest } from '../middleware/requireAuth';
 
 // Temporary storage for OTPs (In production, use Redis)
 const otpStore: Record<string, { code: string; expiresAt: number }> = {};
@@ -37,6 +38,14 @@ const getPlatformRoleSlug = async (userId: string) => {
     [userId]
   );
   return result.rows[0]?.slug || null;
+};
+
+const validatePassword = (password: string) => {
+  if (password.length < 8) return false;
+  if (!/[A-Za-z]/.test(password)) return false;
+  if (!/\d/.test(password)) return false;
+  if (!/[^A-Za-z0-9]/.test(password)) return false;
+  return true;
 };
 
 export const sendVerificationCode = async (req: Request, res: Response) => {
@@ -161,6 +170,50 @@ export const resetPassword = async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Reset password error:', error);
     res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const changePassword = async (req: Request, res: Response) => {
+  const { currentPassword, newPassword, confirmPassword } = req.body || {};
+  const authedReq = req as AuthedRequest;
+  const userId = authedReq.userId;
+
+  if (!userId) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  if (!currentPassword || !newPassword || !confirmPassword) {
+    return res.status(400).json({ message: '모든 비밀번호 항목을 입력해 주세요.' });
+  }
+  if (newPassword !== confirmPassword) {
+    return res.status(400).json({ message: '새 비밀번호가 일치하지 않습니다.' });
+  }
+  if (currentPassword === newPassword) {
+    return res.status(400).json({ message: '새 비밀번호는 현재 비밀번호와 달라야 합니다.' });
+  }
+  if (!validatePassword(newPassword)) {
+    return res.status(400).json({ message: '새 비밀번호 조건을 충족해 주세요.' });
+  }
+
+  try {
+    const userRes = await db.query('SELECT password_hash FROM users WHERE id = $1 AND deleted_at IS NULL', [userId]);
+    const passwordHash = userRes.rows[0]?.password_hash;
+    if (!passwordHash) {
+      return res.status(400).json({ message: '비밀번호를 변경할 수 없습니다.' });
+    }
+
+    const isValid = await bcrypt.compare(String(currentPassword), String(passwordHash));
+    if (!isValid) {
+      return res.status(400).json({ message: '현재 비밀번호가 올바르지 않습니다.' });
+    }
+
+    const saltRounds = 10;
+    const newHash = await bcrypt.hash(String(newPassword), saltRounds);
+    await db.query('UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [newHash, userId]);
+
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('Change password error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
   }
 };
 
