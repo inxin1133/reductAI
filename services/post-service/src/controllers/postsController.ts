@@ -876,11 +876,33 @@ export async function getCurrentUser(req: Request, res: Response) {
   try {
     const userId = (req as AuthedRequest).userId
     const r = await query(
-      `SELECT id, email, full_name FROM users WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+      `
+      SELECT
+        id,
+        email,
+        full_name,
+        metadata->>'profile_image_asset_id' AS profile_image_asset_id
+      FROM users
+      WHERE id = $1 AND deleted_at IS NULL
+      LIMIT 1
+      `,
       [userId]
     )
     if (r.rows.length === 0) return res.status(404).json({ message: "User not found" })
-    return res.json(r.rows[0])
+    const row = r.rows[0] as {
+      id: string
+      email: string
+      full_name?: string | null
+      profile_image_asset_id?: string | null
+    }
+    const profileImageAssetId = row.profile_image_asset_id ? String(row.profile_image_asset_id) : null
+    return res.json({
+      id: row.id,
+      email: row.email,
+      full_name: row.full_name ?? null,
+      profile_image_asset_id: profileImageAssetId,
+      profile_image_url: profileImageAssetId ? `/api/ai/media/assets/${profileImageAssetId}` : null,
+    })
   } catch (e) {
     console.error("post-service getCurrentUser error:", e)
     return res.status(500).json({ message: "Failed to load user" })
@@ -890,16 +912,72 @@ export async function getCurrentUser(req: Request, res: Response) {
 export async function updateCurrentUser(req: Request, res: Response) {
   try {
     const userId = (req as AuthedRequest).userId
-    const fullNameRaw = (req.body || {})?.full_name
+    const body = (req.body || {}) as Record<string, unknown>
+    const fullNameRaw = body?.full_name
     const fullName = typeof fullNameRaw === "string" ? fullNameRaw.trim() : ""
-    if (!fullName) return res.status(400).json({ message: "full_name is required" })
+    const profileImageRaw = body?.profile_image_asset_id
+    let profileImageAssetId: string | null | undefined = undefined
+    if (profileImageRaw === null) {
+      profileImageAssetId = null
+    } else if (typeof profileImageRaw === "string") {
+      const cleaned = profileImageRaw.trim()
+      profileImageAssetId = cleaned ? cleaned : null
+    }
+
+    if (!fullName && profileImageAssetId === undefined) {
+      return res.status(400).json({ message: "No changes provided" })
+    }
+
+    if (profileImageAssetId !== undefined && profileImageAssetId !== null && !isUuid(profileImageAssetId)) {
+      return res.status(400).json({ message: "Invalid profile_image_asset_id" })
+    }
+
+    const fields: string[] = []
+    const params: any[] = []
+
+    if (fullName) {
+      params.push(fullName)
+      fields.push(`full_name = $${params.length}`)
+    }
+
+    if (profileImageAssetId !== undefined) {
+      if (profileImageAssetId === null) {
+        fields.push(`metadata = (COALESCE(metadata, '{}'::jsonb) - 'profile_image_asset_id')`)
+      } else {
+        params.push(profileImageAssetId)
+        fields.push(
+          `metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{profile_image_asset_id}', to_jsonb($${params.length}::text), true)`
+        )
+      }
+    }
+
+    fields.push(`updated_at = NOW()`)
+    params.push(userId)
 
     const r = await query(
-      `UPDATE users SET full_name = $1, updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL RETURNING id, email, full_name`,
-      [fullName, userId]
+      `
+      UPDATE users
+      SET ${fields.join(", ")}
+      WHERE id = $${params.length} AND deleted_at IS NULL
+      RETURNING id, email, full_name, metadata->>'profile_image_asset_id' AS profile_image_asset_id
+      `,
+      params
     )
     if (r.rows.length === 0) return res.status(404).json({ message: "User not found" })
-    return res.json(r.rows[0])
+    const row = r.rows[0] as {
+      id: string
+      email: string
+      full_name?: string | null
+      profile_image_asset_id?: string | null
+    }
+    const profileImageId = row.profile_image_asset_id ? String(row.profile_image_asset_id) : null
+    return res.json({
+      id: row.id,
+      email: row.email,
+      full_name: row.full_name ?? null,
+      profile_image_asset_id: profileImageId,
+      profile_image_url: profileImageId ? `/api/ai/media/assets/${profileImageId}` : null,
+    })
   } catch (e) {
     console.error("post-service updateCurrentUser error:", e)
     return res.status(500).json({ message: "Failed to update user" })

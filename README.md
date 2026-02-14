@@ -85,6 +85,7 @@ docker compose up -d --build file-service
 docker compose restart user-service
 docker compose restart post-service
 docker compose restart ai-agent-service
+docker compose restart file-service
 
 ## 내리고 재빌드
 docker compose down

@@ -98,6 +98,29 @@ type Language = {
   is_active?: boolean
 }
 
+type PlanTier = "free" | "pro" | "premium" | "business" | "enterprise"
+
+const PLAN_TIER_ORDER: PlanTier[] = ["free", "pro", "premium", "business", "enterprise"]
+const PLAN_TIER_AVATAR_BG: Record<PlanTier, string> = {
+  free: "bg-muted",
+  pro: "bg-teal-500",
+  premium: "bg-indigo-500",
+  business: "bg-amber-500",
+  enterprise: "bg-rose-500",
+}
+
+function normalizePlanTier(value: unknown): PlanTier | null {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
+  if (!raw) return null
+  if (PLAN_TIER_ORDER.includes(raw as PlanTier)) return raw as PlanTier
+  return null
+}
+
+function pickHighestTier(tiers: PlanTier[]): PlanTier {
+  if (!tiers.length) return "free"
+  return tiers.reduce((best, tier) => (PLAN_TIER_ORDER.indexOf(tier) > PLAN_TIER_ORDER.indexOf(best) ? tier : best), "free")
+}
+
 export function Sidebar({ className }: SidebarProps) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -227,6 +250,7 @@ export function Sidebar({ className }: SidebarProps) {
       return ""
     }
   })
+  const [tenantPlanTier, setTenantPlanTier] = useState<string>("")
   const [tenantName, setTenantName] = useState<string>(() => {
     try {
       const raw = window.localStorage.getItem(TENANT_INFO_CACHE_KEY)
@@ -246,8 +270,10 @@ export function Sidebar({ className }: SidebarProps) {
       role_slug?: string | null
       role_name?: string | null
       role_scope?: string | null
+      plan_tier?: string | null
     }>
   >([])
+  const [profileImageUrl, setProfileImageUrl] = useState<string | null>(null)
   const [languages, setLanguages] = useState<Language[]>([])
   const [currentLang, setCurrentLang] = useState("")
   const LANGUAGE_STORAGE_KEY = "reductai.language.v1"
@@ -591,6 +617,58 @@ export function Sidebar({ className }: SidebarProps) {
     return { name, email: rawEmail, initial }
   }, [])
 
+  const tierCandidates = useMemo(() => {
+    const tiers: PlanTier[] = []
+    const currentTier = normalizePlanTier(tenantPlanTier)
+    if (currentTier) tiers.push(currentTier)
+    tenantMemberships.forEach((t) => {
+      const tier = normalizePlanTier(t.plan_tier)
+      if (tier) tiers.push(tier)
+    })
+    return tiers
+  }, [tenantMemberships, tenantPlanTier])
+
+  const highestTier = useMemo(() => pickHighestTier(tierCandidates), [tierCandidates])
+  const avatarBgClass = PLAN_TIER_AVATAR_BG[highestTier]
+
+  const profileImageSrc = useMemo(() => {
+    if (!profileImageUrl) return null
+    if (typeof window === "undefined") return profileImageUrl
+    if (!profileImageUrl.startsWith("/api/ai/media/assets/")) return profileImageUrl
+    const token = window.localStorage.getItem("token")
+    if (!token) return profileImageUrl
+    const sep = profileImageUrl.includes("?") ? "&" : "?"
+    return `${profileImageUrl}${sep}token=${encodeURIComponent(token)}`
+  }, [profileImageUrl])
+
+  const ProfileAvatar = ({
+    sizeClass,
+    roundedClass,
+    textClass,
+    className,
+  }: {
+    sizeClass: string
+    roundedClass: string
+    textClass: string
+    className?: string
+  }) => (
+    <div
+      className={cn(
+        sizeClass,
+        roundedClass,
+        "flex items-center justify-center shrink-0 overflow-hidden",
+        avatarBgClass,
+        className
+      )}
+    >
+      {profileImageSrc ? (
+        <img src={profileImageSrc} alt="프로필 이미지" className={cn(sizeClass, "object-cover")} />
+      ) : (
+        <span className={cn("text-white font-semibold", textClass)}>{userProfile.initial}</span>
+      )}
+    </div>
+  )
+
   // 현재 페이지에 따라 GNB 메뉴 활성화 표시를 결정
   const isFrontAIActive = location.pathname.startsWith("/front-ai")
   const isTimelineActive = location.pathname.startsWith("/timeline")
@@ -815,9 +893,11 @@ export function Sidebar({ className }: SidebarProps) {
     const id = typeof j.id === "string" ? String(j.id) : ""
     const type = typeof j.tenant_type === "string" ? String(j.tenant_type) : ""
     const name = typeof j.name === "string" ? String(j.name).trim() : ""
+    const planTier = typeof j.plan_tier === "string" ? String(j.plan_tier).trim() : ""
     if (id) setTenantId(id)
     if (type) setTenantType(type)
     if (name) setTenantName(name)
+    if (planTier) setTenantPlanTier(planTier)
     if (id || type || name) {
       try {
         window.localStorage.setItem(
@@ -848,14 +928,35 @@ export function Sidebar({ className }: SidebarProps) {
       name?: string | null
       tenant_type?: string | null
       is_primary?: boolean
+      plan_tier?: string | null
     }>
     if (Array.isArray(rows)) {
       setTenantMemberships(rows)
     }
   }
 
+  const loadUserProfile = async () => {
+    const h = authHeaders()
+    if (!h.Authorization) return
+    const r = await fetch("/api/posts/user/me", { headers: h }).catch(() => null)
+    if (!r || !r.ok) return
+    const j = (await r.json().catch(() => ({}))) as Record<string, unknown>
+    const profileUrl =
+      typeof j.profile_image_url === "string"
+        ? String(j.profile_image_url)
+        : typeof j.profile_image_asset_id === "string" && j.profile_image_asset_id
+          ? `/api/ai/media/assets/${String(j.profile_image_asset_id)}`
+          : ""
+    setProfileImageUrl(profileUrl || null)
+  }
+
   useEffect(() => {
     void loadTenantMemberships()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    void loadUserProfile()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -1277,9 +1378,7 @@ export function Sidebar({ className }: SidebarProps) {
       {/* User Info Section - 유저 정보 섹션 */}
       <div className="flex flex-col gap-1 px-1 py-1">
         <div className="flex gap-2 items-center px-2 py-1.5 rounded-sm">
-          <div className="size-10 bg-teal-500 rounded-lg flex items-center justify-center shrink-0">
-            <span className="text-white font-semibold text-lg">{userProfile.initial}</span>
-          </div>
+          <ProfileAvatar sizeClass="size-10" roundedClass="rounded-lg" textClass="text-lg" />
           <div className="flex flex-col flex-1 min-w-0">
             <p className="text-lg font-bold text-popover-foreground truncate">{userProfile.name}</p>
           </div>
@@ -1446,9 +1545,7 @@ export function Sidebar({ className }: SidebarProps) {
         {/* Mobile Profile Popover Trigger */}
         <Popover open={isMobileProfileOpen} onOpenChange={setIsMobileProfileOpen}>
           <PopoverTrigger asChild>
-            <div className="size-8 bg-teal-500 rounded-md flex items-center justify-center shrink-0 cursor-pointer">
-              <span className="text-white font-bold text-sm">김</span>
-            </div>
+            <ProfileAvatar sizeClass="size-8" roundedClass="rounded-md" textClass="text-sm font-bold" className="cursor-pointer" />
           </PopoverTrigger>
           <ProfilePopoverContent />
         </Popover>
@@ -1480,9 +1577,7 @@ export function Sidebar({ className }: SidebarProps) {
           {/* Mobile Menu Profile Popover Trigger */}
           <Popover open={isMobileProfileOpen} onOpenChange={setIsMobileProfileOpen}>
             <PopoverTrigger asChild>
-              <div className="size-8 bg-teal-500 rounded-md flex items-center justify-center shrink-0 cursor-pointer">
-                <span className="text-white font-bold text-sm">김</span>
-              </div>
+              <ProfileAvatar sizeClass="size-8" roundedClass="rounded-md" textClass="text-sm font-bold" className="cursor-pointer" />
             </PopoverTrigger>
             <ProfilePopoverContent />
           </Popover>
@@ -1781,9 +1876,7 @@ export function Sidebar({ className }: SidebarProps) {
             <div className={cn("flex items-center gap-2 p-2 cursor-pointer hover:bg-accent/50 rounded-md transition-colors", !isOpen && "justify-center p-0")}>
               {isOpen ? (
                 <>
-                  <div className="size-10 bg-teal-500 rounded-lg flex items-center justify-center shrink-0">
-                    <span className="text-white font-semibold text-lg">{userProfile.initial}</span>
-                  </div>
+                  <ProfileAvatar sizeClass="size-10" roundedClass="rounded-lg" textClass="text-lg" />
                   <div className="flex flex-col flex-1 min-w-0">
                     <p className="text-sm text-left font-semibold text-sidebar-foreground truncate">{userProfile.name}</p>
                     <div className="flex items-center text-xs text-muted-foreground flex-wrap gap-1">
@@ -1799,9 +1892,7 @@ export function Sidebar({ className }: SidebarProps) {
                   </div>
                 </>
               ) : (
-                <div className="size-8 bg-teal-500 rounded-md flex items-center justify-center shrink-0">
-                  <span className="text-white font-semibold text-base">김</span>
-                </div>
+                <ProfileAvatar sizeClass="size-8" roundedClass="rounded-md" textClass="text-base" />
               )}
             </div>
           </PopoverTrigger>

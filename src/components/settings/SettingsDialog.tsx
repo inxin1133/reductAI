@@ -1,5 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { type ChangeEvent, type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Dialog, DialogClose, DialogContent } from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
@@ -85,6 +93,7 @@ const SETTINGS_DIALOG_OPEN_KEY = "reductai:settings:isOpen"
 const SETTINGS_MENU_IDS = new Set<SettingsMenuId>([...PERSONAL_MENUS, ...BILLING_MENUS].map((item) => item.id))
 const DAUM_POSTCODE_SCRIPT_ID = "daum-postcode-script"
 const AUTH_API_BASE = "http://localhost:3001/auth"
+const PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 
 function readSettingsMenuFromStorage(): SettingsMenuId | null {
   try {
@@ -140,6 +149,8 @@ type CurrentUserProfile = {
   id: string
   email: string
   full_name?: string | null
+  profile_image_asset_id?: string | null
+  profile_image_url?: string | null
 }
 
 type CurrentTenantProfile = {
@@ -299,6 +310,12 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
   const [currentUser, setCurrentUser] = useState<CurrentUserProfile | null>(null)
   const [currentTenant, setCurrentTenant] = useState<CurrentTenantProfile | null>(null)
   const [tenantMemberships, setTenantMemberships] = useState<TenantMembership[]>([])
+  const [profileImageUrl, setProfileImageUrl] = useState<string | null>(null)
+  const [profileImageAssetId, setProfileImageAssetId] = useState<string | null>(null)
+  const [profileImageLoading, setProfileImageLoading] = useState(false)
+  const [profileImageError, setProfileImageError] = useState<string | null>(null)
+  const [profileImageOversizeOpen, setProfileImageOversizeOpen] = useState(false)
+  const profileImageInputRef = useRef<HTMLInputElement | null>(null)
 
   const [isEditingUserName, setIsEditingUserName] = useState(false)
   const [isSavingUserName, setIsSavingUserName] = useState(false)
@@ -372,6 +389,16 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
     return trimmed.slice(0, 1).toUpperCase()
   }, [resolvedUserEmail, resolvedUserName])
 
+  const profileImageSrc = useMemo(() => {
+    if (!profileImageUrl) return null
+    if (typeof window === "undefined") return profileImageUrl
+    if (!profileImageUrl.startsWith("/api/ai/media/assets/")) return profileImageUrl
+    const token = window.localStorage.getItem("token")
+    if (!token) return profileImageUrl
+    const sep = profileImageUrl.includes("?") ? "&" : "?"
+    return `${profileImageUrl}${sep}token=${encodeURIComponent(token)}`
+  }, [profileImageUrl])
+
   const tierCandidates = useMemo(() => {
     const tiers: PlanTier[] = []
     const fromTenant = normalizePlanTier(currentTenant?.plan_tier)
@@ -444,11 +471,23 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
       if (userRes.ok) {
         const userJson = (await userRes.json().catch(() => null)) as CurrentUserProfile | null
         if (userJson?.id) {
+          const nextProfileAssetId = userJson.profile_image_asset_id
+            ? String(userJson.profile_image_asset_id)
+            : null
+          const nextProfileUrl = userJson.profile_image_url
+            ? String(userJson.profile_image_url)
+            : nextProfileAssetId
+              ? `/api/ai/media/assets/${nextProfileAssetId}`
+              : null
           setCurrentUser({
             id: String(userJson.id),
             email: String(userJson.email || ""),
             full_name: userJson.full_name ?? null,
+            profile_image_asset_id: nextProfileAssetId,
+            profile_image_url: nextProfileUrl,
           })
+          setProfileImageAssetId(nextProfileAssetId)
+          setProfileImageUrl(nextProfileUrl)
           setUserNameDraft(String(userJson.full_name || ""))
           if (typeof window !== "undefined") {
             if (userJson.email) window.localStorage.setItem("user_email", String(userJson.email))
@@ -539,11 +578,25 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
       }
       const updated = (await res.json().catch(() => null)) as CurrentUserProfile | null
       if (updated?.id) {
+        const nextProfileAssetId = updated.profile_image_asset_id
+          ? String(updated.profile_image_asset_id)
+          : profileImageAssetId
+        const nextProfileUrl = updated.profile_image_url
+          ? String(updated.profile_image_url)
+          : nextProfileAssetId
+            ? `/api/ai/media/assets/${nextProfileAssetId}`
+            : profileImageUrl
         setCurrentUser({
           id: String(updated.id),
           email: String(updated.email || ""),
           full_name: updated.full_name ?? null,
+          profile_image_asset_id: nextProfileAssetId,
+          profile_image_url: nextProfileUrl,
         })
+        if (nextProfileAssetId !== profileImageAssetId) {
+          setProfileImageAssetId(nextProfileAssetId ?? null)
+          setProfileImageUrl(nextProfileUrl ?? null)
+        }
         setUserNameDraft(String(updated.full_name || ""))
         if (typeof window !== "undefined") {
           if (updated.full_name) window.localStorage.setItem("user_name", String(updated.full_name))
@@ -553,7 +606,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
     } finally {
       setIsSavingUserName(false)
     }
-  }, [authHeaders, isSavingUserName, resolvedUserName, userNameDraft])
+  }, [authHeaders, isSavingUserName, profileImageAssetId, profileImageUrl, resolvedUserName, userNameDraft])
 
   const startEditTenantName = useCallback(() => {
     if (isSavingTenantName) return
@@ -627,6 +680,145 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
       setIsSavingTenantName(false)
     }
   }, [authHeaders, currentTenant, isSavingTenantName, tenantNameDraft])
+
+  const openProfileImagePicker = useCallback(() => {
+    if (profileImageLoading) return
+    profileImageInputRef.current?.click()
+  }, [profileImageLoading])
+
+  const handleProfileImageSelected = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0]
+      event.target.value = ""
+      if (!file) return
+
+      setProfileImageError(null)
+      setProfileError(null)
+
+      if (!["image/jpeg", "image/png"].includes(file.type)) {
+        setProfileImageError("JPG/PNG 파일만 업로드할 수 있습니다.")
+        return
+      }
+      if (file.size > PROFILE_IMAGE_MAX_BYTES) {
+        setProfileImageOversizeOpen(true)
+        return
+      }
+
+      const headers = authHeaders()
+      if (!headers.Authorization) {
+        setProfileImageError("로그인이 필요합니다.")
+        return
+      }
+
+      const prevAssetId = profileImageAssetId
+
+      setProfileImageLoading(true)
+      try {
+        const uploadRes = await fetch("/api/ai/media/profile-image", {
+          method: "POST",
+          headers: { ...headers, "Content-Type": file.type },
+          body: file,
+        })
+        if (!uploadRes.ok) {
+          const msg = await uploadRes.text().catch(() => "")
+          setProfileImageError(msg || "프로필 이미지를 업로드하지 못했습니다.")
+          return
+        }
+
+        const uploaded = (await uploadRes.json().catch(() => null)) as {
+          assetId?: string
+          id?: string
+          url?: string
+        } | null
+        const assetId = String(uploaded?.assetId || uploaded?.id || "").trim()
+        const url = uploaded?.url ? String(uploaded.url) : assetId ? `/api/ai/media/assets/${assetId}` : ""
+        if (!assetId || !url) {
+          setProfileImageError("업로드 결과를 확인할 수 없습니다.")
+          return
+        }
+
+        const updateRes = await fetch("/api/posts/user/me", {
+          method: "PATCH",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ profile_image_asset_id: assetId }),
+        })
+        if (!updateRes.ok) {
+          const msg = await updateRes.text().catch(() => "")
+          setProfileImageError(msg || "프로필 이미지 저장에 실패했습니다.")
+          return
+        }
+
+        setProfileImageAssetId(assetId)
+        setProfileImageUrl(url)
+        setCurrentUser((prev) =>
+          prev
+            ? { ...prev, profile_image_asset_id: assetId, profile_image_url: url }
+            : {
+                id: currentUser?.id || "",
+                email: currentUser?.email || "",
+                full_name: currentUser?.full_name ?? null,
+                profile_image_asset_id: assetId,
+                profile_image_url: url,
+              }
+        )
+
+        if (prevAssetId && prevAssetId !== assetId) {
+          await fetch(`/api/ai/media/assets/${encodeURIComponent(prevAssetId)}`, {
+            method: "DELETE",
+            headers,
+          }).catch(() => null)
+        }
+      } finally {
+        setProfileImageLoading(false)
+      }
+    },
+    [authHeaders, currentUser, profileImageAssetId]
+  )
+
+  const handleRemoveProfileImage = useCallback(
+    async (event: MouseEvent<HTMLButtonElement>) => {
+      event.stopPropagation()
+      if (!profileImageAssetId || profileImageLoading) return
+
+      const headers = authHeaders()
+      if (!headers.Authorization) {
+        setProfileImageError("로그인이 필요합니다.")
+        return
+      }
+
+      setProfileImageLoading(true)
+      setProfileImageError(null)
+      try {
+        const updateRes = await fetch("/api/posts/user/me", {
+          method: "PATCH",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ profile_image_asset_id: null }),
+        })
+        if (!updateRes.ok) {
+          const msg = await updateRes.text().catch(() => "")
+          setProfileImageError(msg || "프로필 이미지 삭제에 실패했습니다.")
+          return
+        }
+
+        const deleteId = profileImageAssetId
+        setProfileImageAssetId(null)
+        setProfileImageUrl(null)
+        setCurrentUser((prev) =>
+          prev ? { ...prev, profile_image_asset_id: null, profile_image_url: null } : prev
+        )
+
+        if (deleteId) {
+          await fetch(`/api/ai/media/assets/${encodeURIComponent(deleteId)}`, {
+            method: "DELETE",
+            headers,
+          }).catch(() => null)
+        }
+      } finally {
+        setProfileImageLoading(false)
+      }
+    },
+    [authHeaders, profileImageAssetId, profileImageLoading]
+  )
 
   const handleChangePassword = useCallback(async () => {
     if (passwordSaving) return
@@ -856,16 +1048,74 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
                       {profileError}
                     </div>
                   ) : null}
+                  <AlertDialog open={profileImageOversizeOpen} onOpenChange={setProfileImageOversizeOpen}>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>업로드 용량 초과</AlertDialogTitle>
+                      </AlertDialogHeader>
+                      <div className="text-sm text-muted-foreground">
+                        프로필 이미지는 최대 10MB 이하 파일만 업로드할 수 있습니다.
+                      </div>
+                      <AlertDialogFooter>
+                        <AlertDialogAction>확인</AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
 
                   <div className="p-4">
                     <div className="flex items-center gap-3">
-                      <div
-                        className={cn(
-                          "size-10 rounded-lg flex items-center justify-center shrink-0",
-                          PLAN_TIER_STYLES[highestTier].avatar
-                        )}
-                      >
-                        <span className="text-white font-semibold text-lg">{userInitial}</span>
+                      <div className="relative shrink-0 group">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div
+                              role="button"
+                              tabIndex={0}
+                              onClick={openProfileImagePicker}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" || event.key === " ") {
+                                  event.preventDefault()
+                                  openProfileImagePicker()
+                                }
+                              }}
+                              className={cn(
+                                "size-10 rounded-lg flex items-center justify-center overflow-hidden transition",
+                                PLAN_TIER_STYLES[highestTier].avatar,
+                                profileImageLoading ? "cursor-wait opacity-70" : "cursor-pointer hover:brightness-95"
+                              )}
+                              aria-label="프로필 이미지 변경"
+                            >
+                              {profileImageSrc ? (
+                                <img
+                                  src={profileImageSrc}
+                                  alt="프로필 이미지"
+                                  className="size-10 object-cover"
+                                />
+                              ) : (
+                                <span className="text-white font-semibold text-lg">{userInitial}</span>
+                              )}
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom">
+                            <p>{profileImageSrc ? "프로필 이미지 변경" : "프로필 이미지 삽입"}</p>
+                          </TooltipContent>
+                        </Tooltip>
+                        {profileImageSrc ? (
+                          <button
+                            type="button"
+                            className="absolute -top-2 -right-2 z-10 flex size-5 items-center justify-center rounded-full bg-foreground text-background opacity-0 transition group-hover:opacity-100 shadow-sm"
+                            onClick={handleRemoveProfileImage}
+                            aria-label="프로필 이미지 삭제"
+                          >
+                            <X className="size-3" />
+                          </button>
+                        ) : null}
+                        <input
+                          ref={profileImageInputRef}
+                          type="file"
+                          accept="image/jpeg,image/png"
+                          className="hidden"
+                          onChange={handleProfileImageSelected}
+                        />
                       </div>
                       <div className="flex flex-col flex-1 min-w-0">
                         {isEditingUserName ? (
@@ -895,7 +1145,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
                         )}
                         {isEditingUserName ? (
                           <p className="pt-1 pl-2  text-xs text-left text-muted-foreground truncate">
-                            {isSavingUserName ? "저장 중..." : "Enter로 저장 · 인풋 밖 클릭으로 취소"}
+                            {isSavingUserName ? "저장 중..." : "내용 변경후 Enter로 저장 또는 인풋 밖 클릭 (변경 내용 없을 시 취소)"}
                           </p>
                         ) : (
                           <button
@@ -908,6 +1158,9 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
                         )}
                       </div>
                     </div>
+                    {profileImageError ? (
+                      <p className="mt-2 text-xs text-destructive">{profileImageError}</p>
+                    ) : null}
                   </div>
 
                   <div className="p-4">

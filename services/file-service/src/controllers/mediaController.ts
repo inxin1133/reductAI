@@ -2,11 +2,12 @@ import { Request, Response } from 'express';
 import { query } from '../config/db';
 import { AuthedRequest } from '../middleware/requireAuth';
 import { ensureSystemTenantId } from '../services/systemTenantService';
-import { newAssetId, storeBytesAsAsset, storeImageDataUrlAsAsset } from '../services/mediaAssetsService';
+import { newAssetId, storeBytesAsAsset, storeImageDataUrlAsAsset, storeProfileImageAsset } from '../services/mediaAssetsService';
 import path from 'path';
 import fs from 'fs/promises';
 import { createReadStream } from 'fs';
 import archiver from 'archiver';
+import sharp from 'sharp';
 
 type MediaKind = 'image' | 'audio' | 'video' | 'file';
 type FileSourceType = 'ai_generated' | 'attachment' | 'post_upload' | 'external_link' | 'profile_image';
@@ -21,6 +22,9 @@ const VALID_SOURCE_TYPES = new Set<FileSourceType>([
 ]);
 
 const VALID_KINDS = new Set<MediaKind>(['image', 'audio', 'video', 'file']);
+const PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+const PROFILE_IMAGE_SIZE = 256;
+const PROFILE_IMAGE_MIME = new Set(['image/jpeg', 'image/png']);
 
 function mediaRootDir() {
   const root = process.env.MEDIA_STORAGE_ROOT;
@@ -262,6 +266,55 @@ export async function createMediaAssetUpload(req: Request, res: Response) {
     }
     console.error('createMediaAssetUpload error:', e);
     return res.status(500).json({ message: 'Failed to create media asset', details: msg });
+  }
+}
+
+export async function createProfileImageUpload(req: Request, res: Response) {
+  try {
+    const { tenantId } = await resolveTenantId(req as AuthedRequest);
+    const userId = (req as AuthedRequest).userId;
+    if (!userId) return res.status(401).json({ message: 'Missing userId' });
+
+    const mime = String(req.headers['content-type'] || 'application/octet-stream')
+      .split(';')[0]
+      .trim();
+    if (!PROFILE_IMAGE_MIME.has(mime)) {
+      return res.status(400).json({ message: 'JPG/PNG 파일만 업로드할 수 있습니다.' });
+    }
+
+    const bytesBuf = Buffer.isBuffer(req.body) ? (req.body as Buffer) : Buffer.from(String(req.body || ''), 'utf8');
+    if (!bytesBuf || bytesBuf.length === 0) {
+      return res.status(400).json({ message: 'file bytes are required' });
+    }
+    if (bytesBuf.length > PROFILE_IMAGE_MAX_BYTES) {
+      return res.status(413).json({ message: 'File too large' });
+    }
+
+    const processed = await sharp(bytesBuf)
+      .resize(PROFILE_IMAGE_SIZE, PROFILE_IMAGE_SIZE, { fit: 'cover', position: 'centre' })
+      .webp({ quality: 90 })
+      .toBuffer();
+
+    const stored = await storeProfileImageAsset({
+      tenantId,
+      userId: String(userId),
+      assetId: newAssetId(),
+      bytesBuf: processed,
+      width: PROFILE_IMAGE_SIZE,
+      height: PROFILE_IMAGE_SIZE,
+    });
+
+    return res.status(201).json(stored);
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    if (msg === 'FILE_TOO_LARGE') {
+      return res.status(413).json({ message: 'File too large' });
+    }
+    if (msg === 'INVALID_BYTES') {
+      return res.status(400).json({ message: 'Invalid file bytes' });
+    }
+    console.error('createProfileImageUpload error:', e);
+    return res.status(500).json({ message: 'Failed to upload profile image', details: msg });
   }
 }
 

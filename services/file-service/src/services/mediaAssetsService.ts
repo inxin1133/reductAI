@@ -240,3 +240,72 @@ export async function storeBytesAsAsset(args: {
     storageKey: relPath,
   };
 }
+
+export async function storeProfileImageAsset(args: {
+  tenantId: string;
+  userId: string;
+  assetId: string;
+  bytesBuf: Buffer;
+  width: number;
+  height: number;
+}): Promise<{ assetId: string; url: string; mime: string; bytes: number; sha256: string; storageKey: string }> {
+  const bytesBuf = args.bytesBuf;
+  if (!Buffer.isBuffer(bytesBuf) || bytesBuf.length === 0) throw new Error('INVALID_BYTES');
+  if (bytesBuf.length > maxBytes()) {
+    throw new Error('FILE_TOO_LARGE');
+  }
+
+  const sha256 = crypto.createHash('sha256').update(bytesBuf).digest('hex');
+  const ext = 'webp';
+  const mime = 'image/webp';
+
+  const root = mediaRootDir();
+  const safeTenant = isUuid(args.tenantId) ? args.tenantId : 'tenant';
+  const safeUser = isUuid(args.userId) ? args.userId : 'user';
+
+  const relDir = path.join(safeTenant, 'profile_images', safeUser);
+  const fileName = `avatar_${sha256.slice(0, 16)}.${ext}`;
+  const relPath = path.join(relDir, fileName);
+  const absPath = path.join(root, relPath);
+
+  await fs.mkdir(path.dirname(absPath), { recursive: true });
+  await fs.writeFile(absPath, bytesBuf);
+
+  await query(
+    `
+    INSERT INTO file_assets
+      (id, tenant_id, user_id, source_type, reference_type, reference_id, kind, mime, bytes, file_extension, sha256, width, height, status, storage_provider, storage_key, storage_url, is_private, expires_at, metadata)
+    VALUES
+      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'stored','local_fs',$14,NULL,TRUE,$15,$16::jsonb)
+    `,
+    [
+      args.assetId,
+      args.tenantId,
+      args.userId,
+      'profile_image',
+      'user_profile',
+      args.userId,
+      'image',
+      mime,
+      bytesBuf.length,
+      ext,
+      sha256,
+      args.width,
+      args.height,
+      relPath,
+      null,
+      JSON.stringify({
+        source: 'profile_image',
+      }),
+    ]
+  );
+
+  return {
+    assetId: args.assetId,
+    url: `/api/ai/media/assets/${args.assetId}`,
+    mime,
+    bytes: bytesBuf.length,
+    sha256,
+    storageKey: relPath,
+  };
+}

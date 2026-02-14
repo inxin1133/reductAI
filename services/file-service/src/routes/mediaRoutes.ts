@@ -3,6 +3,7 @@ import { requireAuth, verifyJwtToken } from '../middleware/requireAuth';
 import {
   createMediaAsset,
   createMediaAssetUpload,
+  createProfileImageUpload,
   deleteMediaAsset,
   downloadMediaAssetsZip,
   getMediaAsset,
@@ -38,6 +39,7 @@ router.use((req: any, res: any, next: any) => {
 
 router.post('/assets/upload', express.raw({ type: '*/*', limit: '25mb' }), createMediaAssetUpload);
 router.post('/assets', createMediaAsset);
+router.post('/profile-image', express.raw({ type: '*/*', limit: '10mb' }), createProfileImageUpload);
 router.post('/assets/zip', downloadMediaAssetsZip);
 router.get('/assets', listMediaAssets);
 router.get('/assets/:id', getMediaAsset);
