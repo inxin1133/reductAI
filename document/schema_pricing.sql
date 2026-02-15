@@ -318,6 +318,9 @@ WITH sku_data AS (
         ('openai', 'gpt-o4-mini-tts', 'GPT-o4 mini TTS', 'audio', 'input_tokens', 'text', 'tokens', 1000000, '{}'::jsonb, 'openai.gpt-o4-mini-tts.audio.input'),
         ('openai', 'gpt-o4-mini-tts', 'GPT-o4 mini TTS', 'audio', 'cached_input_tokens', 'text', 'tokens', 1000000, '{}'::jsonb, 'openai.gpt-o4-mini-tts.audio.cached_input'),
         ('openai', 'gpt-o4-mini-tts', 'GPT-o4 mini TTS', 'audio', 'output_tokens', 'text', 'tokens', 1000000, '{}'::jsonb, 'openai.gpt-o4-mini-tts.audio.output'),
+        ('openai', 'gpt-o4-mini-tts', 'GPT-o4 mini TTS', 'audio', 'seconds', NULL, 'second', 1, '{"task":"tts"}'::jsonb, 'openai.gpt-o4-mini-tts.audio.seconds'),
+        ('openai', 'whisper-1', 'Whisper 1', 'audio', 'seconds', NULL, 'second', 1, '{"task":"stt"}'::jsonb, 'openai.whisper-1.audio.seconds'),
+        ('google', 'stt', 'Google STT', 'audio', 'seconds', NULL, 'second', 1, '{"task":"stt"}'::jsonb, 'google.stt.audio.seconds'),
 
         -- Web search
         ('serper', 'serper', 'Serper', 'web_search', 'requests', NULL, 'request', 1, '{}'::jsonb, 'serper.web_search.request')
@@ -404,6 +407,11 @@ rate_data AS (
         ('openai.gpt-o4-mini-tts.audio.input', 1.10, NULL, NULL, NULL),
         ('openai.gpt-o4-mini-tts.audio.cached_input', 0.28, NULL, NULL, NULL),
         ('openai.gpt-o4-mini-tts.audio.output', 4.40, NULL, NULL, NULL),
+        ('openai.gpt-o4-mini-tts.audio.seconds', 0.00, NULL, NULL, NULL),
+        -- Whisper 1 (STT)
+        ('openai.whisper-1.audio.seconds', 0.00, NULL, NULL, NULL),
+        -- Google STT
+        ('google.stt.audio.seconds', 0.0001, NULL, NULL, NULL),
         -- Serper
         ('serper.web_search.request', 0.001, NULL, NULL, NULL)
     ) AS t(sku_code, rate_value, tier_unit, tier_min, tier_max)

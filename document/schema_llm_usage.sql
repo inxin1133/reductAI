@@ -243,7 +243,39 @@ COMMENT ON COLUMN llm_token_usages.output_tokens IS '출력 토큰 수';
 COMMENT ON COLUMN llm_token_usages.unit IS '과금 단위(tokens)';
 
 -- ============================================
--- 3. LLM IMAGE USAGES (이미지 생성 사용량)
+-- 3. LLM AUDIO USAGES (STT/TTS 사용량)
+-- ============================================
+
+CREATE TABLE llm_audio_usages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    usage_log_id UUID NOT NULL REFERENCES llm_usage_logs(id) ON DELETE CASCADE,
+    task VARCHAR(20) CHECK (task IN ('stt', 'tts')),
+    seconds DECIMAL(10, 3) NOT NULL DEFAULT 0,
+    audio_bytes BIGINT, -- 오디오 바이트(입력 또는 출력)
+    sample_rate INTEGER, -- 16000 / 44100 / 48000
+    channels VARCHAR(20), -- mono / stereo
+    bit_depth INTEGER, -- 16 / 24
+    format VARCHAR(20), -- wav / mp3 / ogg / pcm 등
+    unit VARCHAR(20) NOT NULL DEFAULT 'second' CHECK (unit IN ('second')),
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_llm_audio_usages_usage_log_id ON llm_audio_usages(usage_log_id);
+
+COMMENT ON TABLE llm_audio_usages IS 'STT/TTS 오디오 사용량(정밀 과금 단위).';
+COMMENT ON COLUMN llm_audio_usages.usage_log_id IS 'llm_usage_logs.id 참조';
+COMMENT ON COLUMN llm_audio_usages.task IS '작업 종류(stt/tts)';
+COMMENT ON COLUMN llm_audio_usages.seconds IS '오디오 길이(초)';
+COMMENT ON COLUMN llm_audio_usages.audio_bytes IS '오디오 바이트 크기';
+COMMENT ON COLUMN llm_audio_usages.sample_rate IS '샘플 레이트';
+COMMENT ON COLUMN llm_audio_usages.channels IS '채널 수(mono/stereo)';
+COMMENT ON COLUMN llm_audio_usages.bit_depth IS '비트 깊이';
+COMMENT ON COLUMN llm_audio_usages.format IS '오디오 포맷';
+COMMENT ON COLUMN llm_audio_usages.unit IS '과금 단위(second)';
+
+-- ============================================
+-- 4. LLM IMAGE USAGES (이미지 생성 사용량)
 -- ============================================
 
 CREATE TABLE llm_image_usages (
@@ -267,7 +299,7 @@ COMMENT ON COLUMN llm_image_usages.quality IS '이미지 품질';
 COMMENT ON COLUMN llm_image_usages.unit IS '과금 단위(image)';
 
 -- ============================================
--- 4. LLM VIDEO USAGES (비디오 생성 사용량)
+-- 5. LLM VIDEO USAGES (비디오 생성 사용량)
 -- ============================================
 
 CREATE TABLE llm_video_usages (
@@ -289,7 +321,7 @@ COMMENT ON COLUMN llm_video_usages.size IS '해상도(예: 720p/1080p/4k)';
 COMMENT ON COLUMN llm_video_usages.unit IS '과금 단위(second)';
 
 -- ============================================
--- 5. LLM MUSIC USAGES (음악 생성 사용량)
+-- 6. LLM MUSIC USAGES (음악 생성 사용량)
 -- ============================================
 
 CREATE TABLE llm_music_usages (
@@ -315,7 +347,7 @@ COMMENT ON COLUMN llm_music_usages.bit_depth IS '비트 깊이';
 COMMENT ON COLUMN llm_music_usages.unit IS '과금 단위(second)';
 
 -- ============================================
--- 6. LLM WEB SEARCH USAGES (웹검색 사용량)
+-- 7. LLM WEB SEARCH USAGES (웹검색 사용량)
 -- ============================================
 
 CREATE TABLE llm_web_search_usages (
