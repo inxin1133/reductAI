@@ -2861,30 +2861,30 @@ export function ChatInterface({
                           </DropdownMenuGroup>
                         </DropdownMenuContent>
                       </DropdownMenu>
-                      <Tooltip>
-                        <TooltipTrigger
-                          className={uiSelectedType === "text" ? "flex items-center gap-1" : "hidden"}
-                        >
-                          {uiSelectedType === "text" ? (
-                            <>
+                      {uiSelectedType === "text" ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="inline-flex items-center gap-1 cursor-default">
                               <span className="text-sm hidden md:block text-muted-foreground">웹 허용</span>
                               <Globe className="size-4 md:hidden text-muted-foreground" />
-                              <Switch
-                                checked={effectiveWebAllowed}
-                                disabled={!webSearchEnabled || !webSearchProviderAllowed}
-                                onCheckedChange={(v) => setWebAllowed(Boolean(v))}
-                              />
-                            </>
-                          ) : null}
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p>
-                            {webSearchDisabledReason
-                              ? webSearchDisabledReason
-                              : "웹 허용 시, AI가 판단하여 웹 검색이 필요할 경우 웹 검색을 통해 최신 정보를 반영합니다."}
-                          </p>
-                        </TooltipContent>
-                      </Tooltip>
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p>
+                              {webSearchDisabledReason
+                                ? webSearchDisabledReason
+                                : "웹 허용 시, AI가 판단하여 웹 검색이 필요할 경우 웹 검색을 통해 최신 정보를 반영합니다."}
+                            </p>
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : null}
+                      {uiSelectedType === "text" ? (
+                        <Switch
+                          checked={effectiveWebAllowed}
+                          disabled={!webSearchEnabled || !webSearchProviderAllowed}
+                          onCheckedChange={(v) => setWebAllowed(Boolean(v))}
+                        />
+                      ) : null}
                       {/* Timeline compact: single-line prompt textarea (looks like input, switches to multi textarea when it wraps) */}
                       {/* 타임라인 컴팩트: 한 줄 프롬프트 입력창(인풋처럼 보이며, 줄이 바뀔 때 멀티라인 텍스트에어리어로 전환됨) */}
                       <div className={cn("flex flex-1 items-center", isCompact && compactPromptMode === "single" ? "" : "hidden")}>
