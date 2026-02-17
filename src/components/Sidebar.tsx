@@ -27,7 +27,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { handleSessionExpired, isSessionExpired, resetSessionExpiredGuard } from "@/lib/session"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { forwardRef, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -102,7 +102,7 @@ type PlanTier = "free" | "pro" | "premium" | "business" | "enterprise"
 
 const PLAN_TIER_ORDER: PlanTier[] = ["free", "pro", "premium", "business", "enterprise"]
 const PLAN_TIER_AVATAR_BG: Record<PlanTier, string> = {
-  free: "bg-muted",
+  free: "bg-muted-foreground",
   pro: "bg-teal-500",
   premium: "bg-indigo-500",
   business: "bg-amber-500",
@@ -641,18 +641,17 @@ export function Sidebar({ className }: SidebarProps) {
     return `${profileImageUrl}${sep}token=${encodeURIComponent(token)}`
   }, [profileImageUrl])
 
-  const ProfileAvatar = ({
-    sizeClass,
-    roundedClass,
-    textClass,
-    className,
-  }: {
-    sizeClass: string
-    roundedClass: string
-    textClass: string
-    className?: string
-  }) => (
+  const ProfileAvatar = forwardRef<
+    HTMLDivElement,
+    {
+      sizeClass: string
+      roundedClass: string
+      textClass: string
+      className?: string
+    }
+  >(({ sizeClass, roundedClass, textClass, className, ...props }, ref) => (
     <div
+      ref={ref}
       className={cn(
         sizeClass,
         roundedClass,
@@ -660,6 +659,7 @@ export function Sidebar({ className }: SidebarProps) {
         avatarBgClass,
         className
       )}
+      {...props}
     >
       {profileImageSrc ? (
         <img src={profileImageSrc} alt="프로필 이미지" className={cn(sizeClass, "object-cover")} />
@@ -667,7 +667,7 @@ export function Sidebar({ className }: SidebarProps) {
         <span className={cn("text-white font-semibold", textClass)}>{userProfile.initial}</span>
       )}
     </div>
-  )
+  ))
 
   // 현재 페이지에 따라 GNB 메뉴 활성화 표시를 결정
   const isFrontAIActive = location.pathname.startsWith("/front-ai")

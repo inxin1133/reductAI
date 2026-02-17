@@ -1236,8 +1236,8 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
                             <ChevronsUp className="size-3" />
                             업그레이드
                           </Button> */}
-                        </div>
-                      </div>
+                        </div>                        
+                      </div>                      
                     </div>
                   </div>
 
