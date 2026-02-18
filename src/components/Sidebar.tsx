@@ -273,7 +273,16 @@ export function Sidebar({ className }: SidebarProps) {
       plan_tier?: string | null
     }>
   >([])
-  const [profileImageUrl, setProfileImageUrl] = useState<string | null>(null)
+  const PROFILE_IMAGE_CACHE_KEY = "reductai.user.profile_image_url.v1"
+  const [profileImageUrl, setProfileImageUrl] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null
+    try {
+      const raw = String(window.localStorage.getItem(PROFILE_IMAGE_CACHE_KEY) || "").trim()
+      return raw ? raw : null
+    } catch {
+      return null
+    }
+  })
   const [languages, setLanguages] = useState<Language[]>([])
   const [currentLang, setCurrentLang] = useState("")
   const LANGUAGE_STORAGE_KEY = "reductai.language.v1"
@@ -950,6 +959,15 @@ export function Sidebar({ className }: SidebarProps) {
           ? `/api/ai/media/assets/${String(j.profile_image_asset_id)}`
           : ""
     setProfileImageUrl(profileUrl || null)
+    try {
+      if (profileUrl) {
+        window.localStorage.setItem(PROFILE_IMAGE_CACHE_KEY, profileUrl)
+      } else {
+        window.localStorage.removeItem(PROFILE_IMAGE_CACHE_KEY)
+      }
+    } catch {
+      // ignore storage issues
+    }
   }
 
   useEffect(() => {
