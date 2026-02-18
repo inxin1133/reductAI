@@ -1,0 +1,60 @@
+diff --git a/node_modules/@radix-ui/react-popper/dist/index.js b/node_modules/@radix-ui/react-popper/dist/index.js
+index f7a9994..a4990aa 100644
+--- a/node_modules/@radix-ui/react-popper/dist/index.js
++++ b/node_modules/@radix-ui/react-popper/dist/index.js
+@@ -74,9 +74,13 @@ var PopperAnchor = React.forwardRef(
+     const context = usePopperContext(ANCHOR_NAME, __scopePopper);
+     const ref = React.useRef(null);
+     const composedRefs = (0, import_react_compose_refs.useComposedRefs)(forwardedRef, ref);
+-    React.useEffect(() => {
+-      context.onAnchorChange(virtualRef?.current || ref.current);
+-    });
++    const prevAnchorRef = React.useRef(null);
++    (0, import_react_use_layout_effect.useLayoutEffect)(() => {
++      const nextAnchor = (virtualRef == null ? void 0 : virtualRef.current) || ref.current;
++      if (prevAnchorRef.current === nextAnchor) return;
++      prevAnchorRef.current = nextAnchor;
++      context.onAnchorChange(nextAnchor);
++    }, [context, virtualRef]);
+     return virtualRef ? null : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_react_primitive.Primitive.div, { ...anchorProps, ref: composedRefs });
+   }
+ );
+@@ -103,7 +107,7 @@ var PopperContent = React.forwardRef(
+     } = props;
+     const context = usePopperContext(CONTENT_NAME, __scopePopper);
+     const [content, setContent] = React.useState(null);
+-    const composedRefs = (0, import_react_compose_refs.useComposedRefs)(forwardedRef, (node) => setContent(node));
++    const composedRefs = (0, import_react_compose_refs.useComposedRefs)(forwardedRef, setContent);
+     const [arrow, setArrow] = React.useState(null);
+     const arrowSize = (0, import_react_use_size.useSize)(arrow);
+     const arrowWidth = arrowSize?.width ?? 0;
+diff --git a/node_modules/@radix-ui/react-popper/dist/index.mjs b/node_modules/@radix-ui/react-popper/dist/index.mjs
+index 49fe263..3043b98 100644
+--- a/node_modules/@radix-ui/react-popper/dist/index.mjs
++++ b/node_modules/@radix-ui/react-popper/dist/index.mjs
+@@ -39,9 +39,13 @@ var PopperAnchor = React.forwardRef(
+     const context = usePopperContext(ANCHOR_NAME, __scopePopper);
+     const ref = React.useRef(null);
+     const composedRefs = useComposedRefs(forwardedRef, ref);
+-    React.useEffect(() => {
+-      context.onAnchorChange(virtualRef?.current || ref.current);
+-    });
++    const prevAnchorRef = React.useRef(null);
++    useLayoutEffect(() => {
++      const nextAnchor = virtualRef?.current || ref.current;
++      if (prevAnchorRef.current === nextAnchor) return;
++      prevAnchorRef.current = nextAnchor;
++      context.onAnchorChange(nextAnchor);
++    }, [context, virtualRef]);
+     return virtualRef ? null : /* @__PURE__ */ jsx(Primitive.div, { ...anchorProps, ref: composedRefs });
+   }
+ );
+@@ -68,7 +72,7 @@ var PopperContent = React.forwardRef(
+     } = props;
+     const context = usePopperContext(CONTENT_NAME, __scopePopper);
+     const [content, setContent] = React.useState(null);
+-    const composedRefs = useComposedRefs(forwardedRef, (node) => setContent(node));
++    const composedRefs = useComposedRefs(forwardedRef, setContent);
+     const [arrow, setArrow] = React.useState(null);
+     const arrowSize = useSize(arrow);
+     const arrowWidth = arrowSize?.width ?? 0;

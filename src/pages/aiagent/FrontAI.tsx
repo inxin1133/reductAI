@@ -43,6 +43,10 @@ export default function FrontAI() {
   }
   
   const [selection, setSelection] = React.useState<{ modelApiId: string; providerSlug: string; modelType: string }>(() => readSelectionFromStorage())
+  const selectionRef = React.useRef(selection)
+  React.useEffect(() => {
+    selectionRef.current = selection
+  }, [selection])
   const [selectionVersion, setSelectionVersion] = React.useState(0)
   // 토큰이 없거나 만료된 경우 접근 차단
   React.useEffect(() => {
@@ -60,6 +64,7 @@ export default function FrontAI() {
         if (prev.modelApiId === next.modelApiId && prev.providerSlug === next.providerSlug && prev.modelType === next.modelType) {
           return prev
         }
+        selectionRef.current = next
         setSelectionVersion((v) => v + 1)
         return next
       })
@@ -71,6 +76,7 @@ export default function FrontAI() {
         if (prev.modelApiId === next.modelApiId && prev.providerSlug === next.providerSlug && prev.modelType === next.modelType) {
           return prev
         }
+        selectionRef.current = next
         setSelectionVersion((v) => v + 1)
         return next
       })
@@ -165,31 +171,23 @@ export default function FrontAI() {
           initialModelType={(selection.modelType as "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code") || undefined}
           onSelectionChange={(selection) => {
             if (!selection.modelApiId || !selection.providerSlug) return
-            setSelection((prev) => {
-              if (
-                prev.modelApiId === selection.modelApiId &&
-                prev.providerSlug === selection.providerSlug &&
-                prev.modelType === selection.modelType
-              ) {
-                return prev
-              }
-              return {
-                modelApiId: selection.modelApiId || "",
-                providerSlug: selection.providerSlug || "",
-                modelType: selection.modelType || "",
-              }
-            })
+            const next = {
+              modelApiId: selection.modelApiId || "",
+              providerSlug: selection.providerSlug || "",
+              modelType: selection.modelType || "",
+            }
+            const prev = selectionRef.current
+            if (
+              prev.modelApiId === next.modelApiId &&
+              prev.providerSlug === next.providerSlug &&
+              prev.modelType === next.modelType
+            ) {
+              return
+            }
+            selectionRef.current = next
             try {
-              localStorage.setItem(LAST_SELECTION_KEY, JSON.stringify({
-                modelApiId: selection.modelApiId || "",
-                providerSlug: selection.providerSlug || "",
-                modelType: selection.modelType || "",
-              }))
-              sessionStorage.setItem(LAST_SELECTION_KEY, JSON.stringify({
-                modelApiId: selection.modelApiId || "",
-                providerSlug: selection.providerSlug || "",
-                modelType: selection.modelType || "",
-              }))
+              localStorage.setItem(LAST_SELECTION_KEY, JSON.stringify(next))
+              sessionStorage.setItem(LAST_SELECTION_KEY, JSON.stringify(next))
             } catch {
               // ignore storage issues
             }

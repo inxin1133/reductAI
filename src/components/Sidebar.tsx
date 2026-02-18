@@ -27,7 +27,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { handleSessionExpired, isSessionExpired, resetSessionExpiredGuard } from "@/lib/session"
-import { forwardRef, useEffect, useMemo, useRef, useState } from "react"
+import React, { useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -641,17 +641,19 @@ export function Sidebar({ className }: SidebarProps) {
     return `${profileImageUrl}${sep}token=${encodeURIComponent(token)}`
   }, [profileImageUrl])
 
-  const ProfileAvatar = forwardRef<
-    HTMLDivElement,
-    {
-      sizeClass: string
-      roundedClass: string
-      textClass: string
-      className?: string
-    }
-  >(({ sizeClass, roundedClass, textClass, className, ...props }, ref) => (
+  const ProfileAvatar = ({
+    sizeClass,
+    roundedClass,
+    textClass,
+    className,
+    ...props
+  }: {
+    sizeClass: string
+    roundedClass: string
+    textClass: string
+    className?: string
+  } & React.ComponentProps<"div">) => (
     <div
-      ref={ref}
       className={cn(
         sizeClass,
         roundedClass,
@@ -667,7 +669,7 @@ export function Sidebar({ className }: SidebarProps) {
         <span className={cn("text-white font-semibold", textClass)}>{userProfile.initial}</span>
       )}
     </div>
-  ))
+  )
 
   // 현재 페이지에 따라 GNB 메뉴 활성화 표시를 결정
   const isFrontAIActive = location.pathname.startsWith("/front-ai")
