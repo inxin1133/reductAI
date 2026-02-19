@@ -5,6 +5,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Box, CirclePause, Coins, Database, Gauge, HardDrive, Menu, PackageOpen, ShieldCheck, UserPlus, UserRoundCheck, Users, UsersRound, X, ChevronsUp, Settings2, HandCoins, EvCharger, } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -641,9 +642,16 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
                               <span className="text-xs text-muted-foreground">{item.unit}</span>
                               </div>
                               {item.label === "현재 보유량" ? (
-                                <Button variant="outline" size="sm" className="w-8 h-8">
-                                  <EvCharger className="text-blue-500" />
-                                </Button>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button variant="outline" size="sm" className="w-8 h-8" aria-label="추가 충전하기">
+                                      <EvCharger className="text-blue-500" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top">
+                                    <p>추가 충전하기</p>
+                                  </TooltipContent>
+                                </Tooltip>
                               ) : null}
                             </div>
                           </div>
