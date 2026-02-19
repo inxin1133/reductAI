@@ -255,30 +255,6 @@ const SettingsDialogSidebarMenu = ({
       </div>
     </div>
 
-    <div className="p-2">
-      <div className="flex h-8 items-center px-2 text-xs text-sidebar-foreground/70">결제 관리</div>
-      <div className="flex flex-col gap-1">
-        {BILLING_MENUS.map((item) => {
-          const Icon = item.icon
-          const isActive = activeId === item.id
-          return (
-            <button
-              key={item.id}
-              type="button"
-              className={cn(
-                "flex h-8 items-center gap-2 rounded-md px-2 text-left text-sidebar-foreground transition-colors hover:bg-accent",
-                isActive && "bg-accent"
-              )}
-              onClick={() => onChange(item.id)}
-            >
-              <Icon className="size-5 shrink-0" />
-              <span className="text-sm">{item.label}</span>
-            </button>
-          )
-        })}
-      </div>
-    </div>
-
     <div className="mt-auto p-2">
       <Button
         variant="outline"

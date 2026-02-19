@@ -15,6 +15,7 @@ import PostEntryPage from "./pages/posts/PostEntryPage";
 import TrashPage from "./pages/trash/Trash";
 import FileAssetsPage from "./pages/files/FileAssetsPage";
 import { PersonalFilesPage, SharedFilesPage } from "./pages/files/PageAttachmentsPage";
+import PaymentCard from "./pages/billing/PaymentCard";
 
 import UserManager from "./pages/admin/users/UserManager";
 import RoleManager from "./pages/admin/users/RoleManager";
@@ -104,6 +105,10 @@ const router = createBrowserRouter([
       {
         path: "/front-ai",
         element: <FrontAI />,
+      },
+      {
+        path: "/billing/card",
+        element: <PaymentCard />,
       },
       {
         path: "/timeline",

@@ -65,6 +65,7 @@ import { Badge } from "@/components/ui/badge"
 import { useTheme } from "@/hooks/useTheme"
 import { IconReduct } from "@/components/icons/IconReduct"
 import { SettingsDialog, type SettingsMenuId } from "@/components/settings/SettingsDialog"
+import { BillingSettingsDialog } from "@/components/settings/BillingSettingsDialog"
 import { PlanDialog } from "@/components/settings/PlanDialog"
 import { TenantSettingsDialog } from "@/components/settings/TenantSettingsDialog"
 import EmojiPicker, { Theme } from "emoji-picker-react"
@@ -611,6 +612,7 @@ export function Sidebar({ className }: SidebarProps) {
   const [isMobile, setIsMobile] = useState(false)
   const [isMobileProfileOpen, setIsMobileProfileOpen] = useState(false)
   const [isSettingsDialogOpen, setIsSettingsDialogOpen] = useState(false)
+  const [isBillingSettingsDialogOpen, setIsBillingSettingsDialogOpen] = useState(false)
   const [settingsDialogInitialMenu, setSettingsDialogInitialMenu] = useState<SettingsMenuId>("profile")
   const [isPlanDialogOpen, setIsPlanDialogOpen] = useState(false)
   const [isTenantSettingsDialogOpen, setIsTenantSettingsDialogOpen] = useState(false)
@@ -1346,6 +1348,12 @@ export function Sidebar({ className }: SidebarProps) {
       initialMenu={settingsDialogInitialMenu}
     />
   )
+  const billingSettingsDialog = (
+    <BillingSettingsDialog
+      open={isBillingSettingsDialogOpen}
+      onOpenChange={setIsBillingSettingsDialogOpen}
+    />
+  )
   const planDialog = <PlanDialog open={isPlanDialogOpen} onOpenChange={setIsPlanDialogOpen} />
   const tenantSettingsDialog = (
     <TenantSettingsDialog open={isTenantSettingsDialogOpen} onOpenChange={setIsTenantSettingsDialogOpen} />
@@ -1384,6 +1392,12 @@ export function Sidebar({ className }: SidebarProps) {
 
   const openPlanDialog = () => {
     setIsPlanDialogOpen(true)
+    setIsProfileOpen(false)
+    setIsMobileProfileOpen(false)
+  }
+
+  const openBillingSettingsDialog = () => {
+    setIsBillingSettingsDialogOpen(true)
     setIsProfileOpen(false)
     setIsMobileProfileOpen(false)
   }
@@ -1460,7 +1474,7 @@ export function Sidebar({ className }: SidebarProps) {
         <button
           type="button"
           className="flex w-full gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors text-left"
-          onClick={() => openSettingsDialogAt("subscription")}
+          onClick={openBillingSettingsDialog}
         >
           <Wallet className="size-4 text-popover-foreground shrink-0" />
           <p className="text-sm text-popover-foreground flex-1">결제 관리</p>
@@ -1585,6 +1599,7 @@ export function Sidebar({ className }: SidebarProps) {
         {CategoryDeleteDialog}
         {CreateCategoryDialog}
         {settingsDialog}
+        {billingSettingsDialog}
         {planDialog}
         {tenantSettingsDialog}
       </div>
@@ -3014,6 +3029,7 @@ export function Sidebar({ className }: SidebarProps) {
       {CategoryDeleteDialog}
       {CreateCategoryDialog}
       {settingsDialog}
+      {billingSettingsDialog}
       {planDialog}
       {tenantSettingsDialog}
     </div>

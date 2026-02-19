@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { createPortal } from "react-dom"
 import { Check, HardDrive, Loader2, Users, X, Zap } from "lucide-react"
+import { useNavigate } from "react-router-dom"
 import { cn } from "@/lib/utils"
 import { fetchBillingPlansWithPrices } from "@/services/billingService"
 import type { BillingPlanWithPrices } from "@/services/billingService"
@@ -72,6 +73,7 @@ function tierBadgeBg(tier: string): string {
 }
 
 export function PlanDialog({ open, onOpenChange }: PlanDialogProps) {
+  const navigate = useNavigate()
   const [plans, setPlans] = useState<BillingPlanWithPrices[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -286,6 +288,17 @@ export function PlanDialog({ open, onOpenChange }: PlanDialogProps) {
                             ? "border border-border bg-background text-foreground hover:bg-accent"
                             : "bg-primary text-primary-foreground hover:bg-primary/90"
                         )}
+                        onClick={() => {
+                          if (plan.tier === "free") return
+                          onOpenChange(false)
+                          navigate("/billing/card", {
+                            state: {
+                              planId: plan.id,
+                              planName: plan.name,
+                              billingCycle,
+                            },
+                          })
+                        }}
                       >
                         {plan.tier === "free" ? "현재 요금제" : "업그레이드"}
                       </button>
