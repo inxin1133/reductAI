@@ -116,7 +116,10 @@ export function PlanDialog({ open, onOpenChange }: PlanDialogProps) {
       >
         {/* Header */}
         <div className="flex items-start justify-between px-6 py-4">
-          <h2 className="text-base font-bold text-foreground">사용 요금표</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-base font-bold text-foreground">서비스 플랜 요금표</h2>
+            <span className="text-xs text-muted-foreground">(부가세 별도)</span>
+          </div>
           <button
             type="button"
             className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"

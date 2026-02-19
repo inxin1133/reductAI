@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react"
-import { useLocation } from "react-router-dom"
+import { useEffect, useMemo, useState } from "react"
+import { useLocation, useNavigate } from "react-router-dom"
 import { CreditCard, Lock } from "lucide-react"
 import { Header } from "@/components/Header"
 import { Button } from "@/components/ui/button"
@@ -9,14 +9,14 @@ import { CardJcb } from "@/components/icons/CardJcb"
 import { CardMaster } from "@/components/icons/CardMaster"
 import { CardUnion } from "@/components/icons/CardUnion"
 import { CardVisa } from "@/components/icons/CardVisa"
+import { type CardBrand, hasBillingCard, hasBillingInfo, writeBillingCard } from "@/lib/billingFlow"
 
 type LocationState = {
   planId?: string
   planName?: string
   billingCycle?: "monthly" | "yearly"
+  allowEdit?: boolean
 }
-
-type CardBrand = "visa" | "master" | "amex" | "jcb" | "union"
 
 function normalizeCardNumber(value: string): string {
   return value.replace(/\D/g, "").slice(0, 16)
@@ -52,9 +52,11 @@ function detectCardBrand(rawDigits: string): CardBrand | null {
 }
 
 export default function PaymentCard() {
+  const navigate = useNavigate()
   const location = useLocation()
   const state = (location.state || {}) as LocationState
   const selectedPlanName = typeof state.planName === "string" ? state.planName : null
+  const allowEdit = Boolean(state.allowEdit)
 
   const [cardNumber, setCardNumber] = useState("")
   const [cardHolder, setCardHolder] = useState("")
@@ -79,12 +81,41 @@ export default function PaymentCard() {
               ? CardUnion
               : null
 
+  useEffect(() => {
+    if (allowEdit) return
+    if (hasBillingCard() && hasBillingInfo()) {
+      navigate("/billing/confirm", { replace: true })
+      return
+    }
+    if (hasBillingCard()) {
+      navigate("/billing/info", { replace: true })
+    }
+  }, [allowEdit, navigate])
+
+  const handleNext = () => {
+    const digits = normalizeCardNumber(cardNumber)
+    const last4 = digits ? digits.slice(-4) : ""
+    writeBillingCard({
+      brand: cardBrand ?? undefined,
+      last4: last4 || undefined,
+      holder: cardHolder.trim() || undefined,
+      expiry: cardExpiry || undefined,
+    })
+    navigate("/billing/info", {
+      state: {
+        planId: state.planId,
+        planName: state.planName,
+        billingCycle: state.billingCycle,
+      },
+    })
+  }
+
   return (
     <div className="min-h-screen bg-muted/20">
       <Header className="" />
       <main className="px-6 py-10">
 
-        <div className="mx-auto flex w-full max-w-[800px] flex-col gap-5">
+        <div className="mx-auto flex w-full max-w-[700px] flex-col gap-5">
           <div className="text-center flex flex-col gap-3">
             <h1 className="text-xl font-bold text-foreground">결제 카드 등록</h1>
 
@@ -176,11 +207,10 @@ export default function PaymentCard() {
 
           </div>
           <div className="flex items-center justify-between">
-            <div></div>
-            {/* <Button type="button" variant="outline" className="min-w-[120px]" onClick={() => navigate(-1)}>
+            <Button type="button" variant="outline" className="min-w-[120px]" onClick={() => navigate(-1)}>
               이전
-            </Button> */}
-            <Button type="button" className="min-w-[120px]">
+            </Button>
+            <Button type="button" className="min-w-[120px]" onClick={handleNext}>
               다음 단계
             </Button>
           </div>

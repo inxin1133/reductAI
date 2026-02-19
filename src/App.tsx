@@ -52,6 +52,9 @@ import CreditGrants from "./pages/admin/credits/Grants";
 import CreditAccounts from "./pages/admin/credits/Accounts";
 import CreditLedger from "./pages/admin/credits/Ledger";
 import CreditUsageAllocations from "./pages/admin/credits/UsageAllocations";
+import BillingInfo from "./pages/billing/BillingInfo";
+import PaymentConfirm from "./pages/billing/PaymentConfirm";
+import PaymentComplete from "./pages/billing/PaymentComplete";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 
@@ -109,6 +112,18 @@ const router = createBrowserRouter([
       {
         path: "/billing/card",
         element: <PaymentCard />,
+      },
+      {
+        path: "/billing/info",
+        element: <BillingInfo />,
+      },
+      {
+        path: "/billing/confirm",
+        element: <PaymentConfirm />,
+      },
+      {
+        path: "/billing/complete",
+        element: <PaymentComplete />,
       },
       {
         path: "/timeline",

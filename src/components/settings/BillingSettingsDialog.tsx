@@ -265,6 +265,7 @@ export function BillingSettingsDialog({ open, onOpenChange, initialMenu }: Billi
 
             <div className="mt-3 min-w-0 flex-1 overflow-y-auto pr-2">
               {activeMenu === "subscription" ? (
+                // 구독 관리
                 <div className="grid gap-4">
                   <div className="p-4">
                     <div className="text-sm font-semibold text-foreground border-b border-border pb-2">현재 구독</div>
@@ -281,6 +282,7 @@ export function BillingSettingsDialog({ open, onOpenChange, initialMenu }: Billi
               ) : null}
 
               {activeMenu === "invoices" ? (
+                // 청구서
                 <div>
                   <Table>
                     <TableHeader>
@@ -314,6 +316,7 @@ export function BillingSettingsDialog({ open, onOpenChange, initialMenu }: Billi
               ) : null}
 
               {activeMenu === "billing" ? (
+                // 청구 관리
                 <div className="grid gap-3">
                   {!billingEditOpen ? (
                     <>
@@ -415,6 +418,7 @@ export function BillingSettingsDialog({ open, onOpenChange, initialMenu }: Billi
               ) : null}
 
               {activeMenu === "payments" ? (
+                // 결제 수단
                 <div className="grid gap-4">
                   <div className="p-4">
                     <div className="text-sm font-semibold text-foreground">등록된 결제 수단</div>
@@ -495,6 +499,7 @@ export function BillingSettingsDialog({ open, onOpenChange, initialMenu }: Billi
               ) : null}
 
               {activeMenu === "transactions" ? (
+                // 결제 내역
                 <div>
                   <Table>
                     <TableHeader>

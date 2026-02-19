@@ -1410,6 +1410,47 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
                     </div>
                   </div>
 
+                   {/* 충전 옵션 */}
+                   <div className="p-4">
+                    <div className="text-sm font-semibold text-foreground">충전 옵션 <span className="text-xs text-muted-foreground">(부가세 별도)</span></div>
+                    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+                      {[
+                        { credits: "10,000", price: "$10", unit: "1 Credit = $0.001", accent: false },
+                        { credits: "21,000", price: "$20", unit: "1 Credit = $0.00095", accent: false },
+                        { credits: "55,000", price: "$50", unit: "1 Credit = $0.00091", accent: true },
+                        { credits: "120,000", price: "$100", unit: "1 Credit = $0.00083", accent: false },
+                      ].map((opt) => (
+                        <Card
+                          key={opt.credits}
+                          className={cn(
+                            "gap-1 py-0 transition-shadow hover:shadow-md",
+                            opt.accent && "ring-1 ring-blue-500"
+                          )}
+                        >
+                          <CardHeader className="px-4 pt-4 pb-1">
+                            <CardTitle className="text-lg font-bold text-foreground">+{opt.credits}</CardTitle>
+                            <p className="text-[11px] text-muted-foreground">크레딧</p>
+                          </CardHeader>
+                          <CardContent className="px-4 pb-2">
+                            <div className="text-2xl font-extrabold text-foreground gap-1 flex items-center">{opt.price}
+                              {opt.accent ? <span className="rounded-full border border-border text-regular px-1.5 py-0.5 text-[10px] text-blue-500">BEST</span> : ""}
+                            </div>
+                            <p className="mt-1 text-[11px] text-muted-foreground">{opt.unit}</p>
+                          </CardContent>
+                          <CardFooter className="px-4 pb-4 pt-1">
+                            <Button
+                              variant={opt.accent ? "default" : "outline"}
+                              size="sm"
+                              className={cn("w-full text-xs", opt.accent && "bg-blue-500 hover:bg-blue-600 text-white")}
+                            >
+                              구매하기
+                            </Button>
+                          </CardFooter>
+                        </Card>
+                      ))}
+                    </div>
+                  </div>
+
 
                   {/* 제공 받은 크레딧 */}
                   <div className="p-4">
@@ -1486,46 +1527,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
 
 
 
-                  {/* 충전 옵션 */}
-                  <div className="p-4">
-                    <div className="text-sm font-semibold text-foreground">충전 옵션 <span className="text-xs text-muted-foreground">(부가세 별도)</span></div>
-                    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-                      {[
-                        { credits: "10,000", price: "$10", unit: "1 Credit = $0.001", accent: false },
-                        { credits: "21,000", price: "$20", unit: "1 Credit = $0.00095", accent: false },
-                        { credits: "55,000", price: "$50", unit: "1 Credit = $0.00091", accent: true },
-                        { credits: "120,000", price: "$100", unit: "1 Credit = $0.00083", accent: false },
-                      ].map((opt) => (
-                        <Card
-                          key={opt.credits}
-                          className={cn(
-                            "gap-1 py-0 transition-shadow hover:shadow-md",
-                            opt.accent && "ring-1 ring-blue-500"
-                          )}
-                        >
-                          <CardHeader className="px-4 pt-4 pb-1">
-                            <CardTitle className="text-lg font-bold text-foreground">+{opt.credits}</CardTitle>
-                            <p className="text-[11px] text-muted-foreground">크레딧</p>
-                          </CardHeader>
-                          <CardContent className="px-4 pb-2">
-                            <div className="text-2xl font-extrabold text-foreground gap-1 flex items-center">{opt.price}
-                              {opt.accent ? <span className="rounded-full border border-border text-regular px-1.5 py-0.5 text-[10px] text-blue-500">BEST</span> : ""}
-                            </div>
-                            <p className="mt-1 text-[11px] text-muted-foreground">{opt.unit}</p>
-                          </CardContent>
-                          <CardFooter className="px-4 pb-4 pt-1">
-                            <Button
-                              variant={opt.accent ? "default" : "outline"}
-                              size="sm"
-                              className={cn("w-full text-xs", opt.accent && "bg-blue-500 hover:bg-blue-600 text-white")}
-                            >
-                              구매하기
-                            </Button>
-                          </CardFooter>
-                        </Card>
-                      ))}
-                    </div>
-                  </div>
+                 
 
 
                 </div>
