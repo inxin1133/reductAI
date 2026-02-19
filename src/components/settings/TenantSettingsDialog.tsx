@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState, } from "react"
 import { Dialog, DialogClose, DialogContent } from "@/components/ui/dialog"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
-import { Box, CirclePause, Coins, Database, Gauge, HardDrive, Menu, PackageOpen, ShieldCheck, UserPlus, UserRoundCheck, Users, UsersRound, X, ChevronsUp, Settings2, HandCoins, } from "lucide-react"
+import { Switch } from "@/components/ui/switch"
+import { Box, CirclePause, Coins, Database, Gauge, HardDrive, Menu, PackageOpen, ShieldCheck, UserPlus, UserRoundCheck, Users, UsersRound, X, ChevronsUp, Settings2, HandCoins, EvCharger, } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 type TenantSettingsDialogProps = {
@@ -111,6 +113,13 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
     const start = (usagePageSafe - 1) * usagePageSize
     return usageRows.slice(start, start + usagePageSize)
   }, [usagePageSafe, usagePageSize, usageRows])
+  const excludedMembers = useMemo(
+    () => [
+      { name: "박지민", email: "jung@example.com", removedAt: "2026-02-01" },
+      { name: "이수진", email: "kang@example.com", removedAt: "2026-01-21" },
+    ],
+    []
+  )
 
   useEffect(() => {
     if (!open) {
@@ -223,6 +232,7 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
               {activeMenu === "members" ? (
                 // 멤버 관리
                 <div className="grid gap-4">
+
                   <div className="px-4 pb-4">
                     <div className="text-sm font-semibold text-foreground">멤버 현황</div>
                     <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -251,7 +261,6 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
 
                   <div className="px-4 pb-4">
                     <div className="text-sm font-semibold text-foreground">멤버 목록</div>
-
                     <div className="mt-3 overflow-x-auto rounded-md border border-border">
                       <Table className="text-sm">
                         <TableHeader className="bg-muted/50 text-xs font-medium text-muted-foreground">
@@ -307,9 +316,51 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
                         </TableBody>
                       </Table>
                     </div>
-
-
                   </div>
+
+                  <div className="px-4 pb-4">
+                    <div className="text-sm font-semibold text-foreground">제외 멤버 목록</div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      제외 멤버는 한번이라도 크레딧 사용 이력이 있는 사용자만 추가가 됩니다. 사용이력이 없을 시 목록에서 완전 제거 됩니다.
+                    </p>
+                    <div className="mt-3 overflow-x-auto rounded-md border border-border">
+                      <Table className="text-sm">
+                        <TableHeader className="bg-muted/50 text-xs font-medium text-muted-foreground">
+                          <TableRow className="border-b-0">
+                            <TableHead>이름</TableHead>
+                            <TableHead>이메일</TableHead>
+                            <TableHead className="text-center">제외일</TableHead>
+                            <TableHead className="w-[90px] text-center">초대</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody className="text-muted-foreground">
+                          {excludedMembers.length ? (
+                            excludedMembers.map((row) => (
+                              <TableRow key={row.email} className="hover:bg-accent/40">
+                                <TableCell className="text-foreground text-xs">{row.name}</TableCell>
+                                <TableCell className="text-foreground">
+                                  <span className="text-xs block w-[160px] truncate">{row.email}</span>
+                                </TableCell>
+                                <TableCell className="text-center text-xs">{row.removedAt}</TableCell>
+                                <TableCell className="text-center">
+                                  <Button variant="outline" size="sm" className="text-blue-500 hover:text-blue-600">
+                                    다시 초대
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            ))
+                          ) : (
+                            <TableRow>
+                              <TableCell colSpan={4} className="py-8 text-center text-xs text-muted-foreground">
+                                테넌트에 제외된 멤버가 없습니다.
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+
                 </div>
               ) : null}
 
@@ -404,7 +455,24 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
               {activeMenu === "credits" ? (
                 //  서비스 크레딧 운영
                 <div className="grid gap-4">
-                  {/* 스토리지 사용 현황 */}
+
+                  <div className="flex items-center px-4 gap-2">
+                    {/* 월 선택 */}
+                    <div>
+                      <Select>
+                        <SelectTrigger>
+                          <SelectValue placeholder="이번달" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="current">이번달</SelectItem>
+                          <SelectItem value="2026-01">2026년 1월</SelectItem>
+                          <SelectItem value="2025-12">2025년 12월</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="text-sm text-muted-foreground">2026-02-19 ~ 2026-03-19</div>
+                  </div>
+
                   <div className="px-4 pb-4">
                     <div className="text-sm font-semibold text-foreground">서비스 크레딧 사용 현황</div>
                     <div className="mt-4">
@@ -444,26 +512,29 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
 
                   {/* 멤버별 사용량 */}
                   <div className="px-4 pb-4">
-                    <div className="text-sm font-semibold text-foreground">멤버 크레딧 사용량/제공 현황</div>
+                    <div className="text-sm font-semibold text-foreground">멤버 크레딧 사용 현황 및 관리</div>
                     <div className="mt-3 overflow-hidden rounded-md border border-border">
                       <Table className="text-sm">
                         <TableHeader className="bg-muted/50 text-xs font-medium text-muted-foreground">
                           <TableRow className="border-b-0">
+                            <TableHead className="w-[44px] text-center">No.</TableHead>
                             <TableHead className="">멤버</TableHead>
-                            <TableHead className="w-full hidden sm:table-cell">사용량</TableHead>
-                            <TableHead className="text-right">크레딧</TableHead>
+                            <TableHead className="w-full hidden sm:table-cell">사용 점유율</TableHead>
+                            <TableHead className="text-right">사용량(크레딧)</TableHead>
+                            <TableHead className="text-center">상태</TableHead>
                             <TableHead className="w-[40px] text-center">관리</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody className="text-muted-foreground">
                           {[
-                            { name: "홍길동", used: 10000, limit: 10000, percent: 100 },
-                            { name: "김하늘", used: 8700, limit: 10000, percent: 87 },
-                            { name: "박지민", used: 6200, limit: 10000, percent: 62 },
-                            { name: "이수진", used: 3800, limit: 10000, percent: 38 },
-                            { name: "최민호", used: 1400, limit: 10000, percent: 14 },
-                          ].map((row) => (
+                            { name: "홍길동", used: 8000, limit: "(제한없음)", percent: 16, is_active: true },
+                            { name: "박지민", used: 6200, limit: "(제한없음)", percent: 8.2, is_active: true },
+                            { name: "이수진", used: 3800, limit: 10000, percent: 5.2, is_active: true },
+                            { name: "김하늘", used: 0, limit: 0, percent: 0, is_active: false },
+                            { name: "최민호", used: 0, limit: 0, percent: 0, is_active: false },
+                          ].map((row, index) => (
                             <TableRow key={row.name} className="hover:bg-accent/40">
+                              <TableCell className="text-center text-xs text-muted-foreground">{index + 1}</TableCell>
                               <TableCell className="text-foreground">
                                 <div className="flex items-center gap-1">
                                   <div className="flex items-center justify-center gap-2 w-6 h-6 bg-teal-500 rounded-sm">
@@ -487,7 +558,10 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
                                 </div>
                               </TableCell>
                               <TableCell className="text-right text-xs">
-                                {row.used.toLocaleString()} / {row.limit.toLocaleString()} 크레딧
+                                {row.used.toLocaleString()} / {row.limit.toLocaleString()}
+                              </TableCell>
+                              <TableCell className="text-center text-xs">
+                                {row.is_active ? <span className="text-teal-500 border border-teal-500 rounded-full px-2 py-1">사용</span> : <span className="text-destructive border border-destructive rounded-full px-2 py-1">불가</span>}
                               </TableCell>
                               <TableCell className="text-center">
                                 <Button variant="outline" size="sm" className="text-blue-500 hover:text-blue-600">
@@ -502,35 +576,6 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
                   </div>
 
                 </div>
-
-
-                // <div className="grid gap-4">
-                //   <div className="rounded-lg border border-border p-4">
-                //     <div className="text-sm font-semibold text-foreground">크레딧 운영 요약</div>
-                //     <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                //       {[
-                //         { label: "월간 크레딧", value: "50,000" },
-                //         { label: "이번 달 사용", value: "28,140" },
-                //         { label: "남은 크레딧", value: "21,860" },
-                //       ].map((item) => (
-                //         <div key={item.label} className="rounded-md border border-border px-3 py-2">
-                //           <div className="text-xs text-muted-foreground">{item.label}</div>
-                //           <div className="mt-2 text-lg font-semibold text-foreground">{item.value}</div>
-                //         </div>
-                //       ))}
-                //     </div>
-                //   </div>
-
-                //   <div className="rounded-lg border border-border p-4">
-                //     <div className="text-sm font-semibold text-foreground">운영 정책</div>
-                //     <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
-                //       <div className="rounded-md border border-border px-3 py-2">멤버별 월간 한도: 5,000</div>
-                //       <div className="rounded-md border border-border px-3 py-2">관리자 초과 승인: 필요</div>
-                //       <div className="rounded-md border border-border px-3 py-2">알림 기준: 잔여 20%</div>
-                //     </div>
-                //   </div>
-                // </div>
-
               ) : null}
 
 
@@ -538,54 +583,114 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
                 // 충전 크레딧 운영
                 <div className="grid gap-4">
 
-                  <div className="px-4 pb-4">
-                    <div className="text-sm font-semibold text-foreground">충전 크레딧 보유량</div>
+                  <div className="flex items-center px-4 gap-2">
+                    {/* 월 선택 */}
+                    <div>
+                      <Select>
+                        <SelectTrigger>
+                          <SelectValue placeholder="이번달" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="current">이번달</SelectItem>
+                          <SelectItem value="2026-01">2026년 1월</SelectItem>
+                          <SelectItem value="2025-12">2025년 12월</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="text-sm text-muted-foreground">2026-02-19 ~ 2026-03-19</div>
                   </div>
 
-                  <div className="px-4 ">
-                    <div className="text-sm font-semibold text-foreground">충전 크레딧 허용 관리</div>
+                  <div className="px-4 pb-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold text-foreground">충전 크레딧 사용 현황</div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">서비스 크레딧 소진시 자동 사용</span>
+                        <Switch id="" defaultChecked={true} />
+                      </div>
+                    </div>
 
-                    <div className="mt-3 overflow-x-auto rounded-md border border-border">
+
+                    <div className="mt-4">
+                      {/* 전체 사용량 바 */}
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-muted-foreground">전체 사용량</span>
+                        <span className="font-semibold text-foreground">0 / 980,000 크레딧</span>
+                      </div>
+                      <div className="mt-2 h-3 w-full overflow-hidden rounded-full bg-muted">
+                        <div className="h-full rounded-full bg-primary transition-all" style={{ width: "0.0%" }} />
+                      </div>
+                      <div className="mt-1 text-right text-xs text-muted-foreground">0% 사용 중</div>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      {[
+                        { label: "현재 보유량", value: 980000, unit: "크레딧", icon: Database, accent: "text-foreground", bg: "bg-muted/60", ring: "" },
+                        { label: "사용량", value: 0, unit: "크레딧", icon: HardDrive, accent: "text-sky-600", bg: "bg-sky-50 dark:bg-sky-950/40", ring: "ring-1 ring-sky-200 dark:ring-sky-800" },
+                        { label: "남은 용량", value: 980000, unit: "크레딧", icon: PackageOpen, accent: "text-emerald-600", bg: "bg-emerald-50 dark:bg-emerald-950/40", ring: "ring-1 ring-emerald-200 dark:ring-emerald-800" },
+                      ].map((item) => {
+                        const Icon = item.icon
+                        return (
+                          <div key={item.label} className={cn("relative rounded-xl px-4 py-3 transition-shadow hover:shadow-sm", item.bg, item.ring)}>
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-medium text-muted-foreground">{item.label}</span>
+                              <Icon className={cn("size-4 shrink-0", item.accent)} />
+                            </div>
+                            <div className="mt-2 flex items-baseline justify-between gap-1">
+                              <div className="flex items-center gap-1">
+                              <span className={cn("text-2xl font-bold tracking-tight", item.accent)}>{item.value.toLocaleString()}</span>
+                              <span className="text-xs text-muted-foreground">{item.unit}</span>
+                              </div>
+                              {item.label === "현재 보유량" ? (
+                                <Button variant="outline" size="sm" className="w-8 h-8">
+                                  <EvCharger className="text-blue-500" />
+                                </Button>
+                              ) : null}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  {/* 멤버별 충전 크레딧 사용 현황 및 관리*/}
+                  <div className="px-4 pb-4">
+                    <div className="text-sm font-semibold text-foreground">멤버 충전 크레딧 사용 현황 및 관리</div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      충전 크레딧은 서비스 크레딧 사용 가능 멤버에 한해서 적용이 가능합니다.
+                    </p>
+                    <div className="mt-3 overflow-hidden rounded-md border border-border">
                       <Table className="text-sm">
                         <TableHeader className="bg-muted/50 text-xs font-medium text-muted-foreground">
                           <TableRow className="border-b-0">
-                            <TableHead className="">이름</TableHead>                            
-                            <TableHead className="text-center">역할</TableHead>
-                            <TableHead className="w-[60px] text-center">상태</TableHead>
-                            <TableHead className="hidden text-center sm:table-cell">가입일</TableHead>
-                            <TableHead className="w-[40px] text-center">관리</TableHead>
+                            <TableHead className="w-[44px] text-center">No.</TableHead>
+                            <TableHead className="">멤버</TableHead>
+                            <TableHead className="text-right">사용량(크레딧)</TableHead>
+                            <TableHead className="text-center w-[80px]">허용여부</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody className="text-muted-foreground">
                           {[
-                            { name: "홍길동", email: "lee@example.com", role: "소유자", status: "활성", date: "2026-02-15", statusColor: "text-teal-600 bg-teal-50 ring-teal-500" },
-                            { name: "김하늘", email: "choi@example.com", role: "관리자", status: "활성", date: "2026-02-14", statusColor: "text-teal-600 bg-teal-50 ring-teal-500" },
-                            { name: "박지민", email: "jung@example.com", role: "멤버", status: "대기", date: "2026-02-12", statusColor: "text-amber-600 bg-amber-50 ring-amber-500" },
-                            { name: "이수진", email: "kang@example.com", role: "멤버", status: "정지", date: "2026-02-10", statusColor: "text-rose-600 bg-rose-50 ring-rose-500" },
-                            { name: "최민호", email: "yoon@example.com", role: "맴버", status: "활성", date: "2026-01-20", statusColor: "text-teal-600 bg-teal-50 ring-teal-500" },
-                          ].map((row) => (
-                            <TableRow key={row.email} className="hover:bg-accent/40">
+                            { name: "홍길동", used: 0, percent: 0.0, is_active: true },
+                            { name: "박지민", used: 0, percent: 0.0, is_active: false },
+                            { name: "이수진", used: 0, percent: 0.0, is_active: true },
+                          ].map((row, index) => (
+                            <TableRow key={row.name} className="hover:bg-accent/40">
+                              <TableCell className="text-center text-xs text-muted-foreground">{index + 1}</TableCell>
                               <TableCell className="text-foreground">
                                 <div className="flex items-center gap-1">
                                   <div className="flex items-center justify-center gap-2 w-6 h-6 bg-teal-500 rounded-sm">
                                     <span className="text-white font-semibold text-sm">이</span>
                                   </div>
-                                  <div className="text-xs truncate">{row.name}</div>
+                                  <div className="text-xs block max-w-[120px] truncate">{row.name}</div>
                                 </div>
-                              </TableCell>                              
-                              <TableCell className="text-center">{row.role}</TableCell>
-                              <TableCell className="text-center">
-                                <span className={cn("inline-block rounded-full px-2 py-0.5 text-xs font-semibold ring-1", row.statusColor)}>
-                                  {row.status}
-                                </span>
                               </TableCell>
-                              <TableCell className="hidden text-xs text-center sm:table-cell">{row.date}</TableCell>
+                              <TableCell className="text-right text-xs">
+                                {row.used.toLocaleString()}
+                              </TableCell>
                               <TableCell className="text-center">
-                                {row.role !== "소유자" ? (
-                                  <button type="button" className="text-xs text-muted-foreground border border-border rounded-md px-2 py-1">관리</button>
-                                ) : (
-                                  <span className="text-xs text-muted-foreground">—</span>
-                                )}
+                                <div className="flex items-center justify-center">
+                                  <Switch defaultChecked={row.is_active} aria-label={`${row.name} 사용 가능 여부`} />
+                                </div>
                               </TableCell>
                             </TableRow>
                           ))}

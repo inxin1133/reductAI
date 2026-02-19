@@ -7,6 +7,7 @@ import {
   ChevronsUpDown,
   Clock,
   Ellipsis,
+  ImageOff,
   LogOut,
   Menu,
   MessageSquareMore,
@@ -283,6 +284,7 @@ export function Sidebar({ className }: SidebarProps) {
       return null
     }
   })
+  const [isProfileImageBroken, setIsProfileImageBroken] = useState(false)
   const [languages, setLanguages] = useState<Language[]>([])
   const [currentLang, setCurrentLang] = useState("")
   const LANGUAGE_STORAGE_KEY = "reductai.language.v1"
@@ -649,6 +651,10 @@ export function Sidebar({ className }: SidebarProps) {
     const sep = profileImageUrl.includes("?") ? "&" : "?"
     return `${profileImageUrl}${sep}token=${encodeURIComponent(token)}`
   }, [profileImageUrl])
+  const fallbackInitial = (String(userProfile.initial || "").trim() || "NA")
+  useEffect(() => {
+    setIsProfileImageBroken(false)
+  }, [profileImageSrc])
 
   const ProfileAvatar = ({
     sizeClass,
@@ -672,10 +678,17 @@ export function Sidebar({ className }: SidebarProps) {
       )}
       {...props}
     >
-      {profileImageSrc ? (
-        <img src={profileImageSrc} alt="프로필 이미지" className={cn(sizeClass, "object-cover")} />
+      {profileImageSrc && !isProfileImageBroken ? (
+        <img
+          src={profileImageSrc}
+          alt="프로필 이미지"
+          className={cn(sizeClass, "object-cover")}
+          onError={() => setIsProfileImageBroken(true)}
+        />
+      ) : profileImageSrc && isProfileImageBroken ? (
+        <ImageOff className={cn("text-white/80", sizeClass === "size-10" ? "size-5" : "size-4")} />
       ) : (
-        <span className={cn("text-white font-semibold", textClass)}>{userProfile.initial}</span>
+        <span className={cn("text-white font-semibold", textClass)}>{fallbackInitial}</span>
       )}
     </div>
   )
