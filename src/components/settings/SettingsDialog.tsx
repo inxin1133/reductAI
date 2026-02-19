@@ -43,6 +43,7 @@ import {
   Trash2,
   User,
   X,
+  EvCharger,
 } from "lucide-react"
 import { Switch } from "@/components/ui/switch"
 // cn: 여러 CSS 클래스 이름을 조건이나 배열 등 다양한 형태로 조합해서 하나의 문자열로 반환하는 유틸리티 함수입니다.
@@ -1386,8 +1387,12 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
                           <div className="h-full w-[50%] rounded-full bg-indigo-500" />
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
-                          <div>이번달 50% 사용 (<span className="text-indigo-500">10,000</span> / 20,000 크레딧)</div>
+                          <div>이번달 50% 사용 (10,000 사용 / 10,000 남음 / 전체 20,000 크레딧)</div>
                           <div>다음 충전일: <span className="text-foreground">2026-03-01</span></div>
+                        </div>
+                        <div className="mt-2 flex text-sm text-foreground flex-1 items-center gap-2">                          
+                          <span className="font-bold">나의 사용</span> 
+                          <span className="">5,800 크레딧</span>
                         </div>
                       </div>
 
@@ -1403,9 +1408,9 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
                           <div className="h-full w-[100%] rounded-full bg-primary" />
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
-                          <div>이번달 0% 사용 (<span className="text-primary">0</span> / 42,000 크레딧)</div>
+                          <div>이번달 0% 사용 (0 사용 / 42,000 남음 / 전체 42,000 크레딧)</div> 
                           <div>마지막 충전일: <span className="text-foreground">2026-01-29</span></div>
-                        </div>
+                        </div>                        
                       </div>
                     </div>
                   </div>
@@ -1468,25 +1473,17 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
                           <div className="h-full w-[90%] rounded-full bg-amber-500" />
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
-                          <div>이번달 10% 사용 (<span className="text-amber-500">9,000</span> / 10,000 크레딧)</div>
+                          <div>이번달 10% 사용 (5,000 사용 / 45,000 남음 / 테넌트 전체 50,000 크레딧)</div>
                           <div>다음 갱신일: <span className="text-foreground">2026-03-06</span></div>
                         </div>
-                      </div>
-
-                      <div className="px-4 py-6">
-                        <div className="flex items-center justify-between">
-                          <div className="text-sm font-semibold text-foreground">충전 크레딧</div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-muted-foreground">서비스 크레딧 소진시 자동 사용</span>
-                          </div>
+                        <div className="mt-2 text-xs text-foreground flex flex-1 items-center gap-2">                          
+                          <div className="text-sm text-teal-500">사용 제한 없음</div> 
+                          <div className="text-xs text-muted-foreground"><span className="text-foreground">1,000 사용</span> / 테넌트 전체 50,000 크레딧 내에서 사용 가능</div>
                         </div>
-                        <div className="mt-3 h-2 w-full rounded-full bg-muted">
-                          <div className="h-full w-[100%] rounded-full bg-primary" />
+                        <div className="mt-3 text-xs text-foreground flex flex-1 items-center gap-1">                          
+                          <EvCharger className="size-4" /><span className="text-sm font-bold">서비스 크레딧 소진시 충전 크레딧 자동 사용 허용됨 </span>
                         </div>
-                        <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
-                          <div>이번달 0% 사용 (<span className="text-primary">0</span> / 5,000 크레딧)</div>
-                        </div>
-                      </div>
+                      </div>                      
                     </div>
 
                     <div className="mt-3 rounded-xl border border-border">
@@ -1501,25 +1498,13 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
                           <div className="h-full w-[80%] rounded-full bg-rose-500" />
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
-                          <div>이번달 20% 사용 (<span className="text-rose-500">4,000</span> / 5,000 크레딧)</div>
+                          <div>이번달 20% 사용 (20,000 사용 / 80,000 남음 / 테넌트 전체 100,000 크레딧)</div>                          
                           <div>다음 갱신일: <span className="text-foreground">2026-03-16</span></div>
                         </div>
-                      </div>
-
-                      <div className="px-4 py-6">
-                        <div className="flex items-center justify-between">
-                          <div className="text-sm font-semibold text-foreground">충전 크레딧</div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-muted-foreground">서비스 크레딧 소진시 자동 사용</span>
-                          </div>
+                        <div className="mt-2 text-xs text-foreground flex flex-1 items-center gap-2">                          
+                          <div className="text-sm text-rose-500">사용 제한 있음</div> <div className="text-xs text-muted-foreground"><span className="text-foreground">2,000 사용</span> / 8,000 남음 / 최대 10,000 크레딧 사용 가능</div> 
                         </div>
-                        <div className="mt-3 h-2 w-full rounded-full bg-muted">
-                          <div className="h-full w-[100%] rounded-full bg-primary" />
-                        </div>
-                        <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
-                          <div>이번달 0% 사용 (<span className="text-primary">0</span> / 5,000 크레딧)</div>
-                        </div>
-                      </div>
+                      </div>                     
                     </div>
 
                   </div>
