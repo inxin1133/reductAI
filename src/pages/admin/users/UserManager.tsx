@@ -61,8 +61,23 @@ interface Pagination {
   totalPages: number
 }
 
-const API_URL = "/api/users"
-const ROLES_API_URL = "/api/roles"
+const API_PATH = "/api/users"
+const ROLES_API_PATH = "/api/roles"
+
+const readResponseErrorMessage = async (response: Response) => {
+  const contentType = response.headers.get("content-type") || ""
+  if (contentType.includes("application/json")) {
+    const data = await response.json().catch(() => null)
+    const msg = typeof data?.message === "string" ? data.message : ""
+    const details = typeof data?.details === "string" ? data.details : ""
+    const combined = [msg, details].filter(Boolean).join("\n").trim()
+    return combined || response.statusText
+  }
+
+  const text = await response.text().catch(() => "")
+  const m = text.match(/<pre>\s*(Cannot[^<]+)\s*<\/pre>/i)
+  return m?.[1]?.trim() || text.trim() || response.statusText
+}
 
 export default function UserManager() {
   const [users, setUsers] = useState<User[]>([])
@@ -110,12 +125,12 @@ export default function UserManager() {
       // Fetch global roles or all roles?
       // Since we are likely assigning global roles to system users, let's filter or just fetch all.
       // Backend getRoles supports tenant_id filtering, but without it returns all?
-      const response = await fetch(`${ROLES_API_URL}?scope=platform`, { headers: authHeaders() })
+      const response = await fetch(`${ROLES_API_PATH}?scope=platform`, { headers: authHeaders() })
       if (response.ok) {
         const data = await response.json()
         setRoles(data)
       } else {
-        const msg = await response.text().catch(() => "")
+        const msg = await readResponseErrorMessage(response)
         console.error("Failed to fetch roles", msg)
       }
     } catch (error) {
@@ -132,13 +147,13 @@ export default function UserManager() {
         limit: pagination.limit.toString(),
         search,
       })
-      const response = await fetch(`${API_URL}?${queryParams}`, { headers: authHeaders() })
+      const response = await fetch(`${API_PATH}?${queryParams}`, { headers: authHeaders() })
       if (response.ok) {
         const data = await response.json()
         setUsers(data.users)
         setPagination(data.pagination)
       } else {
-        const msg = await response.text().catch(() => "")
+        const msg = await readResponseErrorMessage(response)
         setUsers([])
         setErrorMessage(msg || "사용자 목록을 불러오지 못했습니다.")
       }
@@ -216,7 +231,7 @@ export default function UserManager() {
     try {
       setIsSaving(true)
       if (editingUser) {
-        const response = await fetch(`${API_URL}/${editingUser.id}`, {
+        const response = await fetch(`${API_PATH}/${editingUser.id}`, {
           method: "PUT",
           headers: {
             "Content-Type": "application/json",
@@ -235,7 +250,7 @@ export default function UserManager() {
           setIsDialogOpen(false)
           fetchUsers()
         } else {
-          const msg = await response.text()
+          const msg = await readResponseErrorMessage(response)
           alert(`사용자 업데이트 실패: ${msg || "알 수 없는 오류"}`)
           console.error("Failed to update user", msg)
         }
@@ -244,7 +259,7 @@ export default function UserManager() {
           alert("이메일과 비밀번호는 필수입니다.")
           return
         }
-        const response = await fetch(API_URL, {
+        const response = await fetch(API_PATH, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -264,7 +279,7 @@ export default function UserManager() {
           setIsDialogOpen(false)
           fetchUsers()
         } else {
-          const msg = await response.text()
+          const msg = await readResponseErrorMessage(response)
           alert(`사용자 생성 실패: ${msg || "알 수 없는 오류"}`)
           console.error("Failed to create user", msg)
         }

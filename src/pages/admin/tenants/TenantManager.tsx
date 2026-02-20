@@ -25,7 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
-import { Pencil, Trash2, Loader2, Plus, Search, Building2, ChevronLeft, ChevronRight } from "lucide-react"
+import { Pencil, Trash2, Loader2, Search, Building2, ChevronLeft, ChevronRight } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { AdminPage } from "@/components/layout/AdminPage"
 
@@ -45,12 +45,6 @@ interface Tenant {
   created_at: string
 }
 
-interface User {
-  id: string
-  email: string
-  full_name: string
-}
-
 interface Pagination {
   page: number
   limit: number
@@ -59,11 +53,9 @@ interface Pagination {
 }
 
 const API_URL = "http://localhost:3003/api/tenants"
-const USERS_API_URL = "http://localhost:3002/api/users"
 
 export default function TenantManager() {
   const [tenants, setTenants] = useState<Tenant[]>([])
-  const [users, setUsers] = useState<User[]>([])
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 10, total: 0, totalPages: 0 })
   const [isLoading, setIsLoading] = useState(true)
   const [search, setSearch] = useState("")
@@ -96,7 +88,6 @@ export default function TenantManager() {
 
   useEffect(() => {
     fetchTenants()
-    fetchUsers()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pagination.page, search])
 
@@ -119,33 +110,6 @@ export default function TenantManager() {
     } finally {
       setIsLoading(false)
     }
-  }
-
-  const fetchUsers = async () => {
-    try {
-      // Just fetching first 100 users for selection. Ideally should be a search select.
-      const response = await fetch(`${USERS_API_URL}?limit=100`, { headers: authHeaders() })
-      if (response.ok) {
-        const data = await response.json()
-        setUsers(data.users)
-      }
-    } catch (error) {
-      console.error("Failed to fetch users", error)
-    }
-  }
-
-  const handleCreate = () => {
-    setEditingTenant(null)
-    setFormData({
-      name: "",
-      slug: "",
-      domain: "",
-      tenant_type: "personal",
-      status: "active",
-      owner_id: "",
-      member_limit: "",
-    })
-    setIsDialogOpen(true)
   }
 
   const handleEdit = (tenant: Tenant) => {
@@ -181,17 +145,21 @@ export default function TenantManager() {
   }
 
   const handleSubmit = async () => {
+    if (!editingTenant) {
+      alert("테넌트는 별도로 생성할 수 없습니다.")
+      return
+    }
+
     try {
-      const method = editingTenant ? "PUT" : "POST"
-      const url = editingTenant ? `${API_URL}/${editingTenant.id}` : API_URL
-      const memberLimitValue = formData.member_limit.trim()
       const payload = {
         ...formData,
-        member_limit: memberLimitValue ? Number(memberLimitValue) : null,
+        // 서비스 구독으로 결정되는 값들은 수정 불가
+        tenant_type: editingTenant.tenant_type,
+        member_limit: editingTenant.member_limit ?? null,
       }
       
-      const response = await fetch(url, {
-        method,
+      const response = await fetch(`${API_URL}/${editingTenant.id}`, {
+        method: "PUT",
         headers: {
           "Content-Type": "application/json",
           ...authHeaders(),
@@ -222,13 +190,7 @@ export default function TenantManager() {
   }
 
   return (
-    <AdminPage
-      headerContent={
-        <Button onClick={handleCreate} size="sm">
-          <Plus className="mr-2 h-4 w-4" /> 테넌트 추가
-        </Button>
-      }
-    >
+    <AdminPage>
       <div className="flex items-center justify-between">
         <div>
           <p className="text-muted-foreground">
@@ -397,7 +359,7 @@ export default function TenantManager() {
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
-            <DialogTitle>{editingTenant ? "테넌트 수정" : "테넌트 추가"}</DialogTitle>
+            <DialogTitle>테넌트 수정</DialogTitle>
             <DialogDescription>
               테넌트 정보를 입력하세요.
             </DialogDescription>
@@ -444,48 +406,29 @@ export default function TenantManager() {
               <Label htmlFor="tenant_type" className="text-right">
                 유형
               </Label>
-              <Select 
-                value={formData.tenant_type} 
-                onValueChange={(value) =>
-                  setFormData({ ...formData, tenant_type: value as Tenant["tenant_type"] })
-                }
-              >
-                <SelectTrigger className="col-span-3">
-                  <SelectValue placeholder="Select type" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="personal">Personal</SelectItem>
-                  <SelectItem value="team">Team</SelectItem>
-                  <SelectItem value="group">Group</SelectItem>
-                </SelectContent>
-              </Select>
+              <div className="col-span-3 text-sm p-2 bg-muted rounded">
+                유형 변경 불가
+                <span className="text-muted-foreground">
+                  {" "}
+                  (현재: {editingTenant?.tenant_type ?? formData.tenant_type})
+                </span>
+              </div>
             </div>
 
             <div className="grid grid-cols-4 items-center gap-4">
               <Label htmlFor="owner_id" className="text-right">
                 소유자
               </Label>
-              {editingTenant ? (
-                  <div className="col-span-3 text-sm p-2 bg-muted rounded">
-                      소유자 변경 불가 (현재: {editingTenant.owner_name || editingTenant.owner_id})
-                  </div>
-              ) : (
-                <Select 
-                    value={formData.owner_id} 
-                    onValueChange={(value) => setFormData({ ...formData, owner_id: value })}
-                >
-                    <SelectTrigger className="col-span-3">
-                    <SelectValue placeholder="Select owner" />
-                    </SelectTrigger>
-                    <SelectContent>
-                    {users.map((user) => (
-                        <SelectItem key={user.id} value={user.id}>
-                        {user.full_name} ({user.email})
-                        </SelectItem>
-                    ))}
-                    </SelectContent>
-                </Select>
-              )}
+              <div className="col-span-3 text-sm p-2 bg-muted rounded">
+                소유자 변경 불가
+                {editingTenant ? (
+                  <span className="text-muted-foreground">
+                    {" "}
+                    (현재: {editingTenant.owner_name || editingTenant.owner_id}
+                    {editingTenant.owner_email ? ` / ${editingTenant.owner_email}` : ""})
+                  </span>
+                ) : null}
+              </div>
             </div>
 
             <div className="grid grid-cols-4 items-center gap-4">
@@ -510,15 +453,17 @@ export default function TenantManager() {
               <Label htmlFor="member_limit" className="text-right">
                 멤버 한도
               </Label>
-              <Input
-                id="member_limit"
-                type="number"
-                value={formData.member_limit}
-                onChange={(e) => setFormData({ ...formData, member_limit: e.target.value })}
-                className="col-span-3"
-                placeholder="비워두면 제한 없음"
-                min={0}
-              />
+              <div className="col-span-3 text-sm p-2 bg-muted rounded">
+                멤버 한도 변경 불가
+                <span className="text-muted-foreground">
+                  {" "}
+                  (현재:{" "}
+                  {editingTenant?.member_limit === null || editingTenant?.member_limit === undefined
+                    ? "∞"
+                    : editingTenant.member_limit.toLocaleString()}
+                  )
+                </span>
+              </div>
             </div>
           </div>
           <DialogFooter>

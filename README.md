@@ -83,6 +83,7 @@ docker compose up -d --build file-service
 
 # 서비스만 간단히 재시작
 docker compose restart user-service
+docker compose restart tenant-service
 docker compose restart post-service
 docker compose restart ai-agent-service
 docker compose restart file-service
