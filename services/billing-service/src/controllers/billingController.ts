@@ -982,8 +982,10 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
     const periodStartIso = periodStartDate.toISOString()
     const periodEndIso = periodEndDate.toISOString()
 
-    const planRes = await client.query(`SELECT id FROM billing_plans WHERE id = $1`, [planId])
+    const planRes = await client.query(`SELECT id, tier, tenant_type FROM billing_plans WHERE id = $1`, [planId])
     if (planRes.rows.length === 0) return res.status(404).json({ message: "Billing plan not found" })
+    const planTier = String(planRes.rows[0]?.tier || "")
+    const planTenantType = String(planRes.rows[0]?.tenant_type || "")
 
     await client.query("BEGIN")
     transactionStarted = true
@@ -1090,6 +1092,19 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
         ]
       )
       subscriptionRow = insertRes.rows[0]
+    }
+
+    if (planTenantType) {
+      await client.query(
+        `
+        UPDATE tenants
+        SET tenant_type = $1,
+            metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{plan_tier}', to_jsonb($2::text), TRUE),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $3 AND deleted_at IS NULL
+        `,
+        [planTenantType, planTier || "free", resolvedTenantId]
+      )
     }
 
     const billingAccountRes = await client.query(`SELECT id FROM billing_accounts WHERE tenant_id = $1`, [resolvedTenantId])

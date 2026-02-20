@@ -249,11 +249,6 @@ export default function TenantManager() {
                     <div className="flex items-center gap-2">
                       <Building2 className="h-4 w-4 text-muted-foreground" />
                       <span>{tenant.name}</span>
-                      {isSystem ? (
-                        <Badge variant="outline" className="text-xs">
-                          시스템
-                        </Badge>
-                      ) : null}
                     </div>
                   </TableCell>
                   <TableCell>

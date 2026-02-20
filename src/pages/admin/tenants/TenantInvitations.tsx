@@ -78,6 +78,11 @@ const API_URL = "/api/tenants/invitations"
 const FILTER_ALL = "__all__"
 const STATUSES: InvitationStatus[] = ["pending", "accepted", "rejected", "expired", "cancelled"]
 const ROLES: InvitationRole[] = ["owner", "admin", "member", "viewer"]
+
+const truncateText = (value: string, max = 12) => {
+  const text = String(value || "")
+  return text.length > max ? `${text.slice(0, max)}...` : text
+}
 const ROLE_LABELS: Record<InvitationRole, string> = {
   owner: "소유자",
   admin: "관리자",
@@ -366,11 +371,21 @@ export default function TenantInvitations() {
               <TableRow key={row.id}>
                 <TableCell>
                   <div className="text-sm">{row.tenant_name || row.tenant_slug || row.tenant_id}</div>
-                  <div className="text-xs text-muted-foreground">{row.tenant_id}</div>
+                  <div className="text-xs text-muted-foreground" title={row.tenant_id}>
+                    {truncateText(row.tenant_id)}
+                  </div>
                 </TableCell>
                 <TableCell>
-                  <div className="text-sm">{row.invitee_email}</div>
-                  <div className="text-xs text-muted-foreground">{row.invitee_user_id || "-"}</div>
+                  <div className="text-sm">
+                    {row.invitee_name ? `${row.invitee_name} (${row.invitee_email})` : row.invitee_email}
+                  </div>
+                  {row.invitee_user_id ? (
+                    <div className="text-xs text-muted-foreground" title={row.invitee_user_id}>
+                      {truncateText(row.invitee_user_id)}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">-</div>
+                  )}
                 </TableCell>
                 <TableCell>{ROLE_LABELS[row.membership_role] || row.membership_role}</TableCell>
                 <TableCell>

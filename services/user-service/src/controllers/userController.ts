@@ -3,6 +3,32 @@ import bcrypt from 'bcrypt';
 import pool from '../config/db';
 import type { AuthedRequest } from '../middleware/requireAuth';
 
+const MAX_TENANT_SLUG_LENGTH = 24;
+const PERSONAL_SLUG_SUFFIX_LENGTH = 6;
+
+const slugifyTenant = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-+/g, '-');
+
+const normalizeTenantSlug = (value: string, maxLength = MAX_TENANT_SLUG_LENGTH) => {
+  const cleaned = slugifyTenant(value);
+  if (!cleaned) return '';
+  if (cleaned.length <= maxLength) return cleaned;
+  return cleaned.slice(0, maxLength).replace(/-+$/g, '');
+};
+
+const buildPersonalTenantSlug = (nameOrEmail: string, userId: string) => {
+  const suffix = userId.replace(/-/g, '').slice(0, PERSONAL_SLUG_SUFFIX_LENGTH);
+  const baseRaw = normalizeTenantSlug(nameOrEmail, MAX_TENANT_SLUG_LENGTH);
+  const maxBaseLength = MAX_TENANT_SLUG_LENGTH - (suffix.length + 1);
+  const base = maxBaseLength > 0 ? normalizeTenantSlug(baseRaw, maxBaseLength) : '';
+  return base ? `${base}-${suffix}` : suffix;
+};
+
 export const getUsers = async (req: Request, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
@@ -18,7 +44,11 @@ export const getUsers = async (req: Request, res: Response) => {
         r.id as role_id,
         pt.id as tenant_id,
         pt.name as tenant_name,
+        pt.slug as tenant_slug,
+        pt.domain as tenant_domain,
         pt.tenant_type as tenant_type,
+        pt.current_member_count as tenant_current_member_count,
+        COALESCE(bp.included_seats, pt.member_limit, 1) AS tenant_included_seats,
         COALESCE(
           NULLIF(pt.metadata->>'plan_tier',''),
           NULLIF(pt.metadata->>'service_tier',''),
@@ -28,7 +58,53 @@ export const getUsers = async (req: Request, res: Response) => {
       LEFT JOIN user_roles ur ON u.id = ur.user_id
       LEFT JOIN roles r ON ur.role_id = r.id AND r.scope = 'platform'
       LEFT JOIN LATERAL (
-        SELECT t.id, t.name, t.tenant_type, t.metadata, utr.is_primary_tenant, utr.joined_at, utr.granted_at
+        SELECT t.id, t.name, t.slug, t.domain, t.tenant_type, t.current_member_count, t.member_limit, t.metadata, utr.is_primary_tenant, utr.joined_at, utr.granted_at
+        FROM user_tenant_roles utr
+        JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+        WHERE utr.user_id = u.id
+          AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+          AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+        ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC, utr.granted_at ASC
+        LIMIT 1
+      ) pt ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT bs.plan_id
+        FROM billing_subscriptions bs
+        WHERE bs.tenant_id = pt.id AND bs.status <> 'cancelled'
+        ORDER BY bs.created_at DESC
+        LIMIT 1
+      ) latest_sub ON TRUE
+      LEFT JOIN billing_plans bp ON bp.id = latest_sub.plan_id
+      WHERE u.deleted_at IS NULL
+    `;
+    
+    const params: any[] = [];
+
+    if (search) {
+      query += ` AND (
+        u.email ILIKE $1
+        OR u.full_name ILIKE $1
+        OR r.name ILIKE $1
+        OR r.slug ILIKE $1
+        OR pt.name ILIKE $1
+        OR pt.slug ILIKE $1
+      )`;
+      params.push(`%${search}%`);
+    }
+
+    query += ` ORDER BY u.id, ur.granted_at DESC NULLS LAST, u.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    params.push(limit, offset);
+
+    const { rows } = await pool.query(query, params);
+
+    // Get total count for pagination
+    let countQuery = `
+      SELECT COUNT(DISTINCT u.id) AS total
+      FROM users u
+      LEFT JOIN user_roles ur ON u.id = ur.user_id
+      LEFT JOIN roles r ON ur.role_id = r.id AND r.scope = 'platform'
+      LEFT JOIN LATERAL (
+        SELECT t.id, t.name, t.slug, t.tenant_type, t.metadata, utr.is_primary_tenant, utr.joined_at, utr.granted_at
         FROM user_tenant_roles utr
         JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
         WHERE utr.user_id = u.id
@@ -39,24 +115,16 @@ export const getUsers = async (req: Request, res: Response) => {
       ) pt ON TRUE
       WHERE u.deleted_at IS NULL
     `;
-    
-    const params: any[] = [];
-
-    if (search) {
-      query += ` AND (u.email ILIKE $1 OR u.full_name ILIKE $1)`;
-      params.push(`%${search}%`);
-    }
-
-    query += ` ORDER BY u.id, ur.granted_at DESC NULLS LAST, u.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
-    params.push(limit, offset);
-
-    const { rows } = await pool.query(query, params);
-
-    // Get total count for pagination
-    let countQuery = `SELECT COUNT(*) FROM users WHERE deleted_at IS NULL`;
     const countParams: any[] = [];
     if (search) {
-      countQuery += ` AND (email ILIKE $1 OR full_name ILIKE $1)`;
+      countQuery += ` AND (
+        u.email ILIKE $1
+        OR u.full_name ILIKE $1
+        OR r.name ILIKE $1
+        OR r.slug ILIKE $1
+        OR pt.name ILIKE $1
+        OR pt.slug ILIKE $1
+      )`;
       countParams.push(`%${search}%`);
     }
     const countResult = await pool.query(countQuery, countParams);
@@ -96,6 +164,8 @@ export const getUser = async (req: Request, res: Response) => {
         r.id as role_id,
         pt.id as tenant_id,
         pt.name as tenant_name,
+        pt.slug as tenant_slug,
+        pt.domain as tenant_domain,
         pt.tenant_type as tenant_type,
         COALESCE(
           NULLIF(pt.metadata->>'plan_tier',''),
@@ -106,7 +176,7 @@ export const getUser = async (req: Request, res: Response) => {
       LEFT JOIN user_roles ur ON u.id = ur.user_id
       LEFT JOIN roles r ON ur.role_id = r.id AND r.scope = 'platform'
       LEFT JOIN LATERAL (
-        SELECT t.id, t.name, t.tenant_type, t.metadata, utr.is_primary_tenant, utr.joined_at, utr.granted_at
+        SELECT t.id, t.name, t.slug, t.domain, t.tenant_type, t.metadata, utr.is_primary_tenant, utr.joined_at, utr.granted_at
         FROM user_tenant_roles utr
         JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
         WHERE utr.user_id = u.id
@@ -137,7 +207,7 @@ export const updateUser = async (req: Request, res: Response) => {
   try {
     await client.query('BEGIN');
     const { id } = req.params;
-    const { full_name, status, email_verified, role_id, tenant_name } = req.body;
+    const { full_name, status, email_verified, role_id, tenant_name, tenant_slug, tenant_domain } = req.body;
     const authedReq = req as AuthedRequest;
 
     // 1. Update basic user info
@@ -158,12 +228,37 @@ export const updateUser = async (req: Request, res: Response) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
+    const tenantUpdates: string[] = [];
+    const tenantParams: any[] = [];
+
     if (tenant_name !== undefined) {
       const tenantName = typeof tenant_name === 'string' ? tenant_name.trim() : '';
       if (!tenantName) {
         await client.query('ROLLBACK');
         return res.status(400).json({ message: 'Invalid tenant_name' });
       }
+      tenantUpdates.push(`name = $${tenantParams.length + 1}`);
+      tenantParams.push(tenantName);
+    }
+
+    if (tenant_slug !== undefined) {
+      const tenantSlugRaw = typeof tenant_slug === 'string' ? tenant_slug : '';
+      const tenantSlug = normalizeTenantSlug(tenantSlugRaw);
+      if (!tenantSlug) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'Invalid tenant_slug' });
+      }
+      tenantUpdates.push(`slug = $${tenantParams.length + 1}`);
+      tenantParams.push(tenantSlug);
+    }
+
+    if (tenant_domain !== undefined) {
+      const tenantDomain = typeof tenant_domain === 'string' ? tenant_domain.trim() : '';
+      tenantUpdates.push(`domain = $${tenantParams.length + 1}`);
+      tenantParams.push(tenantDomain || null);
+    }
+
+    if (tenantUpdates.length > 0) {
       const tenantResult = await client.query(
         `
         SELECT t.id
@@ -184,10 +279,10 @@ export const updateUser = async (req: Request, res: Response) => {
       await client.query(
         `
         UPDATE tenants
-        SET name = $1, updated_at = CURRENT_TIMESTAMP
-        WHERE id = $2
+        SET ${tenantUpdates.join(', ')}, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $${tenantParams.length + 1}
         `,
-        [tenantName, tenantResult.rows[0].id]
+        [...tenantParams, tenantResult.rows[0].id]
       );
     }
 
@@ -293,7 +388,7 @@ export const createUser = async (req: Request, res: Response) => {
     }
 
     const tenantName = nameValue || emailValue;
-    const tenantSlug = `personal-${user.id}`;
+    const tenantSlug = buildPersonalTenantSlug(tenantName || emailValue, user.id);
     const tenantRes = await client.query(
       `
       INSERT INTO tenants (owner_id, name, slug, tenant_type, status, member_limit, current_member_count, metadata)
@@ -412,7 +507,8 @@ export const listUserTenantMemberships = async (req: Request, res: Response) => 
     const limit = Math.min(toInt(req.query.limit, 50), 200);
     const offset = toInt(req.query.offset, 0);
 
-    if (membershipFilter && membershipFilter !== 'none' && membershipFilter !== 'has') {
+    const validFilters = ['none', 'has', 'single', 'multi'];
+    if (membershipFilter && !validFilters.includes(membershipFilter)) {
       return res.status(400).json({ message: 'invalid membership filter' });
     }
 
@@ -428,6 +524,12 @@ export const listUserTenantMemberships = async (req: Request, res: Response) => 
     }
     if (membershipFilter === 'none') {
       where.push(`NOT EXISTS (SELECT 1 FROM user_tenant_roles utr WHERE utr.user_id = u.id)`);
+    }
+    if (membershipFilter === 'single') {
+      where.push(`(SELECT COUNT(*) FROM user_tenant_roles utr WHERE utr.user_id = u.id) = 1`);
+    }
+    if (membershipFilter === 'multi') {
+      where.push(`(SELECT COUNT(*) FROM user_tenant_roles utr WHERE utr.user_id = u.id) >= 2`);
     }
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -480,16 +582,29 @@ export const listUserTenantMemberships = async (req: Request, res: Response) => 
         t.name AS tenant_name,
         t.slug AS tenant_slug,
         t.tenant_type AS tenant_type,
+        t.current_member_count AS current_member_count,
+        t.member_limit AS member_limit,
         COALESCE(
           NULLIF(t.metadata->>'plan_tier',''),
           NULLIF(t.metadata->>'service_tier',''),
-          NULLIF(t.metadata->>'tier','')
+          NULLIF(t.metadata->>'tier',''),
+          bp.tier
         ) AS plan_tier,
+        COALESCE(bp.included_seats, t.member_limit, 1) AS included_seats,
+        COALESCE(bp.max_seats, t.member_limit) AS max_seats,
         r.name AS role_name,
         r.slug AS role_slug,
         r.scope AS role_scope
       FROM user_tenant_roles utr
       JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+      LEFT JOIN LATERAL (
+        SELECT bs.plan_id
+        FROM billing_subscriptions bs
+        WHERE bs.tenant_id = t.id AND bs.status <> 'cancelled'
+        ORDER BY bs.created_at DESC
+        LIMIT 1
+      ) latest_sub ON TRUE
+      LEFT JOIN billing_plans bp ON bp.id = latest_sub.plan_id
       LEFT JOIN roles r ON r.id = utr.role_id
       WHERE utr.user_id = ANY($1::uuid[])
       ORDER BY utr.user_id, COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC NULLS LAST, utr.granted_at ASC NULLS LAST

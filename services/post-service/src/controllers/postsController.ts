@@ -601,6 +601,12 @@ export async function listMyPageCategories(req: Request, res: Response) {
     }
 
     await client.query("BEGIN")
+    // Prevent duplicate default category creation under concurrent requests.
+    const lockKey =
+      categoryType === "team_page"
+        ? `default-category:team:${tenantId}`
+        : `default-category:personal:${tenantId}:${userId}`
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [lockKey])
 
     // Ensure default category exists ONLY once:
     // - Create when there has never been any category row for this scope (including deleted rows).

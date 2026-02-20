@@ -1,6 +1,23 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
 
+const MAX_TENANT_SLUG_LENGTH = 24;
+
+const slugifyTenant = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-+/g, '-');
+
+const normalizeTenantSlug = (value: string, maxLength = MAX_TENANT_SLUG_LENGTH) => {
+  const cleaned = slugifyTenant(value);
+  if (!cleaned) return '';
+  if (cleaned.length <= maxLength) return cleaned;
+  return cleaned.slice(0, maxLength).replace(/-+$/g, '');
+};
+
 export const getTenants = async (req: Request, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
@@ -56,6 +73,11 @@ export const createTenant = async (req: Request, res: Response) => {
   try {
     await client.query('BEGIN');
     const { name, slug, domain, tenant_type, owner_id } = req.body;
+    const normalizedSlug = normalizeTenantSlug(typeof slug === 'string' ? slug : '');
+    if (!normalizedSlug) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Invalid slug' });
+    }
     const status = typeof req.body?.status === 'string' ? req.body.status : 'active';
     const memberLimitRaw = req.body?.member_limit;
     const memberLimit =
@@ -77,7 +99,7 @@ export const createTenant = async (req: Request, res: Response) => {
     const initialMemberCount = owner_id ? 1 : 0;
     const tenantResult = await client.query(insertTenantQuery, [
       name,
-      slug,
+      normalizedSlug,
       domain,
       tenant_type,
       owner_id,
@@ -151,6 +173,11 @@ export const updateTenant = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { name, slug, domain, tenant_type, status } = req.body;
+    const normalizedSlug =
+      slug === undefined ? undefined : normalizeTenantSlug(typeof slug === 'string' ? slug : '');
+    if (slug !== undefined && !normalizedSlug) {
+      return res.status(400).json({ message: 'Invalid slug' });
+    }
     const memberLimitRaw = req.body?.member_limit;
     const memberLimit =
       memberLimitRaw === undefined || memberLimitRaw === ''
@@ -176,7 +203,7 @@ export const updateTenant = async (req: Request, res: Response) => {
       RETURNING *
     `;
     
-    const { rows } = await pool.query(query, [name, slug, domain, tenant_type, status, memberLimit, id]);
+    const { rows } = await pool.query(query, [name, normalizedSlug, domain, tenant_type, status, memberLimit, id]);
 
     if (rows.length === 0) {
       return res.status(404).json({ message: 'Tenant not found' });

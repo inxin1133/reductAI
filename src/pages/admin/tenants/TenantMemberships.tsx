@@ -1,13 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
 import { adminFetch } from "@/lib/adminFetch"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -20,6 +12,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Loader2, RefreshCcw } from "lucide-react"
 import { AdminPage } from "@/components/layout/AdminPage"
+import { type PlanTier, PLAN_TIER_LABELS, PLAN_TIER_STYLES } from "@/lib/planTier"
 
 type MembershipStatus = "active" | "inactive" | "suspended" | "pending"
 
@@ -34,6 +27,10 @@ type MembershipItem = {
   tenant_name?: string | null
   tenant_slug?: string | null
   tenant_type?: string | null
+  current_member_count?: number | null
+  member_limit?: number | null
+  included_seats?: number | null
+  max_seats?: number | null
   plan_tier?: string | null
   role_name?: string | null
   role_slug?: string | null
@@ -68,8 +65,8 @@ const FILTER_ALL = "__all__"
 
 const MEMBERSHIP_FILTERS = [
   { value: FILTER_ALL, label: "전체" },
-  { value: "has", label: "소속 있음" },
-  { value: "none", label: "소속 없음" },
+  { value: "single", label: "소속 1개만" },
+  { value: "multi", label: "소속 2개 이상" },
 ]
 
 const ROLE_LABELS: Record<string, string> = {
@@ -77,14 +74,6 @@ const ROLE_LABELS: Record<string, string> = {
   admin: "관리자",
   member: "멤버",
   viewer: "뷰어",
-}
-
-const PLAN_TIER_LABELS: Record<string, string> = {
-  free: "Free",
-  pro: "Pro",
-  premium: "Premium",
-  business: "Business",
-  enterprise: "Enterprise",
 }
 
 const MEMBERSHIP_STATUS_LABELS: Record<string, string> = {
@@ -95,10 +84,10 @@ const MEMBERSHIP_STATUS_LABELS: Record<string, string> = {
 }
 
 const MEMBERSHIP_STATUS_STYLES: Record<string, string> = {
-  active: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  pending: "bg-amber-50 text-amber-700 border-amber-200",
-  suspended: "bg-rose-50 text-rose-700 border-rose-200",
-  inactive: "bg-slate-50 text-slate-600 border-slate-200",
+  active: "bg-emerald-50 text-emerald-600 ring-1 ring-emerald-500",
+  pending: "bg-amber-50 text-amber-600 ring-1 ring-amber-500",
+  suspended: "bg-rose-50 text-rose-600 ring-1 ring-rose-500",
+  inactive: "bg-slate-50 text-slate-600 ring-1 ring-slate-300",
 }
 
 const USER_STATUS_LABELS: Record<string, string> = {
@@ -109,10 +98,10 @@ const USER_STATUS_LABELS: Record<string, string> = {
 }
 
 const USER_STATUS_STYLES: Record<string, string> = {
-  active: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  inactive: "bg-slate-50 text-slate-600 border-slate-200",
-  suspended: "bg-rose-50 text-rose-700 border-rose-200",
-  locked: "bg-amber-50 text-amber-700 border-amber-200",
+  active: "bg-emerald-50 text-emerald-600 ring-1 ring-emerald-500",
+  inactive: "bg-slate-50 text-slate-600 ring-1 ring-slate-300",
+  suspended: "bg-rose-50 text-rose-600 ring-1 ring-rose-500",
+  locked: "bg-amber-50 text-amber-600 ring-1 ring-amber-500",
 }
 
 function fmtDate(iso?: string | null) {
@@ -122,6 +111,33 @@ function fmtDate(iso?: string | null) {
   } catch {
     return iso
   }
+}
+
+function normalizeSeatValue(value?: number | null) {
+  if (!Number.isFinite(value)) return null
+  return Math.max(0, Number(value))
+}
+
+function formatSeatSummary(current?: number | null, included?: number | null, max?: number | null) {
+  const safeCurrent = normalizeSeatValue(current) ?? 0
+  const safeMax = normalizeSeatValue(max)
+  const safeIncluded = normalizeSeatValue(included) ?? safeMax ?? 1
+  const maxLabel = safeMax === null ? "∞" : String(safeMax)
+  return `${safeCurrent}/${safeIncluded}/${maxLabel}`
+}
+
+function planTierBadge(tier?: string | null) {
+  const key = (tier || "").toLowerCase() as PlanTier
+  const label = PLAN_TIER_LABELS[key] || tier || "-"
+  const style = PLAN_TIER_STYLES[key]
+  if (!style) {
+    return <Badge variant="outline">{label}</Badge>
+  }
+  return (
+    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${style.badge}`}>
+      {label}
+    </span>
+  )
 }
 
 export default function TenantMemberships() {
@@ -186,7 +202,7 @@ export default function TenantMemberships() {
           <Input placeholder="이메일 또는 이름 검색" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
         <div className="w-full md:w-40 space-y-1">
-          <div className="text-xs text-muted-foreground">소속 여부</div>
+          <div className="text-xs text-muted-foreground">소속 구분</div>
           <Select value={membershipFilter} onValueChange={setMembershipFilter}>
             <SelectTrigger>
               <SelectValue placeholder="membership" />
@@ -200,108 +216,82 @@ export default function TenantMemberships() {
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center gap-2" />
       </div>
 
-      <div className="border rounded-md">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>사용자</TableHead>
-              <TableHead className="w-[120px]">소속 수</TableHead>
-              <TableHead>테넌트/역할/플랜</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.length === 0 && !loading ? (
-              <TableRow>
-                <TableCell colSpan={3} className="text-center text-muted-foreground">
-                  표시할 회원이 없습니다.
-                </TableCell>
-              </TableRow>
-            ) : null}
-            {loading ? (
-              <TableRow>
-                <TableCell colSpan={3} className="text-center text-muted-foreground">
-                  <Loader2 className="h-4 w-4 inline-block animate-spin mr-2" />
-                  로딩 중...
-                </TableCell>
-              </TableRow>
-            ) : null}
-            {rows.map((row) => {
-              const statusKey = String(row.user.status || "").toLowerCase()
-              const userStatusLabel = USER_STATUS_LABELS[statusKey] || row.user.status || "-"
-              const userStatusStyle = USER_STATUS_STYLES[statusKey] || "bg-slate-50 text-slate-600 border-slate-200"
-              return (
-                <TableRow key={row.user.id}>
-                  <TableCell>
-                    <div className="text-sm text-foreground">{row.user.full_name || row.user.email}</div>
-                    <div className="text-xs text-muted-foreground">{row.user.email}</div>
-                    {row.user.status ? (
-                      <Badge variant="outline" className={`mt-2 ${userStatusStyle}`}>
-                        {userStatusLabel}
-                      </Badge>
-                    ) : null}
-                  </TableCell>
-                  <TableCell className="text-sm">{row.membership_count}</TableCell>
-                  <TableCell>
-                    {row.memberships.length ? (
-                      <div className="space-y-2">
-                        {row.memberships.map((membership) => {
-                          const roleSlug = String(membership.role_slug || "").toLowerCase()
-                          const roleLabel = membership.role_name || ROLE_LABELS[roleSlug] || "멤버"
-                          const membershipStatusKey = String(membership.membership_status || "active").toLowerCase()
-                          const membershipStatusLabel =
-                            MEMBERSHIP_STATUS_LABELS[membershipStatusKey] || membership.membership_status || "active"
-                          const membershipStatusStyle =
-                            MEMBERSHIP_STATUS_STYLES[membershipStatusKey] || MEMBERSHIP_STATUS_STYLES.active
-                          const planKey = String(membership.plan_tier || "").toLowerCase()
-                          const planLabel = PLAN_TIER_LABELS[planKey] || membership.plan_tier || "-"
+      {loading ? (
+        <div className="flex items-center justify-center py-16 text-muted-foreground">
+          <Loader2 className="h-5 w-5 animate-spin mr-2" />
+          로딩 중...
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="flex items-center justify-center py-16 text-muted-foreground">
+          표시할 회원이 없습니다.
+        </div>
+      ) : (
+        <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+          {rows.map((row) => {
+            const statusKey = (row.user.status || "").toLowerCase()
+            const userStatusLabel = USER_STATUS_LABELS[statusKey] || row.user.status || "-"
+            const userStatusStyle = USER_STATUS_STYLES[statusKey] || USER_STATUS_STYLES.inactive
 
-                          return (
-                            <div
-                              key={membership.id}
-                              className="flex flex-col gap-2 rounded-md border border-border/60 px-3 py-2"
-                            >
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-2 text-sm text-foreground">
-                                    <span className="truncate">
-                                      {membership.tenant_name || membership.tenant_slug || membership.tenant_id}
-                                    </span>
-                                    {membership.is_primary_tenant ? (
-                                      <Badge variant="secondary">기본</Badge>
-                                    ) : null}
-                                  </div>
-                                  <div className="text-xs text-muted-foreground">
-                                    {roleLabel} · {membership.role_scope || "-"} · {membership.tenant_type || "-"}
-                                  </div>
-                                </div>
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <Badge variant="outline">{planLabel}</Badge>
-                                  <Badge variant="outline" className={membershipStatusStyle}>
-                                    {membershipStatusLabel}
-                                  </Badge>
-                                </div>
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                가입 {fmtDate(membership.joined_at || null)}
-                                {membership.expires_at ? ` · 만료 ${fmtDate(membership.expires_at)}` : ""}
-                              </div>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    ) : (
-                      <div className="text-xs text-muted-foreground">소속 없음</div>
-                    )}
-                  </TableCell>
-                </TableRow>
-              )
-            })}
-          </TableBody>
-        </Table>
-      </div>
+            return (
+              <div
+                key={row.user.id}
+                className="rounded-xl border bg-card p-5 shadow-sm"
+              >
+                <div className="flex items-start justify-between gap-2 mb-1">
+                  <h3 className="text-lg font-semibold text-foreground truncate">
+                    {row.user.full_name || row.user.email}
+                  </h3>
+                  <span className={`shrink-0 inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${userStatusStyle}`}>
+                    {userStatusLabel}
+                  </span>
+                </div>
+                <p className="text-sm text-muted-foreground mb-4">{row.user.email}</p>
+
+                {row.memberships.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">소속 없음</p>
+                ) : (
+                  <div className="space-y-3">
+                    {row.memberships.map((m) => {
+                      const roleSlug = (m.role_slug || "").toLowerCase()
+                      const roleLabel = m.role_name || ROLE_LABELS[roleSlug] || "멤버"
+                      const msKey = (m.membership_status || "active").toLowerCase()
+                      const msLabel = MEMBERSHIP_STATUS_LABELS[msKey] || m.membership_status || "active"
+                      const msStyle = MEMBERSHIP_STATUS_STYLES[msKey] || MEMBERSHIP_STATUS_STYLES.active
+
+                      return (
+                        <div
+                          key={m.id}
+                          className="rounded-lg border border-border/60 bg-background p-3.5"
+                        >
+                          <div className="flex items-start justify-between gap-2 mb-1">
+                            <h4 className="text-sm font-semibold text-foreground truncate">
+                              {m.tenant_name || m.tenant_slug || m.tenant_id}
+                            </h4>
+                            <span className={`shrink-0 inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${msStyle}`}>
+                              {msLabel}
+                            </span>
+                          </div>
+                          <p className="text-xs text-muted-foreground mb-2">
+                            {roleLabel} · {m.tenant_type ? (m.tenant_type.charAt(0).toUpperCase() + m.tenant_type.slice(1)) : "-"} · 좌석{" "}
+                            {formatSeatSummary(m.current_member_count, m.included_seats, m.max_seats)}
+                          </p>
+                          <p className="text-xs text-muted-foreground mb-2">
+                            가입 {fmtDate(m.joined_at || null)}
+                            {m.expires_at ? ` · 만료 ${fmtDate(m.expires_at)}` : ""}
+                          </p>
+                          {planTierBadge(m.plan_tier)}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       <div className="flex items-center justify-between">
         <div className="text-sm text-muted-foreground">

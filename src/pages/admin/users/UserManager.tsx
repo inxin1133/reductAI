@@ -25,9 +25,11 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Pencil, Loader2, ChevronLeft, ChevronRight, Search, Plus } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { AdminPage } from "@/components/layout/AdminPage"
+import { type PlanTier, PLAN_TIER_LABELS, PLAN_TIER_STYLES } from "@/lib/planTier"
 
 interface User {
   id: string
@@ -43,8 +45,12 @@ interface User {
   role_id?: string
   tenant_id?: string | null
   tenant_name?: string | null
+  tenant_slug?: string | null
+  tenant_domain?: string | null
   tenant_type?: 'personal' | 'team' | 'group' | null
   tenant_plan_tier?: string | null
+  tenant_current_member_count?: number | null
+  tenant_included_seats?: number | null
 }
 
 interface Role {
@@ -59,6 +65,18 @@ interface Pagination {
   limit: number
   total: number
   totalPages: number
+}
+
+interface TenantMemberRow {
+  id: string
+  user_id: string
+  tenant_id: string
+  role_id?: string | null
+  membership_status?: string | null
+  user_email?: string | null
+  user_name?: string | null
+  role_name?: string | null
+  role_slug?: string | null
 }
 
 const API_PATH = "/api/users"
@@ -86,6 +104,11 @@ export default function UserManager() {
   const [isLoading, setIsLoading] = useState(true)
   const [search, setSearch] = useState("")
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [memberPopoverTenantId, setMemberPopoverTenantId] = useState<string | null>(null)
+  const [memberSearch, setMemberSearch] = useState("")
+  const [memberListByTenant, setMemberListByTenant] = useState<Record<string, TenantMemberRow[]>>({})
+  const [memberLoadingByTenant, setMemberLoadingByTenant] = useState<Record<string, boolean>>({})
+  const [memberErrorByTenant, setMemberErrorByTenant] = useState<Record<string, string>>({})
   
   // Dialog state
   const [isDialogOpen, setIsDialogOpen] = useState(false)
@@ -98,6 +121,8 @@ export default function UserManager() {
     email_verified: boolean
     role_id: string
     tenant_name: string
+    tenant_slug: string
+    tenant_domain: string
   }>({
     email: "",
     password: "",
@@ -106,6 +131,8 @@ export default function UserManager() {
     email_verified: false,
     role_id: "",
     tenant_name: "",
+    tenant_slug: "",
+    tenant_domain: "",
   })
   const [isSaving, setIsSaving] = useState(false)
 
@@ -166,6 +193,33 @@ export default function UserManager() {
     }
   }
 
+  const fetchTenantMembers = async (tenantId: string) => {
+    if (!tenantId) return
+    setMemberLoadingByTenant((prev) => ({ ...prev, [tenantId]: true }))
+    setMemberErrorByTenant((prev) => ({ ...prev, [tenantId]: "" }))
+    try {
+      const params = new URLSearchParams({
+        tenant_id: tenantId,
+        status: "active",
+        limit: "200",
+      })
+      const response = await fetch(`/api/tenants/memberships?${params.toString()}`, { headers: authHeaders() })
+      if (!response.ok) {
+        const msg = await readResponseErrorMessage(response)
+        throw new Error(msg || "멤버 목록을 불러오지 못했습니다.")
+      }
+      const data = await response.json()
+      const rows = Array.isArray(data?.rows) ? data.rows : []
+      setMemberListByTenant((prev) => ({ ...prev, [tenantId]: rows }))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "멤버 목록 로드 실패"
+      setMemberListByTenant((prev) => ({ ...prev, [tenantId]: [] }))
+      setMemberErrorByTenant((prev) => ({ ...prev, [tenantId]: message }))
+    } finally {
+      setMemberLoadingByTenant((prev) => ({ ...prev, [tenantId]: false }))
+    }
+  }
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault()
     setPagination(prev => ({ ...prev, page: 1 })) // Reset to page 1 on search
@@ -195,6 +249,8 @@ export default function UserManager() {
       email_verified: user.email_verified,
       role_id: user.role_id || getDefaultRoleId(),
       tenant_name: user.tenant_name || "",
+      tenant_slug: user.tenant_slug || "",
+      tenant_domain: user.tenant_domain || "",
     })
     setIsDialogOpen(true)
   }
@@ -209,6 +265,8 @@ export default function UserManager() {
       email_verified: false,
       role_id: getDefaultRoleId(),
       tenant_name: "",
+      tenant_slug: "",
+      tenant_domain: "",
     })
     setIsDialogOpen(true)
   }
@@ -243,6 +301,8 @@ export default function UserManager() {
             email_verified: formData.email_verified,
             role_id: roleToUse,
             tenant_name: formData.tenant_name,
+            tenant_slug: formData.tenant_slug,
+            tenant_domain: formData.tenant_domain,
           }),
         })
 
@@ -302,6 +362,44 @@ export default function UserManager() {
     }
   }
 
+  const truncateText = (value: string, max: number) => {
+    if (value.length <= max) return value
+    return `${value.slice(0, max)}...`
+  }
+
+  const formatMemberCount = (current?: number | null, included?: number | null) => {
+    const safeCurrent = Number.isFinite(current) ? Math.max(0, Number(current)) : 0
+    const safeIncluded = Number.isFinite(included) && Number(included) > 0 ? Number(included) : 1
+    return `${safeCurrent}/${safeIncluded}`
+  }
+
+  const filterMembers = (members: TenantMemberRow[]) => {
+    const query = memberSearch.trim().toLowerCase()
+    if (!query) return members
+    return members.filter((member) => {
+      const name = String(member.user_name || "").toLowerCase()
+      const email = String(member.user_email || "").toLowerCase()
+      const role = String(member.role_name || member.role_slug || "").toLowerCase()
+      return name.includes(query) || email.includes(query) || role.includes(query)
+    })
+  }
+
+  const renderPlanTierBadge = (tier?: string | null, tenantType?: string | null) => {
+    const fallback = tenantType === "personal" ? "free" : "-"
+    const rawTier = tier || fallback
+    const key = String(rawTier || "").toLowerCase() as PlanTier
+    const label = PLAN_TIER_LABELS[key] || rawTier || "-"
+    const style = PLAN_TIER_STYLES[key]
+    if (!style) {
+      return <Badge variant="outline">{label}</Badge>
+    }
+    return (
+      <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${style.badge}`}>
+        {label}
+      </span>
+    )
+  }
+
   return (
     <AdminPage
       headerContent={
@@ -321,7 +419,7 @@ export default function UserManager() {
       <div className="flex items-center gap-2">
         <form onSubmit={handleSearch} className="flex gap-2">
           <Input 
-            placeholder="이메일 또는 이름 검색..." 
+            placeholder="이메일 또는 이름, 역할, 테넌트 검색" 
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-[300px]"
@@ -336,11 +434,11 @@ export default function UserManager() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>이름</TableHead>
-              <TableHead>이메일</TableHead>
-              <TableHead>테넌트 이름</TableHead>
+              <TableHead>이름/이메일</TableHead>
+              <TableHead>테넌트/Slug</TableHead>
               <TableHead>테넌트 유형</TableHead>
               <TableHead>서비스 등급</TableHead>
+              <TableHead>멤버</TableHead>
               <TableHead>상태</TableHead>
               <TableHead>역할</TableHead>
               <TableHead>이메일 인증</TableHead>
@@ -371,16 +469,105 @@ export default function UserManager() {
             ) : (
               users.map((user) => (
                 <TableRow key={user.id}>
-                  <TableCell className="font-medium">{user.full_name || '-'}</TableCell>
-                  <TableCell>{user.email}</TableCell>
-                  <TableCell>{user.tenant_name || '-'}</TableCell>
+                  <TableCell>
+                    <div className="font-medium">{user.full_name || "-"}</div>
+                    <div className="text-xs text-muted-foreground">{user.email}</div>
+                  </TableCell>
+                  <TableCell>
+                    <div>{user.tenant_name || "-"}</div>
+                    <div
+                      className="text-xs text-muted-foreground"
+                      title={user.tenant_slug || ""}
+                    >
+                      {user.tenant_slug ? truncateText(user.tenant_slug, 10) : "-"}
+                    </div>
+                  </TableCell>
                   <TableCell>
                     <Badge variant="secondary" className="capitalize">
                       {user.tenant_type || '-'}
                     </Badge>
                   </TableCell>
+                  <TableCell className="text-xs">
+                    {renderPlanTierBadge(user.tenant_plan_tier, user.tenant_type)}
+                  </TableCell>
                   <TableCell className="font-mono text-xs">
-                    {user.tenant_plan_tier || (user.tenant_type === "personal" ? "free" : "-")}
+                    <Popover
+                      open={memberPopoverTenantId === (user.tenant_id || null)}
+                      onOpenChange={(open) => {
+                        const nextId = open ? user.tenant_id || null : null
+                        setMemberPopoverTenantId(nextId)
+                        if (open && user.tenant_id) {
+                          setMemberSearch("")
+                          if (!memberListByTenant[user.tenant_id]) {
+                            fetchTenantMembers(user.tenant_id)
+                          }
+                        }
+                      }}
+                    >
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 font-mono text-xs"
+                          disabled={!user.tenant_id}
+                        >
+                          {formatMemberCount(user.tenant_current_member_count, user.tenant_included_seats)}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-80 p-3" align="start">
+                        <div className="space-y-2">
+                          <div className="text-xs text-muted-foreground">검색</div>
+                          <Input
+                            placeholder="이름/이메일/역할 검색"
+                            value={memberSearch}
+                            onChange={(e) => setMemberSearch(e.target.value)}
+                          />
+                        </div>
+                        <div className="mt-3 max-h-60 overflow-auto space-y-2">
+                          {user.tenant_id ? (
+                            (() => {
+                              const tenantId = user.tenant_id
+                              const loading = memberLoadingByTenant[tenantId]
+                              const error = memberErrorByTenant[tenantId]
+                              const members = filterMembers(memberListByTenant[tenantId] || [])
+
+                              if (loading) {
+                                return (
+                                  <div className="text-xs text-muted-foreground flex items-center gap-2">
+                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                    불러오는 중...
+                                  </div>
+                                )
+                              }
+                              if (error) {
+                                return <div className="text-xs text-destructive">{error}</div>
+                              }
+                              if (members.length === 0) {
+                                return <div className="text-xs text-muted-foreground">표시할 멤버가 없습니다.</div>
+                              }
+
+                              return members.map((member) => (
+                                <div key={member.id} className="rounded-md border border-border/60 px-3 py-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="text-sm font-medium">
+                                      {member.user_name || member.user_email || "-"}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      {member.role_name || member.role_slug || "-"}
+                                    </div>
+                                  </div>
+                                  <div className="text-xs text-muted-foreground">
+                                    ({member.user_email || "-"})
+                                  </div>
+                                </div>
+                              ))
+                            })()
+                          ) : (
+                            <div className="text-xs text-muted-foreground">테넌트 정보가 없습니다.</div>
+                          )}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
                   </TableCell>
                   <TableCell>
                     <Badge variant="outline" className={`border-0 ${getStatusColor(user.status)}`}>
@@ -400,7 +587,16 @@ export default function UserManager() {
                     )}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {user.last_login_at ? new Date(user.last_login_at).toLocaleString() : '-'}
+                    {user.last_login_at
+                      ? new Date(user.last_login_at).toLocaleString("ko-KR", {
+                          year: "numeric",
+                          month: "2-digit",
+                          day: "2-digit",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          hour12: false,
+                        })
+                      : "-"}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {new Date(user.created_at).toLocaleDateString()}
@@ -516,6 +712,30 @@ export default function UserManager() {
                     placeholder="테넌트 이름"
                   />
                 </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="tenant_slug" className="text-right">
+                    Slug
+                  </Label>
+                  <Input
+                    id="tenant_slug"
+                    value={formData.tenant_slug}
+                    onChange={(e) => setFormData({ ...formData, tenant_slug: e.target.value })}
+                    className="col-span-3"
+                    placeholder="tenant-slug"
+                  />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="tenant_domain" className="text-right">
+                    도메인
+                  </Label>
+                  <Input
+                    id="tenant_domain"
+                    value={formData.tenant_domain}
+                    onChange={(e) => setFormData({ ...formData, tenant_domain: e.target.value })}
+                    className="col-span-3"
+                    placeholder="example.com"
+                  />
+                </div>
 
                 <div className="grid grid-cols-4 items-center gap-4">
                   <Label className="text-right">테넌트 유형</Label>
@@ -526,7 +746,7 @@ export default function UserManager() {
                 <div className="grid grid-cols-4 items-center gap-4">
                   <Label className="text-right">서비스 등급</Label>
                   <div className="col-span-3 text-sm font-medium">
-                    {editingUser?.tenant_plan_tier || (editingUser?.tenant_type === "personal" ? "free" : "-")}
+                    {renderPlanTierBadge(editingUser?.tenant_plan_tier, editingUser?.tenant_type)}
                   </div>
                 </div>
               </>

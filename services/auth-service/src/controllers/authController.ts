@@ -5,6 +5,32 @@ import * as db from '../config/db';
 import { sendVerificationEmail } from '../services/emailService';
 import type { AuthedRequest } from '../middleware/requireAuth';
 
+const MAX_TENANT_SLUG_LENGTH = 24;
+const PERSONAL_SLUG_SUFFIX_LENGTH = 6;
+
+const slugifyTenant = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-+/g, '-');
+
+const normalizeTenantSlug = (value: string, maxLength = MAX_TENANT_SLUG_LENGTH) => {
+  const cleaned = slugifyTenant(value);
+  if (!cleaned) return '';
+  if (cleaned.length <= maxLength) return cleaned;
+  return cleaned.slice(0, maxLength).replace(/-+$/g, '');
+};
+
+const buildPersonalTenantSlug = (nameOrEmail: string, userId: string) => {
+  const suffix = userId.replace(/-/g, '').slice(0, PERSONAL_SLUG_SUFFIX_LENGTH);
+  const baseRaw = normalizeTenantSlug(nameOrEmail, MAX_TENANT_SLUG_LENGTH);
+  const maxBaseLength = MAX_TENANT_SLUG_LENGTH - (suffix.length + 1);
+  const base = maxBaseLength > 0 ? normalizeTenantSlug(baseRaw, maxBaseLength) : '';
+  return base ? `${base}-${suffix}` : suffix;
+};
+
 // Temporary storage for OTPs (In production, use Redis)
 const otpStore: Record<string, { code: string; expiresAt: number }> = {};
 
@@ -267,7 +293,7 @@ export const register = async (req: Request, res: Response) => {
     }
 
     const tenantName = user.full_name || user.email;
-    const tenantSlug = `personal-${user.id}`;
+    const tenantSlug = buildPersonalTenantSlug(tenantName || user.email, user.id);
     const tenantRes = await client.query(
       `
       INSERT INTO tenants (owner_id, name, slug, tenant_type, status, member_limit, current_member_count, metadata)
