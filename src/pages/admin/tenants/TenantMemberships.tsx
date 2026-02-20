@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, RefreshCcw } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type MembershipStatus = "active" | "inactive" | "suspended" | "pending"
 
@@ -167,7 +168,14 @@ export default function TenantMemberships() {
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="space-y-4 bg-background">
+    <AdminPage
+      headerContent={
+        <Button variant="outline" size="sm" onClick={fetchMemberships} disabled={loading}>
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+          <span className="ml-2">새로고침</span>
+        </Button>
+      }
+    >
       <div>
         <p className="text-muted-foreground">회원별 테넌트 소속, 역할, 플랜을 한눈에 확인합니다.</p>
       </div>
@@ -192,12 +200,7 @@ export default function TenantMemberships() {
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchMemberships} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            <span className="ml-2">새로고침</span>
-          </Button>
-        </div>
+        <div className="flex items-center gap-2" />
       </div>
 
       <div className="border rounded-md">
@@ -318,6 +321,6 @@ export default function TenantMemberships() {
           </Button>
         </div>
       </div>
-    </div>
+    </AdminPage>
   )
 }

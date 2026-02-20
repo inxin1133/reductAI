@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Pencil, Plus, RefreshCcw } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type PlanOption = {
   id: string
@@ -296,7 +297,20 @@ export default function PlanPrices() {
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={fetchList} disabled={loading}>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">새로고침</span>
+          </Button>
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="h-4 w-4" />
+            <span className="ml-2">새 가격</span>
+          </Button>
+        </div>
+      }
+    >
       <div className="space-y-1">
         <div className="text-xl font-semibold">플랜 가격/버전</div>
         <div className="text-sm text-muted-foreground">billing_plan_prices 기준 가격 버전을 관리합니다.</div>
@@ -350,16 +364,7 @@ export default function PlanPrices() {
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchList} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            <span className="ml-2">새로고침</span>
-          </Button>
-          <Button size="sm" onClick={openCreate}>
-            <Plus className="h-4 w-4" />
-            <span className="ml-2">새 가격</span>
-          </Button>
-        </div>
+        <div className="flex items-center gap-2" />
       </div>
 
       <div className="border rounded-md">
@@ -560,6 +565,6 @@ export default function PlanPrices() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }

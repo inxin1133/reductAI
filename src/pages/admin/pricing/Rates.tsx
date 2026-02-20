@@ -26,6 +26,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Copy, Loader2, Pencil, RefreshCcw, Wand2 } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type RateCardStatus = "draft" | "active" | "retired"
 
@@ -424,12 +425,8 @@ export default function Rates() {
   }, [modality, providerSlug, q, selectedRateCard, tokenCategory, usageKind])
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <div className="text-xl font-semibold">가격/요율 관리 - 모델/모달리티 요율표</div>
-          <div className="text-sm text-muted-foreground">pricing_skus + pricing_rates 기준</div>
-        </div>
+    <AdminPage
+      headerContent={
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => fetchRates()} disabled={loading}>
             <RefreshCcw className="size-4 mr-2" />
@@ -444,6 +441,14 @@ export default function Rates() {
             일괄 수정
           </Button>
         </div>
+      }
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-xl font-semibold">가격/요율 관리 - 모델/모달리티 요율표</div>
+          <div className="text-sm text-muted-foreground">pricing_skus + pricing_rates 기준</div>
+        </div>
+        <div className="flex items-center gap-2" />
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
@@ -773,7 +778,7 @@ export default function Rates() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

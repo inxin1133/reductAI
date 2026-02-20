@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Loader2, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type PromptTemplateRow = {
   id: string
@@ -225,14 +226,8 @@ export default function PromptTemplates() {
   }, [rows])
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <div className="text-xl font-semibold">AI 서비스 - 프롬프트 템플릿</div>
-          <div className="text-sm text-muted-foreground">
-            목적(purpose)별로 Responses API 요청 바디(JSON)를 템플릿으로 관리합니다.
-          </div>
-        </div>
+    <AdminPage
+      headerContent={
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => fetchList()} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
@@ -243,6 +238,16 @@ export default function PromptTemplates() {
             <span className="ml-2">템플릿 추가</span>
           </Button>
         </div>
+      }
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-xl font-semibold">AI 서비스 - 프롬프트 템플릿</div>
+          <div className="text-sm text-muted-foreground">
+            목적(purpose)별로 Responses API 요청 바디(JSON)를 템플릿으로 관리합니다.
+          </div>
+        </div>
+        <div className="flex gap-2" />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -417,7 +422,7 @@ export default function PromptTemplates() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

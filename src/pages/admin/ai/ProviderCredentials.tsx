@@ -28,9 +28,8 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
-import { useEffect as useEffectReact } from "react"
 import { Loader2, Pencil, Plus, Search, Trash2, KeyRound } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type ProviderStatus = "active" | "inactive" | "deprecated"
 
@@ -202,7 +201,6 @@ type CredentialUpsertPayload = {
 }
 
 export default function ProviderCredentials() {
-  const { setAction } = useAdminHeaderActionContext()
 
   const [providers, setProviders] = useState<AIProvider[]>([])
   const [credentials, setCredentials] = useState<ProviderCredential[]>([])
@@ -324,16 +322,6 @@ export default function ProviderCredentials() {
     setMetadataText("{}")
     setIsDialogOpen(true)
   }
-
-  // 헤더 액션 등록 (API Key 추가 버튼)
-  useEffectReact(() => {
-    setAction(
-      <Button onClick={handleCreate} size="sm">
-        <Plus className="mr-2 h-4 w-4" /> API Key 추가
-      </Button>
-    )
-    return () => setAction(null)
-  }, [setAction, providers])
 
   const handleEdit = (cred: ProviderCredential) => {
     setEditingCredential(cred)
@@ -543,7 +531,13 @@ export default function ProviderCredentials() {
   }
 
   return (
-    <div className="space-y-4 bg-background">
+    <AdminPage
+      headerContent={
+        <Button onClick={handleCreate} size="sm">
+          <Plus className="mr-2 h-4 w-4" /> API Key 추가
+        </Button>
+      }
+    >
       <div className="flex items-center justify-between">
         <div>
           <p className="text-muted-foreground">
@@ -823,7 +817,7 @@ export default function ProviderCredentials() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

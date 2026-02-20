@@ -27,8 +27,7 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Plus, Pencil, Trash2, Loader2 } from "lucide-react"
-import { useEffect as useEffectReact } from "react"
-import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 interface Language {
   id: string
@@ -45,7 +44,6 @@ interface Language {
 const API_URL = "http://localhost:3006/api/i18n/languages"
 
 export default function LanguageManager() {
-  const { setAction } = useAdminHeaderActionContext()
   const [languages, setLanguages] = useState<Language[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
@@ -101,16 +99,6 @@ export default function LanguageManager() {
     setIsDialogOpen(true)
   }
 
-  // 헤더 액션 등록 (언어 추가 버튼)
-  useEffectReact(() => {
-    setAction(
-      <Button onClick={handleCreate} size="sm">
-        <Plus className="mr-2 h-4 w-4" /> 언어 추가
-      </Button>
-    )
-    return () => setAction(null)
-  }, [setAction])
-
   const handleEdit = (lang: Language) => {
     setEditingLanguage(lang)
     setFormData(lang)
@@ -157,7 +145,13 @@ export default function LanguageManager() {
   }
 
   return (
-    <div className="space-y-4 bg-background">
+    <AdminPage
+      headerContent={
+        <Button onClick={handleCreate} size="sm">
+          <Plus className="mr-2 h-4 w-4" /> 언어 추가
+        </Button>
+      }
+    >
       <div className="flex items-center justify-between">
         <div>
           {/* <h2 className="text-2xl font-bold tracking-tight">지원 언어 관리</h2> */}
@@ -165,9 +159,6 @@ export default function LanguageManager() {
             시스템에서 지원하는 다국어 설정을 관리합니다.
           </p>
         </div>
-        {/* <Button onClick={handleCreate}>
-          <Plus className="mr-2 h-4 w-4" /> 언어 추가
-        </Button> */}
       </div>
 
       <div className="border rounded-md">
@@ -352,7 +343,7 @@ export default function LanguageManager() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

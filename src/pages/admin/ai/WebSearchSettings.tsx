@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Loader2, RefreshCcw, Save } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type WebSearchPolicy = {
   enabled: boolean
@@ -91,19 +92,24 @@ export default function WebSearchSettings() {
   ]
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <div className="text-xl font-semibold">AI 서비스 - 웹검색 정책</div>
+    <AdminPage
+      className="flex flex-col gap-4"
+      headerContent={
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => void load()} disabled={loading}>
+          <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
             {loading ? <Loader2 className="mr-2 size-4 animate-spin" /> : <RefreshCcw className="mr-2 size-4" />}
             새로고침
           </Button>
-          <Button onClick={() => void save()} disabled={saving || !policy}>
+          <Button size="sm" onClick={() => void save()} disabled={saving || !policy}>
             {saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Save className="mr-2 size-4" />}
             저장
           </Button>
         </div>
+      }
+    >
+      <div className="flex items-center justify-between">
+        <div className="text-xl font-semibold">AI 서비스 - 웹검색 정책</div>
+        <div className="flex gap-2" />
       </div>
 
       <Card className="p-4 space-y-4">
@@ -212,6 +218,6 @@ export default function WebSearchSettings() {
           처리됩니다.
         </div>
       </Card>
-    </div>
+    </AdminPage>
   )
 }

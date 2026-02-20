@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Pencil, RefreshCcw } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type AccountRow = {
   id: string
@@ -214,7 +215,14 @@ export default function CreditAccounts() {
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <Button variant="outline" size="sm" onClick={fetchAccounts} disabled={loading}>
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+          <span className="ml-2">새로고침</span>
+        </Button>
+      }
+    >
       <div className="space-y-1">
         <div className="text-xl font-semibold">크레딧 계정/풀</div>
         <div className="text-sm text-muted-foreground">credit_accounts 기준 계정 풀을 관리합니다.</div>
@@ -269,12 +277,7 @@ export default function CreditAccounts() {
           <div className="text-xs text-muted-foreground">테넌트 ID</div>
           <Input value={tenantId} onChange={(e) => setTenantId(e.target.value)} placeholder="owner_tenant_id" />
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchAccounts} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            <span className="ml-2">새로고침</span>
-          </Button>
-        </div>
+        <div className="flex items-center gap-2" />
       </div>
 
       <div className="flex flex-col gap-3 md:flex-row md:items-end">
@@ -431,6 +434,6 @@ export default function CreditAccounts() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }

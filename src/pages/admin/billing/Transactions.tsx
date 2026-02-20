@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Pencil, RefreshCcw } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type TransactionRow = {
   id: string
@@ -226,7 +227,14 @@ export default function BillingTransactions() {
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <Button variant="outline" size="sm" onClick={fetchTransactions} disabled={loading}>
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+          <span className="ml-2">새로고침</span>
+        </Button>
+      }
+    >
       <div className="space-y-1">
         <div className="text-xl font-semibold">결제 내역(Transactions)</div>
         <div className="text-sm text-muted-foreground">payment_transactions 기준 거래 내역을 확인합니다.</div>
@@ -284,12 +292,7 @@ export default function BillingTransactions() {
           <div className="text-xs text-muted-foreground">테넌트 ID</div>
           <Input value={tenantId} onChange={(e) => setTenantId(e.target.value)} placeholder="tenant_id" />
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchTransactions} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            <span className="ml-2">새로고침</span>
-          </Button>
-        </div>
+        <div className="flex items-center gap-2" />
       </div>
 
       <div className="flex flex-col gap-3 md:flex-row md:items-end">
@@ -473,6 +476,6 @@ export default function BillingTransactions() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }

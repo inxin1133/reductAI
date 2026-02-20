@@ -29,6 +29,7 @@ import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Pencil, Plus, RefreshCcw } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type TopupRow = {
   id: string
@@ -220,7 +221,20 @@ export default function TopupProducts() {
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={fetchList} disabled={loading}>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">새로고침</span>
+          </Button>
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="h-4 w-4" />
+            <span className="ml-2">상품 추가</span>
+          </Button>
+        </div>
+      }
+    >
       <div className="space-y-1">
         <div className="text-xl font-semibold">충전 상품 관리</div>
         <div className="text-sm text-muted-foreground">credit_topup_products 기준 충전 상품을 관리합니다.</div>
@@ -248,16 +262,7 @@ export default function TopupProducts() {
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchList} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            <span className="ml-2">새로고침</span>
-          </Button>
-          <Button size="sm" onClick={openCreate}>
-            <Plus className="h-4 w-4" />
-            <span className="ml-2">상품 추가</span>
-          </Button>
-        </div>
+        <div className="flex items-center gap-2" />
       </div>
 
       <div className="border rounded-md">
@@ -410,6 +415,6 @@ export default function TopupProducts() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }

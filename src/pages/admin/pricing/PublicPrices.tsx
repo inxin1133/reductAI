@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Loader2, RefreshCcw } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type PriceRow = {
   provider_slug: string
@@ -118,16 +119,20 @@ export default function PublicPrices() {
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <Button variant="outline" size="sm" onClick={() => fetchList()} disabled={loading}>
+          <RefreshCcw className="size-4 mr-2" />
+          새로고침
+        </Button>
+      }
+    >
       <div className="flex items-center justify-between gap-2">
         <div>
           <div className="text-xl font-semibold">가격/요율 관리 - 사용자 공개 요금표</div>
           <div className="text-sm text-muted-foreground">pricing_model_cost_summaries 기준 조회</div>
         </div>
-        <Button variant="outline" size="sm" onClick={() => fetchList()} disabled={loading}>
-          <RefreshCcw className="size-4 mr-2" />
-          새로고침
-        </Button>
+        <div className="flex items-center gap-2" />
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
@@ -233,7 +238,7 @@ export default function PublicPrices() {
           </Button>
         </div>
       </div>
-    </div>
+    </AdminPage>
   )
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { adminFetch } from "@/lib/adminFetch"
-import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
+import { AdminPage } from "@/components/layout/AdminPage"
 import {
   Table,
   TableBody,
@@ -100,7 +100,6 @@ function parseJson(value: string) {
 }
 
 export default function UserProviders() {
-  const { setAction } = useAdminHeaderActionContext()
   const [rows, setRows] = useState<UserProviderRow[]>([])
   const [loading, setLoading] = useState(false)
   const [total, setTotal] = useState(0)
@@ -219,19 +218,22 @@ export default function UserProviders() {
     fetchUsers()
   }, [])
 
-  useEffect(() => {
-    setAction(
-      <Button size="sm" onClick={openCreate}>
-        <Plus className="mr-2 h-4 w-4" /> 연동 추가
-      </Button>
-    )
-    return () => setAction(null)
-  }, [setAction])
-
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="space-y-4 bg-background">
+    <AdminPage
+      headerContent={
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={fetchProviders} disabled={loading}>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">새로고침</span>
+          </Button>
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="mr-2 h-4 w-4" /> 연동 추가
+          </Button>
+        </div>
+      }
+    >
       <div>
         <p className="text-muted-foreground">회원 SSO/로그인 연동 정보를 관리합니다.</p>
       </div>
@@ -261,12 +263,7 @@ export default function UserProviders() {
           <div className="text-xs text-muted-foreground">사용자 ID</div>
           <Input value={userId} onChange={(e) => setUserId(e.target.value)} placeholder="user_id" />
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchProviders} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            <span className="ml-2">새로고침</span>
-          </Button>
-        </div>
+        <div className="flex items-center gap-2" />
       </div>
 
       <div className="border rounded-md">
@@ -413,6 +410,6 @@ export default function UserProviders() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }

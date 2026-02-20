@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, RefreshCcw } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type LedgerRow = {
   id: string
@@ -151,7 +152,14 @@ export default function CreditLedger() {
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <Button variant="outline" size="sm" onClick={fetchList} disabled={loading}>
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+          <span className="ml-2">새로고침</span>
+        </Button>
+      }
+    >
       <div className="space-y-1">
         <div className="text-xl font-semibold">크레딧 원장(ledger)</div>
         <div className="text-sm text-muted-foreground">credit_ledger_entries 기준 변경 이력을 조회합니다.</div>
@@ -204,12 +212,7 @@ export default function CreditLedger() {
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchList} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            <span className="ml-2">새로고침</span>
-          </Button>
-        </div>
+        <div className="flex items-center gap-2" />
       </div>
 
       <div className="flex flex-col gap-3 md:flex-row md:items-end">
@@ -313,6 +316,6 @@ export default function CreditLedger() {
           </Button>
         </div>
       </div>
-    </div>
+    </AdminPage>
   )
 }

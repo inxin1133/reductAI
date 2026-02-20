@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react"
-import { useAdminHeaderActionContext } from "../../../contexts/AdminHeaderActionContext"
+import { AdminPage } from "../../../components/layout/AdminPage"
 import {
   Table,
   TableBody,
@@ -52,7 +52,6 @@ interface User {
 }
 
 export default function TranslationHistoryPage() {
-  const { setAction, setTitle } = useAdminHeaderActionContext()
   const [history, setHistory] = useState<TranslationHistory[]>([])
   const [namespaces, setNamespaces] = useState<Namespace[]>([])
   const [languages, setLanguages] = useState<Language[]>([])
@@ -67,12 +66,6 @@ export default function TranslationHistoryPage() {
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
   const [isLoading, setIsLoading] = useState(false)
-
-  // 헤더 설정
-  useEffect(() => {
-    setTitle("다국어(i18n) > 번역 이력")
-    setAction(null) // 액션 버튼 없음
-  }, [setTitle, setAction])
 
   // 기초 데이터 로드 (네임스페이스, 언어, 사용자)
   useEffect(() => {
@@ -182,7 +175,7 @@ export default function TranslationHistoryPage() {
   }
 
   return (
-    <div className="space-y-4">
+    <AdminPage headerTitle="다국어(i18n) > 번역 이력">
       {/* 필터 영역 */}
       <div className="flex flex-col md:flex-row gap-4 bg-white p-4 rounded-lg border shadow-sm">
         <div className="flex-1">
@@ -320,7 +313,7 @@ export default function TranslationHistoryPage() {
           <ChevronRight className="h-4 w-4" />
         </Button>
       </div>
-    </div>
+    </AdminPage>
   )
 }
 

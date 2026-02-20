@@ -30,6 +30,7 @@ import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Pencil, Plus, RefreshCcw } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type PlanOption = {
   id: string
@@ -475,7 +476,24 @@ export default function BillingSubscriptions() {
   const changesPageCount = Math.max(1, Math.ceil(changesTotal / changesLimit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={() => openProvision()}>
+            <Plus className="h-4 w-4" />
+            <span className="ml-2">유료 구독 적용</span>
+          </Button>
+          <Button variant="outline" size="sm" onClick={fetchSubscriptions} disabled={loading}>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">구독 새로고침</span>
+          </Button>
+          <Button variant="outline" size="sm" onClick={fetchChanges} disabled={changesLoading}>
+            {changesLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">변경 새로고침</span>
+          </Button>
+        </div>
+      }
+    >
       <div className="space-y-1">
         <div className="text-xl font-semibold">구독 현황</div>
         <div className="text-sm text-muted-foreground">billing_subscriptions, billing_subscription_changes</div>
@@ -543,16 +561,7 @@ export default function BillingSubscriptions() {
               <div className="text-xs text-muted-foreground">테넌트 ID</div>
               <Input value={tenantId} onChange={(e) => setTenantId(e.target.value)} placeholder="tenant_id" />
             </div>
-            <div className="flex items-center gap-2">
-              <Button size="sm" onClick={() => openProvision()}>
-                <Plus className="h-4 w-4" />
-                <span className="ml-2">유료 구독 적용</span>
-              </Button>
-              <Button variant="outline" size="sm" onClick={fetchSubscriptions} disabled={loading}>
-                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-                <span className="ml-2">새로고침</span>
-              </Button>
-            </div>
+            <div className="flex items-center gap-2" />
           </div>
 
           <div className="border rounded-md">
@@ -700,12 +709,7 @@ export default function BillingSubscriptions() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={fetchChanges} disabled={changesLoading}>
-                {changesLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-                <span className="ml-2">새로고침</span>
-              </Button>
-            </div>
+            <div className="flex items-center gap-2" />
           </div>
 
           <div className="border rounded-md">
@@ -1058,6 +1062,6 @@ export default function BillingSubscriptions() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }

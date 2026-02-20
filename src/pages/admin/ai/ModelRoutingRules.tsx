@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Loader2, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type RoutingRule = {
   id: string
@@ -304,14 +305,8 @@ export default function ModelRoutingRules() {
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <div className="text-xl font-semibold">AI 서비스 - 모델 라우팅 규칙</div>
-          <div className="text-sm text-muted-foreground">
-            조건(conditions)에 따라 사용할 모델(target/fallback)을 결정하는 규칙을 관리합니다.
-          </div>
-        </div>
+    <AdminPage
+      headerContent={
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => fetchRules()} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
@@ -322,6 +317,16 @@ export default function ModelRoutingRules() {
             <span className="ml-2">규칙 추가</span>
           </Button>
         </div>
+      }
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-xl font-semibold">AI 서비스 - 모델 라우팅 규칙</div>
+          <div className="text-sm text-muted-foreground">
+            조건(conditions)에 따라 사용할 모델(target/fallback)을 결정하는 규칙을 관리합니다.
+          </div>
+        </div>
+        <div className="flex gap-2" />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -595,7 +600,7 @@ export default function ModelRoutingRules() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

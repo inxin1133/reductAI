@@ -21,7 +21,7 @@ import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Plus, Pencil, Trash2, Loader2, Search } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 // 네임스페이스 인터페이스 정의
 interface Namespace {
@@ -37,7 +37,6 @@ interface Namespace {
 const API_URL = "http://localhost:3006/api/i18n/namespaces"
 
 export default function NamespaceManager() {
-  const { setAction, setTitle } = useAdminHeaderActionContext()
   const [namespaces, setNamespaces] = useState<Namespace[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
@@ -73,7 +72,6 @@ export default function NamespaceManager() {
 
   // 초기 로딩 및 검색/페이지 변경 시 데이터 호출
   useEffect(() => {
-    setTitle("다국어(i18n) > 네임스페이스 관리")
     fetchNamespaces()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pagination.page, search])
@@ -116,15 +114,11 @@ export default function NamespaceManager() {
     setIsDialogOpen(true)
   }
 
-  // 헤더 액션 버튼 설정 (추가 버튼)
-  useEffect(() => {
-    setAction(
-      <Button onClick={handleCreate} size="sm">
-        <Plus className="mr-2 h-4 w-4" /> 네임스페이스 추가
-      </Button>
-    )
-    return () => setAction(null)
-  }, [setAction])
+  const headerContent = (
+    <Button onClick={handleCreate} size="sm">
+      <Plus className="mr-2 h-4 w-4" /> 네임스페이스 추가
+    </Button>
+  )
 
   // 수정 다이얼로그 열기
   const handleEdit = (ns: Namespace) => {
@@ -192,7 +186,7 @@ export default function NamespaceManager() {
   }
 
   return (
-    <div className="space-y-4 bg-background">
+    <AdminPage headerTitle="다국어(i18n) > 네임스페이스 관리" headerContent={headerContent}>
       <div className="flex items-center justify-between">
         <div>
           <p className="text-muted-foreground">
@@ -371,7 +365,7 @@ export default function NamespaceManager() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

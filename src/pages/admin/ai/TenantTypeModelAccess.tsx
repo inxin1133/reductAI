@@ -28,9 +28,8 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
-import { useEffect as useEffectReact } from "react"
 import { Loader2, Pencil, Plus, Search, Trash2, Link2 } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type TenantType = "personal" | "team" | "group"
 type AccessStatus = "active" | "inactive" | "suspended"
@@ -101,7 +100,6 @@ async function tryFetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Pr
 }
 
 export default function TenantTypeModelAccess() {
-  const { setAction } = useAdminHeaderActionContext()
 
   const [selectedType, setSelectedType] = useState<TenantType>("personal")
   const [models, setModels] = useState<Model[]>([])
@@ -228,14 +226,11 @@ export default function TenantTypeModelAccess() {
     setIsDialogOpen(true)
   }
 
-  useEffectReact(() => {
-    setAction(
-      <Button onClick={handleCreate} size="sm">
-        <Plus className="mr-2 h-4 w-4" /> 정책 추가
-      </Button>
-    )
-    return () => setAction(null)
-  }, [setAction, models])
+  const headerContent = (
+    <Button onClick={handleCreate} size="sm">
+      <Plus className="mr-2 h-4 w-4" /> 정책 추가
+    </Button>
+  )
 
   const handleEdit = (row: TypeModelAccessRow) => {
     setEditing(row)
@@ -347,7 +342,7 @@ export default function TenantTypeModelAccess() {
   }
 
   return (
-    <div className="space-y-4 bg-background">
+    <AdminPage headerContent={headerContent}>
       <div className="flex items-center justify-between">
         <div>
           <p className="text-muted-foreground">
@@ -656,7 +651,7 @@ export default function TenantTypeModelAccess() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

@@ -27,8 +27,7 @@ import {
 import { Label } from "@/components/ui/label"
 import { Pencil, Trash2, Loader2, Plus, Search, Building2, ChevronLeft, ChevronRight } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
-import { useEffect as useEffectReact } from "react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 interface Tenant {
   id: string
@@ -63,7 +62,6 @@ const API_URL = "http://localhost:3003/api/tenants"
 const USERS_API_URL = "http://localhost:3002/api/users"
 
 export default function TenantManager() {
-  const { setAction } = useAdminHeaderActionContext()
   const [tenants, setTenants] = useState<Tenant[]>([])
   const [users, setUsers] = useState<User[]>([])
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 10, total: 0, totalPages: 0 })
@@ -150,16 +148,6 @@ export default function TenantManager() {
     setIsDialogOpen(true)
   }
 
-  // Header Action
-  useEffectReact(() => {
-    setAction(
-      <Button onClick={handleCreate} size="sm">
-        <Plus className="mr-2 h-4 w-4" /> 테넌트 추가
-      </Button>
-    )
-    return () => setAction(null)
-  }, [setAction])
-
   const handleEdit = (tenant: Tenant) => {
     setEditingTenant(tenant)
     setFormData({
@@ -234,7 +222,13 @@ export default function TenantManager() {
   }
 
   return (
-    <div className="space-y-4 bg-background">
+    <AdminPage
+      headerContent={
+        <Button onClick={handleCreate} size="sm">
+          <Plus className="mr-2 h-4 w-4" /> 테넌트 추가
+        </Button>
+      }
+    >
       <div className="flex items-center justify-between">
         <div>
           <p className="text-muted-foreground">
@@ -532,7 +526,7 @@ export default function TenantManager() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

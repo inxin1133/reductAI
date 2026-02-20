@@ -1,16 +1,23 @@
-import { useTheme } from "@/hooks/useTheme"
-import { Eclipse } from "lucide-react"
-import { useLocation } from "react-router-dom"
-import { adminMenuGroups } from "@/config/adminMenu"
 import { useEffect, useState } from "react"
-import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
-import { Button } from "@/components/ui/button"
+import type { ReactNode } from "react"
+import { useLocation } from "react-router-dom"
+import { Eclipse } from "lucide-react"
 
-export function AdminHeader() {
+import { adminMenuGroups } from "@/config/adminMenu"
+import { Button } from "@/components/ui/button"
+import { useTheme } from "@/hooks/useTheme"
+import { cn } from "@/lib/utils"
+
+type AdminHeaderProps = {
+  className?: string
+  title?: string
+  children?: ReactNode
+}
+
+export function AdminHeader({ className, title, children }: AdminHeaderProps) {
   const { toggleTheme } = useTheme()
   const location = useLocation()
   const [defaultTitle, setDefaultTitle] = useState("Dashboard")
-  const { action, title: contextTitle } = useAdminHeaderActionContext()
 
   useEffect(() => {
     let foundTitle = "Dashboard"
@@ -35,10 +42,10 @@ export function AdminHeader() {
     setDefaultTitle(foundTitle)
   }, [location.pathname])
 
-  const displayTitle = contextTitle || defaultTitle
+  const displayTitle = title && title.trim() ? title : defaultTitle
 
   return (
-    <div className="h-[60px] flex items-center justify-between px-6 shrink-0">
+    <div className={cn("h-[60px] flex items-center justify-between shrink-0", className)}>
       <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-sm text-muted-foreground">
         {displayTitle.split(" > ").map((segment, idx, arr) => (
           <span key={segment} className="flex items-center gap-2">
@@ -50,7 +57,7 @@ export function AdminHeader() {
         ))}
       </nav>
       <div className="flex items-center gap-4">
-        {action}
+        {children}
         <Button         
          variant="ghost"
          className="size-8 shrink-0 hover:bg-accent"

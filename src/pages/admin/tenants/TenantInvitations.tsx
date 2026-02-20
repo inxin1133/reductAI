@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { adminFetch } from "@/lib/adminFetch"
-import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
+import { AdminPage } from "@/components/layout/AdminPage"
 import {
   Table,
   TableBody,
@@ -123,7 +123,6 @@ function statusBadge(status?: string | null) {
 }
 
 export default function TenantInvitations() {
-  const { setAction } = useAdminHeaderActionContext()
   const [rows, setRows] = useState<InvitationRow[]>([])
   const [loading, setLoading] = useState(false)
   const [total, setTotal] = useState(0)
@@ -282,19 +281,22 @@ export default function TenantInvitations() {
     fetchTenants()
   }, [])
 
-  useEffect(() => {
-    setAction(
-      <Button size="sm" onClick={openCreate}>
-        <Plus className="mr-2 h-4 w-4" /> 초대 추가
-      </Button>
-    )
-    return () => setAction(null)
-  }, [setAction])
-
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="space-y-4 bg-background">
+    <AdminPage
+      headerContent={
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={fetchInvitations} disabled={loading}>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">새로고침</span>
+          </Button>
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="mr-2 h-4 w-4" /> 초대 추가
+          </Button>
+        </div>
+      }
+    >
       <div>
         <p className="text-muted-foreground">테넌트 초대 상태와 만료를 관리합니다.</p>
       </div>
@@ -328,12 +330,7 @@ export default function TenantInvitations() {
           <div className="text-xs text-muted-foreground">초대 이메일</div>
           <Input value={inviteeEmail} onChange={(e) => setInviteeEmail(e.target.value)} placeholder="invitee_email" />
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchInvitations} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            <span className="ml-2">새로고침</span>
-          </Button>
-        </div>
+        <div className="flex items-center gap-2" />
       </div>
 
       <div className="border rounded-md">
@@ -544,6 +541,6 @@ export default function TenantInvitations() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }

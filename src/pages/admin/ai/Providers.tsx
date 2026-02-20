@@ -28,9 +28,8 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
-import { useEffect as useEffectReact } from "react"
 import { Loader2, Pencil, Plus, Search, Trash2, ShieldCheck, ShieldAlert } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 import { ProviderLogo, PROVIDER_LOGO_OPTIONS } from "@/components/icons/providerLogoRegistry"
 
 type ProviderStatus = "active" | "inactive" | "deprecated"
@@ -166,7 +165,6 @@ async function tryFetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Pr
 }
 
 export default function Providers() {
-  const { setAction } = useAdminHeaderActionContext()
 
   const [providers, setProviders] = useState<AIProvider[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -255,16 +253,6 @@ export default function Providers() {
     setMetadataText("{}")
     setIsDialogOpen(true)
   }
-
-  // 헤더 액션 등록 (제공업체 추가 버튼)
-  useEffectReact(() => {
-    setAction(
-      <Button onClick={handleCreate} size="sm">
-        <Plus className="mr-2 h-4 w-4" /> 제공업체 추가
-      </Button>
-    )
-    return () => setAction(null)
-  }, [setAction])
 
   const handleEdit = (provider: AIProvider) => {
     setEditingProvider(provider)
@@ -425,7 +413,13 @@ export default function Providers() {
   }
 
   return (
-    <div className="space-y-4 bg-background">
+    <AdminPage
+      headerContent={
+        <Button onClick={handleCreate} size="sm">
+          <Plus className="mr-2 h-4 w-4" /> 제공업체 추가
+        </Button>
+      }
+    >
       <div className="flex items-center justify-between">
         <div>
           <p className="text-muted-foreground">
@@ -722,7 +716,7 @@ export default function Providers() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

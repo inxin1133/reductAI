@@ -30,6 +30,7 @@ import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Pencil, Plus, RefreshCcw } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type ProviderConfigRow = {
   id: string
@@ -528,7 +529,36 @@ export default function PaymentSettings() {
   const methodPageCount = Math.max(1, Math.ceil(methodTotal / methodLimit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={fetchProviders} disabled={providerLoading}>
+            {providerLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">PG 새로고침</span>
+          </Button>
+          <Button size="sm" onClick={openProviderCreate}>
+            <Plus className="h-4 w-4" />
+            <span className="ml-2">PG 추가</span>
+          </Button>
+          <Button variant="outline" size="sm" onClick={fetchAccounts} disabled={accountLoading}>
+            {accountLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">계정 새로고침</span>
+          </Button>
+          <Button size="sm" onClick={openAccountCreate}>
+            <Plus className="h-4 w-4" />
+            <span className="ml-2">계정 추가</span>
+          </Button>
+          <Button variant="outline" size="sm" onClick={fetchMethods} disabled={methodLoading}>
+            {methodLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">결제수단 새로고침</span>
+          </Button>
+          <Button size="sm" onClick={openMethodCreate}>
+            <Plus className="h-4 w-4" />
+            <span className="ml-2">결제수단 추가</span>
+          </Button>
+        </div>
+      }
+    >
       <div className="space-y-1">
         <div className="text-xl font-semibold">결제 수단/PG 설정</div>
         <div className="text-sm text-muted-foreground">payment_provider_configs, billing_accounts, payment_methods</div>
@@ -569,16 +599,7 @@ export default function PaymentSettings() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={fetchProviders} disabled={providerLoading}>
-                {providerLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-                <span className="ml-2">새로고침</span>
-              </Button>
-              <Button size="sm" onClick={openProviderCreate}>
-                <Plus className="h-4 w-4" />
-                <span className="ml-2">PG 추가</span>
-              </Button>
-            </div>
+              <div className="flex items-center gap-2" />
           </div>
 
           <div className="border rounded-md">
@@ -673,16 +694,7 @@ export default function PaymentSettings() {
               <div className="text-xs text-muted-foreground">통화</div>
               <Input value={accountCurrency} onChange={(e) => setAccountCurrency(e.target.value.toUpperCase())} maxLength={3} />
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={fetchAccounts} disabled={accountLoading}>
-                {accountLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-                <span className="ml-2">새로고침</span>
-              </Button>
-              <Button size="sm" onClick={openAccountCreate}>
-                <Plus className="h-4 w-4" />
-                <span className="ml-2">계정 추가</span>
-              </Button>
-            </div>
+              <div className="flex items-center gap-2" />
           </div>
 
           <div className="border rounded-md">
@@ -823,16 +835,7 @@ export default function PaymentSettings() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={fetchMethods} disabled={methodLoading}>
-                {methodLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-                <span className="ml-2">새로고침</span>
-              </Button>
-              <Button size="sm" onClick={openMethodCreate}>
-                <Plus className="h-4 w-4" />
-                <span className="ml-2">결제수단 추가</span>
-              </Button>
-            </div>
+              <div className="flex items-center gap-2" />
           </div>
 
           <div className="border rounded-md">
@@ -1164,6 +1167,6 @@ export default function PaymentSettings() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }

@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Pencil, RefreshCcw } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type InvoiceRow = {
   id: string
@@ -263,7 +264,14 @@ export default function BillingInvoices() {
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <Button variant="outline" size="sm" onClick={fetchInvoices} disabled={loading}>
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+          <span className="ml-2">새로고침</span>
+        </Button>
+      }
+    >
       <div className="space-y-1">
         <div className="text-xl font-semibold">청구서(Invoices)</div>
         <div className="text-sm text-muted-foreground">billing_invoices, invoice_line_items</div>
@@ -302,12 +310,7 @@ export default function BillingInvoices() {
           <div className="text-xs text-muted-foreground">과금 계정 ID</div>
           <Input value={billingAccountId} onChange={(e) => setBillingAccountId(e.target.value)} placeholder="billing_account_id" />
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchInvoices} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            <span className="ml-2">새로고침</span>
-          </Button>
-        </div>
+        <div className="flex items-center gap-2" />
       </div>
 
       <div className="border rounded-md">
@@ -523,6 +526,6 @@ export default function BillingInvoices() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }

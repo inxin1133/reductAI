@@ -30,6 +30,7 @@ import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Pencil, Plus, RefreshCcw } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type PlanGrantRow = {
   id: string
@@ -325,7 +326,24 @@ export default function CreditGrants() {
   const transferPageCount = Math.max(1, Math.ceil(transferTotal / transferLimit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={fetchGrants} disabled={grantLoading}>
+            {grantLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">정책 새로고침</span>
+          </Button>
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="h-4 w-4" />
+            <span className="ml-2">정책 추가</span>
+          </Button>
+          <Button variant="outline" size="sm" onClick={fetchTransfers} disabled={transferLoading}>
+            {transferLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">전송 새로고침</span>
+          </Button>
+        </div>
+      }
+    >
       <div className="space-y-1">
         <div className="text-xl font-semibold">그랜트/분배 정책</div>
         <div className="text-sm text-muted-foreground">credit_plan_grants, credit_transfers</div>
@@ -386,16 +404,7 @@ export default function CreditGrants() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={fetchGrants} disabled={grantLoading}>
-                {grantLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-                <span className="ml-2">새로고침</span>
-              </Button>
-              <Button size="sm" onClick={openCreate}>
-                <Plus className="h-4 w-4" />
-                <span className="ml-2">정책 추가</span>
-              </Button>
-            </div>
+            <div className="flex items-center gap-2" />
           </div>
 
           <div className="border rounded-md">
@@ -523,12 +532,7 @@ export default function CreditGrants() {
               <div className="text-xs text-muted-foreground">테넌트 ID</div>
               <Input value={transferTenantId} onChange={(e) => setTransferTenantId(e.target.value)} placeholder="tenant_id" />
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={fetchTransfers} disabled={transferLoading}>
-                {transferLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-                <span className="ml-2">새로고침</span>
-              </Button>
-            </div>
+            <div className="flex items-center gap-2" />
           </div>
 
           <div className="flex flex-col gap-3 md:flex-row md:items-end">
@@ -734,6 +738,6 @@ export default function CreditGrants() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }

@@ -26,8 +26,7 @@ import {
 } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
 import { Plus, Trash2, Loader2, Search, Save } from "lucide-react"
-import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
-import { useEffect as useEffectReact } from "react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 // 간단한 번역 헬퍼: namespace.key 형식으로 키를 찾아서 UI에 적용
 // 실제 서비스에서는 전역 i18n 라이브러리 또는 컨텍스트에 연결하면 됨
@@ -75,7 +74,6 @@ interface Language {
 const BASE_URL = "http://localhost:3006/api/i18n"
 
 export default function TranslationManager() {
-  const { setAction, setTitle } = useAdminHeaderActionContext()
   const [data, setData] = useState<TranslationKey[]>([])
   const [namespaces, setNamespaces] = useState<Namespace[]>([])
   const [languages, setLanguages] = useState<Language[]>([])
@@ -115,7 +113,6 @@ export default function TranslationManager() {
 
   // --- 초기 데이터 로드 ---
   useEffect(() => {
-    setTitle("다국어(i18n) > 번역 데이터 관리")
     fetchInitialData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -126,30 +123,25 @@ export default function TranslationManager() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pagination.page, search, selectedNamespace])
 
-  // 헤더 액션 (미리보기 언어 선택 + 키 추가 버튼)
-  useEffectReact(() => {
-    setAction(
-      <div className="flex items-center gap-2">
-         <Button onClick={() => setIsKeyDialogOpen(true)} size="sm">
-          <Plus className="mr-2 h-4 w-4" /> 키 추가
-        </Button>
-        <Select value={previewLang} onValueChange={setPreviewLang}>
-          <SelectTrigger className="w-[140px] h-8">
-            <SelectValue placeholder="언어 선택" />
-          </SelectTrigger>
-          <SelectContent>
-            {languages.map(lang => (
-              <SelectItem key={lang.code} value={lang.code}>
-                {lang.flag_emoji} {lang.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-       
-      </div>
-    )
-    return () => setAction(null)
-  }, [setAction, previewLang, languages])
+  const headerContent = (
+    <div className="flex items-center gap-2">
+      <Button onClick={() => setIsKeyDialogOpen(true)} size="sm">
+        <Plus className="mr-2 h-4 w-4" /> 키 추가
+      </Button>
+      <Select value={previewLang} onValueChange={setPreviewLang}>
+        <SelectTrigger className="w-[140px] h-8">
+          <SelectValue placeholder="언어 선택" />
+        </SelectTrigger>
+        <SelectContent>
+          {languages.map(lang => (
+            <SelectItem key={lang.code} value={lang.code}>
+              {lang.flag_emoji} {lang.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
 
   // --- API 호출 함수들 ---
   const fetchInitialData = async () => {
@@ -295,7 +287,11 @@ export default function TranslationManager() {
   }
 
   return (
-    <div className="space-y-4 bg-background h-full flex flex-col">
+    <AdminPage
+      className="h-full flex flex-col"
+      headerTitle="다국어(i18n) > 번역 데이터 관리"
+      headerContent={headerContent}
+    >
       <div className="flex items-center justify-between shrink-0">
         <div>
           <p className="text-muted-foreground">
@@ -497,7 +493,7 @@ export default function TranslationManager() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

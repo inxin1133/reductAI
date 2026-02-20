@@ -29,8 +29,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { Pencil, Trash2, Loader2, Plus, Shield } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
-import { useEffect as useEffectReact } from "react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 interface Permission {
   id: string
@@ -65,7 +64,6 @@ const API_URL = "http://localhost:3002/api"
 const TENANTS_API_URL = "http://localhost:3003/api/tenants"
 
 export default function RoleManager() {
-  const { setAction } = useAdminHeaderActionContext()
   const [roles, setRoles] = useState<Role[]>([])
   const [permissions, setPermissions] = useState<Permission[]>([])
   const [tenants, setTenants] = useState<Tenant[]>([])
@@ -155,16 +153,6 @@ export default function RoleManager() {
     })
     setIsDialogOpen(true)
   }
-
-  // 헤더 액션 등록 (역할 추가 버튼)
-  useEffectReact(() => {
-    setAction(
-      <Button onClick={handleCreate} size="sm">
-        <Plus className="mr-2 h-4 w-4" /> 역할 추가
-      </Button>
-    )
-    return () => setAction(null)
-  }, [setAction])
 
   const handleEdit = async (role: Role) => {
     // Fetch role details to get assigned permissions
@@ -270,7 +258,13 @@ export default function RoleManager() {
   }, {} as Record<string, Permission[]>)
 
   return (
-    <div className="space-y-4 bg-background">
+    <AdminPage
+      headerContent={
+        <Button onClick={handleCreate} size="sm">
+          <Plus className="mr-2 h-4 w-4" /> 역할 추가
+        </Button>
+      }
+    >
       <div className="flex items-center justify-between">
         <div>
           <p className="text-muted-foreground">
@@ -501,6 +495,6 @@ export default function RoleManager() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }

@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, RefreshCcw } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type AuditRow = {
   id: string
@@ -161,7 +162,14 @@ export default function SystemAudit() {
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <Button variant="outline" size="sm" onClick={fetchAuditLogs} disabled={loading}>
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+          <span className="ml-2">새로고침</span>
+        </Button>
+      }
+    >
       <div className="space-y-1">
         <div className="text-xl font-semibold">감사 로그(Audit)</div>
         <div className="text-sm text-muted-foreground">관리자 작업 및 시스템 이벤트 로그를 조회합니다.</div>
@@ -196,12 +204,7 @@ export default function SystemAudit() {
           <div className="text-xs text-muted-foreground">리소스</div>
           <Input value={resourceType} onChange={(e) => setResourceType(e.target.value)} placeholder="resource_type" />
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchAuditLogs} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            <span className="ml-2">새로고침</span>
-          </Button>
-        </div>
+        <div className="flex items-center gap-2" />
       </div>
 
       <div className="flex flex-col gap-3 md:flex-row md:items-end">
@@ -376,6 +379,6 @@ export default function SystemAudit() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }

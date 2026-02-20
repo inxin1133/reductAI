@@ -27,8 +27,7 @@ import {
 import { Label } from "@/components/ui/label"
 import { Pencil, Loader2, ChevronLeft, ChevronRight, Search, Plus } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
-import { useEffect as useEffectReact } from "react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 interface User {
   id: string
@@ -66,7 +65,6 @@ const API_URL = "/api/users"
 const ROLES_API_URL = "/api/roles"
 
 export default function UserManager() {
-  const { setAction } = useAdminHeaderActionContext()
   const [users, setUsers] = useState<User[]>([])
   const [roles, setRoles] = useState<Role[]>([])
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 10, total: 0, totalPages: 0 })
@@ -200,16 +198,6 @@ export default function UserManager() {
     setIsDialogOpen(true)
   }
 
-  // Header Action
-  useEffectReact(() => {
-    setAction(
-      <Button onClick={handleCreate} size="sm">
-        <Plus className="mr-2 h-4 w-4" /> 사용자 생성
-      </Button>
-    )
-    return () => setAction(null)
-  }, [setAction])
-
   // If roles load after opening dialog and no role is selected, apply default role automatically
   useEffect(() => {
     if (isDialogOpen && !formData.role_id && roles.length > 0) {
@@ -300,7 +288,13 @@ export default function UserManager() {
   }
 
   return (
-    <div className="space-y-4 bg-background">
+    <AdminPage
+      headerContent={
+        <Button onClick={handleCreate} size="sm">
+          <Plus className="h-4 w-4 mr-2" /> 사용자 생성
+        </Button>
+      }
+    >
       <div className="flex items-center justify-between">
         <div>
           <p className="text-muted-foreground">
@@ -597,6 +591,6 @@ export default function UserManager() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }

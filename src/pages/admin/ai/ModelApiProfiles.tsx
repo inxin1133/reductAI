@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Loader2, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type Purpose = "chat" | "image" | "video" | "audio" | "music" | "multimodal" | "embedding" | "code"
 
@@ -385,14 +386,8 @@ export default function ModelApiProfiles() {
   }, [selectedProviderBaseUrl, transportText])
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <div className="text-xl font-semibold">AI 서비스 - Model API Profiles</div>
-          <div className="text-sm text-muted-foreground">
-            Provider/모달리티별 호출(transport)과 응답 매핑(response_mapping)을 DB로 관리합니다. (표준안: <span className="font-mono">document/model_api_profiles_standard.md</span>)
-          </div>
-        </div>
+    <AdminPage
+      headerContent={
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => fetchList()} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
@@ -403,6 +398,16 @@ export default function ModelApiProfiles() {
             <span className="ml-2">프로필 추가</span>
           </Button>
         </div>
+      }
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-xl font-semibold">AI 서비스 - Model API Profiles</div>
+          <div className="text-sm text-muted-foreground">
+            Provider/모달리티별 호출(transport)과 응답 매핑(response_mapping)을 DB로 관리합니다. (표준안: <span className="font-mono">document/model_api_profiles_standard.md</span>)
+          </div>
+        </div>
+        <div className="flex gap-2" />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -717,7 +722,7 @@ export default function ModelApiProfiles() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

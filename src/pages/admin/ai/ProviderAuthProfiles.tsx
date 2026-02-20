@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Loader2, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type AuthType = "api_key" | "oauth2_service_account" | "aws_sigv4" | "azure_ad"
 
@@ -276,14 +277,8 @@ export default function ProviderAuthProfiles() {
   }, [credentials, providerId])
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <div className="text-xl font-semibold">AI 서비스 - Provider Auth Profiles</div>
-          <div className="text-sm text-muted-foreground">
-            provider_api_credentials 위에 인증 방식을 프로필로 관리합니다. (v1: api_key / oauth2_service_account)
-          </div>
-        </div>
+    <AdminPage
+      headerContent={
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => fetchList()} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
@@ -294,6 +289,16 @@ export default function ProviderAuthProfiles() {
             <span className="ml-2">인증 프로필 추가</span>
           </Button>
         </div>
+      }
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-xl font-semibold">AI 서비스 - Provider Auth Profiles</div>
+          <div className="text-sm text-muted-foreground">
+            provider_api_credentials 위에 인증 방식을 프로필로 관리합니다. (v1: api_key / oauth2_service_account)
+          </div>
+        </div>
+        <div className="flex gap-2" />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -538,7 +543,7 @@ export default function ProviderAuthProfiles() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Loader2, RefreshCcw, Search } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type UsageStatus = "success" | "failure" | "error" | "timeout" | "rate_limited" | "partial" | "failed"
 
@@ -214,7 +215,14 @@ export default function ModelUsageLogs() {
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <Button variant="outline" size="sm" onClick={fetchList} disabled={loading}>
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+          <span className="ml-2">새로고침</span>
+        </Button>
+      }
+    >
       <div className="flex items-center justify-between gap-2">
         <div>
           <div className="text-xl font-semibold">AI 서비스 - 모델 사용 로그</div>
@@ -222,10 +230,7 @@ export default function ModelUsageLogs() {
             모델 호출 기록(토큰/지연/상태)을 조회합니다.
           </div>
         </div>
-        <Button variant="outline" onClick={() => fetchList()} disabled={loading}>
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-          <span className="ml-2">새로고침</span>
-        </Button>
+        <div className="flex items-center gap-2" />
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
@@ -540,7 +545,7 @@ export default function ModelUsageLogs() {
           )}
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

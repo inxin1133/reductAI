@@ -27,6 +27,7 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Loader2, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type ModelOption = {
   id: string
@@ -322,12 +323,8 @@ export default function Markups() {
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <div className="text-xl font-semibold">가격/요율 관리 - 마진 정책</div>
-          <div className="text-sm text-muted-foreground">pricing_markup_rules 기준</div>
-        </div>
+    <AdminPage
+      headerContent={
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => fetchList()} disabled={loading}>
             <RefreshCcw className="size-4 mr-2" />
@@ -338,6 +335,14 @@ export default function Markups() {
             새 정책
           </Button>
         </div>
+      }
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-xl font-semibold">가격/요율 관리 - 마진 정책</div>
+          <div className="text-sm text-muted-foreground">pricing_markup_rules 기준</div>
+        </div>
+        <div className="flex gap-2" />
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
@@ -684,7 +689,7 @@ export default function Markups() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

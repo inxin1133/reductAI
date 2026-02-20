@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, RefreshCcw } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type UsageAllocationRow = {
   id: string
@@ -164,7 +165,14 @@ export default function CreditUsageAllocations() {
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <Button variant="outline" size="sm" onClick={fetchList} disabled={loading}>
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+          <span className="ml-2">새로고침</span>
+        </Button>
+      }
+    >
       <div className="space-y-1">
         <div className="text-xl font-semibold">크레딧 사용 분배</div>
         <div className="text-sm text-muted-foreground">
@@ -227,12 +235,7 @@ export default function CreditUsageAllocations() {
           <div className="text-xs text-muted-foreground">Provider</div>
           <Input value={providerSlug} onChange={(e) => setProviderSlug(e.target.value)} placeholder="provider_slug" />
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchList} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            <span className="ml-2">새로고침</span>
-          </Button>
-        </div>
+        <div className="flex items-center gap-2" />
       </div>
 
       <div className="flex flex-col gap-3 md:flex-row md:items-end">
@@ -349,6 +352,6 @@ export default function CreditUsageAllocations() {
           </Button>
         </div>
       </div>
-    </div>
+    </AdminPage>
   )
 }

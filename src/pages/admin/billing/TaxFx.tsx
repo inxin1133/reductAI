@@ -29,6 +29,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Loader2, Pencil, Plus, RefreshCcw } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type TaxRateRow = {
   id: string
@@ -347,7 +348,28 @@ export default function TaxFx() {
   const fxPageCount = Math.max(1, Math.ceil(fxTotal / fxLimit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={fetchTaxRates} disabled={taxLoading}>
+            {taxLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">세율 새로고침</span>
+          </Button>
+          <Button size="sm" onClick={openTaxCreate}>
+            <Plus className="h-4 w-4" />
+            <span className="ml-2">세율 추가</span>
+          </Button>
+          <Button variant="outline" size="sm" onClick={fetchFxRates} disabled={fxLoading}>
+            {fxLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">환율 새로고침</span>
+          </Button>
+          <Button size="sm" onClick={openFxCreate}>
+            <Plus className="h-4 w-4" />
+            <span className="ml-2">환율 추가</span>
+          </Button>
+        </div>
+      }
+    >
       <div className="space-y-1">
         <div className="text-xl font-semibold">세금/환율 관리</div>
         <div className="text-sm text-muted-foreground">tax_rates, fx_rates 기준 관리 화면</div>
@@ -387,16 +409,7 @@ export default function TaxFx() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={fetchTaxRates} disabled={taxLoading}>
-                {taxLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-                <span className="ml-2">새로고침</span>
-              </Button>
-              <Button size="sm" onClick={openTaxCreate}>
-                <Plus className="h-4 w-4" />
-                <span className="ml-2">세율 추가</span>
-              </Button>
-            </div>
+            <div className="flex items-center gap-2" />
           </div>
 
           <div className="border rounded-md">
@@ -513,16 +526,7 @@ export default function TaxFx() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={fetchFxRates} disabled={fxLoading}>
-                {fxLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-                <span className="ml-2">새로고침</span>
-              </Button>
-              <Button size="sm" onClick={openFxCreate}>
-                <Plus className="h-4 w-4" />
-                <span className="ml-2">환율 추가</span>
-              </Button>
-            </div>
+            <div className="flex items-center gap-2" />
           </div>
 
           <div className="border rounded-md">
@@ -742,6 +746,6 @@ export default function TaxFx() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }

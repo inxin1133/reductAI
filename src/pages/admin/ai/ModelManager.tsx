@@ -28,9 +28,8 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
-import { useEffect as useEffectReact } from "react"
 import { Loader2, Pencil, Plus, Search, Trash2, RefreshCcw, Play, GripVertical } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type ProviderStatus = "active" | "inactive" | "deprecated"
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
@@ -107,7 +106,6 @@ function asDateInputValue(value: unknown): string {
 }
 
 export default function ModelManager() {
-  const { setAction } = useAdminHeaderActionContext()
 
   const [providers, setProviders] = useState<Provider[]>([])
   const [models, setModels] = useState<AIModel[]>([])
@@ -309,19 +307,16 @@ export default function ModelManager() {
     setIsDialogOpen(true)
   }
 
-  useEffectReact(() => {
-    setAction(
-      <div className="flex items-center gap-2">
-        <Button variant="secondary" size="sm" onClick={() => fetchModels()}>
-          <RefreshCcw className="mr-2 h-4 w-4" /> 새로고침
-        </Button>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="mr-2 h-4 w-4" /> 모델 추가
-        </Button>
-      </div>
-    )
-    return () => setAction(null)
-  }, [setAction, providers])
+  const headerContent = (
+    <div className="flex items-center gap-2">
+      <Button variant="secondary" size="sm" onClick={() => fetchModels()}>
+        <RefreshCcw className="mr-2 h-4 w-4" /> 새로고침
+      </Button>
+      <Button size="sm" onClick={openCreate}>
+        <Plus className="mr-2 h-4 w-4" /> 모델 추가
+      </Button>
+    </div>
+  )
 
   const openEdit = (m: AIModel) => {
     setEditing(m)
@@ -612,7 +607,7 @@ export default function ModelManager() {
   }
 
   return (
-    <div className="space-y-4 bg-background">
+    <AdminPage headerContent={headerContent}>
       <div className="flex items-center justify-between">
         <div>
           <p className="text-muted-foreground">
@@ -1079,7 +1074,7 @@ export default function ModelManager() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

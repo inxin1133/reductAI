@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Loader2, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type ScopeType = "GLOBAL" | "TENANT" | "ROLE"
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
@@ -296,14 +297,8 @@ export default function PromptSuggestions() {
   }, [modelType, models])
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <div className="text-xl font-semibold">AI 서비스 - 예시 프롬프트(Prompt Suggestions)</div>
-          <div className="text-sm text-muted-foreground">
-            채팅 입력창 하단 등에서 클릭하면 입력창에 채워지는 예시 프롬프트를 관리합니다. (model_type 기준 필터링 가능)
-          </div>
-        </div>
+    <AdminPage
+      headerContent={
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => fetchList()} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
@@ -314,6 +309,16 @@ export default function PromptSuggestions() {
             <span className="ml-2">예시 추가</span>
           </Button>
         </div>
+      }
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-xl font-semibold">AI 서비스 - 예시 프롬프트(Prompt Suggestions)</div>
+          <div className="text-sm text-muted-foreground">
+            채팅 입력창 하단 등에서 클릭하면 입력창에 채워지는 예시 프롬프트를 관리합니다. (model_type 기준 필터링 가능)
+          </div>
+        </div>
+        <div className="flex gap-2" />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -592,7 +597,7 @@ export default function PromptSuggestions() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }
 

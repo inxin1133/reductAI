@@ -28,6 +28,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Pencil, Plus, RefreshCcw } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type ServiceRow = {
   id: string
@@ -536,7 +537,36 @@ export default function SystemServices() {
   const accessPageCount = Math.max(1, Math.ceil(accessTotal / accessLimit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={fetchServices} disabled={serviceLoading}>
+            {serviceLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">서비스 새로고침</span>
+          </Button>
+          <Button size="sm" onClick={openServiceCreate}>
+            <Plus className="h-4 w-4 mr-1" />
+            서비스 등록
+          </Button>
+          <Button variant="outline" size="sm" onClick={fetchInstances} disabled={instanceLoading}>
+            {instanceLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">인스턴스 새로고침</span>
+          </Button>
+          <Button size="sm" onClick={openInstanceCreate}>
+            <Plus className="h-4 w-4 mr-1" />
+            인스턴스 등록
+          </Button>
+          <Button variant="outline" size="sm" onClick={fetchAccess} disabled={accessLoading}>
+            {accessLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+            <span className="ml-2">접근 새로고침</span>
+          </Button>
+          <Button size="sm" onClick={openAccessCreate}>
+            <Plus className="h-4 w-4 mr-1" />
+            접근 등록
+          </Button>
+        </div>
+      }
+    >
       <div className="space-y-1">
         <div className="text-xl font-semibold">서비스(Services) 관리</div>
         <div className="text-sm text-muted-foreground">
@@ -573,16 +603,7 @@ export default function SystemServices() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={fetchServices} disabled={serviceLoading}>
-                {serviceLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-                <span className="ml-2">새로고침</span>
-              </Button>
-              <Button size="sm" onClick={openServiceCreate}>
-                <Plus className="h-4 w-4 mr-1" />
-                신규 등록
-              </Button>
-            </div>
+            <div className="flex items-center gap-2" />
           </div>
 
           <div className="border rounded-md">
@@ -697,20 +718,7 @@ export default function SystemServices() {
               <div className="text-xs text-muted-foreground">Region</div>
               <Input value={instanceRegion} onChange={(e) => setInstanceRegion(e.target.value)} placeholder="region" />
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={fetchInstances} disabled={instanceLoading}>
-                {instanceLoading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCcw className="h-4 w-4" />
-                )}
-                <span className="ml-2">새로고침</span>
-              </Button>
-              <Button size="sm" onClick={openInstanceCreate}>
-                <Plus className="h-4 w-4 mr-1" />
-                신규 등록
-              </Button>
-            </div>
+            <div className="flex items-center gap-2" />
           </div>
 
           <div className="border rounded-md">
@@ -848,16 +856,7 @@ export default function SystemServices() {
               <div className="text-xs text-muted-foreground">서비스 ID</div>
               <Input value={accessServiceId} onChange={(e) => setAccessServiceId(e.target.value)} placeholder="service_id" />
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={fetchAccess} disabled={accessLoading}>
-                {accessLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-                <span className="ml-2">새로고침</span>
-              </Button>
-              <Button size="sm" onClick={openAccessCreate}>
-                <Plus className="h-4 w-4 mr-1" />
-                신규 등록
-              </Button>
-            </div>
+            <div className="flex items-center gap-2" />
           </div>
 
           <div className="border rounded-md">
@@ -1191,6 +1190,6 @@ export default function SystemServices() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AdminPage>
   )
 }

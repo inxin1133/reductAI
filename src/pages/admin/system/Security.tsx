@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, RefreshCcw, Trash2 } from "lucide-react"
+import { AdminPage } from "@/components/layout/AdminPage"
 
 type SessionRow = {
   id: string
@@ -137,7 +138,14 @@ export default function SystemSecurity() {
   const pageCount = Math.max(1, Math.ceil(total / limit))
 
   return (
-    <div className="p-6 space-y-4">
+    <AdminPage
+      headerContent={
+        <Button variant="outline" size="sm" onClick={fetchSessions} disabled={loading}>
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+          <span className="ml-2">새로고침</span>
+        </Button>
+      }
+    >
       <div className="space-y-1">
         <div className="text-xl font-semibold">보안 정책</div>
         <div className="text-sm text-muted-foreground">
@@ -178,12 +186,7 @@ export default function SystemSecurity() {
           <div className="text-xs text-muted-foreground">IP</div>
           <Input value={ip} onChange={(e) => setIp(e.target.value)} placeholder="ip" />
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchSessions} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            <span className="ml-2">새로고침</span>
-          </Button>
-        </div>
+        <div className="flex items-center gap-2" />
       </div>
 
       <div className="border rounded-md">
@@ -270,6 +273,6 @@ export default function SystemSecurity() {
           </Button>
         </div>
       </div>
-    </div>
+    </AdminPage>
   )
 }
