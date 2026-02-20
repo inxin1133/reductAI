@@ -9,6 +9,7 @@ import {
   getPostPreview,
   getCurrentTenant,
   getCurrentUser,
+  listCurrentUserProviders,
   listTenantMemberships,
   listDeletedPages,
   listMyPageCategories,
@@ -37,6 +38,7 @@ router.post("/categories/reorder", requireAuth, reorderCategories)
 // Tenant (current)
 router.get("/user/me", requireAuth, getCurrentUser)
 router.patch("/user/me", requireAuth, updateCurrentUser)
+router.get("/user/providers", requireAuth, listCurrentUserProviders)
 router.get("/tenant/current", requireAuth, getCurrentTenant)
 router.get("/tenant/memberships", requireAuth, listTenantMemberships)
 router.patch("/tenant/:id", requireAuth, updateTenantName)

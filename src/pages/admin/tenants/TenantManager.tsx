@@ -40,6 +40,9 @@ interface Tenant {
   owner_id: string
   owner_name?: string
   owner_email?: string
+  member_limit?: number | null
+  current_member_count?: number | null
+  metadata?: Record<string, unknown> | null
   created_at: string
 }
 
@@ -77,6 +80,7 @@ export default function TenantManager() {
     tenant_type: 'personal' | 'team' | 'group'
     status: 'active' | 'inactive' | 'suspended'
     owner_id: string
+    member_limit: string
   }>({
     name: "",
     slug: "",
@@ -84,6 +88,7 @@ export default function TenantManager() {
     tenant_type: "personal",
     status: "active",
     owner_id: "",
+    member_limit: "",
   })
 
   const authHeaders = (): HeadersInit => {
@@ -140,6 +145,7 @@ export default function TenantManager() {
       tenant_type: "personal",
       status: "active",
       owner_id: "",
+      member_limit: "",
     })
     setIsDialogOpen(true)
   }
@@ -163,6 +169,7 @@ export default function TenantManager() {
       tenant_type: tenant.tenant_type,
       status: tenant.status,
       owner_id: tenant.owner_id,
+      member_limit: tenant.member_limit !== null && tenant.member_limit !== undefined ? String(tenant.member_limit) : "",
     })
     setIsDialogOpen(true)
   }
@@ -189,6 +196,11 @@ export default function TenantManager() {
     try {
       const method = editingTenant ? "PUT" : "POST"
       const url = editingTenant ? `${API_URL}/${editingTenant.id}` : API_URL
+      const memberLimitValue = formData.member_limit.trim()
+      const payload = {
+        ...formData,
+        member_limit: memberLimitValue ? Number(memberLimitValue) : null,
+      }
       
       const response = await fetch(url, {
         method,
@@ -196,7 +208,7 @@ export default function TenantManager() {
           "Content-Type": "application/json",
           ...authHeaders(),
         },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(payload),
       })
 
       if (response.ok) {
@@ -252,6 +264,7 @@ export default function TenantManager() {
               <TableHead>이름</TableHead>
               <TableHead>Slug</TableHead>
               <TableHead>유형</TableHead>
+              <TableHead>멤버</TableHead>
               <TableHead>소유자</TableHead>
               <TableHead>상태</TableHead>
               <TableHead>생성일</TableHead>
@@ -261,34 +274,54 @@ export default function TenantManager() {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={7} className="h-24 text-center">
+                <TableCell colSpan={8} className="h-24 text-center">
                   <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                 </TableCell>
               </TableRow>
             ) : tenants.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="h-24 text-center">
+                <TableCell colSpan={8} className="h-24 text-center">
                   등록된 테넌트가 없습니다.
                 </TableCell>
               </TableRow>
             ) : (
-              tenants.map((tenant) => (
+              tenants.map((tenant) => {
+                const isSystem = tenant.slug === "system" || (tenant.metadata as { system?: boolean } | null)?.system === true
+                return (
                 <TableRow key={tenant.id}>
                   <TableCell className="font-medium">
                     <div className="flex items-center gap-2">
                       <Building2 className="h-4 w-4 text-muted-foreground" />
-                      {tenant.name}
+                      <span>{tenant.name}</span>
+                      {isSystem ? (
+                        <Badge variant="outline" className="text-xs">
+                          시스템
+                        </Badge>
+                      ) : null}
                     </div>
                   </TableCell>
                   <TableCell>
                     <Badge variant="outline" className="font-mono text-xs">
-                      {tenant.slug}
+                      <span className="block max-w-[120px] truncate" title={tenant.slug}>
+                        {tenant.slug}
+                      </span>
                     </Badge>
                   </TableCell>
                   <TableCell>
                     <Badge variant="secondary" className="capitalize">
                       {tenant.tenant_type}
                     </Badge>
+                  </TableCell>
+                  <TableCell className="text-sm">
+                    <span className="text-foreground">
+                      {(tenant.current_member_count ?? 0).toLocaleString()}
+                    </span>
+                    <span className="text-muted-foreground"> / </span>
+                    <span className="text-muted-foreground">
+                      {tenant.member_limit === null || tenant.member_limit === undefined
+                        ? "∞"
+                        : tenant.member_limit.toLocaleString()}
+                    </span>
                   </TableCell>
                   <TableCell className="text-sm">
                     {tenant.owner_name ? (
@@ -308,16 +341,30 @@ export default function TenantManager() {
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
-                      <Button variant="ghost" size="icon" onClick={() => handleEdit(tenant)}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleEdit(tenant)}
+                        disabled={isSystem}
+                        aria-disabled={isSystem}
+                        title={isSystem ? "system 테넌트는 수정할 수 없습니다." : "수정"}
+                      >
                         <Pencil className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" onClick={() => handleDelete(tenant.id)}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleDelete(tenant.id)}
+                        disabled={isSystem}
+                        aria-disabled={isSystem}
+                        title={isSystem ? "system 테넌트는 삭제할 수 없습니다." : "삭제"}
+                      >
                         <Trash2 className="h-4 w-4 text-destructive" />
                       </Button>
                     </div>
                   </TableCell>
                 </TableRow>
-              ))
+              )})
             )}
           </TableBody>
         </Table>
@@ -405,7 +452,9 @@ export default function TenantManager() {
               </Label>
               <Select 
                 value={formData.tenant_type} 
-                onValueChange={(value: any) => setFormData({ ...formData, tenant_type: value })}
+                onValueChange={(value) =>
+                  setFormData({ ...formData, tenant_type: value as Tenant["tenant_type"] })
+                }
               >
                 <SelectTrigger className="col-span-3">
                   <SelectValue placeholder="Select type" />
@@ -451,7 +500,7 @@ export default function TenantManager() {
               </Label>
               <Select 
                 value={formData.status} 
-                onValueChange={(value: any) => setFormData({ ...formData, status: value })}
+                onValueChange={(value) => setFormData({ ...formData, status: value as Tenant["status"] })}
               >
                 <SelectTrigger className="col-span-3">
                   <SelectValue placeholder="Select status" />
@@ -462,6 +511,20 @@ export default function TenantManager() {
                   <SelectItem value="suspended">Suspended</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="member_limit" className="text-right">
+                멤버 한도
+              </Label>
+              <Input
+                id="member_limit"
+                type="number"
+                value={formData.member_limit}
+                onChange={(e) => setFormData({ ...formData, member_limit: e.target.value })}
+                className="col-span-3"
+                placeholder="비워두면 제한 없음"
+                min={0}
+              />
             </div>
           </div>
           <DialogFooter>

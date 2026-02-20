@@ -11,11 +11,13 @@ const otpStore: Record<string, { code: string; expiresAt: number }> = {};
 const getPrimaryTenantId = async (userId: string) => {
   const result = await db.query(
     `
-      SELECT tenant_id
-      FROM user_tenant_roles
-      WHERE user_id = $1
-        AND (membership_status IS NULL OR membership_status = 'active')
-      ORDER BY is_primary_tenant DESC, joined_at ASC, granted_at ASC
+      SELECT utr.tenant_id
+      FROM user_tenant_roles utr
+      JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+      WHERE utr.user_id = $1
+        AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+        AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+      ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC, utr.granted_at ASC
       LIMIT 1
     `,
     [userId]
@@ -224,28 +226,86 @@ export const register = async (req: Request, res: Response) => {
     return res.status(400).json({ message: 'All fields are required' });
   }
 
+  const client = await db.default.connect();
   try {
+    await client.query('BEGIN');
     // Check if user exists
-    const userCheck = await db.query('SELECT id FROM users WHERE email = $1', [email]);
+    const userCheck = await client.query('SELECT id FROM users WHERE email = $1', [email]);
     if (userCheck.rows.length > 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ message: 'User already exists' });
     }
 
     const saltRounds = 10;
     const passwordHash = await bcrypt.hash(password, saltRounds);
 
-    const result = await db.query(
+    const result = await client.query(
       'INSERT INTO users (email, password_hash, full_name, email_verified, status) VALUES ($1, $2, $3, $4, $5) RETURNING id, email, full_name',
       [email, passwordHash, name, true, 'active']
     );
 
     const user = result.rows[0];
-    
-    const [tenantId, platformRole] = await Promise.all([
-      getPrimaryTenantId(user.id),
-      getPlatformRoleSlug(user.id),
-    ]);
+    const ownerRoleRes = await client.query(
+      `SELECT id FROM roles WHERE scope = 'tenant_base' AND slug = 'owner' LIMIT 1`
+    );
+    const ownerRoleId =
+      ownerRoleRes.rows[0]?.id ||
+      (
+        await client.query(
+          `
+          INSERT INTO roles (name, slug, description, scope, tenant_id, is_system_role)
+          VALUES ($1, $2, $3, 'tenant_base', NULL, TRUE)
+          RETURNING id
+          `,
+          ['소유자', 'owner', 'Tenant base role: owner']
+        )
+      ).rows[0]?.id;
 
+    if (!ownerRoleId) {
+      await client.query('ROLLBACK');
+      return res.status(500).json({ message: 'Failed to resolve owner role' });
+    }
+
+    const tenantName = user.full_name || user.email;
+    const tenantSlug = `personal-${user.id}`;
+    const tenantRes = await client.query(
+      `
+      INSERT INTO tenants (owner_id, name, slug, tenant_type, status, member_limit, current_member_count, metadata)
+      VALUES ($1,$2,$3,'personal','active',$4,$5,$6::jsonb)
+      RETURNING id
+      `,
+      [user.id, tenantName, tenantSlug, 1, 1, JSON.stringify({ plan_tier: 'free' })]
+    );
+    const tenantId = tenantRes.rows[0]?.id;
+    if (!tenantId) {
+      await client.query('ROLLBACK');
+      return res.status(500).json({ message: 'Failed to create personal tenant' });
+    }
+
+    await client.query(
+      `
+      INSERT INTO user_tenant_roles (
+        user_id,
+        tenant_id,
+        role_id,
+        membership_status,
+        joined_at,
+        is_primary_tenant,
+        granted_by
+      )
+      VALUES ($1, $2, $3, 'active', CURRENT_TIMESTAMP, TRUE, $4)
+      ON CONFLICT (user_id, tenant_id, role_id)
+      DO UPDATE SET
+        membership_status = 'active',
+        left_at = NULL,
+        is_primary_tenant = TRUE
+      `,
+      [user.id, tenantId, ownerRoleId, user.id]
+    );
+
+    await client.query('COMMIT');
+
+    const platformRole = await getPlatformRoleSlug(user.id);
     // Generate JWT
     const token = jwt.sign(
       { userId: user.id, email: user.email, tenantId, platformRole },
@@ -253,17 +313,20 @@ export const register = async (req: Request, res: Response) => {
       { expiresIn: '24h' }
     );
 
-    res.status(201).json({ 
+    res.status(201).json({
       success: true,
-      message: 'User registered successfully', 
+      message: 'User registered successfully',
       user,
       token,
       tenantId,
-      platformRole
+      platformRole,
     });
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error('Registration error:', error);
     res.status(500).json({ message: 'Internal server error' });
+  } finally {
+    client.release();
   }
 };
 

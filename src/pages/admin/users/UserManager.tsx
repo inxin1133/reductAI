@@ -25,8 +25,10 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
-import { Pencil, Loader2, ChevronLeft, ChevronRight, Search } from "lucide-react"
+import { Pencil, Loader2, ChevronLeft, ChevronRight, Search, Plus } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { useAdminHeaderActionContext } from "@/contexts/AdminHeaderActionContext"
+import { useEffect as useEffectReact } from "react"
 
 interface User {
   id: string
@@ -40,6 +42,10 @@ interface User {
   role_name?: string
   role_slug?: string
   role_id?: string
+  tenant_id?: string | null
+  tenant_name?: string | null
+  tenant_type?: 'personal' | 'team' | 'group' | null
+  tenant_plan_tier?: string | null
 }
 
 interface Role {
@@ -60,6 +66,7 @@ const API_URL = "/api/users"
 const ROLES_API_URL = "/api/roles"
 
 export default function UserManager() {
+  const { setAction } = useAdminHeaderActionContext()
   const [users, setUsers] = useState<User[]>([])
   const [roles, setRoles] = useState<Role[]>([])
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 10, total: 0, totalPages: 0 })
@@ -71,15 +78,21 @@ export default function UserManager() {
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editingUser, setEditingUser] = useState<User | null>(null)
   const [formData, setFormData] = useState<{
+    email: string
+    password: string
     full_name: string
     status: string
     email_verified: boolean
     role_id: string
+    tenant_name: string
   }>({
+    email: "",
+    password: "",
     full_name: "",
     status: "active",
     email_verified: false,
     role_id: "",
+    tenant_name: "",
   })
   const [isSaving, setIsSaving] = useState(false)
 
@@ -162,24 +175,50 @@ export default function UserManager() {
   const handleEdit = (user: User) => {
     setEditingUser(user)
     setFormData({
+      email: user.email || "",
+      password: "",
       full_name: user.full_name || "",
       status: user.status,
       email_verified: user.email_verified,
       role_id: user.role_id || getDefaultRoleId(),
+      tenant_name: user.tenant_name || "",
     })
     setIsDialogOpen(true)
   }
 
+  const handleCreate = () => {
+    setEditingUser(null)
+    setFormData({
+      email: "",
+      password: "",
+      full_name: "",
+      status: "active",
+      email_verified: false,
+      role_id: getDefaultRoleId(),
+      tenant_name: "",
+    })
+    setIsDialogOpen(true)
+  }
+
+  // Header Action
+  useEffectReact(() => {
+    setAction(
+      <Button onClick={handleCreate} size="sm">
+        <Plus className="mr-2 h-4 w-4" /> 사용자 생성
+      </Button>
+    )
+    return () => setAction(null)
+  }, [setAction])
+
   // If roles load after opening dialog and no role is selected, apply default role automatically
   useEffect(() => {
-    if (isDialogOpen && editingUser && !formData.role_id && roles.length > 0) {
+    if (isDialogOpen && !formData.role_id && roles.length > 0) {
       setFormData(prev => ({ ...prev, role_id: prev.role_id || getDefaultRoleId() }))
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roles])
 
   const handleSubmit = async () => {
-    if (!editingUser) return
     const roleToUse = formData.role_id || getDefaultRoleId()
     if (!roleToUse) {
       alert("부여할 역할을 선택해주세요. (roles에 등록된 역할 중 하나)")
@@ -188,26 +227,63 @@ export default function UserManager() {
 
     try {
       setIsSaving(true)
-      const response = await fetch(`${API_URL}/${editingUser.id}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          ...authHeaders(),
-        },
-        body: JSON.stringify({ ...formData, role_id: roleToUse }),
-      })
+      if (editingUser) {
+        const response = await fetch(`${API_URL}/${editingUser.id}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders(),
+          },
+          body: JSON.stringify({
+            full_name: formData.full_name,
+            status: formData.status,
+            email_verified: formData.email_verified,
+            role_id: roleToUse,
+            tenant_name: formData.tenant_name,
+          }),
+        })
 
-      if (response.ok) {
-        setIsDialogOpen(false)
-        fetchUsers()
+        if (response.ok) {
+          setIsDialogOpen(false)
+          fetchUsers()
+        } else {
+          const msg = await response.text()
+          alert(`사용자 업데이트 실패: ${msg || "알 수 없는 오류"}`)
+          console.error("Failed to update user", msg)
+        }
       } else {
-        const msg = await response.text()
-        alert(`사용자 업데이트 실패: ${msg || "알 수 없는 오류"}`)
-        console.error("Failed to update user", msg)
+        if (!formData.email.trim() || !formData.password.trim()) {
+          alert("이메일과 비밀번호는 필수입니다.")
+          return
+        }
+        const response = await fetch(API_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders(),
+          },
+          body: JSON.stringify({
+            email: formData.email.trim(),
+            password: formData.password,
+            full_name: formData.full_name.trim(),
+            status: formData.status,
+            email_verified: formData.email_verified,
+            role_id: roleToUse,
+          }),
+        })
+
+        if (response.ok) {
+          setIsDialogOpen(false)
+          fetchUsers()
+        } else {
+          const msg = await response.text()
+          alert(`사용자 생성 실패: ${msg || "알 수 없는 오류"}`)
+          console.error("Failed to create user", msg)
+        }
       }
     } catch (error) {
-      console.error("Failed to update user", error)
-      alert("사용자 업데이트 중 오류가 발생했습니다.")
+      console.error("Failed to save user", error)
+      alert("사용자 처리 중 오류가 발생했습니다.")
     } finally {
       setIsSaving(false)
     }
@@ -253,8 +329,11 @@ export default function UserManager() {
             <TableRow>
               <TableHead>이름</TableHead>
               <TableHead>이메일</TableHead>
+              <TableHead>테넌트 이름</TableHead>
+              <TableHead>테넌트 유형</TableHead>
+              <TableHead>서비스 등급</TableHead>
               <TableHead>상태</TableHead>
-              <TableHead>역할</TableHead> {/* New Role Column */}
+              <TableHead>역할</TableHead>
               <TableHead>이메일 인증</TableHead>
               <TableHead>마지막 로그인</TableHead>
               <TableHead>가입일</TableHead>
@@ -264,19 +343,19 @@ export default function UserManager() {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={8} className="h-24 text-center">
+                <TableCell colSpan={11} className="h-24 text-center">
                   <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                 </TableCell>
               </TableRow>
             ) : errorMessage ? (
               <TableRow>
-                <TableCell colSpan={8} className="h-24 text-center text-destructive">
+                <TableCell colSpan={11} className="h-24 text-center text-destructive">
                   {errorMessage}
                 </TableCell>
               </TableRow>
             ) : users.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="h-24 text-center">
+                <TableCell colSpan={11} className="h-24 text-center">
                   등록된 사용자가 없습니다.
                 </TableCell>
               </TableRow>
@@ -285,6 +364,15 @@ export default function UserManager() {
                 <TableRow key={user.id}>
                   <TableCell className="font-medium">{user.full_name || '-'}</TableCell>
                   <TableCell>{user.email}</TableCell>
+                  <TableCell>{user.tenant_name || '-'}</TableCell>
+                  <TableCell>
+                    <Badge variant="secondary" className="capitalize">
+                      {user.tenant_type || '-'}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {user.tenant_plan_tier || (user.tenant_type === "personal" ? "free" : "-")}
+                  </TableCell>
                   <TableCell>
                     <Badge variant="outline" className={`border-0 ${getStatusColor(user.status)}`}>
                       {user.status.toUpperCase()}
@@ -353,16 +441,46 @@ export default function UserManager() {
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="sm:max-w-[425px]">
           <DialogHeader>
-            <DialogTitle>사용자 정보 수정</DialogTitle>
+            <DialogTitle>{editingUser ? "사용자 정보 수정" : "사용자 생성"}</DialogTitle>
             <DialogDescription>
-              사용자 상태 및 정보를 수정합니다.
+              {editingUser ? "사용자 상태 및 정보를 수정합니다." : "새로운 사용자를 생성합니다."}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
-             <div className="grid grid-cols-4 items-center gap-4">
-              <Label className="text-right">이메일</Label>
-              <div className="col-span-3 text-sm font-medium">{editingUser?.email}</div>
-            </div>
+            {editingUser ? (
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label className="text-right">이메일</Label>
+                <div className="col-span-3 text-sm font-medium">{editingUser?.email}</div>
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="email" className="text-right">
+                    이메일
+                  </Label>
+                  <Input
+                    id="email"
+                    value={formData.email}
+                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                    className="col-span-3"
+                    placeholder="user@example.com"
+                  />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="password" className="text-right">
+                    비밀번호
+                  </Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    value={formData.password}
+                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                    className="col-span-3"
+                    placeholder="임시 비밀번호"
+                  />
+                </div>
+              </>
+            )}
             <div className="grid grid-cols-4 items-center gap-4">
               <Label htmlFor="full_name" className="text-right">
                 이름
@@ -374,6 +492,43 @@ export default function UserManager() {
                 className="col-span-3"
               />
             </div>
+
+            {editingUser ? (
+              <>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="tenant_name" className="text-right">
+                    테넌트 이름
+                  </Label>
+                  <Input
+                    id="tenant_name"
+                    value={formData.tenant_name}
+                    onChange={(e) => setFormData({ ...formData, tenant_name: e.target.value })}
+                    className="col-span-3"
+                    placeholder="테넌트 이름"
+                  />
+                </div>
+
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label className="text-right">테넌트 유형</Label>
+                  <div className="col-span-3 text-sm font-medium">
+                    {editingUser?.tenant_type || "-"}
+                  </div>
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label className="text-right">서비스 등급</Label>
+                  <div className="col-span-3 text-sm font-medium">
+                    {editingUser?.tenant_plan_tier || (editingUser?.tenant_type === "personal" ? "free" : "-")}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label className="text-right">테넌트</Label>
+                <div className="col-span-3 text-sm text-muted-foreground">
+                  personal / free로 자동 생성됩니다.
+                </div>
+              </div>
+            )}
             
             {/* Role Selection */}
             <div className="grid grid-cols-4 items-center gap-4">

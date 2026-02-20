@@ -110,6 +110,13 @@ const PLAN_TIER_AVATAR_BG: Record<PlanTier, string> = {
   business: "bg-amber-500",
   enterprise: "bg-rose-500",
 }
+const PLAN_TIER_LABELS: Record<PlanTier, string> = {
+  free: "Free",
+  pro: "Pro",
+  premium: "Premium",
+  business: "Business",
+  enterprise: "Enterprise",
+}
 
 function normalizePlanTier(value: unknown): PlanTier | null {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
@@ -314,9 +321,11 @@ export function Sidebar({ className }: SidebarProps) {
     return name || "팀/그룹"
   }
 
-  const resolveServiceLabel = (t: { tenant_type?: string | null }) => {
+  const resolveServiceLabel = (t: { tenant_type?: string | null; plan_tier?: string | null }) => {
+    const tier = normalizePlanTier(t.plan_tier)
+    if (tier) return PLAN_TIER_LABELS[tier]
     const type = String(t.tenant_type || "")
-    if (type === "personal") return "Pro"
+    if (type === "personal") return "Free"
     if (type === "team" || type === "group") return "Premium"
     return "Basic"
   }
@@ -334,10 +343,11 @@ export function Sidebar({ className }: SidebarProps) {
         key: tenantType,
         label: `${resolveTenantLabel({ tenant_type: tenantType, name: tenantName })}:${resolveServiceLabel({
           tenant_type: tenantType,
+          plan_tier: tenantPlanTier,
         })}`,
       },
     ]
-  }, [tenantMemberships, tenantName, tenantType])
+  }, [tenantMemberships, tenantName, tenantPlanTier, tenantType])
 
   useEffect(() => {
     const fetchLanguages = async () => {

@@ -41,6 +41,16 @@ const LEDGER_ENTRY_TYPES = new Set([
   "refund",
   "reversal",
 ])
+const SYSTEM_TENANT_SLUG = "system"
+
+function systemTenantFilter(column: string) {
+  return `NOT EXISTS (
+    SELECT 1
+    FROM tenants st
+    WHERE st.id = ${column}
+      AND (COALESCE((st.metadata->>'system')::boolean, FALSE) = TRUE OR st.slug = '${SYSTEM_TENANT_SLUG}')
+  )`
+}
 
 function uniqIds(values: Array<string | null | undefined>) {
   return Array.from(new Set(values.filter((v): v is string => typeof v === "string" && v.length > 0)))
@@ -538,6 +548,9 @@ export async function listCreditTransfers(req: Request, res: Response) {
       params.push(`%${q}%`)
     }
 
+    where.push(systemTenantFilter("fa.owner_tenant_id"))
+    where.push(systemTenantFilter("ta.owner_tenant_id"))
+
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : ""
 
     const countRes = await query(
@@ -676,6 +689,9 @@ export async function listCreditAccounts(req: Request, res: Response) {
       )
       params.push(`%${q}%`)
     }
+
+    where.push(systemTenantFilter("ca.owner_tenant_id"))
+    where.push(systemTenantFilter("ca.source_tenant_id"))
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : ""
 
@@ -842,6 +858,9 @@ export async function listCreditLedgerEntries(req: Request, res: Response) {
       params.push(`%${q}%`)
     }
 
+    where.push(systemTenantFilter("ca.owner_tenant_id"))
+    where.push(systemTenantFilter("ca.source_tenant_id"))
+
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : ""
 
     const countRes = await query(
@@ -960,6 +979,9 @@ export async function listCreditUsageAllocations(req: Request, res: Response) {
       )
       params.push(`%${q}%`)
     }
+
+    where.push(systemTenantFilter("ca.owner_tenant_id"))
+    where.push(systemTenantFilter("ca.source_tenant_id"))
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : ""
 

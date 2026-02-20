@@ -29,7 +29,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, Pencil, RefreshCcw } from "lucide-react"
+import { Loader2, Pencil, Plus, RefreshCcw } from "lucide-react"
 
 type PlanOption = {
   id: string
@@ -98,11 +98,6 @@ type ListResponse<T> = {
   rows: T[]
 }
 
-type PlanListResponse = {
-  ok: boolean
-  rows: PlanOption[]
-}
-
 type EditForm = {
   status: SubscriptionRow["status"]
   cancel_at_period_end: boolean
@@ -116,7 +111,23 @@ type EditForm = {
   metadata: string
 }
 
+type ProvisionForm = {
+  tenant_id: string
+  subscription_id: string
+  plan_id: string
+  billing_cycle: "monthly" | "yearly"
+  current_period_start: string
+  current_period_end: string
+  price_usd: string
+  currency: string
+  auto_renew: boolean
+  cancel_at_period_end: boolean
+  provider: "toss" | "stripe"
+  note: string
+}
+
 const SUBS_API = "/api/ai/billing/subscriptions"
+const PROVISION_API = "/api/ai/billing/subscriptions/provision"
 const CHANGES_API = "/api/ai/billing/subscription-changes"
 const PLANS_API = "/api/ai/billing/plans"
 const FILTER_ALL = "__all__"
@@ -143,6 +154,12 @@ function formatMoney(v: unknown, currency?: string) {
   const n = Number(v)
   if (!Number.isFinite(n)) return "-"
   return `${currency || "USD"} ${n.toFixed(2)}`
+}
+
+function addMonths(date: Date, months: number) {
+  const d = new Date(date)
+  d.setMonth(d.getMonth() + months)
+  return d
 }
 
 function badgeClass(active: boolean) {
@@ -207,6 +224,23 @@ export default function BillingSubscriptions() {
   })
   const [saving, setSaving] = useState(false)
 
+  const [provisionOpen, setProvisionOpen] = useState(false)
+  const [provisioning, setProvisioning] = useState(false)
+  const [provisionForm, setProvisionForm] = useState<ProvisionForm>({
+    tenant_id: "",
+    subscription_id: "",
+    plan_id: "",
+    billing_cycle: "monthly",
+    current_period_start: "",
+    current_period_end: "",
+    price_usd: "",
+    currency: "USD",
+    auto_renew: true,
+    cancel_at_period_end: false,
+    provider: "stripe",
+    note: "",
+  })
+
   const queryString = useMemo(() => {
     const params = new URLSearchParams()
     params.set("limit", String(limit))
@@ -233,16 +267,16 @@ export default function BillingSubscriptions() {
   async function fetchPlans() {
     try {
       const res = await adminFetch(`${PLANS_API}?limit=200&offset=0`)
-      const json = (await res.json()) as PlanListResponse | any
-      if (res.ok && json?.ok && Array.isArray(json.rows)) {
-        setPlans(json.rows)
-      } else if (Array.isArray(json?.rows)) {
-        setPlans(json.rows)
-      } else if (Array.isArray(json)) {
-        setPlans(json)
-      } else {
-        setPlans([])
+      const json: unknown = await res.json().catch(() => null)
+      if (Array.isArray(json)) {
+        setPlans(json as PlanOption[])
+        return
       }
+      if (json && typeof json === "object" && Array.isArray((json as { rows?: unknown }).rows)) {
+        setPlans((json as { rows: PlanOption[] }).rows)
+        return
+      }
+      setPlans([])
     } catch (e) {
       console.error(e)
       setPlans([])
@@ -314,6 +348,29 @@ export default function BillingSubscriptions() {
     setEditOpen(true)
   }
 
+  function openProvision(row?: SubscriptionRow) {
+    const now = new Date()
+    const cycle = row?.billing_cycle || "monthly"
+    const defaultEnd =
+      cycle === "yearly" ? addMonths(now, 12) : addMonths(now, 1)
+    setProvisionForm({
+      tenant_id: row?.tenant_id || "",
+      subscription_id: row?.id || "",
+      plan_id: row?.plan_id || plans[0]?.id || "",
+      billing_cycle: cycle,
+      current_period_start: toDateTimeLocal(row?.current_period_start || now.toISOString()),
+      current_period_end: toDateTimeLocal(row?.current_period_end || defaultEnd.toISOString()),
+      price_usd:
+        row?.price_usd === null || row?.price_usd === undefined ? "" : String(row.price_usd),
+      currency: row?.currency || "USD",
+      auto_renew: row?.auto_renew ?? true,
+      cancel_at_period_end: row?.cancel_at_period_end ?? false,
+      provider: "stripe",
+      note: "",
+    })
+    setProvisionOpen(true)
+  }
+
   async function saveEdit() {
     if (!editing) return
     if (!form.current_period_start) return alert("현재 기간 시작을 입력해주세요.")
@@ -357,6 +414,60 @@ export default function BillingSubscriptions() {
       alert("구독 정보 저장에 실패했습니다.")
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function saveProvision() {
+    if (!provisionForm.tenant_id.trim()) return alert("테넌트 ID를 입력해주세요.")
+    if (!provisionForm.plan_id) return alert("플랜을 선택해주세요.")
+    if (!provisionForm.current_period_start) return alert("현재 기간 시작을 입력해주세요.")
+    if (!provisionForm.current_period_end) return alert("현재 기간 종료를 입력해주세요.")
+
+    const priceUsd = provisionForm.price_usd.trim() ? Number(provisionForm.price_usd) : 0
+    if (!Number.isFinite(priceUsd) || priceUsd < 0) return alert("가격 값을 확인해주세요.")
+    const currency = provisionForm.currency.trim().toUpperCase()
+    if (!currency || currency.length !== 3) return alert("통화 코드를 확인해주세요.")
+
+    const startDate = new Date(provisionForm.current_period_start)
+    const endDate = new Date(provisionForm.current_period_end)
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      return alert("기간 날짜를 확인해주세요.")
+    }
+
+    const payload: Record<string, unknown> = {
+      tenant_id: provisionForm.tenant_id.trim(),
+      plan_id: provisionForm.plan_id,
+      billing_cycle: provisionForm.billing_cycle,
+      current_period_start: startDate.toISOString(),
+      current_period_end: endDate.toISOString(),
+      price_usd: priceUsd,
+      currency,
+      auto_renew: provisionForm.auto_renew,
+      cancel_at_period_end: provisionForm.cancel_at_period_end,
+      provider: provisionForm.provider,
+      note: provisionForm.note.trim() || undefined,
+    }
+    if (provisionForm.subscription_id) {
+      payload.subscription_id = provisionForm.subscription_id
+    }
+
+    try {
+      setProvisioning(true)
+      const res = await adminFetch(PROVISION_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json.ok) throw new Error("FAILED_PROVISION")
+      setProvisionOpen(false)
+      await fetchSubscriptions()
+      await fetchChanges()
+    } catch (e) {
+      console.error(e)
+      alert("관리자 구독 적용에 실패했습니다.")
+    } finally {
+      setProvisioning(false)
     }
   }
 
@@ -433,6 +544,10 @@ export default function BillingSubscriptions() {
               <Input value={tenantId} onChange={(e) => setTenantId(e.target.value)} placeholder="tenant_id" />
             </div>
             <div className="flex items-center gap-2">
+              <Button size="sm" onClick={() => openProvision()}>
+                <Plus className="h-4 w-4" />
+                <span className="ml-2">유료 구독 적용</span>
+              </Button>
               <Button variant="outline" size="sm" onClick={fetchSubscriptions} disabled={loading}>
                 {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
                 <span className="ml-2">새로고침</span>
@@ -510,9 +625,14 @@ export default function BillingSubscriptions() {
                     <TableCell className="font-mono">{formatMoney(row.price_usd, row.currency)}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{fmtDate(row.updated_at)}</TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="sm" onClick={() => openEdit(row)}>
-                        <Pencil className="h-4 w-4" />
-                      </Button>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button variant="ghost" size="sm" onClick={() => openProvision(row)}>
+                          <Plus className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => openEdit(row)}>
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -793,6 +913,147 @@ export default function BillingSubscriptions() {
             <Button onClick={saveEdit} disabled={saving}>
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               <span className={saving ? "ml-2" : ""}>저장</span>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={provisionOpen} onOpenChange={setProvisionOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>관리자 유료 구독 적용</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {provisionForm.subscription_id ? (
+              <div className="text-xs text-muted-foreground">현재 구독 ID: {provisionForm.subscription_id}</div>
+            ) : null}
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="space-y-1">
+                <div className="text-sm font-medium">테넌트 ID</div>
+                <Input
+                  value={provisionForm.tenant_id}
+                  onChange={(e) => setProvisionForm((p) => ({ ...p, tenant_id: e.target.value }))}
+                  readOnly={Boolean(provisionForm.subscription_id)}
+                />
+              </div>
+              <div className="space-y-1">
+                <div className="text-sm font-medium">플랜</div>
+                <Select value={provisionForm.plan_id} onValueChange={(v) => setProvisionForm((p) => ({ ...p, plan_id: v }))}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="플랜 선택" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {plans.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name} ({p.tier}/{p.tenant_type})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <div className="text-sm font-medium">주기</div>
+                <Select
+                  value={provisionForm.billing_cycle}
+                  onValueChange={(v) => setProvisionForm((p) => ({ ...p, billing_cycle: v as ProvisionForm["billing_cycle"] }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="주기" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="monthly">monthly</SelectItem>
+                    <SelectItem value="yearly">yearly</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <div className="text-sm font-medium">결제 제공자</div>
+                <Select
+                  value={provisionForm.provider}
+                  onValueChange={(v) => setProvisionForm((p) => ({ ...p, provider: v as ProvisionForm["provider"] }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="provider" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="stripe">stripe</SelectItem>
+                    <SelectItem value="toss">toss</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <div className="text-sm font-medium">현재 기간 시작</div>
+                <Input
+                  type="datetime-local"
+                  value={provisionForm.current_period_start}
+                  onChange={(e) => setProvisionForm((p) => ({ ...p, current_period_start: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1">
+                <div className="text-sm font-medium">현재 기간 종료</div>
+                <Input
+                  type="datetime-local"
+                  value={provisionForm.current_period_end}
+                  onChange={(e) => setProvisionForm((p) => ({ ...p, current_period_end: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1">
+                <div className="text-sm font-medium">가격(USD)</div>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={provisionForm.price_usd}
+                  onChange={(e) => setProvisionForm((p) => ({ ...p, price_usd: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1">
+                <div className="text-sm font-medium">통화</div>
+                <Input
+                  value={provisionForm.currency}
+                  onChange={(e) => setProvisionForm((p) => ({ ...p, currency: e.target.value.toUpperCase() }))}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="provision-cancel-at-period-end"
+                  checked={provisionForm.cancel_at_period_end}
+                  onCheckedChange={(v) => setProvisionForm((p) => ({ ...p, cancel_at_period_end: v }))}
+                />
+                <Label htmlFor="provision-cancel-at-period-end">기간 종료 시 취소</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="provision-auto-renew"
+                  checked={provisionForm.auto_renew}
+                  onCheckedChange={(v) => setProvisionForm((p) => ({ ...p, auto_renew: v }))}
+                />
+                <Label htmlFor="provision-auto-renew">자동 갱신</Label>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <div className="text-sm font-medium">서비스 제공 메모</div>
+              <Textarea
+                rows={3}
+                value={provisionForm.note}
+                onChange={(e) => setProvisionForm((p) => ({ ...p, note: e.target.value }))}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setProvisionOpen(false)} disabled={provisioning}>
+              닫기
+            </Button>
+            <Button onClick={saveProvision} disabled={provisioning}>
+              {provisioning ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              <span className={provisioning ? "ml-2" : ""}>적용</span>
             </Button>
           </DialogFooter>
         </DialogContent>

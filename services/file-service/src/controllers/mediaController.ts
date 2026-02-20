@@ -52,6 +52,23 @@ function parseList(raw: unknown): string[] {
 
 async function resolveTenantId(req: AuthedRequest): Promise<{ tenantId: string; hasTenantId: boolean }> {
   if (req.tenantId) return { tenantId: String(req.tenantId), hasTenantId: true };
+  const userId = req.userId ? String(req.userId) : "";
+  if (userId) {
+    const r = await query(
+      `
+      SELECT utr.tenant_id
+      FROM user_tenant_roles utr
+      JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+      WHERE utr.user_id = $1
+        AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+        AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+      ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC, utr.granted_at ASC
+      LIMIT 1
+      `,
+      [userId]
+    );
+    if (r.rows.length > 0) return { tenantId: String(r.rows[0].tenant_id), hasTenantId: true };
+  }
   return { tenantId: await ensureSystemTenantId(), hasTenantId: false };
 }
 

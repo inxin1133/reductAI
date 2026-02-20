@@ -54,7 +54,70 @@ async function resolveTenantId(req: AuthedRequest): Promise<string> {
     const r = await query(`SELECT id FROM tenants WHERE id = $1 AND deleted_at IS NULL LIMIT 1`, [tid])
     if (r.rows.length > 0) return tid
   }
+  const userId = req.userId ? String(req.userId) : ""
+  if (userId) {
+    const r = await query(
+      `
+      SELECT utr.tenant_id
+      FROM user_tenant_roles utr
+      JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+      WHERE utr.user_id = $1
+        AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+        AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+      ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC, utr.granted_at ASC
+      LIMIT 1
+      `,
+      [userId]
+    )
+    if (r.rows.length > 0) return String(r.rows[0].tenant_id)
+  }
   return await ensureSystemTenantId()
+}
+
+async function resolvePersonalTenantId(req: AuthedRequest): Promise<string> {
+  const userId = req.userId ? String(req.userId) : ""
+  if (!userId) return await resolveTenantId(req)
+  const r = await query(
+    `
+    SELECT utr.tenant_id
+    FROM user_tenant_roles utr
+    JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+    WHERE utr.user_id = $1
+      AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+      AND t.tenant_type = 'personal'
+      AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+    ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC, utr.granted_at ASC
+    LIMIT 1
+    `,
+    [userId]
+  )
+  if (r.rows.length > 0) return String(r.rows[0].tenant_id)
+  return await resolveTenantId(req)
+}
+
+async function resolveCategoryContext(categoryId: string) {
+  const r = await query(
+    `
+    SELECT id, tenant_id, category_type, COALESCE(user_id, author_id) AS owner_id
+    FROM board_categories
+    WHERE id = $1 AND deleted_at IS NULL
+    LIMIT 1
+    `,
+    [categoryId]
+  )
+  if (r.rows.length === 0) throw new Error("Invalid category_id")
+  const row = r.rows[0] as { id: string; tenant_id: string; category_type: string; owner_id?: string | null }
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    categoryType: String(row.category_type || ""),
+    ownerId: row.owner_id ? String(row.owner_id) : "",
+  }
+}
+
+async function resolveTenantIdForCategoryType(req: AuthedRequest, categoryType: string) {
+  if (categoryType === "team_page") return await resolveTenantId(req)
+  return await resolvePersonalTenantId(req)
 }
 
 async function tenantAllowsSharedPages(tenantId: string): Promise<boolean> {
@@ -402,8 +465,6 @@ export async function createPost(req: Request, res: Response) {
     const userId = (req as AuthedRequest).userId
     const body = (req.body || {}) as any
 
-    const tenantId = await resolveTenantId(req as AuthedRequest)
-
     const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : "Untitled"
     const pageType = typeof body.page_type === "string" ? body.page_type : "page"
     const visibility = typeof body.visibility === "string" ? body.visibility : "private"
@@ -416,12 +477,14 @@ export async function createPost(req: Request, res: Response) {
 
     await client.query("BEGIN")
 
+    let tenantId = ""
+    let effectiveCategoryId = categoryId
+
     // Validate parent_id (must exist and be owned by same user) if provided
     // Also inherit parent's category_id if none provided explicitly
-    let effectiveCategoryId = categoryId
     if (parentId) {
       const p = await client.query(
-        `SELECT id, category_id
+        `SELECT id, category_id, tenant_id
          FROM posts
          WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
          LIMIT 1`,
@@ -431,10 +494,26 @@ export async function createPost(req: Request, res: Response) {
         await client.query("ROLLBACK")
         return res.status(400).json({ message: "Invalid parent_id" })
       }
+      const parentRow = p.rows[0] as { category_id?: string | null; tenant_id?: string | null }
+      if (parentRow?.tenant_id) {
+        tenantId = String(parentRow.tenant_id)
+      }
       // Inherit parent's category_id if child doesn't specify one
       if (!effectiveCategoryId && p.rows[0].category_id) {
         effectiveCategoryId = p.rows[0].category_id
       }
+    }
+
+    if (!tenantId && effectiveCategoryId) {
+      const ctx = await resolveCategoryContext(effectiveCategoryId)
+      if (ctx.categoryType === "personal_page" && String(ctx.ownerId || "") !== String(userId)) {
+        await client.query("ROLLBACK")
+        return res.status(403).json({ message: "Forbidden" })
+      }
+      tenantId = ctx.tenantId
+    }
+    if (!tenantId) {
+      tenantId = await resolvePersonalTenantId(req as AuthedRequest)
     }
 
     // Validate category if provided (or inherited)
@@ -465,7 +544,21 @@ export async function listMyPages(req: Request, res: Response) {
   try {
     const userId = (req as AuthedRequest).userId
     const categoryId = typeof req.query.categoryId === "string" ? String(req.query.categoryId).trim() : ""
-    const tenantId = await resolveTenantId(req as AuthedRequest)
+    let tenantId = ""
+    if (categoryId) {
+      const ctx = await resolveCategoryContext(categoryId)
+      if (ctx.categoryType === "personal_page" && String(ctx.ownerId || "") !== String(userId)) {
+        return res.status(403).json({ message: "Forbidden" })
+      }
+      if (ctx.categoryType === "team_page") {
+        const ok = await tenantAllowsSharedPages(ctx.tenantId)
+        if (!ok) return res.json([])
+      }
+      tenantId = ctx.tenantId
+    }
+    if (!tenantId) {
+      tenantId = await resolvePersonalTenantId(req as AuthedRequest)
+    }
 
     let sql =
       `SELECT id, parent_id, category_id, title, icon, slug, page_type, status, visibility, child_count, page_order, updated_at
@@ -497,9 +590,9 @@ export async function listMyPageCategories(req: Request, res: Response) {
   const client = await pool.connect()
   try {
     const userId = (req as AuthedRequest).userId
-    const tenantId = await resolveTenantId(req as AuthedRequest)
     const type = typeof req.query.type === "string" ? String(req.query.type) : "personal_page"
     const categoryType = type === "team_page" ? "team_page" : "personal_page"
+    const tenantId = await resolveTenantIdForCategoryType(req as AuthedRequest, categoryType)
 
     // Shared/Team categories exist when the current tenant is NOT personal (team + group).
     if (categoryType === "team_page") {
@@ -574,10 +667,10 @@ export async function createMyPageCategory(req: Request, res: Response) {
   const client = await pool.connect()
   try {
     const userId = (req as AuthedRequest).userId
-    const tenantId = await resolveTenantId(req as AuthedRequest)
     const body = (req.body || {}) as { name?: unknown; icon?: unknown; type?: unknown }
     const type = typeof body.type === "string" ? body.type : "personal_page"
     const categoryType = type === "team_page" ? "team_page" : "personal_page"
+    const tenantId = await resolveTenantIdForCategoryType(req as AuthedRequest, categoryType)
     const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "New category"
     const icon = typeof body.icon === "string" ? body.icon.trim().slice(0, 100) : null
 
@@ -619,7 +712,6 @@ export async function updateCategory(req: Request, res: Response) {
   const client = await pool.connect()
   try {
     const userId = (req as AuthedRequest).userId
-    const tenantId = await resolveTenantId(req as AuthedRequest)
     const { id } = req.params
     const body = (req.body || {}) as any
 
@@ -635,14 +727,15 @@ export async function updateCategory(req: Request, res: Response) {
 
     // Ensure category exists & ownership rules (personal_page requires author match)
     const cur = await query(
-      `SELECT id, category_type, COALESCE(user_id, author_id) AS owner_id
+      `SELECT id, tenant_id, category_type, COALESCE(user_id, author_id) AS owner_id
        FROM board_categories
-       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+       WHERE id = $1 AND deleted_at IS NULL
        LIMIT 1`,
-      [id, tenantId]
+      [id]
     )
     if (cur.rows.length === 0) return res.status(404).json({ message: "Category not found" })
-    const row = cur.rows[0] as { category_type: string; owner_id?: string | null }
+    const row = cur.rows[0] as { tenant_id: string; category_type: string; owner_id?: string | null }
+    const tenantId = String(row.tenant_id)
     if (String(row.category_type) === "personal_page" && String(row.owner_id || "") !== String(userId)) {
       return res.status(403).json({ message: "Forbidden" })
     }
@@ -690,18 +783,18 @@ export async function deleteCategory(req: Request, res: Response) {
   const client = await pool.connect()
   try {
     const userId = (req as AuthedRequest).userId
-    const tenantId = await resolveTenantId(req as AuthedRequest)
     const { id } = req.params
 
     const cur = await client.query(
-      `SELECT id, category_type, COALESCE(user_id, author_id) AS owner_id
+      `SELECT id, tenant_id, category_type, COALESCE(user_id, author_id) AS owner_id
        FROM board_categories
-       WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+       WHERE id = $1 AND deleted_at IS NULL
        LIMIT 1`,
-      [id, tenantId]
+      [id]
     )
     if (cur.rows.length === 0) return res.status(404).json({ message: "Category not found" })
-    const row = cur.rows[0] as { category_type: string; owner_id?: string | null }
+    const row = cur.rows[0] as { tenant_id: string; category_type: string; owner_id?: string | null }
+    const tenantId = String(row.tenant_id)
     if (String(row.category_type) === "personal_page" && String(row.owner_id || "") !== String(userId)) {
       return res.status(403).json({ message: "Forbidden" })
     }
@@ -757,10 +850,10 @@ export async function reorderCategories(req: Request, res: Response) {
   const client = await pool.connect()
   try {
     const userId = (req as AuthedRequest).userId
-    const tenantId = await resolveTenantId(req as AuthedRequest)
     const body = (req.body || {}) as any
     const type = typeof body.type === "string" ? body.type : "personal_page"
     const categoryType = type === "team_page" ? "team_page" : "personal_page"
+    const tenantId = await resolveTenantIdForCategoryType(req as AuthedRequest, categoryType)
     const orderedIds = Array.isArray(body.orderedIds) ? body.orderedIds.map(String).filter(Boolean) : []
     if (!orderedIds.length) return res.status(400).json({ message: "orderedIds is required" })
 
@@ -836,6 +929,9 @@ export async function listTenantMemberships(req: Request, res: Response) {
         t.id,
         t.name,
         t.tenant_type,
+        COALESCE(utr.membership_status, 'active') AS membership_status,
+        utr.joined_at,
+        utr.expires_at,
         COALESCE(utr.is_primary_tenant, FALSE) AS is_primary,
         r.slug AS role_slug,
         r.name AS role_name,
@@ -860,7 +956,7 @@ export async function listTenantMemberships(req: Request, res: Response) {
         GROUP BY utr2.tenant_id
       ) mc ON mc.tenant_id = t.id
       WHERE utr.user_id = $1
-        AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+        AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
       ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC, utr.granted_at ASC
       `,
       [userId]
@@ -869,6 +965,30 @@ export async function listTenantMemberships(req: Request, res: Response) {
   } catch (e) {
     console.error("post-service listTenantMemberships error:", e)
     return res.status(500).json({ message: "Failed to load tenant memberships" })
+  }
+}
+
+export async function listCurrentUserProviders(req: Request, res: Response) {
+  try {
+    const userId = (req as AuthedRequest).userId
+    const r = await query(
+      `
+      SELECT
+        id,
+        provider,
+        provider_user_id,
+        extra_data,
+        created_at
+      FROM user_providers
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+      `,
+      [userId]
+    )
+    return res.json(r.rows)
+  } catch (e) {
+    console.error("post-service listCurrentUserProviders error:", e)
+    return res.status(500).json({ message: "Failed to load providers" })
   }
 }
 
@@ -1026,12 +1146,34 @@ export async function updatePostCategory(req: Request, res: Response) {
   const client = await pool.connect()
   try {
     const userId = (req as AuthedRequest).userId
-    const tenantId = await resolveTenantId(req as AuthedRequest)
     const { id } = req.params
     const body = (req.body || {}) as any
     const categoryId = typeof body.category_id === "string" && body.category_id.trim() ? body.category_id.trim() : null
 
-    if (categoryId) await assertCategoryAccess({ categoryId, tenantId, userId })
+    const cur = await client.query(
+      `SELECT id, tenant_id
+       FROM posts
+       WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
+       LIMIT 1`,
+      [id, userId]
+    )
+    if (cur.rows.length === 0) return res.status(404).json({ message: "Post not found" })
+    const tenantId = String(cur.rows[0].tenant_id)
+
+    if (categoryId) {
+      const ctx = await resolveCategoryContext(categoryId)
+      if (String(ctx.tenantId) !== String(tenantId)) {
+        return res.status(400).json({ message: "Category belongs to a different tenant" })
+      }
+      if (ctx.categoryType === "personal_page" && String(ctx.ownerId || "") !== String(userId)) {
+        return res.status(403).json({ message: "Forbidden" })
+      }
+      if (ctx.categoryType === "team_page") {
+        const ok = await tenantAllowsSharedPages(tenantId)
+        if (!ok) return res.status(400).json({ message: "Shared categories require a non-personal tenant" })
+      }
+      await assertCategoryAccess({ categoryId, tenantId, userId })
+    }
 
     const r = await client.query(
       `UPDATE posts
@@ -1222,20 +1364,20 @@ export async function listDeletedPages(req: Request, res: Response) {
 export async function getDeletedPageDetail(req: Request, res: Response) {
   try {
     const userId = (req as AuthedRequest).userId
-    const tenantId = await resolveTenantId(req as AuthedRequest)
     const { id } = req.params
     const pageId = String(id || "").trim()
     if (!pageId) return res.status(400).json({ message: "id is required" })
 
     const p = await query(
-      `SELECT id, parent_id, title, icon, category_id, metadata, status, deleted_at, updated_at
+      `SELECT id, tenant_id, parent_id, title, icon, category_id, metadata, status, deleted_at, updated_at
        FROM posts
-       WHERE id = $1 AND tenant_id = $2 AND author_id = $3
+       WHERE id = $1 AND author_id = $2
        LIMIT 1`,
-      [pageId, tenantId, userId]
+      [pageId, userId]
     )
     if (p.rows.length === 0) return res.status(404).json({ message: "Post not found" })
     const row = p.rows[0] as any
+    const tenantId = String(row.tenant_id)
     if (!isDeletedRow(row)) return res.status(400).json({ message: "Post is not deleted" })
 
     // content (reuse the same mapping as getPostContent)
@@ -1304,7 +1446,6 @@ export async function restoreDeletedPage(req: Request, res: Response) {
   const client = await pool.connect()
   try {
     const userId = (req as AuthedRequest).userId
-    const tenantId = await resolveTenantId(req as AuthedRequest)
     const { id } = req.params
     const pageId = String(id || "").trim()
     if (!pageId) return res.status(400).json({ message: "id is required" })
@@ -1315,17 +1456,18 @@ export async function restoreDeletedPage(req: Request, res: Response) {
 
     // Ensure the page exists + is deleted (ownership enforced)
     const cur = await client.query(
-      `SELECT id, parent_id, category_id, metadata, status, deleted_at
+      `SELECT id, tenant_id, parent_id, category_id, metadata, status, deleted_at
        FROM posts
-       WHERE id = $1 AND tenant_id = $2 AND author_id = $3
+       WHERE id = $1 AND author_id = $2
        FOR UPDATE`,
-      [pageId, tenantId, userId]
+      [pageId, userId]
     )
     if (cur.rows.length === 0) {
       await client.query("ROLLBACK")
       return res.status(404).json({ message: "Post not found" })
     }
     const row = cur.rows[0] as any
+    const tenantId = String(row.tenant_id)
     if (!isDeletedRow(row)) {
       await client.query("ROLLBACK")
       return res.status(400).json({ message: "Post is not deleted" })
@@ -1439,7 +1581,6 @@ export async function purgeDeletedPage(req: Request, res: Response) {
   const client = await pool.connect()
   try {
     const userId = (req as AuthedRequest).userId
-    const tenantId = await resolveTenantId(req as AuthedRequest)
     const { id } = req.params
     const pageId = String(id || "").trim()
     if (!pageId) return res.status(400).json({ message: "id is required" })
@@ -1447,17 +1588,18 @@ export async function purgeDeletedPage(req: Request, res: Response) {
     await client.query("BEGIN")
 
     const cur = await client.query(
-      `SELECT id, status, deleted_at
+      `SELECT id, tenant_id, status, deleted_at
        FROM posts
-       WHERE id = $1 AND tenant_id = $2 AND author_id = $3
+       WHERE id = $1 AND author_id = $2
        FOR UPDATE`,
-      [pageId, tenantId, userId]
+      [pageId, userId]
     )
     if (cur.rows.length === 0) {
       await client.query("ROLLBACK")
       return res.status(404).json({ message: "Post not found" })
     }
     const row = cur.rows[0] as any
+    const tenantId = String(row.tenant_id)
     if (!isDeletedRow(row)) {
       await client.query("ROLLBACK")
       return res.status(400).json({ message: "Post is not deleted" })
@@ -1520,7 +1662,6 @@ export async function movePage(req: Request, res: Response) {
   const client = await pool.connect()
   try {
     const userId = (req as AuthedRequest).userId
-    const tenantId = await resolveTenantId(req as AuthedRequest)
     const { id } = req.params
     const body = (req.body || {}) as any
 
@@ -1533,17 +1674,18 @@ export async function movePage(req: Request, res: Response) {
 
     // Verify the page exists and belongs to user
     const pageRes = await client.query(
-      `SELECT id, parent_id, category_id, page_order
+      `SELECT id, parent_id, category_id, page_order, tenant_id
        FROM posts
-       WHERE id = $1 AND tenant_id = $2 AND author_id = $3 AND deleted_at IS NULL
+       WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
        LIMIT 1`,
-      [id, tenantId, userId]
+      [id, userId]
     )
     if (pageRes.rows.length === 0) {
       await client.query("ROLLBACK")
       return res.status(404).json({ message: "Page not found" })
     }
     const page = pageRes.rows[0]
+    const tenantId = String(page.tenant_id)
     const oldParentId = page.parent_id
     const categoryId = page.category_id
 

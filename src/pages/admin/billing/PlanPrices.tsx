@@ -398,7 +398,7 @@ export default function PlanPrices() {
                   <div className="flex flex-col">
                     <span className="font-medium">{row.plan_name || row.plan_slug || row.plan_id}</span>
                     <span className="text-xs text-muted-foreground font-mono">
-                      {row.plan_slug} {row.plan_tier ? `(${row.plan_tier}/${row.plan_tenant_type})` : ""}
+                      {row.plan_slug} {row.plan_tier ? `(${row.plan_tier}/${row.plan_tenant_type || "-"})` : ""}
                     </span>
                   </div>
                 </TableCell>

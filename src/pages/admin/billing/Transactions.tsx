@@ -111,6 +111,11 @@ function statusBadge(status: string) {
   return "bg-slate-50 text-slate-700 border-slate-200"
 }
 
+function transactionLabel(row: TransactionRow) {
+  if (row.metadata?.source === "service_provision") return "서비스 제공"
+  return `${row.provider}/${row.transaction_type}`
+}
+
 export default function BillingTransactions() {
   const [rows, setRows] = useState<TransactionRow[]>([])
   const [loading, setLoading] = useState(false)
@@ -346,9 +351,7 @@ export default function BillingTransactions() {
                     <span className="text-xs text-muted-foreground font-mono">{row.tenant_slug || ""}</span>
                   </div>
                 </TableCell>
-                <TableCell className="font-mono">
-                  {row.provider}/{row.transaction_type}
-                </TableCell>
+                <TableCell className="font-mono">{transactionLabel(row)}</TableCell>
                 <TableCell>
                   <Badge variant="outline" className={statusBadge(row.status)}>
                     {row.status}

@@ -14,6 +14,7 @@ import {
   listBillingPlanPrices,
   listBillingSubscriptionChanges,
   listBillingSubscriptions,
+  provisionBillingSubscription,
   listPaymentMethods,
   listPaymentProviderConfigs,
   listPaymentTransactions,
@@ -68,6 +69,7 @@ router.put("/payment-methods/:id", updatePaymentMethod)
 
 // Subscriptions
 router.get("/subscriptions", listBillingSubscriptions)
+router.post("/subscriptions/provision", provisionBillingSubscription)
 router.put("/subscriptions/:id", updateBillingSubscription)
 router.get("/subscription-changes", listBillingSubscriptionChanges)
 

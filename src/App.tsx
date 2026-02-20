@@ -18,8 +18,11 @@ import { PersonalFilesPage, SharedFilesPage } from "./pages/files/PageAttachment
 import PaymentCard from "./pages/billing/PaymentCard";
 
 import UserManager from "./pages/admin/users/UserManager";
+import UserProviders from "./pages/admin/users/UserProviders";
 import RoleManager from "./pages/admin/users/RoleManager";
 import TenantManager from "./pages/admin/tenants/TenantManager";
+import TenantMemberships from "./pages/admin/tenants/TenantMemberships";
+import TenantInvitations from "./pages/admin/tenants/TenantInvitations";
 import Providers from "./pages/admin/ai/Providers";
 import ProviderCredentials from "./pages/admin/ai/ProviderCredentials";
 import ModelManager from "./pages/admin/ai/ModelManager";
@@ -194,8 +197,20 @@ const router = createBrowserRouter([
             element: <UserManager />,
           },
           {
+            path: "users/providers",
+            element: <UserProviders />,
+          },
+          {
             path: "tenants",
             element: <TenantManager />,
+          },
+          {
+            path: "tenants/memberships",
+            element: <TenantMemberships />,
+          },
+          {
+            path: "tenants/invitations",
+            element: <TenantInvitations />,
           },
           {
             path: "roles",

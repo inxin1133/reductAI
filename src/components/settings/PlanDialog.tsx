@@ -275,7 +275,9 @@ export function PlanDialog({ open, onOpenChange }: PlanDialogProps) {
                               ? "개인"
                               : plan.tenant_type === "team"
                                 ? "팀"
-                                : "그룹"}
+                                : plan.tenant_type === "group"
+                                  ? "그룹"
+                                  : "없음"}
                           </span>
                         </span>
                       </li>

@@ -165,12 +165,22 @@ type TenantMembership = {
   id: string
   name?: string | null
   tenant_type?: string | null
+  membership_status?: string | null
+  joined_at?: string | null
+  expires_at?: string | null
   is_primary?: boolean
   role_slug?: string | null
   role_name?: string | null
   role_scope?: string | null
   member_count?: number | null
   plan_tier?: string | null
+}
+
+type UserProvider = {
+  id: string
+  provider: string
+  provider_user_id?: string | null
+  created_at?: string | null
 }
 
 const INITIAL_BILLING_FORM: BillingFormState = {
@@ -212,6 +222,27 @@ const ROLE_LABELS: Record<string, string> = {
   viewer: "뷰어",
 }
 
+const MEMBERSHIP_STATUS_LABELS: Record<string, string> = {
+  active: "활성",
+  pending: "대기",
+  suspended: "정지",
+  inactive: "비활성",
+}
+
+const MEMBERSHIP_STATUS_STYLES: Record<string, string> = {
+  active: "bg-emerald-50 text-emerald-600 ring-emerald-500",
+  pending: "bg-amber-50 text-amber-600 ring-amber-500",
+  suspended: "bg-rose-50 text-rose-600 ring-rose-500",
+  inactive: "bg-slate-50 text-slate-500 ring-slate-300",
+}
+
+const PROVIDER_LABELS: Record<string, string> = {
+  google: "Google",
+  kakao: "Kakao",
+  naver: "Naver",
+  local: "Email",
+}
+
 function normalizePlanTier(value: unknown): PlanTier | null {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
   if (!raw) return null
@@ -222,6 +253,15 @@ function normalizePlanTier(value: unknown): PlanTier | null {
 function pickHighestTier(tiers: PlanTier[]): PlanTier {
   if (!tiers.length) return "free"
   return tiers.reduce((best, tier) => (PLAN_TIER_ORDER.indexOf(tier) > PLAN_TIER_ORDER.indexOf(best) ? tier : best), "free")
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "-"
+  try {
+    return new Date(value).toLocaleString()
+  } catch {
+    return value
+  }
 }
 
 const SettingsDialogSidebarMenu = ({
@@ -287,6 +327,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
   const [currentUser, setCurrentUser] = useState<CurrentUserProfile | null>(null)
   const [currentTenant, setCurrentTenant] = useState<CurrentTenantProfile | null>(null)
   const [tenantMemberships, setTenantMemberships] = useState<TenantMembership[]>([])
+  const [userProviders, setUserProviders] = useState<UserProvider[]>([])
   const [profileImageUrl, setProfileImageUrl] = useState<string | null>(null)
   const [profileImageAssetId, setProfileImageAssetId] = useState<string | null>(null)
   const [profileImageLoading, setProfileImageLoading] = useState(false)
@@ -439,10 +480,11 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
     setProfileLoading(true)
     setProfileError(null)
     try {
-      const [userRes, tenantRes, membershipsRes] = await Promise.all([
+      const [userRes, tenantRes, membershipsRes, providersRes] = await Promise.all([
         fetch("/api/posts/user/me", { headers }),
         fetch("/api/posts/tenant/current", { headers }),
         fetch("/api/posts/tenant/memberships", { headers }),
+        fetch("/api/posts/user/providers", { headers }),
       ])
 
       if (userRes.ok) {
@@ -505,6 +547,10 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
       if (membershipsRes.ok) {
         const membershipsJson = (await membershipsRes.json().catch(() => [])) as TenantMembership[]
         setTenantMemberships(Array.isArray(membershipsJson) ? membershipsJson : [])
+      }
+      if (providersRes.ok) {
+        const providersJson = (await providersRes.json().catch(() => [])) as UserProvider[]
+        setUserProviders(Array.isArray(providersJson) ? providersJson : [])
       }
     } catch (error) {
       console.error(error)
@@ -1219,12 +1265,38 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
                   </div>
 
                   <div className="p-4">
+                    <div className="text-sm font-semibold text-foreground border-b border-border pb-2">연동 계정</div>
+                    <div className="mt-3 grid gap-3 text-sm text-muted-foreground">
+                      {userProviders.length ? (
+                        userProviders.map((provider) => (
+                          <div key={provider.id} className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className="text-foreground">{PROVIDER_LABELS[provider.provider] || provider.provider}</span>
+                              {provider.provider_user_id ? (
+                                <span className="text-xs text-muted-foreground">{provider.provider_user_id}</span>
+                              ) : null}
+                            </div>
+                            <div className="text-xs text-muted-foreground">{formatDateTime(provider.created_at)}</div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-xs text-muted-foreground">
+                          {profileLoading ? "불러오는 중..." : "연동된 계정이 없습니다."}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="p-4">
                     <div className="text-sm font-semibold text-foreground border-b border-border pb-2">테넌트 정보</div>
                     <div className="mt-3 grid gap-3 text-sm text-muted-foreground">
                       {tenantMemberships.length ? (
                         tenantMemberships.map((item) => {
                           const roleSlug = String(item.role_slug || "").toLowerCase()
                           const roleLabel = item.role_name || ROLE_LABELS[roleSlug] || "멤버"
+                          const statusKey = String(item.membership_status || "active").toLowerCase()
+                          const statusLabel = MEMBERSHIP_STATUS_LABELS[statusKey] || "활성"
+                          const statusStyle = MEMBERSHIP_STATUS_STYLES[statusKey] || MEMBERSHIP_STATUS_STYLES.active
                           const memberCount =
                             typeof item.member_count === "number" && Number.isFinite(item.member_count)
                               ? item.member_count
@@ -1232,10 +1304,17 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
                           const canManage = roleSlug === "owner" || roleSlug === "admin"
                           return (
                             <div key={item.id} className="flex items-center justify-between">
-                              <div className="flex items-center gap-1">
-                                {item.name || "-"} <span className="text-xs">({roleLabel})</span>
+                              <div className="flex items-center gap-2">
+                                <span>{item.name || "-"}</span>
+                                <span className="text-xs">({roleLabel})</span>
+                                <span className={cn("inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1", statusStyle)}>
+                                  {statusLabel}
+                                </span>
                               </div>
                               <div className="flex items-center gap-2 text-foreground">
+                                {item.expires_at ? (
+                                  <span className="text-xs text-muted-foreground">만료 {formatDateTime(item.expires_at)}</span>
+                                ) : null}
                                 멤버 {memberCount ?? "-"}명
                                 {canManage ? (
                                   <Tooltip>

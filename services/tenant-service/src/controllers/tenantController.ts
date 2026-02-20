@@ -56,14 +56,35 @@ export const createTenant = async (req: Request, res: Response) => {
   try {
     await client.query('BEGIN');
     const { name, slug, domain, tenant_type, owner_id } = req.body;
+    const status = typeof req.body?.status === 'string' ? req.body.status : 'active';
+    const memberLimitRaw = req.body?.member_limit;
+    const memberLimit =
+      memberLimitRaw === null || memberLimitRaw === undefined || memberLimitRaw === ''
+        ? null
+        : Number(memberLimitRaw);
+
+    if (memberLimit !== null && (!Number.isFinite(memberLimit) || memberLimit < 0)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Invalid member_limit' });
+    }
 
     // Create tenant
     const insertTenantQuery = `
-      INSERT INTO tenants (name, slug, domain, tenant_type, owner_id)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO tenants (name, slug, domain, tenant_type, owner_id, status, member_limit, current_member_count)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING *
     `;
-    const tenantResult = await client.query(insertTenantQuery, [name, slug, domain, tenant_type, owner_id]);
+    const initialMemberCount = owner_id ? 1 : 0;
+    const tenantResult = await client.query(insertTenantQuery, [
+      name,
+      slug,
+      domain,
+      tenant_type,
+      owner_id,
+      status,
+      memberLimit,
+      initialMemberCount,
+    ]);
     const tenant = tenantResult.rows[0];
 
     if (owner_id) {
@@ -130,6 +151,17 @@ export const updateTenant = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { name, slug, domain, tenant_type, status } = req.body;
+    const memberLimitRaw = req.body?.member_limit;
+    const memberLimit =
+      memberLimitRaw === undefined || memberLimitRaw === ''
+        ? undefined
+        : memberLimitRaw === null
+          ? null
+          : Number(memberLimitRaw);
+
+    if (memberLimit !== undefined && memberLimit !== null && (!Number.isFinite(memberLimit) || memberLimit < 0)) {
+      return res.status(400).json({ message: 'Invalid member_limit' });
+    }
 
     const query = `
       UPDATE tenants 
@@ -138,12 +170,13 @@ export const updateTenant = async (req: Request, res: Response) => {
           domain = COALESCE($3, domain),
           tenant_type = COALESCE($4, tenant_type),
           status = COALESCE($5, status),
+          member_limit = COALESCE($6, member_limit),
           updated_at = CURRENT_TIMESTAMP
-      WHERE id = $6 AND deleted_at IS NULL
+      WHERE id = $7 AND deleted_at IS NULL
       RETURNING *
     `;
     
-    const { rows } = await pool.query(query, [name, slug, domain, tenant_type, status, id]);
+    const { rows } = await pool.query(query, [name, slug, domain, tenant_type, status, memberLimit, id]);
 
     if (rows.length === 0) {
       return res.status(404).json({ message: 'Tenant not found' });

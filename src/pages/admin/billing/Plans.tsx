@@ -31,14 +31,14 @@ import { Badge } from "@/components/ui/badge"
 import { Loader2, Pencil, Plus, RefreshCcw } from "lucide-react"
 
 type PlanTier = "free" | "pro" | "premium" | "business" | "enterprise"
-type TenantType = "personal" | "team" | "group"
+type TenantTypeValue = "personal" | "team" | "group"
 
 type PlanRow = {
   id: string
   slug: string
   name: string
   tier: PlanTier
-  tenant_type: TenantType
+  tenant_type: TenantTypeValue
   description?: string | null
   included_seats: number
   min_seats: number
@@ -64,7 +64,7 @@ type FormState = {
   slug: string
   name: string
   tier: PlanTier
-  tenant_type: TenantType
+  tenant_type: TenantTypeValue
   description: string
   included_seats: string
   min_seats: string
@@ -212,6 +212,9 @@ export default function BillingPlans() {
 
     if (!form.slug.trim()) return { error: "slug를 입력해주세요." }
     if (!form.name.trim()) return { error: "이름을 입력해주세요." }
+    if (form.tier === "free" && form.tenant_type !== "personal") {
+      return { error: "free 요금제는 테넌트 유형이 personal이어야 합니다." }
+    }
     if (!Number.isFinite(includedSeats) || includedSeats <= 0) return { error: "포함 좌석 수를 입력해주세요." }
     if (!Number.isFinite(minSeats) || minSeats <= 0) return { error: "최소 좌석 수를 입력해주세요." }
     if (maxSeats !== null && (!Number.isFinite(maxSeats) || maxSeats < 0)) return { error: "최대 좌석 수를 확인해주세요." }
@@ -456,7 +459,10 @@ export default function BillingPlans() {
             </div>
             <div className="space-y-1">
               <div className="text-sm font-medium">테넌트 타입</div>
-              <Select value={form.tenant_type} onValueChange={(v) => setForm((p) => ({ ...p, tenant_type: v as TenantType }))}>
+              <Select
+                value={form.tenant_type}
+                onValueChange={(v) => setForm((p) => ({ ...p, tenant_type: v as TenantTypeOption }))}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="타입 선택" />
                 </SelectTrigger>

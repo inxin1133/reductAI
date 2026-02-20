@@ -1,5 +1,6 @@
 import { Request, Response } from "express"
-import { query } from "../config/db"
+import pool, { query } from "../config/db"
+import type { AuthedRequest } from "../middleware/requireAuth"
 import { lookupTenants } from "../services/identityClient"
 
 function toInt(v: unknown, fallback: number | null = null) {
@@ -21,6 +22,45 @@ function toBool(v: unknown): boolean | null {
     if (v.toLowerCase() === "false") return false
   }
   return null
+}
+
+let billingInvoiceColumns: Set<string> | null = null
+
+async function isSystemTenantId(client: any, tenantId: string): Promise<boolean> {
+  if (!tenantId) return false
+  const r = await client.query(
+    `
+    SELECT slug, COALESCE((metadata->>'system')::boolean, FALSE) AS is_system
+    FROM tenants
+    WHERE id = $1 AND deleted_at IS NULL
+    LIMIT 1
+    `,
+    [tenantId]
+  )
+  const row = r.rows[0]
+  if (!row) return false
+  return Boolean(row.is_system) || String(row.slug || "") === "system"
+}
+
+async function loadInvoiceColumns(client: any) {
+  if (billingInvoiceColumns) return billingInvoiceColumns
+  const res = await client.query(
+    `
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'billing_invoices'
+    `
+  )
+  billingInvoiceColumns = new Set(res.rows.map((row: any) => String(row.column_name)))
+  return billingInvoiceColumns
+}
+
+function makeInvoiceNumber(prefix = "SVP") {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, "0")
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`
+  const rand = Math.random().toString(36).slice(2, 6).toUpperCase()
+  return `${prefix}-${stamp}-${rand}`
 }
 
 const PLAN_TIERS = new Set(["free", "pro", "premium", "business", "enterprise"])
@@ -170,7 +210,8 @@ export async function createBillingPlan(req: Request, res: Response) {
     const slug = toStr(req.body?.slug)
     const name = toStr(req.body?.name)
     const tier = toStr(req.body?.tier)
-    const tenantType = toStr(req.body?.tenant_type)
+    const tenantTypeRaw = req.body?.tenant_type
+    const tenantType = toStr(tenantTypeRaw)
     const description = typeof req.body?.description === "string" ? req.body.description : null
 
     const includedSeatsRaw = req.body?.included_seats
@@ -198,7 +239,12 @@ export async function createBillingPlan(req: Request, res: Response) {
     if (!slug) return res.status(400).json({ message: "slug is required" })
     if (!name) return res.status(400).json({ message: "name is required" })
     if (!PLAN_TIERS.has(tier)) return res.status(400).json({ message: "invalid tier" })
-    if (!TENANT_TYPES.has(tenantType)) return res.status(400).json({ message: "invalid tenant_type" })
+    if (!tenantType || !TENANT_TYPES.has(tenantType)) {
+      return res.status(400).json({ message: "invalid tenant_type" })
+    }
+    if (tier === "free" && tenantType !== "personal") {
+      return res.status(400).json({ message: "free plans must use personal tenant_type" })
+    }
     if (!Number.isFinite(includedSeats) || includedSeats <= 0) {
       return res.status(400).json({ message: "included_seats must be positive" })
     }
@@ -285,15 +331,46 @@ export async function updateBillingPlan(req: Request, res: Response) {
       if (!name) return res.status(400).json({ message: "name must be non-empty" })
       setField("name", name)
     }
+    let nextTier: string | null = null
+    let currentTier: string | null = null
+    let currentTenantType: string | null = null
+
+    const loadCurrentPlan = async () => {
+      if (currentTier !== null) return
+      const currentRes = await query(`SELECT tier, tenant_type FROM billing_plans WHERE id = $1`, [id])
+      if (currentRes.rows.length === 0) return
+      currentTier = currentRes.rows[0]?.tier ?? null
+      currentTenantType = currentRes.rows[0]?.tenant_type ?? null
+    }
+
     if (input.tier !== undefined) {
       const tier = toStr(input.tier)
       if (!PLAN_TIERS.has(tier)) return res.status(400).json({ message: "invalid tier" })
+      nextTier = tier
       setField("tier", tier)
     }
     if (input.tenant_type !== undefined) {
       const tenantType = toStr(input.tenant_type)
-      if (!TENANT_TYPES.has(tenantType)) return res.status(400).json({ message: "invalid tenant_type" })
+      if (!tenantType || !TENANT_TYPES.has(tenantType)) {
+        return res.status(400).json({ message: "invalid tenant_type" })
+      }
+      if (!nextTier) {
+        await loadCurrentPlan()
+        nextTier = currentTier
+      }
+      if (nextTier === "free" && tenantType !== "personal") {
+        return res.status(400).json({ message: "free plans must use personal tenant_type" })
+      }
       setField("tenant_type", tenantType)
+    }
+    if (nextTier && nextTier !== "free" && input.tenant_type === undefined) {
+      await loadCurrentPlan()
+      if (!currentTenantType) {
+        return res.status(400).json({ message: "tenant_type is required for non-free plans" })
+      }
+    }
+    if (nextTier === "free" && input.tenant_type === undefined) {
+      setField("tenant_type", "personal")
     }
     if (input.description !== undefined) {
       const description = typeof input.description === "string" ? input.description : null
@@ -855,6 +932,328 @@ export async function updateBillingSubscription(req: Request, res: Response) {
   } catch (e: any) {
     console.error("updateBillingSubscription error:", e)
     return res.status(500).json({ message: "Failed to update subscription", details: String(e?.message || e) })
+  }
+}
+
+export async function provisionBillingSubscription(req: Request, res: Response) {
+  const client = await pool.connect()
+  let transactionStarted = false
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(req.body?.tenant_id)
+    const subscriptionId = toStr(req.body?.subscription_id)
+    const planId = toStr(req.body?.plan_id)
+    const billingCycle = toStr(req.body?.billing_cycle)
+    const currency = toStr(req.body?.currency).toUpperCase() || "USD"
+    const provider = toStr(req.body?.provider) || "stripe"
+    const status = toStr(req.body?.status) || "active"
+    const note = typeof req.body?.note === "string" ? req.body.note.trim() : ""
+
+    const priceUsdRaw = req.body?.price_usd
+    const priceUsd = priceUsdRaw === null || priceUsdRaw === undefined || priceUsdRaw === "" ? 0 : Number(priceUsdRaw)
+
+    const cancelAt = toBool(req.body?.cancel_at_period_end)
+    const autoRenew = toBool(req.body?.auto_renew)
+
+    const currentPeriodStart = req.body?.current_period_start
+    const currentPeriodEnd = req.body?.current_period_end
+
+    if (!tenantId) return res.status(400).json({ message: "tenant_id is required" })
+    if (await isSystemTenantId({ query }, tenantId)) {
+      return res.status(400).json({ message: "system tenant cannot be billed" })
+    }
+    if (!planId) return res.status(400).json({ message: "plan_id is required" })
+    if (!BILLING_CYCLES.has(billingCycle)) return res.status(400).json({ message: "invalid billing_cycle" })
+    if (!SUBSCRIPTION_STATUSES.has(status)) return res.status(400).json({ message: "invalid status" })
+    if (!PAYMENT_PROVIDERS.has(provider)) return res.status(400).json({ message: "invalid provider" })
+    if (!Number.isFinite(priceUsd) || priceUsd < 0) {
+      return res.status(400).json({ message: "price_usd must be >= 0" })
+    }
+    if (!currency || currency.length !== 3) return res.status(400).json({ message: "currency must be 3 letters" })
+    if (!currentPeriodStart) return res.status(400).json({ message: "current_period_start is required" })
+    if (!currentPeriodEnd) return res.status(400).json({ message: "current_period_end is required" })
+
+    const periodStartDate = new Date(currentPeriodStart)
+    const periodEndDate = new Date(currentPeriodEnd)
+    if (Number.isNaN(periodStartDate.getTime()) || Number.isNaN(periodEndDate.getTime())) {
+      return res.status(400).json({ message: "invalid period dates" })
+    }
+
+    const periodStartIso = periodStartDate.toISOString()
+    const periodEndIso = periodEndDate.toISOString()
+
+    const planRes = await client.query(`SELECT id FROM billing_plans WHERE id = $1`, [planId])
+    if (planRes.rows.length === 0) return res.status(404).json({ message: "Billing plan not found" })
+
+    await client.query("BEGIN")
+    transactionStarted = true
+
+    let subscriptionRow: any | null = null
+    if (subscriptionId) {
+      const subRes = await client.query(`SELECT * FROM billing_subscriptions WHERE id = $1`, [subscriptionId])
+      if (subRes.rows.length === 0) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+        return res.status(404).json({ message: "Subscription not found" })
+      }
+      subscriptionRow = subRes.rows[0]
+    } else {
+      const subRes = await client.query(
+        `SELECT * FROM billing_subscriptions WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 1`,
+        [tenantId]
+      )
+      subscriptionRow = subRes.rows[0] || null
+    }
+
+    const nowIso = new Date().toISOString()
+    const serviceMeta = {
+      source: "service_provision",
+      note: note || null,
+      provided_by: authed.userId,
+      provided_at: nowIso,
+    }
+
+    const existingMeta =
+      subscriptionRow && subscriptionRow.metadata && typeof subscriptionRow.metadata === "object" ? subscriptionRow.metadata : {}
+    const nextSubscriptionMeta = {
+      ...existingMeta,
+      service_provision: serviceMeta,
+    }
+
+    const resolvedTenantId = subscriptionRow ? String(subscriptionRow.tenant_id) : tenantId
+    if (subscriptionRow && resolvedTenantId !== tenantId) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      return res.status(400).json({ message: "tenant_id does not match subscription" })
+    }
+    if (await isSystemTenantId(client, resolvedTenantId)) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      return res.status(400).json({ message: "system tenant cannot be billed" })
+    }
+
+    if (subscriptionRow) {
+      const updateRes = await client.query(
+        `
+        UPDATE billing_subscriptions
+        SET plan_id = $1,
+            billing_cycle = $2,
+            status = $3,
+            current_period_start = $4,
+            current_period_end = $5,
+            cancel_at_period_end = $6,
+            auto_renew = $7,
+            price_usd = $8,
+            currency = $9,
+            metadata = $10::jsonb,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $11
+        RETURNING *
+        `,
+        [
+          planId,
+          billingCycle,
+          status,
+          periodStartIso,
+          periodEndIso,
+          cancelAt === null ? false : cancelAt,
+          autoRenew === null ? true : autoRenew,
+          priceUsd,
+          currency,
+          JSON.stringify(nextSubscriptionMeta),
+          subscriptionRow.id,
+        ]
+      )
+      subscriptionRow = updateRes.rows[0]
+    } else {
+      const insertRes = await client.query(
+        `
+        INSERT INTO billing_subscriptions
+          (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end,
+           cancel_at_period_end, auto_renew, price_usd, currency, metadata)
+        VALUES
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+        RETURNING *
+        `,
+        [
+          resolvedTenantId,
+          planId,
+          billingCycle,
+          status,
+          periodStartIso,
+          periodEndIso,
+          cancelAt === null ? false : cancelAt,
+          autoRenew === null ? true : autoRenew,
+          priceUsd,
+          currency,
+          JSON.stringify({ service_provision: serviceMeta }),
+        ]
+      )
+      subscriptionRow = insertRes.rows[0]
+    }
+
+    const billingAccountRes = await client.query(`SELECT id FROM billing_accounts WHERE tenant_id = $1`, [resolvedTenantId])
+    let billingAccountId = billingAccountRes.rows[0]?.id
+    if (!billingAccountId) {
+      const createAccountRes = await client.query(
+        `
+        INSERT INTO billing_accounts (tenant_id, currency, metadata)
+        VALUES ($1,$2,$3::jsonb)
+        RETURNING id
+        `,
+        [
+          resolvedTenantId,
+          currency,
+          JSON.stringify({ source: "service_provision", created_by: authed.userId, created_at: nowIso }),
+        ]
+      )
+      billingAccountId = createAccountRes.rows[0]?.id
+    }
+
+    if (!billingAccountId) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      return res.status(500).json({ message: "Failed to resolve billing account" })
+    }
+
+    const invoiceColumns = await loadInvoiceColumns(client)
+    const invoiceCols: string[] = []
+    const invoiceVals: any[] = []
+    const invoicePlaceholders: string[] = []
+    const addInvoiceCol = (name: string, value: any, cast?: string) => {
+      if (!invoiceColumns.has(name)) return
+      invoiceCols.push(name)
+      invoiceVals.push(value)
+      invoicePlaceholders.push(cast ? `$${invoiceVals.length}::${cast}` : `$${invoiceVals.length}`)
+    }
+
+    addInvoiceCol("tenant_id", resolvedTenantId)
+    addInvoiceCol("subscription_id", subscriptionRow.id)
+    addInvoiceCol("billing_account_id", billingAccountId)
+    addInvoiceCol("invoice_number", makeInvoiceNumber("SVP"))
+    addInvoiceCol("status", "paid")
+    addInvoiceCol("currency", currency)
+    addInvoiceCol("subtotal_usd", priceUsd)
+    addInvoiceCol("total_usd", priceUsd)
+    addInvoiceCol("issue_date", nowIso)
+    addInvoiceCol("paid_at", nowIso)
+    addInvoiceCol("metadata", JSON.stringify(serviceMeta), "jsonb")
+    if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", 0)
+    if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", 0)
+    if (invoiceColumns.has("discount_usd")) addInvoiceCol("discount_usd", 0)
+    if (invoiceColumns.has("period_start")) addInvoiceCol("period_start", periodStartIso)
+    if (invoiceColumns.has("period_end")) addInvoiceCol("period_end", periodEndIso)
+    if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", currency)
+    if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", priceUsd)
+    if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", 0)
+    if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", priceUsd)
+
+    let invoiceRow: any | null = null
+    for (let i = 0; i < 3; i += 1) {
+      try {
+        const insertInvoiceRes = await client.query(
+          `
+          INSERT INTO billing_invoices (${invoiceCols.join(", ")})
+          VALUES (${invoicePlaceholders.join(", ")})
+          RETURNING *
+          `,
+          invoiceVals
+        )
+        invoiceRow = insertInvoiceRes.rows[0]
+        break
+      } catch (e: any) {
+        if (e?.code === "23505" && String(e?.detail || "").includes("invoice_number")) {
+          invoiceCols.splice(0, invoiceCols.length)
+          invoiceVals.splice(0, invoiceVals.length)
+          invoicePlaceholders.splice(0, invoicePlaceholders.length)
+          addInvoiceCol("tenant_id", resolvedTenantId)
+          addInvoiceCol("subscription_id", subscriptionRow.id)
+          addInvoiceCol("billing_account_id", billingAccountId)
+          addInvoiceCol("invoice_number", makeInvoiceNumber("SVP"))
+          addInvoiceCol("status", "paid")
+          addInvoiceCol("currency", currency)
+          addInvoiceCol("subtotal_usd", priceUsd)
+          addInvoiceCol("total_usd", priceUsd)
+          addInvoiceCol("issue_date", nowIso)
+          addInvoiceCol("paid_at", nowIso)
+          addInvoiceCol("metadata", JSON.stringify(serviceMeta), "jsonb")
+          if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", 0)
+          if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", 0)
+          if (invoiceColumns.has("discount_usd")) addInvoiceCol("discount_usd", 0)
+          if (invoiceColumns.has("period_start")) addInvoiceCol("period_start", periodStartIso)
+          if (invoiceColumns.has("period_end")) addInvoiceCol("period_end", periodEndIso)
+          if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", currency)
+          if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", priceUsd)
+          if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", 0)
+          if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", priceUsd)
+          continue
+        }
+        throw e
+      }
+    }
+
+    if (!invoiceRow) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      return res.status(500).json({ message: "Failed to create invoice" })
+    }
+
+    await client.query(
+      `
+      INSERT INTO invoice_line_items
+        (invoice_id, line_type, description, quantity, unit_price_usd, amount_usd, currency, metadata)
+      VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+      `,
+      [
+        invoiceRow.id,
+        "adjustment",
+        "서비스 제공",
+        1,
+        priceUsd,
+        priceUsd,
+        currency,
+        JSON.stringify(serviceMeta),
+      ]
+    )
+
+    await client.query(
+      `
+      INSERT INTO payment_transactions
+        (invoice_id, billing_account_id, provider, transaction_type, status, amount_usd, currency, processed_at, provider_transaction_id, metadata)
+      VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+      `,
+      [
+        invoiceRow.id,
+        billingAccountId,
+        provider,
+        "adjustment",
+        "succeeded",
+        priceUsd,
+        currency,
+        nowIso,
+        makeInvoiceNumber("SVP-TX"),
+        JSON.stringify(serviceMeta),
+      ]
+    )
+
+    await client.query("COMMIT")
+    transactionStarted = false
+
+    return res.status(201).json({
+      ok: true,
+      subscription: subscriptionRow,
+      invoice: invoiceRow,
+    })
+  } catch (e: any) {
+    if (transactionStarted) {
+      await client.query("ROLLBACK")
+    }
+    console.error("provisionBillingSubscription error:", e)
+    return res.status(500).json({ message: "Failed to provision subscription", details: String(e?.message || e) })
+  } finally {
+    client.release()
   }
 }
 

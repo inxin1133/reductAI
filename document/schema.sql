@@ -537,6 +537,14 @@ CREATE TRIGGER update_roles_updated_at BEFORE UPDATE ON roles
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================
+-- 11.5 INITIAL DATA - SYSTEM TENANT
+-- ============================================
+
+INSERT INTO tenants (owner_id, name, slug, tenant_type, status, metadata)
+VALUES (NULL, 'System (Platform)', 'system', 'group', 'active', '{"system": true}'::jsonb)
+ON CONFLICT (slug) DO NOTHING;
+
+-- ============================================
 -- 12. INITIAL DATA - DEFAULT PERMISSIONS
 -- ============================================
 

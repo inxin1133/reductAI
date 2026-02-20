@@ -132,6 +132,11 @@ function statusBadge(status: string) {
   return "bg-slate-50 text-slate-700 border-slate-200"
 }
 
+function lineTypeLabel(item: LineItemRow) {
+  if (item.metadata?.source === "service_provision") return "서비스 제공"
+  return item.line_type
+}
+
 export default function BillingInvoices() {
   const [rows, setRows] = useState<InvoiceRow[]>([])
   const [loading, setLoading] = useState(false)
@@ -493,7 +498,7 @@ export default function BillingInvoices() {
                       ) : null}
                       {lineItems.map((item) => (
                         <TableRow key={item.id}>
-                          <TableCell className="font-mono text-xs">{item.line_type}</TableCell>
+                          <TableCell className="font-mono text-xs">{lineTypeLabel(item)}</TableCell>
                           <TableCell>{item.description}</TableCell>
                           <TableCell className="font-mono text-xs">{Number(item.quantity).toFixed(2)}</TableCell>
                           <TableCell className="font-mono text-xs">{fmtMoney(item.unit_price_usd, item.currency)}</TableCell>
