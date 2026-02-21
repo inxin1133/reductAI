@@ -26,7 +26,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, Pencil, RefreshCcw } from "lucide-react"
+import { Eye, Loader2, Pencil, RefreshCcw } from "lucide-react"
 import { AdminPage } from "@/components/layout/AdminPage"
 
 type TransactionRow = {
@@ -143,6 +143,8 @@ export default function BillingTransactions() {
     metadata: "",
   })
   const [saving, setSaving] = useState(false)
+  const [viewOpen, setViewOpen] = useState(false)
+  const [viewing, setViewing] = useState<TransactionRow | null>(null)
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams()
@@ -191,6 +193,11 @@ export default function BillingTransactions() {
       metadata: row.metadata ? JSON.stringify(row.metadata, null, 2) : "",
     })
     setEditOpen(true)
+  }
+
+  function openView(row: TransactionRow) {
+    setViewing(row)
+    setViewOpen(true)
   }
 
   async function saveEdit() {
@@ -321,7 +328,7 @@ export default function BillingTransactions() {
               <TableHead>금액</TableHead>
               <TableHead>현지 통화</TableHead>
               <TableHead>처리 시간</TableHead>
-              <TableHead className="text-right">액션</TableHead>
+              <TableHead className="text-right">관리</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -366,9 +373,14 @@ export default function BillingTransactions() {
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">{fmtDate(row.processed_at)}</TableCell>
                 <TableCell className="text-right">
-                  <Button variant="ghost" size="sm" onClick={() => openEdit(row)}>
-                    <Pencil className="h-4 w-4" />
-                  </Button>
+                  <div className="flex items-center justify-end gap-1">
+                    <Button variant="ghost" size="sm" onClick={() => openView(row)} aria-label="상세 보기">
+                      <Eye className="h-4 w-4" />
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => openEdit(row)}>
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
@@ -472,6 +484,103 @@ export default function BillingTransactions() {
             <Button onClick={saveEdit} disabled={saving}>
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               <span className={saving ? "ml-2" : ""}>저장</span>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={viewOpen} onOpenChange={setViewOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>결제 내역 상세</DialogTitle>
+          </DialogHeader>
+          {viewing ? (
+            <div className="space-y-4">
+              <div className="text-xs text-muted-foreground">
+                {viewing.provider} · {viewing.transaction_type} · {viewing.status}
+              </div>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">거래 ID</div>
+                  <div className="text-sm font-mono break-all">{viewing.id}</div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">프로바이더 거래 ID</div>
+                  <div className="text-sm font-mono break-all">{viewing.provider_transaction_id || "-"}</div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">청구서 ID / 번호</div>
+                  <div className="text-sm font-mono break-all">
+                    {viewing.invoice_id || "-"} {viewing.invoice_number ? `(${viewing.invoice_number})` : ""}
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">테넌트</div>
+                  <div className="text-sm">
+                    {viewing.tenant_name || viewing.tenant_slug || "-"}
+                    {viewing.tenant_type ? ` (${viewing.tenant_type})` : ""}
+                  </div>
+                  <div className="text-xs text-muted-foreground font-mono">{viewing.tenant_slug || ""}</div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">거래 유형</div>
+                  <div className="text-sm">{transactionLabel(viewing)}</div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">상태</div>
+                  <Badge variant="outline" className={statusBadge(viewing.status)}>
+                    {viewing.status}
+                  </Badge>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">금액</div>
+                  <div className="text-sm font-mono">{fmtMoney(viewing.amount_usd, viewing.currency)}</div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">현지 통화</div>
+                  <div className="text-sm font-mono">
+                    {viewing.amount_local ? fmtMoney(viewing.amount_local, viewing.local_currency || "KRW") : "-"}
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">처리 시간</div>
+                  <div className="text-sm">{fmtDate(viewing.processed_at)}</div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">실패 사유</div>
+                  <div className="text-sm">{viewing.failure_reason || "-"}</div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">결제 수단 ID</div>
+                  <div className="text-sm font-mono break-all">{viewing.payment_method_id || "-"}</div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">과금 계정 ID</div>
+                  <div className="text-sm font-mono break-all">{viewing.billing_account_id || "-"}</div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">연결 거래 ID</div>
+                  <div className="text-sm font-mono break-all">{viewing.related_transaction_id || "-"}</div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">생성 / 업데이트</div>
+                  <div className="text-sm">{fmtDate(viewing.created_at)}</div>
+                  <div className="text-sm">{fmtDate(viewing.updated_at)}</div>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-xs text-muted-foreground">메타데이터</div>
+                <Textarea
+                  rows={6}
+                  value={viewing.metadata ? JSON.stringify(viewing.metadata, null, 2) : ""}
+                  readOnly
+                />
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setViewOpen(false)}>
+              닫기
             </Button>
           </DialogFooter>
         </DialogContent>

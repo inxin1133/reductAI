@@ -20,7 +20,6 @@ import PaymentCard from "./pages/billing/PaymentCard";
 import UserManager from "./pages/admin/users/UserManager";
 import UserProviders from "./pages/admin/users/UserProviders";
 import RoleManager from "./pages/admin/users/RoleManager";
-import TenantManager from "./pages/admin/tenants/TenantManager";
 import TenantMemberships from "./pages/admin/tenants/TenantMemberships";
 import TenantInvitations from "./pages/admin/tenants/TenantInvitations";
 import Providers from "./pages/admin/ai/Providers";
@@ -199,10 +198,6 @@ const router = createBrowserRouter([
           {
             path: "users/providers",
             element: <UserProviders />,
-          },
-          {
-            path: "tenants",
-            element: <TenantManager />,
           },
           {
             path: "tenants/memberships",

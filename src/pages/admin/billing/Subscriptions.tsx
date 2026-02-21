@@ -31,6 +31,7 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Pencil, Plus, RefreshCcw } from "lucide-react"
 import { AdminPage } from "@/components/layout/AdminPage"
+import { type PlanTier, PLAN_TIER_LABELS, PLAN_TIER_STYLES } from "@/lib/planTier"
 
 type PlanOption = {
   id: string
@@ -63,6 +64,21 @@ type FxRateRow = {
   source?: string | null
   effective_at?: string | null
   is_active?: boolean | null
+}
+
+type PaymentProviderConfigRow = {
+  id: string
+  provider: string
+  is_active: boolean
+}
+
+type TaxRateRow = {
+  id: string
+  name: string
+  country_code: string
+  rate_percent: number | string
+  effective_at?: string | null
+  is_active?: boolean
 }
 
 type SubscriptionRow = {
@@ -146,6 +162,7 @@ type ProvisionForm = {
   current_period_end: string
   price_usd: string
   currency: string
+  tax_country_code: string
   auto_renew: boolean
   cancel_at_period_end: boolean
   provider: "toss" | "stripe"
@@ -167,6 +184,8 @@ const CHANGES_API = "/api/ai/billing/subscription-changes"
 const PLANS_API = "/api/ai/billing/plans"
 const PLAN_PRICES_API = "/api/ai/billing/plan-prices"
 const FX_RATES_API = "/api/ai/billing/fx-rates"
+const PROVIDER_CONFIGS_API = "/api/ai/billing/payment-provider-configs"
+const TAX_RATES_API = "/api/ai/billing/tax-rates"
 const FILTER_ALL = "__all__"
 
 function fmtDate(iso?: string | null) {
@@ -256,6 +275,25 @@ function formatMoneyDisplay(value: number | null, currency: string) {
   })
 }
 
+function renderPlanTierBadge(tier?: string | null) {
+  const key = String(tier || "").toLowerCase() as PlanTier
+  const label = PLAN_TIER_LABELS[key] || tier || "-"
+  const style = PLAN_TIER_STYLES[key]
+  if (!style) {
+    return <Badge variant="outline">{label}</Badge>
+  }
+  return (
+    <span className={`inline-flex items-center justify-center rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${style.badge}`}>
+      {label}
+    </span>
+  )
+}
+
+function truncateText(value: string, max: number) {
+  if (value.length <= max) return value
+  return `${value.slice(0, max)}...`
+}
+
 function pickLatestPlanPrice(rows: PlanPriceRow[], planId: string, billingCycle: string) {
   if (!planId) return null
   const matches = rows.filter(
@@ -299,6 +337,22 @@ function pickLatestFxRate(rows: FxRateRow[], base: string, quote: string) {
   return rate
 }
 
+function pickLatestTaxRate(rows: TaxRateRow[], countryCode: string) {
+  const code = normalizeCurrency(countryCode).slice(0, 2)
+  if (!code) return null
+  const matches = rows.filter(
+    (r) => String(r.country_code || "").toUpperCase() === code && r.is_active !== false
+  )
+  if (!matches.length) return null
+  return matches
+    .slice()
+    .sort((a, b) => {
+      const at = a.effective_at ? new Date(a.effective_at).getTime() : 0
+      const bt = b.effective_at ? new Date(b.effective_at).getTime() : 0
+      return bt - at
+    })[0]
+}
+
 function resolveFxRate(rows: FxRateRow[], base: string, quote: string) {
   const baseKey = normalizeCurrency(base)
   const quoteKey = normalizeCurrency(quote)
@@ -324,6 +378,10 @@ export default function BillingSubscriptions() {
   const [planPricesLoading, setPlanPricesLoading] = useState(false)
   const [fxRates, setFxRates] = useState<FxRateRow[]>([])
   const [fxRatesLoading, setFxRatesLoading] = useState(false)
+  const [providerConfigs, setProviderConfigs] = useState<PaymentProviderConfigRow[]>([])
+  const [providerConfigsLoading, setProviderConfigsLoading] = useState(false)
+  const [taxRates, setTaxRates] = useState<TaxRateRow[]>([])
+  const [taxRatesLoading, setTaxRatesLoading] = useState(false)
   const [rows, setRows] = useState<SubscriptionRow[]>([])
   const [loading, setLoading] = useState(false)
   const [total, setTotal] = useState(0)
@@ -374,6 +432,7 @@ export default function BillingSubscriptions() {
     current_period_end: "",
     price_usd: "",
     currency: "USD",
+    tax_country_code: "",
     auto_renew: true,
     cancel_at_period_end: false,
     provider: "stripe",
@@ -385,6 +444,7 @@ export default function BillingSubscriptions() {
   const [tenantLookupOpen, setTenantLookupOpen] = useState(false)
   const [tenantLookupLoading, setTenantLookupLoading] = useState(false)
   const [tenantLookupError, setTenantLookupError] = useState<string | null>(null)
+  const [provisionPriceTouched, setProvisionPriceTouched] = useState(false)
 
   const editPlanPrice = useMemo(() => {
     if (!editing) return null
@@ -415,6 +475,49 @@ export default function BillingSubscriptions() {
     if (rate === null) return null
     return roundMoney(baseAmount * rate, currencyDecimals(targetCurrency))
   }, [provisionForm.currency, provisionPlanPrice, fxRates])
+
+  const activeProviders = useMemo(
+    () => providerConfigs.map((p) => String(p.provider || "")).filter(Boolean),
+    [providerConfigs]
+  )
+
+  const provisionTaxCountry = useMemo(() => {
+    return provisionForm.tax_country_code.trim().toUpperCase()
+  }, [provisionForm.tax_country_code])
+
+  const provisionTaxRate = useMemo(
+    () => (provisionTaxCountry ? pickLatestTaxRate(taxRates, provisionTaxCountry) : null),
+    [provisionTaxCountry, taxRates]
+  )
+
+  const provisionBaseAmount = useMemo(() => {
+    const manual = toNumberOrNull(provisionForm.price_usd)
+    if (manual !== null) return manual
+    return provisionAutoPrice
+  }, [provisionForm.price_usd, provisionAutoPrice])
+
+  const provisionTaxAmount = useMemo(() => {
+    if (provisionBaseAmount === null) return null
+    const rate = toNumberOrNull(provisionTaxRate?.rate_percent)
+    if (!rate || rate <= 0) return 0
+    return roundMoney(provisionBaseAmount * (rate / 100), currencyDecimals(provisionForm.currency))
+  }, [provisionBaseAmount, provisionForm.currency, provisionTaxRate])
+
+  const taxCountryOptions = useMemo(() => {
+    const set = new Set(
+      taxRates
+        .filter((r) => r.is_active !== false)
+        .map((r) => String(r.country_code || "").toUpperCase())
+        .filter(Boolean)
+    )
+    return Array.from(set).sort()
+  }, [taxRates])
+
+  const provisionTotalAmount = useMemo(() => {
+    if (provisionBaseAmount === null) return null
+    const tax = provisionTaxAmount ?? 0
+    return roundMoney(provisionBaseAmount + tax, currencyDecimals(provisionForm.currency))
+  }, [provisionBaseAmount, provisionForm.currency, provisionTaxAmount])
 
   const currencyOptions = useMemo(() => {
     const set = new Set<string>()
@@ -514,6 +617,38 @@ export default function BillingSubscriptions() {
     }
   }
 
+  async function fetchPaymentProviders() {
+    setProviderConfigsLoading(true)
+    try {
+      const params = new URLSearchParams({ is_active: "true", limit: "200" })
+      const res = await adminFetch(`${PROVIDER_CONFIGS_API}?${params.toString()}`)
+      const json = (await res.json().catch(() => ({}))) as { ok?: boolean; rows?: PaymentProviderConfigRow[] }
+      if (!res.ok || !json.ok) throw new Error("FAILED")
+      setProviderConfigs(Array.isArray(json.rows) ? json.rows : [])
+    } catch (e) {
+      console.error(e)
+      setProviderConfigs([])
+    } finally {
+      setProviderConfigsLoading(false)
+    }
+  }
+
+  async function fetchTaxRates() {
+    setTaxRatesLoading(true)
+    try {
+      const params = new URLSearchParams({ is_active: "true", limit: "200" })
+      const res = await adminFetch(`${TAX_RATES_API}?${params.toString()}`)
+      const json = (await res.json().catch(() => ({}))) as { ok?: boolean; rows?: TaxRateRow[] }
+      if (!res.ok || !json.ok) throw new Error("FAILED")
+      setTaxRates(Array.isArray(json.rows) ? json.rows : [])
+    } catch (e) {
+      console.error(e)
+      setTaxRates([])
+    } finally {
+      setTaxRatesLoading(false)
+    }
+  }
+
   async function fetchSubscriptions() {
     setLoading(true)
     try {
@@ -552,6 +687,8 @@ export default function BillingSubscriptions() {
     fetchPlans()
     fetchPlanPrices()
     fetchFxRates()
+    fetchPaymentProviders()
+    fetchTaxRates()
   }, [])
 
   useEffect(() => {
@@ -561,12 +698,14 @@ export default function BillingSubscriptions() {
       setTenantLookupOpen(false)
       setTenantLookupLoading(false)
       setTenantLookupError(null)
+      setProvisionPriceTouched(false)
       return
     }
     if (provisionForm.tenant_id && !tenantLookupQuery) {
       setTenantLookupQuery(provisionForm.tenant_id)
     }
   }, [provisionForm.tenant_id, provisionOpen, tenantLookupQuery])
+
 
   useEffect(() => {
     if (!editOpen || !editing) return
@@ -578,9 +717,23 @@ export default function BillingSubscriptions() {
   useEffect(() => {
     if (!provisionOpen) return
     if (provisionAutoPrice === null) return
+    if (provisionPriceTouched) return
     const next = String(provisionAutoPrice)
     setProvisionForm((p) => (p.price_usd === next ? p : { ...p, price_usd: next }))
-  }, [provisionAutoPrice, provisionOpen])
+  }, [provisionAutoPrice, provisionOpen, provisionPriceTouched])
+
+  useEffect(() => {
+    if (!provisionOpen) return
+    setProvisionPriceTouched(false)
+  }, [provisionOpen, provisionForm.plan_id, provisionForm.billing_cycle, provisionForm.currency])
+
+  useEffect(() => {
+    if (!provisionOpen) return
+    if (!activeProviders.length) return
+    if (!activeProviders.includes(provisionForm.provider)) {
+      setProvisionForm((p) => ({ ...p, provider: activeProviders[0] as ProvisionForm["provider"] }))
+    }
+  }, [activeProviders, provisionForm.provider, provisionOpen])
 
   useEffect(() => {
     if (!provisionOpen) return
@@ -687,6 +840,7 @@ export default function BillingSubscriptions() {
       price_usd:
         row?.price_usd === null || row?.price_usd === undefined ? "" : String(row.price_usd),
       currency: row?.currency || "USD",
+      tax_country_code: "",
       auto_renew: normalized.auto_renew,
       cancel_at_period_end: normalized.cancel_at_period_end,
       provider: "stripe",
@@ -756,10 +910,12 @@ export default function BillingSubscriptions() {
     }
 
     const priceUsd =
-      provisionAutoPrice !== null ? provisionAutoPrice : provisionForm.price_usd.trim() ? Number(provisionForm.price_usd) : 0
+      provisionForm.price_usd.trim() ? Number(provisionForm.price_usd) : provisionAutoPrice !== null ? provisionAutoPrice : 0
     if (!Number.isFinite(priceUsd) || priceUsd < 0) return alert("가격 값을 확인해주세요.")
     const currency = provisionForm.currency.trim().toUpperCase()
     if (!currency || currency.length !== 3) return alert("통화 코드를 확인해주세요.")
+    const taxCountryCode = provisionForm.tax_country_code.trim().toUpperCase()
+    if (taxCountryCode && taxCountryCode.length !== 2) return alert("세금 국가 코드를 확인해주세요.")
 
     const startDate = new Date(provisionForm.current_period_start)
     const endDate = new Date(provisionForm.current_period_end)
@@ -780,6 +936,9 @@ export default function BillingSubscriptions() {
       cancel_at_period_end: normalized.cancel_at_period_end,
       provider: provisionForm.provider,
       note: provisionForm.note.trim() || undefined,
+    }
+    if (taxCountryCode) {
+      payload.tax_country_code = taxCountryCode
     }
     if (provisionForm.subscription_id) {
       payload.subscription_id = provisionForm.subscription_id
@@ -910,7 +1069,7 @@ export default function BillingSubscriptions() {
                   <TableHead>취소 예정</TableHead>
                   <TableHead>가격</TableHead>
                   <TableHead>업데이트</TableHead>
-                  <TableHead className="text-right">액션</TableHead>
+                  <TableHead className="text-right">관리</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -934,15 +1093,19 @@ export default function BillingSubscriptions() {
                     <TableCell>
                       <div className="flex flex-col">
                         <span className="font-medium">{row.tenant_name || row.tenant_slug || row.tenant_id}</span>
-                        <span className="text-xs text-muted-foreground font-mono">
-                          {row.tenant_slug} {row.tenant_type ? `(${row.tenant_type})` : ""}
+                        <span
+                          className="text-xs text-muted-foreground font-mono"
+                          title={row.tenant_slug || ""}
+                        >
+                          {row.tenant_slug ? truncateText(row.tenant_slug, 12) : "-"}{" "}
+                          {row.tenant_type ? `(${row.tenant_type})` : ""}
                         </span>
                       </div>
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-col">
-                        <span className="font-medium">{row.plan_name || row.plan_slug || row.plan_id}</span>
-                        <span className="text-xs text-muted-foreground font-mono">{row.plan_tier || "-"}</span>
+                        {/* <span className="font-medium">{row.plan_name || row.plan_slug || row.plan_id}</span> */}
+                        {renderPlanTierBadge(row.plan_tier)}
                       </div>
                     </TableCell>
                     <TableCell className="font-mono">{row.billing_cycle}</TableCell>
@@ -951,9 +1114,10 @@ export default function BillingSubscriptions() {
                         {row.status}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {fmtDate(row.current_period_start)} ~ {fmtDate(row.current_period_end)}
-                    </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    <div>{fmtDate(row.current_period_start)}</div>
+                    <div>{fmtDate(row.current_period_end)}</div>
+                  </TableCell>
                     <TableCell>
                       <Badge variant="outline" className={badgeClass(row.auto_renew)}>
                         {row.auto_renew ? "ON" : "OFF"}
@@ -1411,10 +1575,21 @@ export default function BillingSubscriptions() {
                     <SelectValue placeholder="provider" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="stripe">stripe</SelectItem>
-                    <SelectItem value="toss">toss</SelectItem>
+                    {activeProviders.map((provider) => (
+                      <SelectItem key={provider} value={provider}>
+                        {provider}
+                      </SelectItem>
+                    ))}
+                    {!activeProviders.length && !providerConfigsLoading ? (
+                      <SelectItem value="__none__" disabled>
+                        활성된 PG가 없습니다.
+                      </SelectItem>
+                    ) : null}
                   </SelectContent>
                 </Select>
+                {providerConfigsLoading ? (
+                  <div className="text-xs text-muted-foreground">결제 제공자 불러오는 중...</div>
+                ) : null}
               </div>
               <div className="space-y-1">
                 <div className="text-sm font-medium">현재 기간 시작</div>
@@ -1435,19 +1610,19 @@ export default function BillingSubscriptions() {
               <div className="space-y-1">
                 <div className="text-sm font-medium">가격({provisionForm.currency || "USD"})</div>
                 <Input
-                  type={provisionAutoPrice !== null ? "text" : "number"}
+                  type="number"
                   min={0}
                   step="0.01"
-                  value={
-                    provisionAutoPrice !== null
-                      ? formatMoneyDisplay(provisionAutoPrice, provisionForm.currency)
-                      : provisionForm.price_usd
-                  }
-                  onChange={(e) => setProvisionForm((p) => ({ ...p, price_usd: e.target.value }))}
-                  readOnly={provisionAutoPrice !== null}
+                  value={provisionForm.price_usd}
+                  onChange={(e) => {
+                    setProvisionPriceTouched(true)
+                    setProvisionForm((p) => ({ ...p, price_usd: e.target.value }))
+                  }}
                 />
                 {provisionAutoPrice !== null ? (
-                  <div className="text-xs text-muted-foreground">플랜 기준으로 자동 책정됩니다.</div>
+                  <div className="text-xs text-muted-foreground">
+                    플랜 기준 기본값: {formatMoneyDisplay(provisionAutoPrice, provisionForm.currency)} (수정 가능)
+                  </div>
                 ) : provisionPlanPrice ? (
                   <div className="text-xs text-muted-foreground">환율 정보를 찾지 못했습니다. 필요 시 입력하세요.</div>
                 ) : planPricesLoading ? (
@@ -1457,6 +1632,21 @@ export default function BillingSubscriptions() {
                 ) : (
                   <div className="text-xs text-muted-foreground">플랜을 선택하면 자동으로 설정됩니다.</div>
                 )}
+                <div className="text-xs text-muted-foreground">
+                  {taxRatesLoading ? (
+                    "세율 정보를 불러오는 중..."
+                  ) : provisionTaxRate ? (
+                    `세율: ${provisionTaxCountry} ${provisionTaxRate.rate_percent}%`
+                  ) : provisionTaxCountry ? (
+                    `세율 없음 (${provisionTaxCountry})`
+                  ) : (
+                    "세율 없음 (선택 안 함)"
+                  )}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  세액: {provisionTaxAmount !== null ? formatMoneyDisplay(provisionTaxAmount, provisionForm.currency) : "-"} ·
+                  합계: {provisionTotalAmount !== null ? formatMoneyDisplay(provisionTotalAmount, provisionForm.currency) : "-"}
+                </div>
               </div>
               <div className="space-y-1">
                 <div className="text-sm font-medium">통화</div>
@@ -1474,6 +1664,30 @@ export default function BillingSubscriptions() {
                 </Select>
                 {fxRatesLoading ? (
                   <div className="text-xs text-muted-foreground">환율 목록 불러오는 중...</div>
+                ) : null}
+              </div>
+              <div className="space-y-1">
+                <div className="text-sm font-medium">세금 국가</div>
+                <Select
+                  value={provisionForm.tax_country_code || "__none__"}
+                  onValueChange={(v) =>
+                    setProvisionForm((p) => ({ ...p, tax_country_code: v === "__none__" ? "" : v }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="선택 안 함" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">선택 안 함</SelectItem>
+                    {taxCountryOptions.map((code) => (
+                      <SelectItem key={code} value={code}>
+                        {code}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {taxRatesLoading ? (
+                  <div className="text-xs text-muted-foreground">세율 목록 불러오는 중...</div>
                 ) : null}
               </div>
             </div>

@@ -245,11 +245,11 @@ CREATE INDEX idx_payment_methods_default ON payment_methods(billing_account_id, 
 
 COMMENT ON TABLE payment_methods IS '과금 계정별로 저장된 결제 수단.';
 COMMENT ON COLUMN payment_methods.id IS '결제 수단 ID(UUID)';
-COMMENT ON COLUMN payment_methods.billing_account_id IS '과금 계정 ID(billing_accounts.id)';
-COMMENT ON COLUMN payment_methods.provider IS '결제 수단 제공자(toss, stripe)';
-COMMENT ON COLUMN payment_methods.type IS '결제 수단 타입(card)';
-COMMENT ON COLUMN payment_methods.provider_customer_id IS '결제 수단 제공자 고유 ID';
-COMMENT ON COLUMN payment_methods.provider_payment_method_id IS '결제 수단 제공자 결제 수단 ID';
+COMMENT ON COLUMN payment_methods.billing_account_id IS '과금 계정 ID(billing_accounts.id)'; -- 결제 수단을 관리하는 과금 계정의 ID입니다.
+COMMENT ON COLUMN payment_methods.provider IS '결제 수단 제공자(toss, stripe)';  -- 결제 수단을 제공하는 결제 제공자의 이름입니다. 예: Stripe, Toss.
+COMMENT ON COLUMN payment_methods.type IS '결제 수단 타입(card)'; -- 결제 수단의 타입입니다. 현재 카드만 지원합니다.
+COMMENT ON COLUMN payment_methods.provider_customer_id IS '결제 수단 제공자 고유 ID'; -- 결제 제공자가 관리하는 “고객”의 ID입니다. 예: Stripe의 cus_... 또는 Toss의 고객 식별자.
+COMMENT ON COLUMN payment_methods.provider_payment_method_id IS '결제 수단 제공자 결제 수단 ID'; -- 결제 제공자에 등록된 결제 수단(카드/계좌)의 ID(토큰)입니다.
 COMMENT ON COLUMN payment_methods.card_brand IS '카드 브랜드(Visa, Mastercard, Amex 등)';
 COMMENT ON COLUMN payment_methods.card_last4 IS '카드 번호 마지막 4자리';
 

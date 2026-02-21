@@ -42,7 +42,6 @@ export const adminMenuGroups: MenuGroup[] = [
         items: [
           { title: "회원 관리", href: "/admin/users" },
           { title: "회원 연동(SSO)", href: "/admin/users/providers" },
-          { title: "테넌트 관리", href: "/admin/tenants" },
           { title: "회원 테넌트 관리", href: "/admin/tenants/memberships" },
           { title: "테넌트 초대 관리", href: "/admin/tenants/invitations" },
           { title: "역할 및 권한 관리", href: "/admin/roles" },

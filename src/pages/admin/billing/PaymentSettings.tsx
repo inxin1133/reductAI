@@ -29,8 +29,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, Pencil, Plus, RefreshCcw } from "lucide-react"
+import { CreditCard, Loader2, Lock, Pencil, Plus, RefreshCcw } from "lucide-react"
 import { AdminPage } from "@/components/layout/AdminPage"
+import { CardVisa } from "@/components/icons/CardVisa"
+import { CardMaster } from "@/components/icons/CardMaster"
+import { CardAmex } from "@/components/icons/CardAmex"
+import { CardJcb } from "@/components/icons/CardJcb"
+import { CardUnion } from "@/components/icons/CardUnion"
 
 type ProviderConfigRow = {
   id: string
@@ -123,6 +128,35 @@ type MethodForm = {
   metadata: string
 }
 
+type MethodTenantLookupUser = {
+  id: string
+  email?: string | null
+  full_name?: string | null
+  tenant_id?: string | null
+  tenant_name?: string | null
+  tenant_type?: string | null
+}
+
+function getCardBrandIcon(brand: string | undefined | null) {
+  const b = (brand || "").toLowerCase()
+  if (b === "visa") return CardVisa
+  if (b === "master" || b === "mastercard") return CardMaster
+  if (b === "amex") return CardAmex
+  if (b === "jcb") return CardJcb
+  if (b === "union" || b === "unionpay") return CardUnion
+  return null
+}
+
+function normalizeCardLast4(value: string): string {
+  return value.replace(/\D/g, "").slice(0, 4)
+}
+
+function formatMethodExpiry(value: string): string {
+  const digits = value.replace(/\D/g, "").slice(0, 4)
+  if (digits.length <= 2) return digits
+  return `${digits.slice(0, 2)}/${digits.slice(2)}`
+}
+
 const PROVIDER_API = "/api/ai/billing/payment-provider-configs"
 const ACCOUNTS_API = "/api/ai/billing/billing-accounts"
 const METHODS_API = "/api/ai/billing/payment-methods"
@@ -194,6 +228,7 @@ function parseJson(value: string) {
 }
 
 export default function PaymentSettings() {
+  const [activeTab, setActiveTab] = useState<"providers" | "accounts" | "methods">("providers")
   const [providerRows, setProviderRows] = useState<ProviderConfigRow[]>([])
   const [providerLoading, setProviderLoading] = useState(false)
   const [providerTotal, setProviderTotal] = useState(0)
@@ -240,6 +275,12 @@ export default function PaymentSettings() {
   const [methodEditing, setMethodEditing] = useState<PaymentMethodRow | null>(null)
   const [methodForm, setMethodForm] = useState<MethodForm>(METHOD_EMPTY)
   const [methodSaving, setMethodSaving] = useState(false)
+
+  const [methodTenantQuery, setMethodTenantQuery] = useState("")
+  const [methodTenantOptions, setMethodTenantOptions] = useState<MethodTenantLookupUser[]>([])
+  const [methodTenantOpen, setMethodTenantOpen] = useState(false)
+  const [methodTenantLoading, setMethodTenantLoading] = useState(false)
+  const [methodTenantError, setMethodTenantError] = useState<string | null>(null)
 
   const providerQuery = useMemo(() => {
     const params = new URLSearchParams()
@@ -338,6 +379,128 @@ export default function PaymentSettings() {
     fetchMethods()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [methodQuery])
+
+  useEffect(() => {
+    if (activeTab === "providers") {
+      fetchProviders()
+      return
+    }
+    if (activeTab === "accounts") {
+      fetchAccounts()
+      return
+    }
+    fetchMethods()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab])
+
+  const MethodCardIcon = useMemo(() => getCardBrandIcon(methodForm.card_brand), [methodForm.card_brand])
+  const methodCardNumberDisplay = methodForm.card_last4
+    ? `•••• •••• •••• ${methodForm.card_last4}`
+    : "•••• •••• •••• 0000"
+  const methodCardExpiryDisplay = useMemo(() => {
+    const m = methodForm.card_exp_month
+    const y = methodForm.card_exp_year
+    if (!m && !y) return "MM/YY"
+    const monthStr = m.padStart(2, "0")
+    const yearStr = y.length >= 4 ? y.slice(-2) : y || "YY"
+    return `${monthStr}/${yearStr}`
+  }, [methodForm.card_exp_month, methodForm.card_exp_year])
+  const methodExpiryInputValue = useMemo(() => {
+    const m = methodForm.card_exp_month
+    const y = methodForm.card_exp_year
+    if (!m && !y) return ""
+    const yearStr = y.length >= 4 ? y.slice(-2) : y
+    return yearStr ? `${m.padStart(2, "0")}/${yearStr}` : m
+  }, [methodForm.card_exp_month, methodForm.card_exp_year])
+
+  function handleMethodExpiryChange(raw: string) {
+    const formatted = formatMethodExpiry(raw)
+    const parts = formatted.split("/")
+    const month = parts[0] || ""
+    const yearPart = parts[1] || ""
+    const year = yearPart.length === 2 ? `20${yearPart}` : yearPart
+    setMethodForm((p) => ({ ...p, card_exp_month: month, card_exp_year: year }))
+  }
+
+  useEffect(() => {
+    if (!methodDialogOpen) return
+    const q = methodTenantQuery.trim()
+    if (!q) {
+      setMethodTenantOptions([])
+      setMethodTenantLoading(false)
+      setMethodTenantError(null)
+      return
+    }
+    if (methodForm.billing_account_id && !methodTenantOpen) return
+
+    let cancelled = false
+    setMethodTenantLoading(true)
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const params = new URLSearchParams({ limit: "20", search: q })
+          const res = await adminFetch(`/api/users?${params.toString()}`)
+          const data = (await res.json().catch(() => null)) as
+            | { users?: MethodTenantLookupUser[]; rows?: MethodTenantLookupUser[]; message?: string }
+            | null
+          if (!res.ok) {
+            const msg = typeof data?.message === "string" ? data.message : "사용자 검색에 실패했습니다."
+            throw new Error(msg)
+          }
+          const list = Array.isArray(data?.users)
+            ? data?.users
+            : Array.isArray(data?.rows)
+              ? data?.rows
+              : []
+          const normalized = list
+            .map((u) => ({
+              id: String(u.id || ""),
+              email: u.email ?? null,
+              full_name: u.full_name ?? null,
+              tenant_id: u.tenant_id ?? null,
+              tenant_name: u.tenant_name ?? null,
+              tenant_type: u.tenant_type ?? null,
+            }))
+            .filter((u) => u.id)
+          if (!cancelled) {
+            setMethodTenantOptions(normalized)
+            setMethodTenantError(null)
+          }
+        } catch (e) {
+          if (!cancelled) {
+            const msg = e instanceof Error ? e.message : "사용자 검색 중 오류가 발생했습니다."
+            setMethodTenantError(msg)
+            setMethodTenantOptions([])
+          }
+        } finally {
+          if (!cancelled) setMethodTenantLoading(false)
+        }
+      })()
+    }, 250)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [methodDialogOpen, methodTenantQuery, methodTenantOpen, methodForm.billing_account_id])
+
+  async function resolveMethodBillingAccount(tenantId: string) {
+    try {
+      const params = new URLSearchParams({ tenant_id: tenantId, limit: "1" })
+      const res = await adminFetch(`${ACCOUNTS_API}?${params.toString()}`)
+      const json = (await res.json()) as ListResponse<BillingAccountRow>
+      if (res.ok && json.ok && json.rows?.length > 0) {
+        setMethodForm((p) => ({ ...p, billing_account_id: json.rows[0].id }))
+        setMethodTenantError(null)
+      } else {
+        setMethodForm((p) => ({ ...p, billing_account_id: "" }))
+        setMethodTenantError("해당 테넌트의 과금 계정이 없습니다.")
+      }
+    } catch {
+      setMethodForm((p) => ({ ...p, billing_account_id: "" }))
+      setMethodTenantError("과금 계정 조회에 실패했습니다.")
+    }
+  }
 
   function openProviderCreate() {
     setProviderEditing(null)
@@ -453,6 +616,10 @@ export default function PaymentSettings() {
   function openMethodCreate() {
     setMethodEditing(null)
     setMethodForm(METHOD_EMPTY)
+    setMethodTenantQuery("")
+    setMethodTenantOptions([])
+    setMethodTenantOpen(false)
+    setMethodTenantError(null)
     setMethodDialogOpen(true)
   }
 
@@ -472,12 +639,18 @@ export default function PaymentSettings() {
       status: row.status || "active",
       metadata: row.metadata ? JSON.stringify(row.metadata, null, 2) : "",
     })
+    const tenantLabel = row.tenant_name
+      ? `${row.tenant_name}${row.billing_email ? ` (${row.billing_email})` : ""}`
+      : row.billing_account_id || ""
+    setMethodTenantQuery(tenantLabel)
+    setMethodTenantOptions([])
+    setMethodTenantOpen(false)
+    setMethodTenantError(null)
     setMethodDialogOpen(true)
   }
 
   async function saveMethod() {
     if (!methodForm.billing_account_id.trim()) return alert("과금 계정 ID를 입력해주세요.")
-    if (!methodForm.provider_payment_method_id.trim()) return alert("결제 수단 ID를 입력해주세요.")
     const metadataValue = parseJson(methodForm.metadata)
     if (metadataValue === null) return alert("metadata JSON 형식이 올바르지 않습니다.")
 
@@ -500,7 +673,7 @@ export default function PaymentSettings() {
           provider: methodForm.provider,
           type: methodForm.type,
           provider_customer_id: methodForm.provider_customer_id.trim() || null,
-          provider_payment_method_id: methodForm.provider_payment_method_id.trim(),
+          provider_payment_method_id: methodForm.provider_payment_method_id.trim() || null,
           card_brand: methodForm.card_brand.trim() || null,
           card_last4: methodForm.card_last4.trim() || null,
           card_exp_month: expMonth,
@@ -532,30 +705,42 @@ export default function PaymentSettings() {
     <AdminPage
       headerContent={
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchProviders} disabled={providerLoading}>
-            {providerLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            <span className="ml-2">PG 새로고침</span>
-          </Button>
-          <Button size="sm" onClick={openProviderCreate}>
-            <Plus className="h-4 w-4" />
-            <span className="ml-2">PG 추가</span>
-          </Button>
-          <Button variant="outline" size="sm" onClick={fetchAccounts} disabled={accountLoading}>
-            {accountLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            <span className="ml-2">계정 새로고침</span>
-          </Button>
-          <Button size="sm" onClick={openAccountCreate}>
-            <Plus className="h-4 w-4" />
-            <span className="ml-2">계정 추가</span>
-          </Button>
-          <Button variant="outline" size="sm" onClick={fetchMethods} disabled={methodLoading}>
-            {methodLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-            <span className="ml-2">결제수단 새로고침</span>
-          </Button>
-          <Button size="sm" onClick={openMethodCreate}>
-            <Plus className="h-4 w-4" />
-            <span className="ml-2">결제수단 추가</span>
-          </Button>
+          {activeTab === "providers" ? (
+            <>
+              <Button variant="outline" size="sm" onClick={fetchProviders} disabled={providerLoading}>
+                {providerLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+                <span className="ml-2">PG 새로고침</span>
+              </Button>
+              <Button size="sm" onClick={openProviderCreate}>
+                <Plus className="h-4 w-4" />
+                <span className="ml-2">PG 추가</span>
+              </Button>
+            </>
+          ) : null}
+          {activeTab === "accounts" ? (
+            <>
+              <Button variant="outline" size="sm" onClick={fetchAccounts} disabled={accountLoading}>
+                {accountLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+                <span className="ml-2">계정 새로고침</span>
+              </Button>
+              <Button size="sm" onClick={openAccountCreate}>
+                <Plus className="h-4 w-4" />
+                <span className="ml-2">계정 추가</span>
+              </Button>
+            </>
+          ) : null}
+          {activeTab === "methods" ? (
+            <>
+              <Button variant="outline" size="sm" onClick={fetchMethods} disabled={methodLoading}>
+                {methodLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+                <span className="ml-2">결제수단 새로고침</span>
+              </Button>
+              <Button size="sm" onClick={openMethodCreate}>
+                <Plus className="h-4 w-4" />
+                <span className="ml-2">결제수단 추가</span>
+              </Button>
+            </>
+          ) : null}
         </div>
       }
     >
@@ -564,11 +749,26 @@ export default function PaymentSettings() {
         <div className="text-sm text-muted-foreground">payment_provider_configs, billing_accounts, payment_methods</div>
       </div>
 
-      <Tabs defaultValue="providers">
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "providers" | "accounts" | "methods")}>
         <TabsList>
-          <TabsTrigger value="providers">PG 설정</TabsTrigger>
-          <TabsTrigger value="accounts">과금 계정</TabsTrigger>
-          <TabsTrigger value="methods">결제 수단</TabsTrigger>
+          <TabsTrigger value="providers">
+            <span>PG 설정</span>
+            {activeTab === "providers" && providerLoading ? (
+              <Loader2 className="ml-2 h-3 w-3 animate-spin" />
+            ) : null}
+          </TabsTrigger>
+          <TabsTrigger value="accounts">
+            <span>과금 계정</span>
+            {activeTab === "accounts" && accountLoading ? (
+              <Loader2 className="ml-2 h-3 w-3 animate-spin" />
+            ) : null}
+          </TabsTrigger>
+          <TabsTrigger value="methods">
+            <span>결제 수단</span>
+            {activeTab === "methods" && methodLoading ? (
+              <Loader2 className="ml-2 h-3 w-3 animate-spin" />
+            ) : null}
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="providers" className="space-y-4">
@@ -1061,17 +1261,168 @@ export default function PaymentSettings() {
       </Dialog>
 
       <Dialog open={methodDialogOpen} onOpenChange={setMethodDialogOpen}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="sm:max-w-[720px]">
           <DialogHeader>
             <DialogTitle>{methodEditing ? "결제 수단 수정" : "결제 수단 추가"}</DialogTitle>
           </DialogHeader>
+
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+            <div>
+              <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground py-2">
+                <Lock className="size-3" />
+                <span>카드 정보 미리보기</span>
+              </div>
+              <div className="rounded-xl bg-gradient-to-r from-blue-600 to-blue-500 p-5 text-white shadow-md">
+                <div className="flex items-start justify-between">
+                  {MethodCardIcon ? (
+                    <MethodCardIcon className="h-6 w-9" />
+                  ) : (
+                    <CreditCard className="size-6 text-white/90" />
+                  )}
+                  <span className="text-xs text-white/80">
+                    {methodForm.provider === "toss" ? "Toss" : methodForm.provider === "stripe" ? "Stripe" : "Card"}
+                  </span>
+                </div>
+                <div className="mt-6 text-lg tracking-[0.18em]">{methodCardNumberDisplay}</div>
+                <div className="mt-6 flex items-end justify-between">
+                  <div>
+                    <p className="text-[10px] uppercase text-white/70">BRAND</p>
+                    <p className="text-sm font-semibold">{methodForm.card_brand || "카드"}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[10px] uppercase text-white/70">유효기간</p>
+                    <p className="text-sm font-semibold">{methodCardExpiryDisplay}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-3">
+              <div className="grid gap-1.5">
+                <label className="text-xs font-medium text-foreground">카드 브랜드</label>
+                <Select value={methodForm.card_brand} onValueChange={(v) => setMethodForm((p) => ({ ...p, card_brand: v }))}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="카드 브랜드 선택" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="visa">Visa</SelectItem>
+                    <SelectItem value="master">Mastercard</SelectItem>
+                    <SelectItem value="amex">Amex</SelectItem>
+                    <SelectItem value="jcb">JCB</SelectItem>
+                    <SelectItem value="union">UnionPay</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-1.5">
+                <label className="text-xs font-medium text-foreground">카드 마지막 4자리</label>
+                <Input
+                  value={methodForm.card_last4}
+                  onChange={(e) => setMethodForm((p) => ({ ...p, card_last4: normalizeCardLast4(e.target.value) }))}
+                  placeholder="1234"
+                  inputMode="numeric"
+                  maxLength={4}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-1.5">
+                  <label className="text-xs font-medium text-foreground">유효기간</label>
+                  <Input
+                    value={methodExpiryInputValue}
+                    onChange={(e) => handleMethodExpiryChange(e.target.value)}
+                    placeholder="MM/YY"
+                    inputMode="numeric"
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <label className="text-xs font-medium text-foreground">상태</label>
+                  <Select value={methodForm.status} onValueChange={(v) => setMethodForm((p) => ({ ...p, status: v as MethodForm["status"] }))}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="상태" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="active">active</SelectItem>
+                      <SelectItem value="expired">expired</SelectItem>
+                      <SelectItem value="deleted">deleted</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <div className="space-y-1">
-              <div className="text-sm font-medium">과금 계정 ID</div>
-              <Input
-                value={methodForm.billing_account_id}
-                onChange={(e) => setMethodForm((p) => ({ ...p, billing_account_id: e.target.value }))}
-              />
+              <div className="text-sm font-medium">과금 계정 (테넌트 검색)</div>
+              <div className="relative">
+                <Input
+                  value={methodTenantQuery}
+                  onChange={(e) => {
+                    const next = e.target.value
+                    setMethodTenantQuery(next)
+                    setMethodTenantOpen(true)
+                    setMethodTenantError(null)
+                    if (methodForm.billing_account_id) {
+                      setMethodForm((p) => ({ ...p, billing_account_id: "" }))
+                    }
+                  }}
+                  onFocus={() => setMethodTenantOpen(true)}
+                  onBlur={() => {
+                    window.setTimeout(() => setMethodTenantOpen(false), 150)
+                  }}
+                  placeholder="사용자 이름 또는 이메일로 검색"
+                />
+                {methodTenantOpen ? (
+                  <div className="absolute z-50 mt-1 w-full rounded-md border bg-popover text-popover-foreground shadow">
+                    {methodTenantLoading ? (
+                      <div className="px-3 py-2 text-sm text-muted-foreground">검색 중...</div>
+                    ) : null}
+                    {!methodTenantLoading && methodTenantError ? (
+                      <div className="px-3 py-2 text-sm text-destructive">{methodTenantError}</div>
+                    ) : null}
+                    {!methodTenantLoading && !methodTenantError && methodTenantQuery.trim() ? (
+                      methodTenantOptions.length ? (
+                        <div className="max-h-64 overflow-auto py-1">
+                          {methodTenantOptions.map((u) => {
+                            const label = `${u.full_name || "이름 없음"} (${u.email || "이메일 없음"})`
+                            const detailParts = [
+                              u.tenant_name ? `테넌트: ${u.tenant_name}` : null,
+                              u.tenant_type ? `유형: ${u.tenant_type}` : null,
+                              u.tenant_id ? `ID: ${u.tenant_id}` : "테넌트 없음",
+                            ].filter(Boolean)
+                            const selectable = Boolean(u.tenant_id)
+                            return (
+                              <button
+                                type="button"
+                                key={`${u.id}-${u.tenant_id || "no-tenant"}`}
+                                className={`w-full px-3 py-2 text-left hover:bg-accent ${
+                                  selectable ? "" : "cursor-not-allowed opacity-60"
+                                }`}
+                                onMouseDown={(e) => {
+                                  e.preventDefault()
+                                  if (!selectable || !u.tenant_id) return
+                                  setMethodTenantQuery(label)
+                                  setMethodTenantOpen(false)
+                                  void resolveMethodBillingAccount(u.tenant_id)
+                                }}
+                              >
+                                <div className="text-sm font-medium">{label}</div>
+                                <div className="text-xs text-muted-foreground">{detailParts.join(" · ")}</div>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <div className="px-3 py-2 text-sm text-muted-foreground">검색 결과가 없습니다.</div>
+                      )
+                    ) : !methodTenantLoading && !methodTenantError ? (
+                      <div className="px-3 py-2 text-sm text-muted-foreground">이름 또는 이메일을 입력하세요.</div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+              {methodForm.billing_account_id ? (
+                <div className="text-xs text-muted-foreground">과금 계정: {methodForm.billing_account_id}</div>
+              ) : null}
             </div>
             <div className="space-y-1">
               <div className="text-sm font-medium">Provider</div>
@@ -1082,30 +1433,6 @@ export default function PaymentSettings() {
                 <SelectContent>
                   <SelectItem value="toss">toss</SelectItem>
                   <SelectItem value="stripe">stripe</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <div className="text-sm font-medium">타입</div>
-              <Select value={methodForm.type} onValueChange={(v) => setMethodForm((p) => ({ ...p, type: v as MethodForm["type"] }))}>
-                <SelectTrigger>
-                  <SelectValue placeholder="type" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="card">card</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <div className="text-sm font-medium">상태</div>
-              <Select value={methodForm.status} onValueChange={(v) => setMethodForm((p) => ({ ...p, status: v as MethodForm["status"] }))}>
-                <SelectTrigger>
-                  <SelectValue placeholder="status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="active">active</SelectItem>
-                  <SelectItem value="expired">expired</SelectItem>
-                  <SelectItem value="deleted">deleted</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1123,23 +1450,8 @@ export default function PaymentSettings() {
                 onChange={(e) => setMethodForm((p) => ({ ...p, provider_payment_method_id: e.target.value }))}
               />
             </div>
-            <div className="space-y-1">
-              <div className="text-sm font-medium">카드 브랜드</div>
-              <Input value={methodForm.card_brand} onChange={(e) => setMethodForm((p) => ({ ...p, card_brand: e.target.value }))} />
-            </div>
-            <div className="space-y-1">
-              <div className="text-sm font-medium">카드 마지막 4자리</div>
-              <Input value={methodForm.card_last4} onChange={(e) => setMethodForm((p) => ({ ...p, card_last4: e.target.value }))} />
-            </div>
-            <div className="space-y-1">
-              <div className="text-sm font-medium">만료 월</div>
-              <Input value={methodForm.card_exp_month} onChange={(e) => setMethodForm((p) => ({ ...p, card_exp_month: e.target.value }))} />
-            </div>
-            <div className="space-y-1">
-              <div className="text-sm font-medium">만료 년도</div>
-              <Input value={methodForm.card_exp_year} onChange={(e) => setMethodForm((p) => ({ ...p, card_exp_year: e.target.value }))} />
-            </div>
           </div>
+
           <div className="flex items-center gap-2">
             <Switch
               id="method-default"

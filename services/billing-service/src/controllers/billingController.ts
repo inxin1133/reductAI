@@ -24,6 +24,40 @@ function toBool(v: unknown): boolean | null {
   return null
 }
 
+const CURRENCY_DECIMALS: Record<string, number> = {
+  USD: 2,
+  EUR: 2,
+  GBP: 2,
+  KRW: 0,
+  JPY: 0,
+}
+
+function currencyDecimals(currency: string) {
+  const key = toStr(currency).toUpperCase()
+  return CURRENCY_DECIMALS[key] ?? 2
+}
+
+function roundMoney(value: number, currency: string) {
+  const factor = 10 ** currencyDecimals(currency)
+  return Math.round(value * factor) / factor
+}
+
+async function pickLatestTaxRate(client: any, countryCode: string) {
+  const code = toStr(countryCode).toUpperCase()
+  if (!code) return null
+  const res = await client.query(
+    `
+    SELECT id, rate_percent, effective_at
+    FROM tax_rates
+    WHERE country_code = $1 AND is_active = TRUE
+    ORDER BY effective_at DESC NULLS LAST, created_at DESC
+    LIMIT 1
+    `,
+    [code]
+  )
+  return res.rows[0] || null
+}
+
 let billingInvoiceColumns: Set<string> | null = null
 
 async function isSystemTenantId(client: any, tenantId: string): Promise<boolean> {
@@ -948,6 +982,7 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
     const provider = toStr(req.body?.provider) || "stripe"
     const status = toStr(req.body?.status) || "active"
     const note = typeof req.body?.note === "string" ? req.body.note.trim() : ""
+    const taxCountryCode = toStr(req.body?.tax_country_code).toUpperCase()
 
     const priceUsdRaw = req.body?.price_usd
     const priceUsd = priceUsdRaw === null || priceUsdRaw === undefined || priceUsdRaw === "" ? 0 : Number(priceUsdRaw)
@@ -970,6 +1005,9 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
       return res.status(400).json({ message: "price_usd must be >= 0" })
     }
     if (!currency || currency.length !== 3) return res.status(400).json({ message: "currency must be 3 letters" })
+    if (taxCountryCode && taxCountryCode.length !== 2) {
+      return res.status(400).json({ message: "tax_country_code must be 2 letters" })
+    }
     if (!currentPeriodStart) return res.status(400).json({ message: "current_period_start is required" })
     if (!currentPeriodEnd) return res.status(400).json({ message: "current_period_end is required" })
 
@@ -1131,6 +1169,14 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
       return res.status(500).json({ message: "Failed to resolve billing account" })
     }
 
+    const taxRateRow = taxCountryCode ? await pickLatestTaxRate(client, taxCountryCode) : null
+    const taxRatePercent = taxRateRow ? Number(taxRateRow.rate_percent) : 0
+    const taxAmount =
+      Number.isFinite(taxRatePercent) && taxRatePercent > 0
+        ? roundMoney(priceUsd * (taxRatePercent / 100), currency)
+        : 0
+    const totalAmount = roundMoney(priceUsd + taxAmount, currency)
+
     const invoiceColumns = await loadInvoiceColumns(client)
     const invoiceCols: string[] = []
     const invoiceVals: any[] = []
@@ -1149,19 +1195,20 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
     addInvoiceCol("status", "paid")
     addInvoiceCol("currency", currency)
     addInvoiceCol("subtotal_usd", priceUsd)
-    addInvoiceCol("total_usd", priceUsd)
+    addInvoiceCol("total_usd", totalAmount)
     addInvoiceCol("issue_date", nowIso)
     addInvoiceCol("paid_at", nowIso)
     addInvoiceCol("metadata", JSON.stringify(serviceMeta), "jsonb")
-    if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", 0)
-    if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", 0)
+    if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmount)
+    if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", taxAmount)
+    if (invoiceColumns.has("tax_rate_id")) addInvoiceCol("tax_rate_id", taxRateRow?.id ?? null)
     if (invoiceColumns.has("discount_usd")) addInvoiceCol("discount_usd", 0)
     if (invoiceColumns.has("period_start")) addInvoiceCol("period_start", periodStartIso)
     if (invoiceColumns.has("period_end")) addInvoiceCol("period_end", periodEndIso)
     if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", currency)
     if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", priceUsd)
-    if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", 0)
-    if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", priceUsd)
+    if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", taxAmount)
+    if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", totalAmount)
 
     let invoiceRow: any | null = null
     for (let i = 0; i < 3; i += 1) {
@@ -1188,19 +1235,20 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
           addInvoiceCol("status", "paid")
           addInvoiceCol("currency", currency)
           addInvoiceCol("subtotal_usd", priceUsd)
-          addInvoiceCol("total_usd", priceUsd)
+          addInvoiceCol("total_usd", totalAmount)
           addInvoiceCol("issue_date", nowIso)
           addInvoiceCol("paid_at", nowIso)
           addInvoiceCol("metadata", JSON.stringify(serviceMeta), "jsonb")
-          if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", 0)
-          if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", 0)
+          if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmount)
+          if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", taxAmount)
+          if (invoiceColumns.has("tax_rate_id")) addInvoiceCol("tax_rate_id", taxRateRow?.id ?? null)
           if (invoiceColumns.has("discount_usd")) addInvoiceCol("discount_usd", 0)
           if (invoiceColumns.has("period_start")) addInvoiceCol("period_start", periodStartIso)
           if (invoiceColumns.has("period_end")) addInvoiceCol("period_end", periodEndIso)
           if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", currency)
           if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", priceUsd)
-          if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", 0)
-          if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", priceUsd)
+          if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", taxAmount)
+          if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", totalAmount)
           continue
         }
         throw e
@@ -2555,7 +2603,6 @@ export async function createPaymentMethod(req: Request, res: Response) {
     if (!billingAccountId) return res.status(400).json({ message: "billing_account_id is required" })
     if (!PAYMENT_PROVIDERS.has(provider)) return res.status(400).json({ message: "invalid provider" })
     if (!PAYMENT_METHOD_TYPES.has(type)) return res.status(400).json({ message: "invalid type" })
-    if (!providerPaymentMethodId) return res.status(400).json({ message: "provider_payment_method_id is required" })
     if (!PAYMENT_METHOD_STATUSES.has(status)) return res.status(400).json({ message: "invalid status" })
     if (cardExpMonth !== null && (!Number.isFinite(cardExpMonth) || cardExpMonth < 1 || cardExpMonth > 12)) {
       return res.status(400).json({ message: "card_exp_month must be 1-12" })
