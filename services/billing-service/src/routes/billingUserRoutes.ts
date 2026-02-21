@@ -2,6 +2,7 @@ import express from "express"
 import {
   checkoutUserSubscription,
   createMyPaymentMethod,
+  getMyCheckoutSummary,
   getMyBillingAccount,
   getMyTaxRate,
   listMyPaymentMethods,
@@ -18,5 +19,6 @@ router.post("/payment-methods", createMyPaymentMethod)
 router.get("/tax-rate", getMyTaxRate)
 router.post("/quote", quoteUserSubscription)
 router.post("/checkout", checkoutUserSubscription)
+router.get("/checkout-summary", getMyCheckoutSummary)
 
 export default router

@@ -50,9 +50,7 @@ import { Switch } from "@/components/ui/switch"
 // cn: 여러 CSS 클래스 이름을 조건이나 배열 등 다양한 형태로 조합해서 하나의 문자열로 반환하는 유틸리티 함수입니다.
 // 예를 들어 조건부로 클래스를 추가하거나, 여러 클래스를 가독성 있게 합칠 때 사용합니다.
 import { cn } from "@/lib/utils"
-import { CardVisa } from "@/components/icons/CardVisa"
-import { CardMaster } from "@/components/icons/CardMaster"
-import { CardAmex } from "@/components/icons/CardAmex"
+import { cardLabel, getCardBrandIcon, normalizeCardBrand } from "@/lib/card"
 
 type SettingsDialogProps = {
   open: boolean
@@ -326,6 +324,9 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     onOpenPlanDialog?.()
     onOpenChange(false)
   }, [onOpenPlanDialog, onOpenChange])
+  const VisaIcon = getCardBrandIcon("visa")
+  const MasterIcon = getCardBrandIcon("master")
+  const AmexIcon = getCardBrandIcon("amex")
 
   const [isEditingUserName, setIsEditingUserName] = useState(false)
   const [isSavingUserName, setIsSavingUserName] = useState(false)
@@ -1902,7 +1903,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                       {/* Visa - 기본 */}
                       <div className="flex items-center gap-3 rounded-xl border border-border p-3 bg-card">
                         <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[#1a1f71]">
-                          <CardVisa className="h-6 w-9" />
+                          {VisaIcon ? <VisaIcon className="h-6 w-9" /> : <CreditCard className="size-5 text-white" />}
                         </div>
                         <div className="flex flex-1 flex-col min-w-0">
                           <div className="flex items-center gap-2">
@@ -1916,7 +1917,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                       {/* Mastercard - 보조 */}
                       <div className="flex items-center gap-3 rounded-xl border border-border p-3 bg-card">
                         <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[#f5f5f5] dark:bg-neutral-800">
-                          <CardMaster className="h-6 w-9" />
+                          {MasterIcon ? <MasterIcon className="h-6 w-9" /> : <CreditCard className="size-5 text-foreground" />}
                         </div>
                         <div className="flex flex-1 flex-col min-w-0">
                           <span className="text-sm font-medium text-foreground">Mastercard •••• 5678</span>
@@ -1944,7 +1945,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                       {/* AMEX - 보조 */}
                       <div className="flex items-center gap-3 rounded-xl border border-border p-3 bg-card">
                         <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[#006fcf]">
-                          <CardAmex className="h-6 w-9" />
+                          {AmexIcon ? <AmexIcon className="h-6 w-9" /> : <CreditCard className="size-5 text-white" />}
                         </div>
                         <div className="flex flex-1 flex-col min-w-0">
                           <span className="text-sm font-medium text-foreground">Amex •••• 9012</span>
@@ -1998,8 +1999,9 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                         { date: "2024-02-01", plan: "Premium 연간", card: "mastercard" as const, last4: "5678", amount: "$600.00", status: "결제됨" },
                         { date: "2023-02-01", plan: "Premium 연간", card: "amex" as const, last4: "9012", amount: "$600.00", status: "결제됨" },
                       ] as const).map((row) => {
-                        const CardIcon = row.card === "visa" ? CardVisa : row.card === "mastercard" ? CardMaster : CardAmex
-                        const cardLabel = row.card === "visa" ? "Visa" : row.card === "mastercard" ? "Mastercard" : "Amex"
+                        const brand = normalizeCardBrand(row.card) ?? "visa"
+                        const CardIcon = getCardBrandIcon(brand) ?? CreditCard
+                        const brandLabel = cardLabel(brand)
                         return (
                           <TableRow key={`${row.date}-${row.plan}`}>
                             <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{row.date}</TableCell>
@@ -2007,7 +2009,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                             <TableCell className="whitespace-normal break-words">
                               <div className="flex items-center gap-1">
                                 <CardIcon className="h-5 w-7 shrink-0 rounded-sm" />
-                                <span className="text-xs text-muted-foreground">{cardLabel} · {row.last4}</span>
+                                <span className="text-xs text-muted-foreground">{brandLabel} · {row.last4}</span>
                               </div>
                             </TableCell>
                             <TableCell className="text-right font-medium">{row.amount}</TableCell>

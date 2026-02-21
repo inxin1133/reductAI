@@ -3693,6 +3693,122 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
   }
 }
 
+export async function getMyCheckoutSummary(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+
+    const transactionId = toStr(req.query.transaction_id)
+    const invoiceId = toStr(req.query.invoice_id)
+
+    const where: string[] = ["ba.tenant_id = $1"]
+    const params: any[] = [tenantId]
+
+    if (transactionId) {
+      where.push(`pt.id = $${params.length + 1}`)
+      params.push(transactionId)
+    } else if (invoiceId) {
+      where.push(`i.id = $${params.length + 1}`)
+      params.push(invoiceId)
+    }
+
+    const whereSql = `WHERE ${where.join(" AND ")}`
+
+    const result = await query(
+      `
+      SELECT
+        pt.id AS transaction_id,
+        pt.status AS transaction_status,
+        pt.provider AS transaction_provider,
+        pt.processed_at,
+        pt.amount_usd,
+        pt.amount_local,
+        pt.currency AS transaction_currency,
+        pt.local_currency AS transaction_local_currency,
+        pt.metadata AS transaction_metadata,
+        i.id AS invoice_id,
+        i.invoice_number,
+        i.status AS invoice_status,
+        i.total_usd,
+        i.local_total,
+        i.currency AS invoice_currency,
+        i.local_currency AS invoice_local_currency,
+        i.period_end,
+        i.metadata AS invoice_metadata,
+        s.id AS subscription_id,
+        s.billing_cycle,
+        s.current_period_end,
+        s.metadata AS subscription_metadata,
+        b.name AS plan_name,
+        b.tier AS plan_tier
+      FROM payment_transactions pt
+      JOIN billing_accounts ba ON ba.id = pt.billing_account_id
+      LEFT JOIN billing_invoices i ON i.id = pt.invoice_id
+      LEFT JOIN billing_subscriptions s ON s.id = i.subscription_id
+      LEFT JOIN billing_plans b ON b.id = s.plan_id
+      ${whereSql}
+      ORDER BY pt.processed_at DESC NULLS LAST, pt.created_at DESC
+      LIMIT 1
+      `,
+      params
+    )
+
+    const row = result.rows[0]
+    if (!row) return res.status(404).json({ message: "Checkout summary not found" })
+
+    const subscriptionMeta =
+      row.subscription_metadata && typeof row.subscription_metadata === "object" ? row.subscription_metadata : {}
+    const invoiceMeta = row.invoice_metadata && typeof row.invoice_metadata === "object" ? row.invoice_metadata : {}
+    const transactionMeta =
+      row.transaction_metadata && typeof row.transaction_metadata === "object" ? row.transaction_metadata : {}
+
+    const planName =
+      row.plan_name || subscriptionMeta.plan_name || invoiceMeta.plan_name || transactionMeta.plan_name || null
+    const billingCycle =
+      row.billing_cycle ||
+      subscriptionMeta.billing_cycle ||
+      invoiceMeta.billing_cycle ||
+      transactionMeta.billing_cycle ||
+      null
+
+    const currencyRaw =
+      row.invoice_local_currency ||
+      row.invoice_currency ||
+      row.transaction_local_currency ||
+      row.transaction_currency ||
+      ""
+    const currency = normalizeCurrency(currencyRaw) || "USD"
+
+    const totalRaw = row.local_total ?? row.total_usd ?? row.amount_local ?? row.amount_usd ?? null
+    const totalAmount = totalRaw === null || totalRaw === undefined || totalRaw === "" ? null : Number(totalRaw)
+    const totalValue = Number.isFinite(totalAmount) ? totalAmount : null
+
+    const nextBillingDate = row.current_period_end || row.period_end || null
+
+    return res.json({
+      ok: true,
+      summary: {
+        plan_name: planName,
+        plan_tier: row.plan_tier ?? null,
+        billing_cycle: billingCycle,
+        total_amount: totalValue,
+        currency,
+        next_billing_date: nextBillingDate,
+        transaction_id: row.transaction_id ?? null,
+        transaction_status: row.transaction_status ?? null,
+        invoice_id: row.invoice_id ?? null,
+        invoice_number: row.invoice_number ?? null,
+        invoice_status: row.invoice_status ?? null,
+        processed_at: row.processed_at ?? null,
+      },
+    })
+  } catch (e: any) {
+    console.error("getMyCheckoutSummary error:", e)
+    return res.status(500).json({ message: "Failed to load checkout summary", details: String(e?.message || e) })
+  }
+}
+
 export async function listPaymentMethods(req: Request, res: Response) {
   try {
     const q = toStr(req.query.q)

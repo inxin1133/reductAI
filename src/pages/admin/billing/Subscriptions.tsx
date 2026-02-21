@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { adminFetch } from "@/lib/adminFetch"
+import { currencyDecimals, formatMoneyWithCode as formatMoney, normalizeCurrency, roundMoneyByDecimals as roundMoney } from "@/lib/currency"
+import { fmtDate, toDateTimeLocal } from "@/lib/datetime"
 import {
   Table,
   TableBody,
@@ -188,30 +190,6 @@ const PROVIDER_CONFIGS_API = "/api/ai/billing/payment-provider-configs"
 const TAX_RATES_API = "/api/ai/billing/tax-rates"
 const FILTER_ALL = "__all__"
 
-function fmtDate(iso?: string | null) {
-  if (!iso) return "-"
-  try {
-    return new Date(iso).toLocaleString()
-  } catch {
-    return iso
-  }
-}
-
-function toDateTimeLocal(iso?: string | null) {
-  if (!iso) return ""
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ""
-  const pad = (n: number) => String(n).padStart(2, "0")
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-function formatMoney(v: unknown, currency?: string) {
-  if (v === null || v === undefined || v === "") return "-"
-  const n = Number(v)
-  if (!Number.isFinite(n)) return "-"
-  return `${currency || "USD"} ${n.toFixed(2)}`
-}
-
 function addMonths(date: Date, months: number) {
   const d = new Date(date)
   d.setMonth(d.getMonth() + months)
@@ -242,28 +220,6 @@ function parseJson(value: string) {
 function toNumberOrNull(value: unknown) {
   const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN
   return Number.isFinite(n) ? n : null
-}
-
-const CURRENCY_DECIMALS: Record<string, number> = {
-  USD: 2,
-  EUR: 2,
-  GBP: 2,
-  KRW: 0,
-  JPY: 0,
-}
-
-function normalizeCurrency(value: unknown) {
-  const raw = typeof value === "string" ? value.trim().toUpperCase() : ""
-  return raw.length === 3 ? raw : raw
-}
-
-function currencyDecimals(currency: string) {
-  return CURRENCY_DECIMALS[normalizeCurrency(currency)] ?? 2
-}
-
-function roundMoney(value: number, decimals: number) {
-  const factor = 10 ** decimals
-  return Math.round(value * factor) / factor
 }
 
 function formatMoneyDisplay(value: number | null, currency: string) {

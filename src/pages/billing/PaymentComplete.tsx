@@ -1,7 +1,9 @@
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Check, CheckCircle2, Download, ArrowRight } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { Header } from "@/components/Header"
 import { Button } from "@/components/ui/button"
+import { currencySymbol, formatMoney } from "@/lib/currency"
 
 type LocationState = {
   planName?: string
@@ -12,76 +14,116 @@ type LocationState = {
   transactionId?: string
 }
 
-const CURRENCY_DECIMALS: Record<string, number> = {
-  USD: 2,
-  EUR: 2,
-  GBP: 2,
-  KRW: 0,
-  JPY: 0,
-  CNY: 2,
-  HKD: 2,
-  SGD: 2,
-  AUD: 2,
-  CAD: 2,
+type CheckoutSummary = {
+  plan_name?: string | null
+  plan_tier?: string | null
+  billing_cycle?: "monthly" | "yearly" | string | null
+  total_amount?: number | null
+  currency?: string | null
+  next_billing_date?: string | null
+  transaction_id?: string | null
+  transaction_status?: string | null
+  invoice_id?: string | null
+  invoice_number?: string | null
+  invoice_status?: string | null
+  processed_at?: string | null
 }
 
-function currencyDecimals(currency: string) {
-  const key = String(currency || "").toUpperCase()
-  return CURRENCY_DECIMALS[key] ?? 2
-}
-
-function currencySymbol(currency: string) {
-  const key = String(currency || "").toUpperCase()
-  switch (key) {
-    case "KRW":
-      return "₩"
-    case "USD":
-      return "$"
-    case "JPY":
-      return "¥"
-    case "EUR":
-      return "€"
-    case "GBP":
-      return "£"
-    case "CNY":
-      return "¥"
-    case "HKD":
-      return "HK$"
-    case "SGD":
-      return "S$"
-    case "AUD":
-      return "A$"
-    case "CAD":
-      return "C$"
-    default:
-      return `${key} `
-  }
-}
-
-function formatMoney(value: number, currency: string) {
-  const decimals = currencyDecimals(currency)
-  return value.toLocaleString("ko-KR", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+type CheckoutSummaryResponse = {
+  ok?: boolean
+  summary?: CheckoutSummary | null
+  message?: string
 }
 
 export default function PaymentComplete() {
   const navigate = useNavigate()
   const location = useLocation()
-  const state = (location.state || {}) as LocationState
-  const planName = state.planName ?? "Professional"
-  const billingCycleLabel = state.billingCycle === "yearly" ? "연간" : "월간"
-  const totalAmount = state.totalAmount ?? 86900
-  const currency = state.currency ?? "USD"
-  const nextBillingDate = state.nextBillingDate ?? (() => {
-    const now = new Date()
-    const next = new Date(now)
-    if (state.billingCycle === "yearly") {
-      next.setFullYear(now.getFullYear() + 1)
-    } else {
-      next.setMonth(now.getMonth() + 1)
+  const state = useMemo(() => (location.state || {}) as LocationState, [location.state])
+  const [summary, setSummary] = useState<CheckoutSummary | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const authHeaders = useCallback((): Record<string, string> => {
+    if (typeof window === "undefined") return {}
+    const token = window.localStorage.getItem("token")
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  }, [])
+
+  const fallbackSummary = useMemo<CheckoutSummary>(
+    () => ({
+      plan_name: state.planName ?? null,
+      billing_cycle: state.billingCycle ?? null,
+      total_amount: typeof state.totalAmount === "number" ? state.totalAmount : null,
+      currency: state.currency ?? null,
+      next_billing_date: state.nextBillingDate ?? null,
+      transaction_id: state.transactionId ?? null,
+    }),
+    [state.billingCycle, state.currency, state.nextBillingDate, state.planName, state.totalAmount, state.transactionId]
+  )
+
+  useEffect(() => {
+    const headers = authHeaders()
+    if (!headers.Authorization) return
+
+    const params = new URLSearchParams()
+    const searchParams = new URLSearchParams(location.search)
+    const transactionId = state.transactionId || searchParams.get("transaction_id") || searchParams.get("tx")
+    const invoiceId = searchParams.get("invoice_id") || searchParams.get("invoice")
+
+    if (transactionId) {
+      params.set("transaction_id", transactionId)
+    } else if (invoiceId) {
+      params.set("invoice_id", invoiceId)
     }
-    return new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "long", day: "numeric" }).format(next)
+
+    const url = params.toString()
+      ? `/api/ai/billing/user/checkout-summary?${params.toString()}`
+      : "/api/ai/billing/user/checkout-summary"
+
+    let active = true
+    setLoading(true)
+    setError(null)
+
+    void (async () => {
+      try {
+        const res = await fetch(url, { headers })
+        const data = (await res.json().catch(() => null)) as CheckoutSummaryResponse | null
+        if (!res.ok || !data?.summary) throw new Error(data?.message || "FAILED_LOAD")
+        if (active) setSummary(data.summary)
+      } catch (e) {
+        console.error(e)
+        if (active) setError("결제 정보를 불러오지 못했습니다.")
+      } finally {
+        if (active) setLoading(false)
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [authHeaders, location.search, state.transactionId])
+
+  const resolved = summary ?? fallbackSummary
+  const planName = resolved.plan_name ?? "-"
+  const planLabel = resolved.plan_name ? `${resolved.plan_name} 플랜` : "선택한 플랜"
+  const billingCycleLabel =
+    resolved.billing_cycle === "yearly" ? "연간" : resolved.billing_cycle === "monthly" ? "월간" : "-"
+  const currency = resolved.currency || "USD"
+  const totalAmount = resolved.total_amount
+  const transactionId = resolved.transaction_id || "-"
+  const nextBillingDate = (() => {
+    const value = resolved.next_billing_date
+    if (!value) return "-"
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) return value
+    return new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "long", day: "numeric" }).format(parsed)
   })()
-  const transactionId = state.transactionId ?? "TXN177146175864291ZVJJMH1"
+  const totalLabel =
+    typeof totalAmount === "number" && Number.isFinite(totalAmount)
+      ? `${currencySymbol(currency)}${formatMoney(totalAmount, currency)}`
+      : loading
+        ? "불러오는 중"
+        : "-"
 
   return (
     <div className="min-h-screen bg-muted/20">
@@ -93,9 +135,8 @@ export default function PaymentComplete() {
               <CheckCircle2 className="size-8 text-emerald-600" />
             </div>
             <h1 className="text-2xl font-bold text-foreground">결제가 완료되었습니다!</h1>
-            <p className="text-sm text-muted-foreground">
-              환영합니다! {planName} 플랜이 성공적으로 활성화되었습니다.
-            </p>
+            <p className="text-sm text-muted-foreground">환영합니다! {planLabel}이 성공적으로 활성화되었습니다.</p>
+            {error ? <p className="text-xs text-destructive">{error}</p> : null}
           </div>
 
           <div className="w-full rounded-xl border border-border bg-background shadow-sm">
@@ -107,10 +148,7 @@ export default function PaymentComplete() {
               <div className="h-px w-full bg-border" />
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">결제 금액</span>
-                <span className="text-lg font-semibold text-foreground">
-                  {currencySymbol(currency)}
-                  {formatMoney(totalAmount, currency)}
-                </span>
+                <span className="text-lg font-semibold text-foreground">{totalLabel}</span>
               </div>
               <div className="h-px w-full bg-border" />
               <div className="flex items-center justify-between">
@@ -146,7 +184,7 @@ export default function PaymentComplete() {
             <div className="mt-3 flex flex-col gap-2 text-sm text-muted-foreground">
               {[
                 "이메일로 영수증과 구독 확인 이메일이 발송되었습니다.",
-                `대시보드에서 모든 ${planName} 플랜 기능을 사용할 수 있습니다.`,
+                `대시보드에서 모든 ${planLabel} 기능을 사용할 수 있습니다.`,
                 "계정 설정에서 언제든지 플랜을 변경하거나 구독을 취소할 수 있습니다.",
               ].map((item) => (
                 <div key={item} className="flex items-start gap-2">

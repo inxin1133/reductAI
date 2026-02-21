@@ -4,12 +4,8 @@ import { CreditCard, Lock } from "lucide-react"
 import { Header } from "@/components/Header"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { CardAmex } from "@/components/icons/CardAmex"
-import { CardJcb } from "@/components/icons/CardJcb"
-import { CardMaster } from "@/components/icons/CardMaster"
-import { CardUnion } from "@/components/icons/CardUnion"
-import { CardVisa } from "@/components/icons/CardVisa"
-import { appendVisited, type CardBrand, type CheckoutFlowState, writeBillingCard } from "@/lib/billingFlow"
+import { appendVisited, type CheckoutFlowState, writeBillingCard } from "@/lib/billingFlow"
+import { detectCardBrand, formatCardNumber, formatExpiry, getCardBrandIcon, normalizeCardNumber, normalizeCvv, parseExpiry } from "@/lib/card"
 
 type LocationState = {
   planId?: string
@@ -33,47 +29,6 @@ type PaymentMethodsResponse = {
   rows?: Array<unknown>
 }
 
-function normalizeCardNumber(value: string): string {
-  return value.replace(/\D/g, "").slice(0, 16)
-}
-
-function formatCardNumber(value: string): string {
-  const digits = normalizeCardNumber(value)
-  return digits.replace(/(\d{4})(?=\d)/g, "$1 ")
-}
-
-function formatExpiry(value: string): string {
-  const digits = value.replace(/\D/g, "").slice(0, 4)
-  if (digits.length <= 2) return digits
-  return `${digits.slice(0, 2)}/${digits.slice(2)}`
-}
-
-function normalizeCvv(value: string): string {
-  return value.replace(/\D/g, "").slice(0, 4)
-}
-
-function parseExpiry(value: string): { month: number | null; year: number | null } {
-  const digits = value.replace(/\D/g, "").slice(0, 4)
-  if (!digits) return { month: null, year: null }
-  const month = digits.length >= 2 ? Number(digits.slice(0, 2)) : null
-  const year = digits.length >= 4 ? Number(`20${digits.slice(2)}`) : null
-  return { month: Number.isFinite(month) ? month : null, year: Number.isFinite(year) ? year : null }
-}
-
-function detectCardBrand(rawDigits: string): CardBrand | null {
-  const digits = rawDigits.replace(/\D/g, "")
-  if (digits.length < 4) return null
-  const first2 = Number(digits.slice(0, 2))
-  const first4 = Number(digits.slice(0, 4))
-
-  if (digits.startsWith("4")) return "visa"
-  if ((first2 >= 51 && first2 <= 55) || (first4 >= 2221 && first4 <= 2720)) return "master"
-  if (digits.startsWith("34") || digits.startsWith("37")) return "amex"
-  if (first4 >= 3528 && first4 <= 3589) return "jcb"
-  if (digits.startsWith("62")) return "union"
-  return null
-}
-
 export default function PaymentCard() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -94,18 +49,7 @@ export default function PaymentCard() {
   const cardHolderDisplay = cardHolder.trim() || "카드 소유자"
   const cardExpiryDisplay = cardExpiry || "MM/YY"
   const cardBrand = useMemo(() => detectCardBrand(cardNumber), [cardNumber])
-  const CardBrandIcon =
-    cardBrand === "visa"
-      ? CardVisa
-      : cardBrand === "master"
-        ? CardMaster
-        : cardBrand === "amex"
-          ? CardAmex
-          : cardBrand === "jcb"
-            ? CardJcb
-            : cardBrand === "union"
-              ? CardUnion
-              : null
+  const CardBrandIcon = getCardBrandIcon(cardBrand)
 
   const authHeaders = useCallback((): Record<string, string> => {
     if (typeof window === "undefined") return {}

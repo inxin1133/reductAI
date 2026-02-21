@@ -31,11 +31,7 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { CreditCard, Loader2, Lock, Pencil, Plus, RefreshCcw } from "lucide-react"
 import { AdminPage } from "@/components/layout/AdminPage"
-import { CardVisa } from "@/components/icons/CardVisa"
-import { CardMaster } from "@/components/icons/CardMaster"
-import { CardAmex } from "@/components/icons/CardAmex"
-import { CardJcb } from "@/components/icons/CardJcb"
-import { CardUnion } from "@/components/icons/CardUnion"
+import { getCardBrandIconFromValue } from "@/lib/card"
 
 type ProviderConfigRow = {
   id: string
@@ -135,16 +131,6 @@ type MethodTenantLookupUser = {
   tenant_id?: string | null
   tenant_name?: string | null
   tenant_type?: string | null
-}
-
-function getCardBrandIcon(brand: string | undefined | null) {
-  const b = (brand || "").toLowerCase()
-  if (b === "visa") return CardVisa
-  if (b === "master" || b === "mastercard") return CardMaster
-  if (b === "amex") return CardAmex
-  if (b === "jcb") return CardJcb
-  if (b === "union" || b === "unionpay") return CardUnion
-  return null
 }
 
 function normalizeCardLast4(value: string): string {
@@ -393,7 +379,7 @@ export default function PaymentSettings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab])
 
-  const MethodCardIcon = useMemo(() => getCardBrandIcon(methodForm.card_brand), [methodForm.card_brand])
+  const MethodCardIcon = useMemo(() => getCardBrandIconFromValue(methodForm.card_brand), [methodForm.card_brand])
   const methodCardNumberDisplay = methodForm.card_last4
     ? `•••• •••• •••• ${methodForm.card_last4}`
     : "•••• •••• •••• 0000"

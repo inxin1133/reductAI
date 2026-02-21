@@ -7,11 +7,6 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
-import { CardAmex } from "@/components/icons/CardAmex"
-import { CardJcb } from "@/components/icons/CardJcb"
-import { CardMaster } from "@/components/icons/CardMaster"
-import { CardUnion } from "@/components/icons/CardUnion"
-import { CardVisa } from "@/components/icons/CardVisa"
 import {
   type CardBrand,
   type BillingInfoProfile,
@@ -22,6 +17,22 @@ import {
   writeBillingCard,
   writeBillingInfo,
 } from "@/lib/billingFlow"
+import { CURRENCY_OPTIONS, COUNTRY_OPTIONS } from "@/lib/billingOptions"
+import {
+  cardBg,
+  cardLabel,
+  detectCardBrand,
+  formatCardNumber,
+  formatExpiry,
+  formatExpiryLabel,
+  getCardBrandIcon,
+  normalizeCardBrand,
+  normalizeCardNumber,
+  normalizeCvv,
+  parseExpiry,
+} from "@/lib/card"
+import { currencySymbol, formatMoney, roundMoney } from "@/lib/currency"
+import { formatPhone, normalizePhoneDigits } from "@/lib/phone"
 import { CreditCard, Lock, Plus, WalletCards, FilePenLine } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { fetchBillingPlansWithPrices } from "@/services/billingService"
@@ -62,33 +73,6 @@ type CardOption = {
   isDefault: boolean
   bg: string
 }
-
-const COUNTRY_OPTIONS = [
-  { code: "KR", label: "대한민국 (KR)" },
-  { code: "US", label: "미국 (US)" },
-  { code: "JP", label: "일본 (JP)" },
-  { code: "CN", label: "중국 (CN)" },
-  { code: "SG", label: "싱가포르 (SG)" },
-  { code: "HK", label: "홍콩 (HK)" },
-  { code: "GB", label: "영국 (GB)" },
-  { code: "DE", label: "독일 (DE)" },
-  { code: "FR", label: "프랑스 (FR)" },
-  { code: "AU", label: "호주 (AU)" },
-  { code: "CA", label: "캐나다 (CA)" },
-]
-
-const CURRENCY_OPTIONS = [
-  { code: "KRW", label: "KRW (원)" },
-  { code: "USD", label: "USD ($)" },
-  { code: "JPY", label: "JPY (¥)" },
-  { code: "EUR", label: "EUR (€)" },
-  { code: "GBP", label: "GBP (£)" },
-  { code: "CNY", label: "CNY (¥)" },
-  { code: "SGD", label: "SGD ($)" },
-  { code: "HKD", label: "HKD ($)" },
-  { code: "AUD", label: "AUD ($)" },
-  { code: "CAD", label: "CAD ($)" },
-]
 
 type BillingAccountResponse = {
   ok?: boolean
@@ -157,254 +141,6 @@ type QuoteState = {
   fx_rate?: number | null
   base_currency?: string | null
   base_amount?: number | null
-}
-
-function normalizeCardNumber(value: string): string {
-  return value.replace(/\D/g, "").slice(0, 16)
-}
-
-function formatCardNumber(value: string): string {
-  const digits = normalizeCardNumber(value)
-  return digits.replace(/(\d{4})(?=\d)/g, "$1 ")
-}
-
-function formatExpiry(value: string): string {
-  const digits = value.replace(/\D/g, "").slice(0, 4)
-  if (digits.length <= 2) return digits
-  return `${digits.slice(0, 2)}/${digits.slice(2)}`
-}
-
-function normalizeCvv(value: string): string {
-  return value.replace(/\D/g, "").slice(0, 4)
-}
-
-function normalizePhoneDigits(value: string): string {
-  return value.replace(/\D/g, "").slice(0, 15)
-}
-
-const COMMON_COUNTRY_CODES = [
-  "1",
-  "7",
-  "20",
-  "27",
-  "30",
-  "31",
-  "32",
-  "33",
-  "34",
-  "36",
-  "39",
-  "40",
-  "41",
-  "43",
-  "44",
-  "45",
-  "46",
-  "47",
-  "48",
-  "49",
-  "51",
-  "52",
-  "53",
-  "54",
-  "55",
-  "56",
-  "57",
-  "58",
-  "60",
-  "61",
-  "62",
-  "63",
-  "64",
-  "65",
-  "66",
-  "81",
-  "82",
-  "84",
-  "86",
-  "90",
-  "91",
-  "92",
-  "93",
-  "94",
-  "95",
-  "98",
-]
-
-function pickCountryCode(digits: string): string {
-  if (!digits) return ""
-  for (let len = 3; len >= 1; len -= 1) {
-    const code = digits.slice(0, len)
-    if (COMMON_COUNTRY_CODES.includes(code)) return code
-  }
-  return digits.length >= 2 ? digits.slice(0, 2) : digits.slice(0, 1)
-}
-
-function formatKoreanNumber(digits: string): string {
-  if (!digits) return ""
-  if (digits.startsWith("02")) {
-    if (digits.length <= 2) return digits
-    if (digits.length <= 5) return `${digits.slice(0, 2)}-${digits.slice(2)}`
-    if (digits.length <= 9) return `${digits.slice(0, 2)}-${digits.slice(2, 5)}-${digits.slice(5)}`
-    return `${digits.slice(0, 2)}-${digits.slice(2, 6)}-${digits.slice(6)}`
-  }
-  if (digits.length <= 3) return digits
-  if (digits.length <= 6) return `${digits.slice(0, 3)}-${digits.slice(3)}`
-  if (digits.length <= 10) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`
-  return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`
-}
-
-function formatInternationalRest(digits: string): string {
-  if (!digits) return ""
-  if (digits.length <= 4) return digits
-  if (digits.length <= 7) return `${digits.slice(0, 3)}-${digits.slice(3)}`
-  if (digits.length <= 10) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`
-  return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`
-}
-
-function formatPhone(value: string): string {
-  const digits = normalizePhoneDigits(value)
-  if (!digits) return ""
-  if (digits.length > 11) {
-    const code = pickCountryCode(digits)
-    const rest = digits.slice(code.length)
-    if (!rest) return code
-    if (code === "82") {
-      const local = formatKoreanNumber(`0${rest}`)
-      return `${code}-${local.replace(/^0/, "")}`
-    }
-    return `${code}-${formatInternationalRest(rest)}`
-  }
-  return formatKoreanNumber(digits)
-}
-
-function parseExpiry(value: string): { month: number | null; year: number | null } {
-  const digits = value.replace(/\D/g, "").slice(0, 4)
-  if (!digits) return { month: null, year: null }
-  const month = digits.length >= 2 ? Number(digits.slice(0, 2)) : null
-  const year = digits.length >= 4 ? Number(`20${digits.slice(2)}`) : null
-  return { month: Number.isFinite(month) ? month : null, year: Number.isFinite(year) ? year : null }
-}
-
-function normalizeStoredBrand(value: unknown): CardBrand | null {
-  const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
-  if (!raw) return null
-  if (raw === "mastercard") return "master"
-  if (raw === "unionpay") return "union"
-  if (raw === "amex") return "amex"
-  if (raw === "visa" || raw === "master" || raw === "jcb" || raw === "union") return raw as CardBrand
-  return null
-}
-
-function cardLabel(brand: CardBrand): string {
-  switch (brand) {
-    case "visa":
-      return "Visa"
-    case "master":
-      return "Mastercard"
-    case "amex":
-      return "Amex"
-    case "jcb":
-      return "JCB"
-    case "union":
-      return "UnionPay"
-    default:
-      return "Card"
-  }
-}
-
-function cardBg(brand: CardBrand): string {
-  switch (brand) {
-    case "visa":
-      return "bg-[#1a1f71]"
-    case "master":
-      return "bg-[#f5f5f5] dark:bg-neutral-800"
-    case "amex":
-      return "bg-[#006fcf]"
-    case "jcb":
-      return "bg-[#1b5e20]"
-    case "union":
-      return "bg-[#d81f26]"
-    default:
-      return "bg-[#1a1f71]"
-  }
-}
-
-function formatExpiryLabel(month?: number | null, year?: number | null): string {
-  if (!month || !year) return "MM/YY"
-  const mm = String(month).padStart(2, "0")
-  const yy = String(year).slice(-2)
-  return `${mm}/${yy}`
-}
-
-const CURRENCY_DECIMALS: Record<string, number> = {
-  USD: 2,
-  EUR: 2,
-  GBP: 2,
-  KRW: 0,
-  JPY: 0,
-  CNY: 2,
-  HKD: 2,
-  SGD: 2,
-  AUD: 2,
-  CAD: 2,
-}
-
-function currencyDecimals(currency: string) {
-  const key = String(currency || "").toUpperCase()
-  return CURRENCY_DECIMALS[key] ?? 2
-}
-
-function roundMoney(value: number, currency: string) {
-  const factor = 10 ** currencyDecimals(currency)
-  return Math.round(value * factor) / factor
-}
-
-function currencySymbol(currency: string) {
-  const key = String(currency || "").toUpperCase()
-  switch (key) {
-    case "KRW":
-      return "₩"
-    case "USD":
-      return "$"
-    case "JPY":
-      return "¥"
-    case "EUR":
-      return "€"
-    case "GBP":
-      return "£"
-    case "CNY":
-      return "¥"
-    case "HKD":
-      return "HK$"
-    case "SGD":
-      return "S$"
-    case "AUD":
-      return "A$"
-    case "CAD":
-      return "C$"
-    default:
-      return `${key} `
-  }
-}
-
-function formatMoney(value: number, currency: string) {
-  const decimals = currencyDecimals(currency)
-  return value.toLocaleString("ko-KR", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
-}
-
-function detectCardBrand(rawDigits: string): CardBrand | null {
-  const digits = rawDigits.replace(/\D/g, "")
-  if (digits.length < 4) return null
-  const first2 = Number(digits.slice(0, 2))
-  const first4 = Number(digits.slice(0, 4))
-
-  if (digits.startsWith("4")) return "visa"
-  if ((first2 >= 51 && first2 <= 55) || (first4 >= 2221 && first4 <= 2720)) return "master"
-  if (digits.startsWith("34") || digits.startsWith("37")) return "amex"
-  if (first4 >= 3528 && first4 <= 3589) return "jcb"
-  if (digits.startsWith("62")) return "union"
-  return null
 }
 
 export default function PaymentConfirm() {
@@ -567,7 +303,7 @@ export default function PaymentConfirm() {
         const options = rows
           .filter((row) => row.status !== "deleted")
           .map((row) => {
-            const brand = normalizeStoredBrand(row.card_brand) ?? "visa"
+            const brand = normalizeCardBrand(row.card_brand) ?? "visa"
             const holder = String(row.metadata?.holder || "").trim() || "사용자"
             return {
               id: row.id,
@@ -673,18 +409,7 @@ export default function PaymentConfirm() {
     setIsCardSelectOpen(false)
   }
 
-  const CardIcon =
-    card?.brand === "visa"
-      ? CardVisa
-      : card?.brand === "master"
-        ? CardMaster
-        : card?.brand === "amex"
-          ? CardAmex
-          : card?.brand === "jcb"
-            ? CardJcb
-            : card?.brand === "union"
-              ? CardUnion
-              : null
+  const CardIcon = getCardBrandIcon(card?.brand)
   const billingAddress = [billingInfo?.address1, billingInfo?.address2, billingInfo?.extraAddress]
     .filter(Boolean)
     .join(" ")
@@ -701,18 +426,7 @@ export default function PaymentConfirm() {
   const addCardHolderDisplay = addCardHolder.trim() || "카드 소유자"
   const addCardExpiryDisplay = addCardExpiry || "MM/YY"
   const addCardBrand = useMemo(() => detectCardBrand(addCardNumber), [addCardNumber])
-  const AddCardIcon =
-    addCardBrand === "visa"
-      ? CardVisa
-      : addCardBrand === "master"
-        ? CardMaster
-        : addCardBrand === "amex"
-          ? CardAmex
-          : addCardBrand === "jcb"
-            ? CardJcb
-            : addCardBrand === "union"
-              ? CardUnion
-              : null
+  const AddCardIcon = getCardBrandIcon(addCardBrand)
   const canSaveCard = Boolean(addCardBrand && normalizeCardNumber(addCardNumber).length >= 4 && !cardSaving)
 
   const handleSaveCard = async () => {
@@ -972,7 +686,7 @@ export default function PaymentConfirm() {
                 </div>
                 <div className="mt-4 flex items-center gap-4">
                   {CardIcon ? (
-                    <div className="flex size-10 items-center justify-center rounded-lg">
+                    <div className={cn("flex size-10 items-center justify-center rounded-lg", cardBg(card?.brand || "visa"))}>
                       <CardIcon className="h-6 w-9" />
                     </div>
                   ) : null}
@@ -1091,18 +805,7 @@ export default function PaymentConfirm() {
           <div className="grid gap-3">
             {cardOptions.map((option) => {
               const isSelected = option.id === selectedCardId
-              const Icon =
-                option.brand === "visa"
-                  ? CardVisa
-                  : option.brand === "master"
-                    ? CardMaster
-                    : option.brand === "amex"
-                      ? CardAmex
-                      : option.brand === "jcb"
-                        ? CardJcb
-                        : option.brand === "union"
-                          ? CardUnion
-                          : CreditCard
+              const Icon = getCardBrandIcon(option.brand) ?? CreditCard
               return (
                 <button
                   key={option.id}
