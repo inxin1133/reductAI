@@ -12,14 +12,32 @@ import { CardJcb } from "@/components/icons/CardJcb"
 import { CardMaster } from "@/components/icons/CardMaster"
 import { CardUnion } from "@/components/icons/CardUnion"
 import { CardVisa } from "@/components/icons/CardVisa"
-import { type CardBrand, type BillingInfoProfile, readBillingCard, readBillingInfo, hasBillingCard, hasBillingInfo, writeBillingCard, writeBillingInfo } from "@/lib/billingFlow"
+import {
+  type CardBrand,
+  type BillingInfoProfile,
+  hasVisited,
+  readBillingCard,
+  readBillingInfo,
+  type CheckoutFlowState,
+  writeBillingCard,
+  writeBillingInfo,
+} from "@/lib/billingFlow"
 import { CreditCard, Lock, Plus, WalletCards, FilePenLine } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { fetchBillingPlansWithPrices } from "@/services/billingService"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 type LocationState = {
   planId?: string
   planName?: string
   billingCycle?: "monthly" | "yearly"
+  flow?: CheckoutFlowState
 }
 
 const EMPTY_BILLING_INFO: BillingInfoProfile = {
@@ -45,6 +63,102 @@ type CardOption = {
   bg: string
 }
 
+const COUNTRY_OPTIONS = [
+  { code: "KR", label: "대한민국 (KR)" },
+  { code: "US", label: "미국 (US)" },
+  { code: "JP", label: "일본 (JP)" },
+  { code: "CN", label: "중국 (CN)" },
+  { code: "SG", label: "싱가포르 (SG)" },
+  { code: "HK", label: "홍콩 (HK)" },
+  { code: "GB", label: "영국 (GB)" },
+  { code: "DE", label: "독일 (DE)" },
+  { code: "FR", label: "프랑스 (FR)" },
+  { code: "AU", label: "호주 (AU)" },
+  { code: "CA", label: "캐나다 (CA)" },
+]
+
+const CURRENCY_OPTIONS = [
+  { code: "KRW", label: "KRW (원)" },
+  { code: "USD", label: "USD ($)" },
+  { code: "JPY", label: "JPY (¥)" },
+  { code: "EUR", label: "EUR (€)" },
+  { code: "GBP", label: "GBP (£)" },
+  { code: "CNY", label: "CNY (¥)" },
+  { code: "SGD", label: "SGD ($)" },
+  { code: "HKD", label: "HKD ($)" },
+  { code: "AUD", label: "AUD ($)" },
+  { code: "CAD", label: "CAD ($)" },
+]
+
+type BillingAccountResponse = {
+  ok?: boolean
+  row?: {
+    billing_name?: string | null
+    billing_email?: string | null
+    billing_postal_code?: string | null
+    billing_address1?: string | null
+    billing_address2?: string | null
+    billing_extra_address?: string | null
+    billing_phone?: string | null
+    country_code?: string | null
+    tax_country_code?: string | null
+    currency?: string | null
+  } | null
+}
+
+type PaymentMethodRow = {
+  id: string
+  card_brand?: string | null
+  card_last4?: string | null
+  card_exp_month?: number | null
+  card_exp_year?: number | null
+  is_default?: boolean | null
+  status?: string | null
+  metadata?: Record<string, unknown> | null
+}
+
+type PaymentMethodsResponse = {
+  ok?: boolean
+  rows?: PaymentMethodRow[]
+}
+
+type CheckoutResponse = {
+  ok?: boolean
+  total_amount?: number
+  currency?: string
+  next_billing_date?: string
+  transaction_id?: string
+  transaction?: { id?: string | null }
+  message?: string
+}
+
+type QuoteResponse = {
+  ok?: boolean
+  plan_id?: string
+  billing_cycle?: string
+  plan_name?: string | null
+  currency?: string
+  amount?: number
+  base_currency?: string | null
+  base_amount?: number | null
+  fx_rate?: number | null
+  tax_rate_percent?: number
+  tax_amount?: number
+  total_amount?: number
+  message?: string
+}
+
+type QuoteState = {
+  currency: string
+  amount: number
+  tax_rate_percent: number
+  tax_amount: number
+  total_amount: number
+  fx_rate?: number | null
+  base_currency?: string | null
+  base_amount?: number | null
+}
+
 function normalizeCardNumber(value: string): string {
   return value.replace(/\D/g, "").slice(0, 16)
 }
@@ -64,6 +178,216 @@ function normalizeCvv(value: string): string {
   return value.replace(/\D/g, "").slice(0, 4)
 }
 
+function normalizePhoneDigits(value: string): string {
+  return value.replace(/\D/g, "").slice(0, 15)
+}
+
+const COMMON_COUNTRY_CODES = [
+  "1",
+  "7",
+  "20",
+  "27",
+  "30",
+  "31",
+  "32",
+  "33",
+  "34",
+  "36",
+  "39",
+  "40",
+  "41",
+  "43",
+  "44",
+  "45",
+  "46",
+  "47",
+  "48",
+  "49",
+  "51",
+  "52",
+  "53",
+  "54",
+  "55",
+  "56",
+  "57",
+  "58",
+  "60",
+  "61",
+  "62",
+  "63",
+  "64",
+  "65",
+  "66",
+  "81",
+  "82",
+  "84",
+  "86",
+  "90",
+  "91",
+  "92",
+  "93",
+  "94",
+  "95",
+  "98",
+]
+
+function pickCountryCode(digits: string): string {
+  if (!digits) return ""
+  for (let len = 3; len >= 1; len -= 1) {
+    const code = digits.slice(0, len)
+    if (COMMON_COUNTRY_CODES.includes(code)) return code
+  }
+  return digits.length >= 2 ? digits.slice(0, 2) : digits.slice(0, 1)
+}
+
+function formatKoreanNumber(digits: string): string {
+  if (!digits) return ""
+  if (digits.startsWith("02")) {
+    if (digits.length <= 2) return digits
+    if (digits.length <= 5) return `${digits.slice(0, 2)}-${digits.slice(2)}`
+    if (digits.length <= 9) return `${digits.slice(0, 2)}-${digits.slice(2, 5)}-${digits.slice(5)}`
+    return `${digits.slice(0, 2)}-${digits.slice(2, 6)}-${digits.slice(6)}`
+  }
+  if (digits.length <= 3) return digits
+  if (digits.length <= 6) return `${digits.slice(0, 3)}-${digits.slice(3)}`
+  if (digits.length <= 10) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`
+  return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`
+}
+
+function formatInternationalRest(digits: string): string {
+  if (!digits) return ""
+  if (digits.length <= 4) return digits
+  if (digits.length <= 7) return `${digits.slice(0, 3)}-${digits.slice(3)}`
+  if (digits.length <= 10) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`
+  return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`
+}
+
+function formatPhone(value: string): string {
+  const digits = normalizePhoneDigits(value)
+  if (!digits) return ""
+  if (digits.length > 11) {
+    const code = pickCountryCode(digits)
+    const rest = digits.slice(code.length)
+    if (!rest) return code
+    if (code === "82") {
+      const local = formatKoreanNumber(`0${rest}`)
+      return `${code}-${local.replace(/^0/, "")}`
+    }
+    return `${code}-${formatInternationalRest(rest)}`
+  }
+  return formatKoreanNumber(digits)
+}
+
+function parseExpiry(value: string): { month: number | null; year: number | null } {
+  const digits = value.replace(/\D/g, "").slice(0, 4)
+  if (!digits) return { month: null, year: null }
+  const month = digits.length >= 2 ? Number(digits.slice(0, 2)) : null
+  const year = digits.length >= 4 ? Number(`20${digits.slice(2)}`) : null
+  return { month: Number.isFinite(month) ? month : null, year: Number.isFinite(year) ? year : null }
+}
+
+function normalizeStoredBrand(value: unknown): CardBrand | null {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
+  if (!raw) return null
+  if (raw === "mastercard") return "master"
+  if (raw === "unionpay") return "union"
+  if (raw === "amex") return "amex"
+  if (raw === "visa" || raw === "master" || raw === "jcb" || raw === "union") return raw as CardBrand
+  return null
+}
+
+function cardLabel(brand: CardBrand): string {
+  switch (brand) {
+    case "visa":
+      return "Visa"
+    case "master":
+      return "Mastercard"
+    case "amex":
+      return "Amex"
+    case "jcb":
+      return "JCB"
+    case "union":
+      return "UnionPay"
+    default:
+      return "Card"
+  }
+}
+
+function cardBg(brand: CardBrand): string {
+  switch (brand) {
+    case "visa":
+      return "bg-[#1a1f71]"
+    case "master":
+      return "bg-[#f5f5f5] dark:bg-neutral-800"
+    case "amex":
+      return "bg-[#006fcf]"
+    case "jcb":
+      return "bg-[#1b5e20]"
+    case "union":
+      return "bg-[#d81f26]"
+    default:
+      return "bg-[#1a1f71]"
+  }
+}
+
+function formatExpiryLabel(month?: number | null, year?: number | null): string {
+  if (!month || !year) return "MM/YY"
+  const mm = String(month).padStart(2, "0")
+  const yy = String(year).slice(-2)
+  return `${mm}/${yy}`
+}
+
+const CURRENCY_DECIMALS: Record<string, number> = {
+  USD: 2,
+  EUR: 2,
+  GBP: 2,
+  KRW: 0,
+  JPY: 0,
+  CNY: 2,
+  HKD: 2,
+  SGD: 2,
+  AUD: 2,
+  CAD: 2,
+}
+
+function currencyDecimals(currency: string) {
+  const key = String(currency || "").toUpperCase()
+  return CURRENCY_DECIMALS[key] ?? 2
+}
+
+function currencySymbol(currency: string) {
+  const key = String(currency || "").toUpperCase()
+  switch (key) {
+    case "KRW":
+      return "₩"
+    case "USD":
+      return "$"
+    case "JPY":
+      return "¥"
+    case "EUR":
+      return "€"
+    case "GBP":
+      return "£"
+    case "CNY":
+      return "¥"
+    case "HKD":
+      return "HK$"
+    case "SGD":
+      return "S$"
+    case "AUD":
+      return "A$"
+    case "CAD":
+      return "C$"
+    default:
+      return `${key} `
+  }
+}
+
+function formatMoney(value: number, currency: string) {
+  const decimals = currencyDecimals(currency)
+  return value.toLocaleString("ko-KR", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+}
+
 function detectCardBrand(rawDigits: string): CardBrand | null {
   const digits = rawDigits.replace(/\D/g, "")
   if (digits.length < 4) return null
@@ -81,15 +405,32 @@ function detectCardBrand(rawDigits: string): CardBrand | null {
 export default function PaymentConfirm() {
   const navigate = useNavigate()
   const location = useLocation()
-  const state = (location.state || {}) as LocationState
+  const state = useMemo(() => (location.state || {}) as LocationState, [location.state])
   const selectedPlanName = typeof state.planName === "string" ? state.planName : null
   const billingCycleLabel = state.billingCycle === "yearly" ? "연간 구독" : "월간 구독"
-  const basePrice = state.billingCycle === "yearly" ? 790000 : 79000
-  const vatAmount = Math.round(basePrice * 0.1)
-  const totalAmount = basePrice + vatAmount
+  const canGoBackToInfo = hasVisited(state.flow, "info")
+  const inFlow = Boolean(state.flow?.visited?.length)
 
   const [card, setCard] = useState(() => readBillingCard())
-  const [billingInfo, setBillingInfo] = useState<BillingInfoProfile>(() => readBillingInfo() ?? EMPTY_BILLING_INFO)
+  const [billingInfo, setBillingInfo] = useState<BillingInfoProfile>(() => {
+    const stored = readBillingInfo() ?? EMPTY_BILLING_INFO
+    return {
+      ...stored,
+      phone: formatPhone(stored.phone || ""),
+      countryCode: stored.countryCode ?? "KR",
+      taxCountryCode: stored.taxCountryCode ?? "KR",
+      currency: stored.currency ?? "KRW",
+    }
+  })
+  const [quote, setQuote] = useState<QuoteState | null>(null)
+  const [quoteLoading, setQuoteLoading] = useState(false)
+  const [resolvedPlanName, setResolvedPlanName] = useState<string | null>(null)
+  const displayCurrency = quote?.currency || billingInfo.currency || "USD"
+  const basePrice = quote?.amount ?? null
+  const taxRatePercent = quote?.tax_rate_percent ?? 0
+  const taxAmount = quote?.tax_amount ?? 0
+  const totalAmount = quote?.total_amount ?? 0
+  const displayPlanName = resolvedPlanName ?? selectedPlanName ?? "Professional"
   const [couponCode, setCouponCode] = useState("")
   const [agreeTerms, setAgreeTerms] = useState(true)
   const [isCardSelectOpen, setIsCardSelectOpen] = useState(false)
@@ -103,22 +444,187 @@ export default function PaymentConfirm() {
   const [billingForm, setBillingForm] = useState<BillingInfoProfile>(billingInfo)
   const [postcodeLoading, setPostcodeLoading] = useState(false)
   const detailAddressRef = useRef<HTMLInputElement | null>(null)
+  const [cardOptions, setCardOptions] = useState<CardOption[]>([])
+  const [cardSaving, setCardSaving] = useState(false)
+  const [paying, setPaying] = useState(false)
+  const canPay = Boolean(
+    quote &&
+      Number.isFinite(quote.total_amount) &&
+      agreeTerms &&
+      card?.last4 &&
+      billingInfo.name &&
+      billingInfo.email &&
+      billingInfo.address1 &&
+      !paying &&
+      !quoteLoading
+  )
 
-  const [cardOptions, setCardOptions] = useState<CardOption[]>(() => [
-    { id: "visa-1234", brand: "visa" as const, label: "Visa", last4: "1234", expiry: "12/28", holder: "Kangwoo", isDefault: true, bg: "bg-[#1a1f71]" },
-    { id: "master-5678", brand: "master" as const, label: "Mastercard", last4: "5678", expiry: "08/27", holder: "Kangwoo", isDefault: false, bg: "bg-[#f5f5f5] dark:bg-neutral-800" },
-    { id: "amex-9012", brand: "amex" as const, label: "Amex", last4: "9012", expiry: "03/26", holder: "Kangwoo", isDefault: false, bg: "bg-[#006fcf]" },
-  ])
+  const authHeaders = useCallback((): Record<string, string> => {
+    if (typeof window === "undefined") return {}
+    const token = window.localStorage.getItem("token")
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  }, [])
+
+  const loadPlanInfo = useCallback(async () => {
+    if (!state.planId) return
+    try {
+      const plans = await fetchBillingPlansWithPrices()
+      const plan = plans.find((item) => item.id === state.planId)
+      if (!plan) return
+      setResolvedPlanName(plan.name || null)
+    } catch (e) {
+      console.error(e)
+    }
+  }, [state.planId])
+
+  const loadQuote = useCallback(async () => {
+    if (!state.planId || !state.billingCycle) {
+      setQuote(null)
+      return null
+    }
+    const headers = authHeaders()
+    if (!headers.Authorization) return null
+    try {
+      setQuoteLoading(true)
+      const res = await fetch("/api/ai/billing/user/quote", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          plan_id: state.planId,
+          billing_cycle: state.billingCycle,
+        }),
+      })
+      const data = (await res.json().catch(() => null)) as QuoteResponse | null
+      if (!res.ok || !data?.ok) throw new Error(data?.message || "FAILED_QUOTE")
+      const nextQuote: QuoteState = {
+        currency: data.currency || "USD",
+        amount: Number(data.amount ?? 0),
+        tax_rate_percent: Number(data.tax_rate_percent ?? 0),
+        tax_amount: Number(data.tax_amount ?? 0),
+        total_amount: Number(data.total_amount ?? 0),
+        fx_rate: data.fx_rate ?? null,
+        base_currency: data.base_currency ?? null,
+        base_amount: data.base_amount ?? null,
+      }
+      setQuote(nextQuote)
+      if (data?.plan_name) setResolvedPlanName(data.plan_name)
+      return nextQuote
+    } catch (e) {
+      console.error(e)
+      setQuote(null)
+      return null
+    } finally {
+      setQuoteLoading(false)
+    }
+  }, [authHeaders, state.billingCycle, state.planId])
+
+  const loadBillingData = useCallback(async () => {
+    const headers = authHeaders()
+    if (!headers.Authorization) return null
+    try {
+      const [accountRes, methodsRes] = await Promise.all([
+        fetch("/api/ai/billing/user/billing-account", { headers }),
+        fetch("/api/ai/billing/user/payment-methods?limit=50", { headers }),
+      ])
+
+      let hasInfo = false
+      if (accountRes.ok) {
+        const data = (await accountRes.json().catch(() => null)) as BillingAccountResponse | null
+        const row = data?.row
+        if (row) {
+          const nextInfo = {
+            name: row.billing_name ?? "",
+            email: row.billing_email ?? "",
+            postalCode: row.billing_postal_code ?? "",
+            address1: row.billing_address1 ?? "",
+            address2: row.billing_address2 ?? "",
+            extraAddress: row.billing_extra_address ?? "",
+            phone: row.billing_phone ? formatPhone(row.billing_phone) : "",
+            countryCode: row.country_code ?? "KR",
+            taxCountryCode: row.tax_country_code ?? row.country_code ?? "KR",
+            currency: row.currency ?? "KRW",
+          }
+          hasInfo = Boolean(nextInfo.name && nextInfo.email && nextInfo.address1)
+          setBillingInfo(nextInfo)
+          if (!isBillingEditOpen) setBillingForm(nextInfo)
+          writeBillingInfo({ ...nextInfo, phone: normalizePhoneDigits(nextInfo.phone) })
+        }
+      }
+
+      let hasCard = false
+      if (methodsRes.ok) {
+        const data = (await methodsRes.json().catch(() => null)) as PaymentMethodsResponse | null
+        const rows = Array.isArray(data?.rows) ? data?.rows : []
+        const options = rows
+          .filter((row) => row.status !== "deleted")
+          .map((row) => {
+            const brand = normalizeStoredBrand(row.card_brand) ?? "visa"
+            const holder = String(row.metadata?.holder || "").trim() || "사용자"
+            return {
+              id: row.id,
+              brand,
+              label: cardLabel(brand),
+              last4: row.card_last4 || "0000",
+              expiry: formatExpiryLabel(row.card_exp_month, row.card_exp_year),
+              holder,
+              isDefault: Boolean(row.is_default),
+              bg: cardBg(brand),
+            }
+          })
+        setCardOptions(options)
+        const selected = options.find((opt) => opt.isDefault) ?? options[0]
+        if (selected) {
+          setCard({
+            brand: selected.brand,
+            last4: selected.last4,
+            holder: selected.holder,
+            expiry: selected.expiry,
+          })
+          writeBillingCard({
+            brand: selected.brand,
+            last4: selected.last4,
+            holder: selected.holder,
+            expiry: selected.expiry,
+          })
+          hasCard = true
+        }
+      }
+
+      return { hasCard, hasInfo }
+    } finally {
+      // no-op
+    }
+  }, [authHeaders, isBillingEditOpen])
 
   useEffect(() => {
-    if (!hasBillingCard()) {
-      navigate("/billing/card", { replace: true })
-      return
+    let cancelled = false
+    void (async () => {
+      try {
+        const status = await loadBillingData()
+        if (cancelled) return
+        if (!inFlow && status) {
+          if (!status.hasCard) {
+            navigate("/billing/card", { replace: true, state })
+            return
+          }
+          if (!status.hasInfo) {
+            navigate("/billing/info", { replace: true, state })
+            return
+          }
+        }
+        await loadQuote()
+      } catch (e) {
+        console.error(e)
+      }
+    })()
+    return () => {
+      cancelled = true
     }
-    if (!hasBillingInfo()) {
-      navigate("/billing/info", { replace: true })
-    }
-  }, [navigate])
+  }, [inFlow, loadBillingData, loadQuote, navigate, state])
+
+  useEffect(() => {
+    void loadPlanInfo()
+  }, [loadPlanInfo])
 
   useEffect(() => {
     if (!isBillingEditOpen) return
@@ -173,6 +679,13 @@ export default function PaymentConfirm() {
   const billingAddress = [billingInfo?.address1, billingInfo?.address2, billingInfo?.extraAddress]
     .filter(Boolean)
     .join(" ")
+  const billingPhoneDisplay = billingInfo.phone ? formatPhone(billingInfo.phone) : "-"
+  const formatAmountLabel = (value: number | null | undefined) => {
+    if (value === null || value === undefined || !Number.isFinite(value)) {
+      return quoteLoading ? "계산 중" : "-"
+    }
+    return `${currencySymbol(displayCurrency)}${formatMoney(value, displayCurrency)}`
+  }
 
   const addFormattedCardNumber = useMemo(() => formatCardNumber(addCardNumber), [addCardNumber])
   const addCardNumberDisplay = addFormattedCardNumber || "0000 0000 0000 0000"
@@ -191,56 +704,53 @@ export default function PaymentConfirm() {
             : addCardBrand === "union"
               ? CardUnion
               : null
-  const canSaveCard = Boolean(addCardBrand && normalizeCardNumber(addCardNumber).length >= 4)
+  const canSaveCard = Boolean(addCardBrand && normalizeCardNumber(addCardNumber).length >= 4 && !cardSaving)
 
-  const handleSaveCard = () => {
+  const handleSaveCard = async () => {
     if (!canSaveCard || !addCardBrand) return
     const digits = normalizeCardNumber(addCardNumber)
     const last4 = digits.slice(-4)
-    const label =
-      addCardBrand === "visa"
-        ? "Visa"
-        : addCardBrand === "master"
-          ? "Mastercard"
-          : addCardBrand === "amex"
-            ? "Amex"
-            : addCardBrand === "jcb"
-              ? "JCB"
-              : "UnionPay"
-    const bg =
-      addCardBrand === "visa"
-        ? "bg-[#1a1f71]"
-        : addCardBrand === "master"
-          ? "bg-[#f5f5f5] dark:bg-neutral-800"
-          : addCardBrand === "amex"
-            ? "bg-[#006fcf]"
-            : addCardBrand === "jcb"
-              ? "bg-[#1b5e20]"
-              : "bg-[#d81f26]"
-    const nextCard = {
-      id: `${addCardBrand}-${last4}-${Date.now()}`,
-      brand: addCardBrand,
-      label,
-      last4,
-      expiry: addCardExpiry || "MM/YY",
-      holder: addCardHolder.trim() || "사용자",
-      isDefault: false,
-      bg,
+    const { month, year } = parseExpiry(addCardExpiry)
+    if (month && (month < 1 || month > 12)) {
+      alert("유효기간 월을 확인해주세요.")
+      return
     }
-    setCardOptions((prev) => [nextCard, ...prev])
-    writeBillingCard({
-      brand: nextCard.brand,
-      last4: nextCard.last4,
-      holder: nextCard.holder,
-      expiry: nextCard.expiry,
-    })
-    setCard({
-      brand: nextCard.brand,
-      last4: nextCard.last4,
-      holder: nextCard.holder,
-      expiry: nextCard.expiry,
-    })
-    setIsCardAddOpen(false)
+    if (year && year < 2000) {
+      alert("유효기간 년도를 확인해주세요.")
+      return
+    }
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      alert("로그인이 필요합니다.")
+      return
+    }
+
+    try {
+      setCardSaving(true)
+      const res = await fetch("/api/ai/billing/user/payment-methods", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "toss",
+          type: "card",
+          card_brand: addCardBrand,
+          card_last4: last4,
+          card_exp_month: month,
+          card_exp_year: year,
+          metadata: { holder: addCardHolder.trim() || null },
+        }),
+      })
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; message?: string } | null
+      if (!res.ok || !data?.ok) throw new Error(data?.message || "FAILED_SAVE")
+
+      await loadBillingData()
+      setIsCardAddOpen(false)
+    } catch (e) {
+      console.error(e)
+      alert("카드 저장에 실패했습니다.")
+    } finally {
+      setCardSaving(false)
+    }
   }
 
   const loadDaumPostcode = useCallback(() => {
@@ -307,10 +817,86 @@ export default function PaymentConfirm() {
     }
   }, [loadDaumPostcode, postcodeLoading])
 
-  const handleSaveBilling = () => {
-    writeBillingInfo(billingForm)
-    setBillingInfo(billingForm)
-    setIsBillingEditOpen(false)
+  const handleSaveBilling = async () => {
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      alert("로그인이 필요합니다.")
+      return
+    }
+    try {
+      const res = await fetch("/api/ai/billing/user/billing-account", {
+        method: "PUT",
+        headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            billing_name: billingForm.name,
+            billing_email: billingForm.email,
+            billing_postal_code: billingForm.postalCode,
+            billing_address1: billingForm.address1,
+            billing_address2: billingForm.address2,
+            billing_extra_address: billingForm.extraAddress,
+            billing_phone: normalizePhoneDigits(billingForm.phone),
+            country_code: billingForm.countryCode || null,
+            tax_country_code: billingForm.taxCountryCode || billingForm.countryCode || null,
+            currency: billingForm.currency || null,
+          }),
+      })
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; message?: string } | null
+      if (!res.ok || !data?.ok) throw new Error(data?.message || "FAILED_SAVE")
+      writeBillingInfo(billingForm)
+      setBillingInfo(billingForm)
+      await loadQuote()
+      setIsBillingEditOpen(false)
+    } catch (e) {
+      console.error(e)
+      alert("청구 정보 저장에 실패했습니다.")
+    }
+  }
+
+  const handleCheckout = async () => {
+    if (!canPay || paying) return
+    if (!state.planId || !state.billingCycle) {
+      alert("요금제 정보가 없습니다.")
+      return
+    }
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      alert("로그인이 필요합니다.")
+      return
+    }
+
+    try {
+      setPaying(true)
+      const res = await fetch("/api/ai/billing/user/checkout", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          plan_id: state.planId,
+          billing_cycle: state.billingCycle,
+        }),
+      })
+      const data = (await res.json().catch(() => null)) as CheckoutResponse | null
+      if (!res.ok || !data?.ok) throw new Error(data?.message || "FAILED_CHECKOUT")
+      const nextBillingDate = data?.next_billing_date
+        ? new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "long", day: "numeric" }).format(
+            new Date(data.next_billing_date)
+          )
+        : undefined
+      navigate("/billing/complete", {
+        state: {
+          planName: displayPlanName,
+          billingCycle: state.billingCycle,
+          totalAmount: data?.total_amount ?? quote?.total_amount ?? totalAmount,
+          currency: data?.currency ?? quote?.currency ?? displayCurrency,
+          nextBillingDate,
+          transactionId: data?.transaction_id ?? data?.transaction?.id,
+        },
+      })
+    } catch (e) {
+      console.error(e)
+      alert("결제 처리에 실패했습니다.")
+    } finally {
+      setPaying(false)
+    }
   }
 
   return (
@@ -329,12 +915,10 @@ export default function PaymentConfirm() {
                 <div className="text-sm font-semibold text-foreground">선택한 플랜</div>
                 <div className="mt-3 flex items-center justify-between">
                   <div>
-                    <div className="text-lg font-semibold text-foreground">{selectedPlanName || "Professional"}</div>
+                    <div className="text-lg font-semibold text-foreground">{displayPlanName}</div>
                     <div className="text-sm text-muted-foreground">{billingCycleLabel}</div>
                   </div>
-                  <div className="text-lg font-semibold text-foreground">
-                    ₩{basePrice.toLocaleString("ko-KR")}
-                  </div>
+                  <div className="text-lg font-semibold text-foreground">{formatAmountLabel(basePrice)}</div>
                 </div>
               </div>
 
@@ -415,7 +999,7 @@ export default function PaymentConfirm() {
                 <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
                   <div className="text-foreground">{billingInfo.name || "-"}</div>
                   <div>{billingInfo.email || "-"}</div>
-                  <div>{billingInfo.phone || "-"}</div>
+                  <div>{billingPhoneDisplay}</div>
                   <div>{billingAddress || "-"}</div>
                   <div>{billingInfo.postalCode || "-"}</div>
                 </div>
@@ -435,23 +1019,13 @@ export default function PaymentConfirm() {
               </div>
 
               <div className="flex items-center justify-between">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="min-w-[120px]"
-                  onClick={() =>
-                    navigate("/billing/info", {
-                      state: {
-                        planId: state.planId,
-                        planName: state.planName,
-                        billingCycle: state.billingCycle,
-                        allowEdit: true,
-                      },
-                    })
-                  }
-                >
-                  이전
-                </Button>
+                {canGoBackToInfo ? (
+                  <Button type="button" variant="outline" className="min-w-[120px]" onClick={() => navigate(-1)}>
+                    이전
+                  </Button>
+                ) : (
+                  <div />
+                )}
                 <div />
               </div>
             </div>
@@ -474,34 +1048,22 @@ export default function PaymentConfirm() {
               <div className="mt-4 grid gap-2 text-sm text-muted-foreground">
                 <div className="flex items-center justify-between">
                   <span>플랜 가격</span>
-                  <span className="text-foreground">₩{basePrice.toLocaleString("ko-KR")}</span>
+                  <span className="text-foreground">{formatAmountLabel(basePrice)}</span>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span>VAT (10%)</span>
-                  <span className="text-foreground">₩{vatAmount.toLocaleString("ko-KR")}</span>
-                </div>
+                {taxAmount > 0 ? (
+                  <div className="flex items-center justify-between">
+                    <span>세금 ({taxRatePercent || 0}%)</span>
+                    <span className="text-foreground">{formatAmountLabel(taxAmount)}</span>
+                  </div>
+                ) : null}
               </div>
               <div className="mt-4 border-t border-border pt-4">
                 <div className="flex items-baseline justify-between">
                   <span className="text-sm font-semibold text-foreground">총 결제 금액</span>
-                  <span className="text-2xl font-bold text-blue-600">
-                    ₩{totalAmount.toLocaleString("ko-KR")}
-                  </span>
+                  <span className="text-2xl font-bold text-blue-600">{formatAmountLabel(totalAmount)}</span>
                 </div>
               </div>
-              <Button
-                type="button"
-                className="mt-4 w-full"
-                onClick={() =>
-                  navigate("/billing/complete", {
-                    state: {
-                      planName: selectedPlanName || "Professional",
-                      billingCycle: state.billingCycle,
-                      totalAmount,
-                    },
-                  })
-                }
-              >
+              <Button type="button" className="mt-4 w-full" onClick={handleCheckout} disabled={!canPay}>
                 결제하기
               </Button>
               <p className="mt-2 text-xs text-muted-foreground">
@@ -685,6 +1247,46 @@ export default function PaymentConfirm() {
                 placeholder="billing@reduct.ai"
               />
             </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              <div className="grid gap-2">
+                <Label>청구지 국가</Label>
+                <Select
+                  value={billingForm.countryCode || "KR"}
+                  onValueChange={(value) =>
+                    setBillingForm((prev) => ({ ...prev, countryCode: value, taxCountryCode: value }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="국가 선택" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {COUNTRY_OPTIONS.map((item) => (
+                      <SelectItem key={item.code} value={item.code}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2">
+                <Label>결제 통화</Label>
+                <Select
+                  value={billingForm.currency || "KRW"}
+                  onValueChange={(value) => setBillingForm((prev) => ({ ...prev, currency: value }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="통화 선택" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CURRENCY_OPTIONS.map((item) => (
+                      <SelectItem key={item.code} value={item.code}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
             <div className="grid gap-2">
               <Label>우편번호</Label>
               <div className="flex items-center gap-2">
@@ -722,8 +1324,10 @@ export default function PaymentConfirm() {
               <Label>전화번호</Label>
               <Input
                 value={billingForm.phone}
-                onChange={(e) => setBillingForm((prev) => ({ ...prev, phone: e.target.value }))}
+                onChange={(e) => setBillingForm((prev) => ({ ...prev, phone: formatPhone(e.target.value) }))}
                 placeholder="전화번호"
+                inputMode="tel"
+                autoComplete="tel"
               />
             </div>
           </div>

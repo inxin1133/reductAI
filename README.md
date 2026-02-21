@@ -87,6 +87,7 @@ docker compose restart tenant-service
 docker compose restart post-service
 docker compose restart ai-agent-service
 docker compose restart file-service
+docker compose restart billing-service
 
 ## 내리고 재빌드
 docker compose down

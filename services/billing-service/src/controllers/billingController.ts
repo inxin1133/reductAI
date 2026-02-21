@@ -42,6 +42,151 @@ function roundMoney(value: number, currency: string) {
   return Math.round(value * factor) / factor
 }
 
+function normalizeCurrency(value: unknown) {
+  const key = toStr(value).toUpperCase()
+  if (!key || key.length !== 3) return ""
+  return key
+}
+
+type FxRateMatch = {
+  id: string | null
+  rate: number
+  effective_at?: string | null
+}
+
+async function pickLatestFxRate(client: any, base: string, quote: string): Promise<FxRateMatch | null> {
+  const baseKey = normalizeCurrency(base)
+  const quoteKey = normalizeCurrency(quote)
+  if (!baseKey || !quoteKey) return null
+  const res = await client.query(
+    `
+    SELECT id, rate, effective_at
+    FROM fx_rates
+    WHERE base_currency = $1 AND quote_currency = $2 AND is_active = TRUE
+    ORDER BY effective_at DESC NULLS LAST, created_at DESC
+    LIMIT 1
+    `,
+    [baseKey, quoteKey]
+  )
+  const row = res.rows[0]
+  if (!row) return null
+  const rate = Number(row.rate)
+  if (!Number.isFinite(rate) || rate <= 0) return null
+  return { id: row.id, rate, effective_at: row.effective_at ?? null }
+}
+
+async function resolveFxRate(client: any, base: string, quote: string) {
+  const baseKey = normalizeCurrency(base)
+  const quoteKey = normalizeCurrency(quote)
+  if (!baseKey || !quoteKey) return null
+  if (baseKey === quoteKey) return { id: null, rate: 1, effective_at: null, inverted: false }
+  const direct = await pickLatestFxRate(client, baseKey, quoteKey)
+  if (direct) return { ...direct, inverted: false }
+  const reverse = await pickLatestFxRate(client, quoteKey, baseKey)
+  if (reverse) return { id: reverse.id, rate: 1 / reverse.rate, effective_at: reverse.effective_at ?? null, inverted: true }
+  return null
+}
+
+async function pickLatestPlanPrice(
+  client: any,
+  planId: string,
+  billingCycle: string,
+  currency: string
+): Promise<{ id: string; price_usd: any; currency: string; version?: any; effective_at?: any } | null> {
+  const currencyKey = normalizeCurrency(currency)
+  if (!currencyKey) return null
+  const res = await client.query(
+    `
+    SELECT id, price_usd, currency, version, effective_at
+    FROM billing_plan_prices
+    WHERE plan_id = $1 AND billing_cycle = $2 AND status = 'active' AND currency = $3
+    ORDER BY effective_at DESC NULLS LAST, version DESC
+    LIMIT 1
+    `,
+    [planId, billingCycle, currencyKey]
+  )
+  return res.rows[0] || null
+}
+
+function quoteError(status: number, message: string) {
+  const err = new Error(message)
+  ;(err as any).status = status
+  return err
+}
+
+async function resolveUserQuote(client: any, tenantId: string, planId: string, billingCycle: string) {
+  if (!tenantId) throw quoteError(400, "tenantId is required")
+  if (!planId) throw quoteError(400, "plan_id is required")
+  if (!BILLING_CYCLES.has(billingCycle)) throw quoteError(400, "invalid billing_cycle")
+
+  const accountRes = await client.query(
+    `SELECT currency, tax_country_code, country_code FROM billing_accounts WHERE tenant_id = $1 LIMIT 1`,
+    [tenantId]
+  )
+  const accountRow = accountRes.rows[0] || {}
+  const targetCurrency = normalizeCurrency(accountRow.currency) || "USD"
+  const taxCountryCode = toStr(accountRow.tax_country_code || accountRow.country_code).toUpperCase()
+
+  let priceRow = await pickLatestPlanPrice(client, planId, billingCycle, targetCurrency)
+  let baseCurrency = targetCurrency
+  let baseAmount = 0
+  let amount = 0
+  let fxRate: number | null = null
+  let fxRateId: string | null = null
+  let fxEffectiveAt: string | null = null
+
+  if (priceRow) {
+    const rawAmount = priceRow.price_usd
+    baseAmount = rawAmount === null || rawAmount === undefined || rawAmount === "" ? 0 : Number(rawAmount)
+    if (!Number.isFinite(baseAmount) || baseAmount < 0) {
+      throw quoteError(400, "price_usd must be >= 0")
+    }
+    amount = roundMoney(baseAmount, targetCurrency)
+  } else {
+    const usdRow = await pickLatestPlanPrice(client, planId, billingCycle, "USD")
+    if (!usdRow) throw quoteError(404, "Billing plan price not found")
+    priceRow = usdRow
+    baseCurrency = "USD"
+    const rawAmount = usdRow.price_usd
+    baseAmount = rawAmount === null || rawAmount === undefined || rawAmount === "" ? 0 : Number(rawAmount)
+    if (!Number.isFinite(baseAmount) || baseAmount < 0) {
+      throw quoteError(400, "price_usd must be >= 0")
+    }
+    if (targetCurrency === "USD") {
+      amount = roundMoney(baseAmount, targetCurrency)
+    } else {
+      const fx = await resolveFxRate(client, "USD", targetCurrency)
+      if (!fx) throw quoteError(404, "FX rate not found")
+      fxRate = fx.rate
+      fxRateId = fx.id
+      fxEffectiveAt = fx.effective_at ?? null
+      amount = roundMoney(baseAmount * fxRate, targetCurrency)
+    }
+  }
+
+  const taxRateRow = taxCountryCode ? await pickLatestTaxRate(client, taxCountryCode) : null
+  const taxRatePercent = taxRateRow ? Number(taxRateRow.rate_percent) : 0
+  const taxAmount =
+    Number.isFinite(taxRatePercent) && taxRatePercent > 0 ? roundMoney(amount * (taxRatePercent / 100), targetCurrency) : 0
+  const totalAmount = roundMoney(amount + taxAmount, targetCurrency)
+
+  return {
+    currency: targetCurrency,
+    amount,
+    base_currency: baseCurrency,
+    base_amount: baseAmount,
+    fx_rate: fxRate,
+    fx_rate_id: fxRateId,
+    fx_effective_at: fxEffectiveAt,
+    tax_rate_percent: taxRatePercent,
+    tax_rate_id: taxRateRow?.id ?? null,
+    tax_amount: taxAmount,
+    total_amount: totalAmount,
+    price_id: priceRow?.id ?? null,
+    price_currency: priceRow?.currency ?? baseCurrency,
+  }
+}
+
 async function pickLatestTaxRate(client: any, countryCode: string) {
   const code = toStr(countryCode).toUpperCase()
   if (!code) return null
@@ -2342,6 +2487,11 @@ export async function createBillingAccount(req: Request, res: Response) {
     const tenantId = toStr(req.body?.tenant_id)
     const billingEmail = typeof req.body?.billing_email === "string" ? req.body.billing_email : null
     const billingName = typeof req.body?.billing_name === "string" ? req.body.billing_name : null
+    const billingPostalCode = toStr(req.body?.billing_postal_code) || null
+    const billingAddress1 = toStr(req.body?.billing_address1) || null
+    const billingAddress2 = toStr(req.body?.billing_address2) || null
+    const billingExtraAddress = toStr(req.body?.billing_extra_address) || null
+    const billingPhone = toStr(req.body?.billing_phone) || null
     const countryCode = toStr(req.body?.country_code).toUpperCase() || null
     const taxCountryCode = toStr(req.body?.tax_country_code).toUpperCase() || null
     const taxId = typeof req.body?.tax_id === "string" ? req.body.tax_id : null
@@ -2366,15 +2516,21 @@ export async function createBillingAccount(req: Request, res: Response) {
     const result = await query(
       `
       INSERT INTO billing_accounts
-        (tenant_id, billing_email, billing_name, country_code, tax_country_code, tax_id, currency, default_payment_method_id, metadata)
+        (tenant_id, billing_email, billing_name, billing_postal_code, billing_address1, billing_address2, billing_extra_address, billing_phone,
+         country_code, tax_country_code, tax_id, currency, default_payment_method_id, metadata)
       VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
       RETURNING *
       `,
       [
         tenantId,
         billingEmail,
         billingName,
+        billingPostalCode,
+        billingAddress1,
+        billingAddress2,
+        billingExtraAddress,
+        billingPhone,
         countryCode,
         taxCountryCode,
         taxId,
@@ -2420,6 +2576,26 @@ export async function updateBillingAccount(req: Request, res: Response) {
     if (input.billing_name !== undefined) {
       const billingName = typeof input.billing_name === "string" ? input.billing_name : null
       setField("billing_name", billingName)
+    }
+    if (input.billing_postal_code !== undefined) {
+      const billingPostalCode = toStr(input.billing_postal_code) || null
+      setField("billing_postal_code", billingPostalCode)
+    }
+    if (input.billing_address1 !== undefined) {
+      const billingAddress1 = toStr(input.billing_address1) || null
+      setField("billing_address1", billingAddress1)
+    }
+    if (input.billing_address2 !== undefined) {
+      const billingAddress2 = toStr(input.billing_address2) || null
+      setField("billing_address2", billingAddress2)
+    }
+    if (input.billing_extra_address !== undefined) {
+      const billingExtraAddress = toStr(input.billing_extra_address) || null
+      setField("billing_extra_address", billingExtraAddress)
+    }
+    if (input.billing_phone !== undefined) {
+      const billingPhone = toStr(input.billing_phone) || null
+      setField("billing_phone", billingPhone)
     }
     if (input.country_code !== undefined) {
       const countryCode = toStr(input.country_code).toUpperCase()
@@ -2478,6 +2654,593 @@ export async function updateBillingAccount(req: Request, res: Response) {
     }
     console.error("updateBillingAccount error:", e)
     return res.status(500).json({ message: "Failed to update billing account", details: String(e?.message || e) })
+  }
+}
+
+export async function getMyBillingAccount(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+
+    const result = await query(`SELECT * FROM billing_accounts WHERE tenant_id = $1 LIMIT 1`, [tenantId])
+    return res.json({ ok: true, row: result.rows[0] || null })
+  } catch (e: any) {
+    console.error("getMyBillingAccount error:", e)
+    return res.status(500).json({ message: "Failed to load billing account", details: String(e?.message || e) })
+  }
+}
+
+export async function upsertMyBillingAccount(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+
+    const billingEmail = typeof req.body?.billing_email === "string" ? req.body.billing_email : null
+    const billingName = typeof req.body?.billing_name === "string" ? req.body.billing_name : null
+    const billingPostalCode = toStr(req.body?.billing_postal_code) || null
+    const billingAddress1 = toStr(req.body?.billing_address1) || null
+    const billingAddress2 = toStr(req.body?.billing_address2) || null
+    const billingExtraAddress = toStr(req.body?.billing_extra_address) || null
+    const billingPhone = toStr(req.body?.billing_phone) || null
+
+    const countryCode = toStr(req.body?.country_code).toUpperCase() || null
+    const taxCountryCode = toStr(req.body?.tax_country_code).toUpperCase() || null
+    const currency = toStr(req.body?.currency).toUpperCase() || "USD"
+
+    if (countryCode && countryCode.length !== 2) {
+      return res.status(400).json({ message: "country_code must be 2 letters" })
+    }
+    if (taxCountryCode && taxCountryCode.length !== 2) {
+      return res.status(400).json({ message: "tax_country_code must be 2 letters" })
+    }
+    if (!currency || currency.length !== 3) {
+      return res.status(400).json({ message: "currency must be 3 letters" })
+    }
+
+    const result = await query(
+      `
+      INSERT INTO billing_accounts
+        (tenant_id, billing_email, billing_name, billing_postal_code, billing_address1, billing_address2, billing_extra_address, billing_phone,
+         country_code, tax_country_code, currency, metadata)
+      VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+      ON CONFLICT (tenant_id) DO UPDATE
+      SET
+        billing_email = EXCLUDED.billing_email,
+        billing_name = EXCLUDED.billing_name,
+        billing_postal_code = EXCLUDED.billing_postal_code,
+        billing_address1 = EXCLUDED.billing_address1,
+        billing_address2 = EXCLUDED.billing_address2,
+        billing_extra_address = EXCLUDED.billing_extra_address,
+        billing_phone = EXCLUDED.billing_phone,
+        country_code = EXCLUDED.country_code,
+        tax_country_code = EXCLUDED.tax_country_code,
+        currency = EXCLUDED.currency,
+        updated_at = CURRENT_TIMESTAMP
+      RETURNING *
+      `,
+      [
+        tenantId,
+        billingEmail,
+        billingName,
+        billingPostalCode,
+        billingAddress1,
+        billingAddress2,
+        billingExtraAddress,
+        billingPhone,
+        countryCode,
+        taxCountryCode,
+        currency,
+        JSON.stringify({}),
+      ]
+    )
+
+    return res.status(200).json({ ok: true, row: result.rows[0] })
+  } catch (e: any) {
+    console.error("upsertMyBillingAccount error:", e)
+    return res.status(500).json({ message: "Failed to save billing account", details: String(e?.message || e) })
+  }
+}
+
+export async function listMyPaymentMethods(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+
+    const limit = Math.min(toInt(req.query.limit, 50) ?? 50, 200)
+    const offset = toInt(req.query.offset, 0) ?? 0
+
+    const countRes = await query(
+      `
+      SELECT COUNT(*)::int AS total
+      FROM payment_methods pm
+      JOIN billing_accounts ba ON ba.id = pm.billing_account_id
+      WHERE ba.tenant_id = $1 AND pm.status <> 'deleted'
+      `,
+      [tenantId]
+    )
+    const rowsRes = await query(
+      `
+      SELECT pm.*
+      FROM payment_methods pm
+      JOIN billing_accounts ba ON ba.id = pm.billing_account_id
+      WHERE ba.tenant_id = $1 AND pm.status <> 'deleted'
+      ORDER BY pm.created_at DESC
+      LIMIT $2 OFFSET $3
+      `,
+      [tenantId, limit, offset]
+    )
+
+    return res.json({
+      ok: true,
+      rows: rowsRes.rows || [],
+      total: countRes.rows[0]?.total ?? 0,
+      limit,
+      offset,
+    })
+  } catch (e: any) {
+    console.error("listMyPaymentMethods error:", e)
+    return res.status(500).json({ message: "Failed to load payment methods", details: String(e?.message || e) })
+  }
+}
+
+export async function getMyTaxRate(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+
+    const accountRes = await query(
+      `SELECT tax_country_code, country_code FROM billing_accounts WHERE tenant_id = $1 LIMIT 1`,
+      [tenantId]
+    )
+    const row = accountRes.rows[0] || {}
+    const countryCode = toStr(row.tax_country_code || row.country_code).toUpperCase()
+    if (!countryCode) return res.json({ ok: true, country_code: null, rate_percent: 0 })
+
+    const rateRow = await pickLatestTaxRate(pool, countryCode)
+    const ratePercent = rateRow ? Number(rateRow.rate_percent) : 0
+    return res.json({ ok: true, country_code: countryCode, rate_percent: ratePercent, tax_rate_id: rateRow?.id ?? null })
+  } catch (e: any) {
+    console.error("getMyTaxRate error:", e)
+    return res.status(500).json({ message: "Failed to load tax rate", details: String(e?.message || e) })
+  }
+}
+
+export async function quoteUserSubscription(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    const planId = toStr(req.body?.plan_id || req.query?.plan_id)
+    const billingCycle = toStr(req.body?.billing_cycle || req.query?.billing_cycle)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+    if (!planId) return res.status(400).json({ message: "plan_id is required" })
+    if (!BILLING_CYCLES.has(billingCycle)) return res.status(400).json({ message: "invalid billing_cycle" })
+
+    const planRes = await client.query(`SELECT id, name FROM billing_plans WHERE id = $1`, [planId])
+    if (planRes.rows.length === 0) return res.status(404).json({ message: "Billing plan not found" })
+
+    const quote = await resolveUserQuote(client, tenantId, planId, billingCycle)
+    return res.status(200).json({
+      ok: true,
+      plan_id: planId,
+      billing_cycle: billingCycle,
+      plan_name: planRes.rows[0]?.name ?? null,
+      ...quote,
+    })
+  } catch (e: any) {
+    if (e?.status) return res.status(e.status).json({ message: e?.message || "Failed to quote" })
+    console.error("quoteUserSubscription error:", e)
+    return res.status(500).json({ message: "Failed to quote", details: String(e?.message || e) })
+  } finally {
+    client.release()
+  }
+}
+
+export async function createMyPaymentMethod(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+
+    const provider = toStr(req.body?.provider) || "toss"
+    const type = toStr(req.body?.type) || "card"
+    const providerCustomerId = typeof req.body?.provider_customer_id === "string" ? req.body.provider_customer_id : null
+    const providerPaymentMethodId =
+      typeof req.body?.provider_payment_method_id === "string" ? req.body.provider_payment_method_id : null
+    const cardBrand = typeof req.body?.card_brand === "string" ? req.body.card_brand : null
+    const cardLast4 = typeof req.body?.card_last4 === "string" ? req.body.card_last4 : null
+    const cardExpMonthRaw = req.body?.card_exp_month
+    const cardExpYearRaw = req.body?.card_exp_year
+    const cardExpMonth =
+      cardExpMonthRaw === null || cardExpMonthRaw === undefined || cardExpMonthRaw === "" ? null : Number(cardExpMonthRaw)
+    const cardExpYear =
+      cardExpYearRaw === null || cardExpYearRaw === undefined || cardExpYearRaw === "" ? null : Number(cardExpYearRaw)
+    const status = toStr(req.body?.status) || "active"
+    const metadataInput = req.body?.metadata
+    const metadataValue =
+      metadataInput && typeof metadataInput === "object" ? metadataInput : metadataInput ? null : {}
+
+    if (!PAYMENT_PROVIDERS.has(provider)) return res.status(400).json({ message: "invalid provider" })
+    if (!PAYMENT_METHOD_TYPES.has(type)) return res.status(400).json({ message: "invalid type" })
+    if (!PAYMENT_METHOD_STATUSES.has(status)) return res.status(400).json({ message: "invalid status" })
+    if (cardExpMonth !== null && (!Number.isFinite(cardExpMonth) || cardExpMonth < 1 || cardExpMonth > 12)) {
+      return res.status(400).json({ message: "card_exp_month must be 1-12" })
+    }
+    if (cardExpYear !== null && (!Number.isFinite(cardExpYear) || cardExpYear < 2000)) {
+      return res.status(400).json({ message: "card_exp_year must be >= 2000" })
+    }
+    if (metadataValue === null) return res.status(400).json({ message: "metadata must be object" })
+
+    const accountRes = await query(`SELECT id FROM billing_accounts WHERE tenant_id = $1`, [tenantId])
+    let billingAccountId = accountRes.rows[0]?.id
+    if (!billingAccountId) {
+      const createRes = await query(
+        `
+        INSERT INTO billing_accounts (tenant_id, metadata)
+        VALUES ($1,$2::jsonb)
+        RETURNING id
+        `,
+        [tenantId, JSON.stringify({ source: "user_payment_method", created_by: authed.userId })]
+      )
+      billingAccountId = createRes.rows[0]?.id
+    }
+    if (!billingAccountId) return res.status(500).json({ message: "Failed to resolve billing account" })
+
+    const countRes = await query(
+      `
+      SELECT COUNT(*)::int AS total
+      FROM payment_methods
+      WHERE billing_account_id = $1 AND status <> 'deleted'
+      `,
+      [billingAccountId]
+    )
+    const isDefault = (countRes.rows[0]?.total ?? 0) === 0
+
+    const result = await query(
+      `
+      INSERT INTO payment_methods
+        (billing_account_id, provider, type, provider_customer_id, provider_payment_method_id,
+         card_brand, card_last4, card_exp_month, card_exp_year, is_default, status, metadata)
+      VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+      RETURNING *
+      `,
+      [
+        billingAccountId,
+        provider,
+        type,
+        providerCustomerId,
+        providerPaymentMethodId,
+        cardBrand,
+        cardLast4,
+        cardExpMonth,
+        cardExpYear,
+        isDefault,
+        status,
+        JSON.stringify(metadataValue || {}),
+      ]
+    )
+
+    return res.status(201).json({ ok: true, row: result.rows[0] })
+  } catch (e: any) {
+    if (e?.code === "23505") {
+      return res.status(409).json({ message: "Payment method already exists", details: String(e?.detail || "") })
+    }
+    console.error("createMyPaymentMethod error:", e)
+    return res.status(500).json({ message: "Failed to create payment method", details: String(e?.message || e) })
+  }
+}
+
+export async function checkoutUserSubscription(req: Request, res: Response) {
+  const client = await pool.connect()
+  let transactionStarted = false
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    const planId = toStr(req.body?.plan_id)
+    const billingCycle = toStr(req.body?.billing_cycle)
+    const provider = toStr(req.body?.provider) || "toss"
+
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+    if (!planId) return res.status(400).json({ message: "plan_id is required" })
+    if (!BILLING_CYCLES.has(billingCycle)) return res.status(400).json({ message: "invalid billing_cycle" })
+    if (!PAYMENT_PROVIDERS.has(provider)) return res.status(400).json({ message: "invalid provider" })
+    if (await isSystemTenantId(client, tenantId)) {
+      return res.status(400).json({ message: "system tenant cannot be billed" })
+    }
+
+    const planRes = await client.query(`SELECT id, name, tier, tenant_type FROM billing_plans WHERE id = $1`, [planId])
+    if (planRes.rows.length === 0) return res.status(404).json({ message: "Billing plan not found" })
+    const planTier = String(planRes.rows[0]?.tier || "")
+    const planTenantType = String(planRes.rows[0]?.tenant_type || "")
+    const planName = String(planRes.rows[0]?.name || "")
+
+    const quote = await resolveUserQuote(client, tenantId, planId, billingCycle)
+    const priceUsd = quote.amount
+    const currency = quote.currency
+    const taxRatePercent = quote.tax_rate_percent
+    const taxAmount = quote.tax_amount
+    const totalAmount = quote.total_amount
+    const taxRateId = quote.tax_rate_id
+    const fxRateId = quote.fx_rate_id
+    const exchangeRate = quote.fx_rate
+
+    const now = new Date()
+    const periodStartIso = now.toISOString()
+    const periodEnd = new Date(now)
+    if (billingCycle === "yearly") {
+      periodEnd.setFullYear(periodEnd.getFullYear() + 1)
+    } else {
+      periodEnd.setMonth(periodEnd.getMonth() + 1)
+    }
+    const periodEndIso = periodEnd.toISOString()
+
+    await client.query("BEGIN")
+    transactionStarted = true
+
+    const subRes = await client.query(
+      `SELECT * FROM billing_subscriptions WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [tenantId]
+    )
+    let subscriptionRow = subRes.rows[0] || null
+    const subscriptionMeta = {
+      source: "user_checkout",
+      plan_id: planId,
+      plan_name: planName,
+      billing_cycle: billingCycle,
+      checked_out_by: authed.userId,
+      checked_out_at: periodStartIso,
+    }
+
+    if (subscriptionRow) {
+      const updateRes = await client.query(
+        `
+        UPDATE billing_subscriptions
+        SET plan_id = $1,
+            billing_cycle = $2,
+            status = $3,
+            current_period_start = $4,
+            current_period_end = $5,
+            cancel_at_period_end = $6,
+            auto_renew = $7,
+            price_usd = $8,
+            currency = $9,
+            metadata = $10::jsonb,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $11
+        RETURNING *
+        `,
+        [
+          planId,
+          billingCycle,
+          "active",
+          periodStartIso,
+          periodEndIso,
+          false,
+          true,
+          priceUsd,
+          currency,
+          JSON.stringify(subscriptionMeta),
+          subscriptionRow.id,
+        ]
+      )
+      subscriptionRow = updateRes.rows[0]
+    } else {
+      const insertRes = await client.query(
+        `
+        INSERT INTO billing_subscriptions
+          (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end,
+           cancel_at_period_end, auto_renew, price_usd, currency, metadata)
+        VALUES
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+        RETURNING *
+        `,
+        [
+          tenantId,
+          planId,
+          billingCycle,
+          "active",
+          periodStartIso,
+          periodEndIso,
+          false,
+          true,
+          priceUsd,
+          currency,
+          JSON.stringify(subscriptionMeta),
+        ]
+      )
+      subscriptionRow = insertRes.rows[0]
+    }
+
+    if (planTenantType) {
+      await client.query(
+        `
+        UPDATE tenants
+        SET tenant_type = $1,
+            metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{plan_tier}', to_jsonb($2::text), TRUE),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $3 AND deleted_at IS NULL
+        `,
+        [planTenantType, planTier || "free", tenantId]
+      )
+    }
+
+    const billingAccountRes = await client.query(`SELECT id FROM billing_accounts WHERE tenant_id = $1`, [tenantId])
+    let billingAccountId = billingAccountRes.rows[0]?.id
+    if (!billingAccountId) {
+      const createAccountRes = await client.query(
+        `
+        INSERT INTO billing_accounts (tenant_id, currency, metadata)
+        VALUES ($1,$2,$3::jsonb)
+        RETURNING id
+        `,
+        [tenantId, currency, JSON.stringify({ source: "user_checkout", created_by: authed.userId })]
+      )
+      billingAccountId = createAccountRes.rows[0]?.id
+    }
+    if (!billingAccountId) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      return res.status(500).json({ message: "Failed to resolve billing account" })
+    }
+
+    const invoiceColumns = await loadInvoiceColumns(client)
+    const invoiceCols: string[] = []
+    const invoiceVals: any[] = []
+    const invoicePlaceholders: string[] = []
+    const addInvoiceCol = (name: string, value: any, cast?: string) => {
+      if (!invoiceColumns.has(name)) return
+      invoiceCols.push(name)
+      invoiceVals.push(value)
+      invoicePlaceholders.push(cast ? `$${invoiceVals.length}::${cast}` : `$${invoiceVals.length}`)
+    }
+
+    addInvoiceCol("tenant_id", tenantId)
+    addInvoiceCol("subscription_id", subscriptionRow.id)
+    addInvoiceCol("billing_account_id", billingAccountId)
+    addInvoiceCol("invoice_number", makeInvoiceNumber("USR"))
+    addInvoiceCol("status", "paid")
+    addInvoiceCol("currency", currency)
+    addInvoiceCol("subtotal_usd", priceUsd)
+    addInvoiceCol("total_usd", totalAmount)
+    addInvoiceCol("issue_date", periodStartIso)
+    addInvoiceCol("paid_at", periodStartIso)
+    addInvoiceCol("metadata", JSON.stringify(subscriptionMeta), "jsonb")
+    if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmount)
+    if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", taxAmount)
+    if (invoiceColumns.has("tax_rate_id")) addInvoiceCol("tax_rate_id", taxRateId ?? null)
+    if (invoiceColumns.has("fx_rate_id")) addInvoiceCol("fx_rate_id", fxRateId ?? null)
+    if (invoiceColumns.has("exchange_rate")) addInvoiceCol("exchange_rate", exchangeRate ?? null)
+    if (invoiceColumns.has("discount_usd")) addInvoiceCol("discount_usd", 0)
+    if (invoiceColumns.has("period_start")) addInvoiceCol("period_start", periodStartIso)
+    if (invoiceColumns.has("period_end")) addInvoiceCol("period_end", periodEndIso)
+    if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", currency)
+    if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", priceUsd)
+    if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", taxAmount)
+    if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", totalAmount)
+
+    let invoiceRow: any | null = null
+    for (let i = 0; i < 3; i += 1) {
+      try {
+        const insertInvoiceRes = await client.query(
+          `
+          INSERT INTO billing_invoices (${invoiceCols.join(", ")})
+          VALUES (${invoicePlaceholders.join(", ")})
+          RETURNING *
+          `,
+          invoiceVals
+        )
+        invoiceRow = insertInvoiceRes.rows[0]
+        break
+      } catch (e: any) {
+        if (e?.code === "23505" && String(e?.detail || "").includes("invoice_number")) {
+          invoiceCols.splice(0, invoiceCols.length)
+          invoiceVals.splice(0, invoiceVals.length)
+          invoicePlaceholders.splice(0, invoicePlaceholders.length)
+          addInvoiceCol("tenant_id", tenantId)
+          addInvoiceCol("subscription_id", subscriptionRow.id)
+          addInvoiceCol("billing_account_id", billingAccountId)
+          addInvoiceCol("invoice_number", makeInvoiceNumber("USR"))
+          addInvoiceCol("status", "paid")
+          addInvoiceCol("currency", currency)
+          addInvoiceCol("subtotal_usd", priceUsd)
+          addInvoiceCol("total_usd", totalAmount)
+          addInvoiceCol("issue_date", periodStartIso)
+          addInvoiceCol("paid_at", periodStartIso)
+          addInvoiceCol("metadata", JSON.stringify(subscriptionMeta), "jsonb")
+          if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmount)
+          if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", taxAmount)
+          if (invoiceColumns.has("tax_rate_id")) addInvoiceCol("tax_rate_id", taxRateId ?? null)
+          if (invoiceColumns.has("fx_rate_id")) addInvoiceCol("fx_rate_id", fxRateId ?? null)
+          if (invoiceColumns.has("exchange_rate")) addInvoiceCol("exchange_rate", exchangeRate ?? null)
+          if (invoiceColumns.has("discount_usd")) addInvoiceCol("discount_usd", 0)
+          if (invoiceColumns.has("period_start")) addInvoiceCol("period_start", periodStartIso)
+          if (invoiceColumns.has("period_end")) addInvoiceCol("period_end", periodEndIso)
+          if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", currency)
+          if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", priceUsd)
+          if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", taxAmount)
+          if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", totalAmount)
+          continue
+        }
+        throw e
+      }
+    }
+
+    if (!invoiceRow) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      return res.status(500).json({ message: "Failed to create invoice" })
+    }
+
+    await client.query(
+      `
+      INSERT INTO invoice_line_items
+        (invoice_id, line_type, description, quantity, unit_price_usd, amount_usd, currency, metadata)
+      VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+      `,
+      [
+        invoiceRow.id,
+        "adjustment",
+        "서비스 제공",
+        1,
+        priceUsd,
+        priceUsd,
+        currency,
+        JSON.stringify(subscriptionMeta),
+      ]
+    )
+
+    const txRes = await client.query(
+      `
+      INSERT INTO payment_transactions
+        (invoice_id, billing_account_id, provider, transaction_type, status, amount_usd, currency, processed_at, provider_transaction_id, metadata)
+      VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+      RETURNING *
+      `,
+      [
+        invoiceRow.id,
+        billingAccountId,
+        provider,
+        "charge",
+        "succeeded",
+        totalAmount,
+        currency,
+        periodStartIso,
+        makeInvoiceNumber("USR-TX"),
+        JSON.stringify(subscriptionMeta),
+      ]
+    )
+
+    await client.query("COMMIT")
+    transactionStarted = false
+
+    return res.status(200).json({
+      ok: true,
+      subscription: subscriptionRow,
+      invoice: invoiceRow,
+      transaction: txRes.rows[0],
+      total_amount: totalAmount,
+      tax_amount: taxAmount,
+      tax_rate_percent: taxRatePercent,
+      currency,
+      next_billing_date: periodEndIso,
+    })
+  } catch (e: any) {
+    if (transactionStarted) await client.query("ROLLBACK")
+    if (e?.status) {
+      return res.status(e.status).json({ message: e?.message || "Failed to checkout subscription" })
+    }
+    console.error("checkoutUserSubscription error:", e)
+    return res.status(500).json({ message: "Failed to checkout subscription", details: String(e?.message || e) })
+  } finally {
+    client.release()
   }
 }
 

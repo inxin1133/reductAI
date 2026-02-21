@@ -58,6 +58,7 @@ type SettingsDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   initialMenu?: SettingsMenuId
+  onOpenPlanDialog?: () => void
 }
 
 export type SettingsMenuId =
@@ -251,9 +252,11 @@ function formatDateTime(value?: string | null) {
 const SettingsDialogSidebarMenu = ({
   activeId,
   onChange,
+  onUpgrade,
 }: {
   activeId: SettingsMenuId
   onChange: (id: SettingsMenuId) => void
+  onUpgrade?: () => void
 }) => (
   <>
     <div className="p-2">
@@ -285,6 +288,7 @@ const SettingsDialogSidebarMenu = ({
         variant="outline"
         size="sm"
         className="text-blue-500 hover:text-blue-600 w-full"
+        onClick={onUpgrade}
       >
         <ChevronsUp className="size-4" />
         업그레이드
@@ -293,7 +297,7 @@ const SettingsDialogSidebarMenu = ({
   </>
 )
 
-export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDialogProps) {
+export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDialog }: SettingsDialogProps) {
   const [activeMenu, setActiveMenu] = useState<SettingsMenuId>(
     () => readSettingsMenuFromStorage() ?? "profile"
   )
@@ -318,6 +322,10 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
   const [profileImageError, setProfileImageError] = useState<string | null>(null)
   const [profileImageOversizeOpen, setProfileImageOversizeOpen] = useState(false)
   const profileImageInputRef = useRef<HTMLInputElement | null>(null)
+  const handleUpgrade = useCallback(() => {
+    onOpenPlanDialog?.()
+    onOpenChange(false)
+  }, [onOpenPlanDialog, onOpenChange])
 
   const [isEditingUserName, setIsEditingUserName] = useState(false)
   const [isSavingUserName, setIsSavingUserName] = useState(false)
@@ -1006,7 +1014,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
       >
         <div className="flex h-[700px] max-h-[calc(100vh-2rem)] w-full bg-background">
           <div className="hidden w-[200px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
-            <SettingsDialogSidebarMenu activeId={activeMenu} onChange={setActiveMenu} />
+            <SettingsDialogSidebarMenu activeId={activeMenu} onChange={setActiveMenu} onUpgrade={handleUpgrade} />
           </div>
 
           <div className="flex min-w-0 flex-1 flex-col p-6">
@@ -1032,7 +1040,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu }: SettingsDial
                   </PopoverTrigger>
                   <PopoverContent align="start" side="bottom" sideOffset={8} className="w-56 p-0">
                     <div className="flex flex-col rounded-lg border border-sidebar-border bg-sidebar">
-                      <SettingsDialogSidebarMenu activeId={activeMenu} onChange={setActiveMenu} />
+                      <SettingsDialogSidebarMenu activeId={activeMenu} onChange={setActiveMenu} onUpgrade={handleUpgrade} />
                     </div>
                   </PopoverContent>
                 </Popover>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { CreditCard, Lock } from "lucide-react"
 import { Header } from "@/components/Header"
@@ -9,13 +9,28 @@ import { CardJcb } from "@/components/icons/CardJcb"
 import { CardMaster } from "@/components/icons/CardMaster"
 import { CardUnion } from "@/components/icons/CardUnion"
 import { CardVisa } from "@/components/icons/CardVisa"
-import { type CardBrand, hasBillingCard, hasBillingInfo, writeBillingCard } from "@/lib/billingFlow"
+import { appendVisited, type CardBrand, type CheckoutFlowState, writeBillingCard } from "@/lib/billingFlow"
 
 type LocationState = {
   planId?: string
   planName?: string
   billingCycle?: "monthly" | "yearly"
   allowEdit?: boolean
+  flow?: CheckoutFlowState
+}
+
+type BillingAccountResponse = {
+  ok?: boolean
+  row?: {
+    billing_name?: string | null
+    billing_email?: string | null
+    billing_address1?: string | null
+  } | null
+}
+
+type PaymentMethodsResponse = {
+  ok?: boolean
+  rows?: Array<unknown>
 }
 
 function normalizeCardNumber(value: string): string {
@@ -37,6 +52,14 @@ function normalizeCvv(value: string): string {
   return value.replace(/\D/g, "").slice(0, 4)
 }
 
+function parseExpiry(value: string): { month: number | null; year: number | null } {
+  const digits = value.replace(/\D/g, "").slice(0, 4)
+  if (!digits) return { month: null, year: null }
+  const month = digits.length >= 2 ? Number(digits.slice(0, 2)) : null
+  const year = digits.length >= 4 ? Number(`20${digits.slice(2)}`) : null
+  return { month: Number.isFinite(month) ? month : null, year: Number.isFinite(year) ? year : null }
+}
+
 function detectCardBrand(rawDigits: string): CardBrand | null {
   const digits = rawDigits.replace(/\D/g, "")
   if (digits.length < 4) return null
@@ -54,14 +77,17 @@ function detectCardBrand(rawDigits: string): CardBrand | null {
 export default function PaymentCard() {
   const navigate = useNavigate()
   const location = useLocation()
-  const state = (location.state || {}) as LocationState
+  const state = useMemo(() => (location.state || {}) as LocationState, [location.state])
   const selectedPlanName = typeof state.planName === "string" ? state.planName : null
   const allowEdit = Boolean(state.allowEdit)
+  const canGoBack = Boolean(state.flow?.visited?.length)
+  const inFlow = Boolean(state.flow?.visited?.length)
 
   const [cardNumber, setCardNumber] = useState("")
   const [cardHolder, setCardHolder] = useState("")
   const [cardExpiry, setCardExpiry] = useState("")
   const [cardCvv, setCardCvv] = useState("")
+  const [saving, setSaving] = useState(false)
 
   const formattedCardNumber = useMemo(() => formatCardNumber(cardNumber), [cardNumber])
   const cardNumberDisplay = formattedCardNumber || "0000 0000 0000 0000"
@@ -81,33 +107,128 @@ export default function PaymentCard() {
               ? CardUnion
               : null
 
+  const authHeaders = useCallback((): Record<string, string> => {
+    if (typeof window === "undefined") return {}
+    const token = window.localStorage.getItem("token")
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  }, [])
+
+  const fetchBillingStatus = useCallback(async () => {
+    const headers = authHeaders()
+    if (!headers.Authorization) return null
+    const [accountRes, methodsRes] = await Promise.all([
+      fetch("/api/ai/billing/user/billing-account", { headers }),
+      fetch("/api/ai/billing/user/payment-methods?limit=1", { headers }),
+    ])
+
+    let hasInfo = false
+    if (accountRes.ok) {
+      const data = (await accountRes.json().catch(() => null)) as BillingAccountResponse | null
+      const row = data?.row
+      hasInfo = Boolean(row?.billing_name && row?.billing_email && row?.billing_address1)
+    }
+
+    let hasCard = false
+    if (methodsRes.ok) {
+      const data = (await methodsRes.json().catch(() => null)) as PaymentMethodsResponse | null
+      hasCard = Array.isArray(data?.rows) && data.rows.length > 0
+    }
+
+    return { hasCard, hasInfo }
+  }, [authHeaders])
+
   useEffect(() => {
-    if (allowEdit) return
-    if (hasBillingCard() && hasBillingInfo()) {
-      navigate("/billing/confirm", { replace: true })
+    if (allowEdit || inFlow) return
+    let cancelled = false
+
+    void (async () => {
+      try {
+        const status = await fetchBillingStatus()
+        if (!status || cancelled) return
+        if (status.hasCard && status.hasInfo) {
+          navigate("/billing/confirm", { replace: true, state })
+          return
+        }
+        if (status.hasCard) {
+          navigate("/billing/info", { replace: true, state })
+        }
+      } catch (e) {
+        console.error(e)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [allowEdit, fetchBillingStatus, navigate, state, inFlow])
+
+  const handleNext = async () => {
+    if (saving) return
+    const digits = normalizeCardNumber(cardNumber)
+    if (!digits || digits.length < 12 || !cardBrand) {
+      alert("카드 번호를 확인해주세요.")
       return
     }
-    if (hasBillingCard()) {
-      navigate("/billing/info", { replace: true })
-    }
-  }, [allowEdit, navigate])
-
-  const handleNext = () => {
-    const digits = normalizeCardNumber(cardNumber)
     const last4 = digits ? digits.slice(-4) : ""
-    writeBillingCard({
-      brand: cardBrand ?? undefined,
-      last4: last4 || undefined,
-      holder: cardHolder.trim() || undefined,
-      expiry: cardExpiry || undefined,
-    })
-    navigate("/billing/info", {
-      state: {
-        planId: state.planId,
-        planName: state.planName,
-        billingCycle: state.billingCycle,
-      },
-    })
+    const { month, year } = parseExpiry(cardExpiry)
+    if (month && (month < 1 || month > 12)) {
+      alert("유효기간 월을 확인해주세요.")
+      return
+    }
+    if (year && year < 2000) {
+      alert("유효기간 년도를 확인해주세요.")
+      return
+    }
+
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      alert("로그인이 필요합니다.")
+      return
+    }
+
+    try {
+      setSaving(true)
+      const res = await fetch("/api/ai/billing/user/payment-methods", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "toss",
+          type: "card",
+          card_brand: cardBrand,
+          card_last4: last4,
+          card_exp_month: month,
+          card_exp_year: year,
+          metadata: { holder: cardHolder.trim() || null },
+        }),
+      })
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; message?: string } | null
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.message || "FAILED_SAVE")
+      }
+
+      writeBillingCard({
+        brand: cardBrand ?? undefined,
+        last4: last4 || undefined,
+        holder: cardHolder.trim() || undefined,
+        expiry: cardExpiry || undefined,
+      })
+
+      const status = await fetchBillingStatus()
+      const target = status?.hasInfo ? "/billing/confirm" : "/billing/info"
+      navigate(target, {
+        state: {
+          planId: state.planId,
+          planName: state.planName,
+          billingCycle: state.billingCycle,
+          flow: appendVisited(state.flow, "card"),
+        },
+      })
+    } catch (e) {
+      console.error(e)
+      alert("카드 저장에 실패했습니다.")
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -207,9 +328,13 @@ export default function PaymentCard() {
 
           </div>
           <div className="flex items-center justify-between">
-            <Button type="button" variant="outline" className="min-w-[120px]" onClick={() => navigate(-1)}>
-              이전
-            </Button>
+            {canGoBack ? (
+              <Button type="button" variant="outline" className="min-w-[120px]" onClick={() => navigate(-1)}>
+                이전
+              </Button>
+            ) : (
+              <div />
+            )}
             <Button type="button" className="min-w-[120px]" onClick={handleNext}>
               다음 단계
             </Button>

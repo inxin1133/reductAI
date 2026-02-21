@@ -3,6 +3,7 @@ import cors from "cors"
 import dotenv from "dotenv"
 import billingRoutes from "./routes/billingRoutes"
 import billingPublicRoutes from "./routes/billingPublicRoutes"
+import billingUserRoutes from "./routes/billingUserRoutes"
 import { requireAuth } from "./middleware/requireAuth"
 import { requirePlatformAdmin } from "./middleware/requirePlatformRole"
 
@@ -16,6 +17,7 @@ app.use(express.json({ limit: "25mb" }))
 app.use(express.urlencoded({ extended: true, limit: "25mb" }))
 
 app.use("/api/ai/billing/public", billingPublicRoutes)
+app.use("/api/ai/billing/user", requireAuth, billingUserRoutes)
 app.use("/api/ai/billing", requireAuth, requirePlatformAdmin, billingRoutes)
 
 app.get("/health", (_req, res) => {

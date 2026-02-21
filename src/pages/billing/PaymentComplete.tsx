@@ -7,8 +7,60 @@ type LocationState = {
   planName?: string
   billingCycle?: "monthly" | "yearly"
   totalAmount?: number
+  currency?: string
   nextBillingDate?: string
   transactionId?: string
+}
+
+const CURRENCY_DECIMALS: Record<string, number> = {
+  USD: 2,
+  EUR: 2,
+  GBP: 2,
+  KRW: 0,
+  JPY: 0,
+  CNY: 2,
+  HKD: 2,
+  SGD: 2,
+  AUD: 2,
+  CAD: 2,
+}
+
+function currencyDecimals(currency: string) {
+  const key = String(currency || "").toUpperCase()
+  return CURRENCY_DECIMALS[key] ?? 2
+}
+
+function currencySymbol(currency: string) {
+  const key = String(currency || "").toUpperCase()
+  switch (key) {
+    case "KRW":
+      return "₩"
+    case "USD":
+      return "$"
+    case "JPY":
+      return "¥"
+    case "EUR":
+      return "€"
+    case "GBP":
+      return "£"
+    case "CNY":
+      return "¥"
+    case "HKD":
+      return "HK$"
+    case "SGD":
+      return "S$"
+    case "AUD":
+      return "A$"
+    case "CAD":
+      return "C$"
+    default:
+      return `${key} `
+  }
+}
+
+function formatMoney(value: number, currency: string) {
+  const decimals = currencyDecimals(currency)
+  return value.toLocaleString("ko-KR", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
 }
 
 export default function PaymentComplete() {
@@ -18,6 +70,7 @@ export default function PaymentComplete() {
   const planName = state.planName ?? "Professional"
   const billingCycleLabel = state.billingCycle === "yearly" ? "연간" : "월간"
   const totalAmount = state.totalAmount ?? 86900
+  const currency = state.currency ?? "USD"
   const nextBillingDate = state.nextBillingDate ?? (() => {
     const now = new Date()
     const next = new Date(now)
@@ -54,7 +107,10 @@ export default function PaymentComplete() {
               <div className="h-px w-full bg-border" />
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">결제 금액</span>
-                <span className="text-lg font-semibold text-foreground">₩{totalAmount.toLocaleString("ko-KR")}</span>
+                <span className="text-lg font-semibold text-foreground">
+                  {currencySymbol(currency)}
+                  {formatMoney(totalAmount, currency)}
+                </span>
               </div>
               <div className="h-px w-full bg-border" />
               <div className="flex items-center justify-between">

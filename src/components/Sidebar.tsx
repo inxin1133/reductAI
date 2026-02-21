@@ -1356,6 +1356,7 @@ export function Sidebar({ className }: SidebarProps) {
       open={isSettingsDialogOpen}
       onOpenChange={setIsSettingsDialogOpen}
       initialMenu={settingsDialogInitialMenu}
+      onOpenPlanDialog={openPlanDialog}
     />
   )
   const billingSettingsDialog = (
@@ -1364,7 +1365,9 @@ export function Sidebar({ className }: SidebarProps) {
       onOpenChange={setIsBillingSettingsDialogOpen}
     />
   )
-  const planDialog = <PlanDialog open={isPlanDialogOpen} onOpenChange={setIsPlanDialogOpen} />
+  const planDialog = (
+    <PlanDialog open={isPlanDialogOpen} onOpenChange={setIsPlanDialogOpen} currentTier={tenantPlanTier} />
+  )
   const tenantSettingsDialog = (
     <TenantSettingsDialog open={isTenantSettingsDialogOpen} onOpenChange={setIsTenantSettingsDialogOpen} />
   )
@@ -1400,7 +1403,7 @@ export function Sidebar({ className }: SidebarProps) {
     openSettingsDialogAt("profile")
   }
 
-  const openPlanDialog = () => {
+  function openPlanDialog() {
     setIsPlanDialogOpen(true)
     setIsProfileOpen(false)
     setIsMobileProfileOpen(false)

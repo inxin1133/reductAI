@@ -15,6 +15,13 @@ export type BillingInfoProfile = {
   address2: string
   extraAddress: string
   phone: string
+  countryCode?: string
+  taxCountryCode?: string
+  currency?: string
+}
+
+export type CheckoutFlowState = {
+  visited?: string[]
 }
 
 const BILLING_CARD_STORAGE_KEY = "reductai:billing:card"
@@ -68,4 +75,14 @@ export function hasBillingCard(): boolean {
 export function hasBillingInfo(): boolean {
   const info = readBillingInfo()
   return Boolean(info?.name && info?.email && info?.address1)
+}
+
+export function appendVisited(flow: CheckoutFlowState | undefined, step: string): CheckoutFlowState {
+  const prev = Array.isArray(flow?.visited) ? flow?.visited : []
+  const next = prev.includes(step) ? prev : [...prev, step]
+  return { visited: next }
+}
+
+export function hasVisited(flow: CheckoutFlowState | undefined, step: string): boolean {
+  return Array.isArray(flow?.visited) ? flow?.visited.includes(step) : false
 }

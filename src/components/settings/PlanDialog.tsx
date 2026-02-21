@@ -1,18 +1,42 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { createPortal } from "react-dom"
 import { Check, HardDrive, Loader2, Users, X, Zap } from "lucide-react"
 import { useNavigate } from "react-router-dom"
 import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
+import { appendVisited, hasBillingCard, hasBillingInfo } from "@/lib/billingFlow"
 import { fetchBillingPlansWithPrices } from "@/services/billingService"
 import type { BillingPlanWithPrices } from "@/services/billingService"
+import { PLAN_TIER_ORDER, type PlanTier } from "@/lib/planTier"
 
 type PlanDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
+  currentTier?: string | null
 }
 
 type BillingCycle = "monthly" | "yearly"
 
+type BillingAccountResponse = {
+  ok?: boolean
+  row?: {
+    billing_name?: string | null
+    billing_email?: string | null
+    billing_address1?: string | null
+  } | null
+}
+
+type PaymentMethodsResponse = {
+  ok?: boolean
+  rows?: Array<{ status?: string | null }>
+}
+
+function normalizePlanTier(value: unknown): PlanTier | null {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
+  if (!raw) return null
+  if (PLAN_TIER_ORDER.includes(raw as PlanTier)) return raw as PlanTier
+  return null
+}
 
 function formatStorage(mb: number | null): string {
   if (mb == null) return "무제한"
@@ -72,12 +96,81 @@ function tierBadgeBg(tier: string): string {
   }
 }
 
-export function PlanDialog({ open, onOpenChange }: PlanDialogProps) {
+function upgradeButtonClass(tier: PlanTier): string {
+  switch (tier) {
+    case "pro":
+      return "bg-teal-500 text-white hover:bg-teal-600"
+    case "premium":
+      return "bg-indigo-500 text-white hover:bg-indigo-600"
+    case "business":
+      return "bg-amber-500 text-white hover:bg-amber-600"
+    case "enterprise":
+      return "bg-rose-500 text-white hover:bg-rose-600"
+    default:
+      return "bg-primary text-primary-foreground hover:bg-primary/90"
+  }
+}
+
+function currentButtonClass(tier: PlanTier): string {
+  switch (tier) {
+    case "pro":
+      return "border-teal-500 text-teal-600 hover:border-teal-500 hover:text-teal-600"
+    case "premium":
+      return "border-indigo-500 text-indigo-600 hover:border-indigo-500 hover:text-indigo-600"
+    case "business":
+      return "border-amber-500 text-amber-600 hover:border-amber-500 hover:text-amber-600"
+    case "enterprise":
+      return "border-rose-500 text-rose-600 hover:border-rose-500 hover:text-rose-600"
+    default:
+      return "border-muted text-muted-foreground hover:border-muted hover:text-muted-foreground"
+  }
+}
+
+export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps) {
   const navigate = useNavigate()
   const [plans, setPlans] = useState<BillingPlanWithPrices[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [billingCycle, setBillingCycle] = useState<BillingCycle>("monthly")
+  const normalizedCurrentTier = useMemo(() => normalizePlanTier(currentTier) ?? "free", [currentTier])
+
+  const authHeaders = useCallback((): Record<string, string> => {
+    if (typeof window === "undefined") return {}
+    const token = window.localStorage.getItem("token")
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  }, [])
+
+  const resolveNextRoute = useCallback(async () => {
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      return !hasBillingCard() ? "/billing/card" : !hasBillingInfo() ? "/billing/info" : "/billing/confirm"
+    }
+
+    try {
+      const [accountRes, methodsRes] = await Promise.all([
+        fetch("/api/ai/billing/user/billing-account", { headers }),
+        fetch("/api/ai/billing/user/payment-methods?limit=1", { headers }),
+      ])
+
+      let hasInfo = false
+      if (accountRes.ok) {
+        const data = (await accountRes.json().catch(() => null)) as BillingAccountResponse | null
+        const row = data?.row
+        hasInfo = Boolean(row?.billing_name && row?.billing_email && row?.billing_address1)
+      }
+
+      let hasCard = false
+      if (methodsRes.ok) {
+        const data = (await methodsRes.json().catch(() => null)) as PaymentMethodsResponse | null
+        hasCard = Array.isArray(data?.rows) && data.rows.length > 0
+      }
+
+      return !hasCard ? "/billing/card" : !hasInfo ? "/billing/info" : "/billing/confirm"
+    } catch (e) {
+      console.error(e)
+      return "/billing/card"
+    }
+  }, [authHeaders])
 
   const loadPlans = useCallback(() => {
     setLoading(true)
@@ -198,6 +291,12 @@ export function PlanDialog({ open, onOpenChange }: PlanDialogProps) {
                     : plan.included_seats === plan.max_seats
                       ? `${plan.included_seats}명`
                       : `${plan.included_seats}~${plan.max_seats}명`
+                const planTier = normalizePlanTier(plan.tier) ?? "free"
+                const currentIndex = PLAN_TIER_ORDER.indexOf(normalizedCurrentTier)
+                const planIndex = PLAN_TIER_ORDER.indexOf(planTier)
+                const isCurrent = planIndex === currentIndex
+                const isUpgrade = planIndex > currentIndex
+                const actionLabel = isCurrent ? "현재 요금제" : isUpgrade ? "업그레이드" : "요금제 변경"
 
                 return (
                   <div
@@ -283,30 +382,36 @@ export function PlanDialog({ open, onOpenChange }: PlanDialogProps) {
                       </li>
                     </ul>
 
-                    {/* CTA */}
+                    {/* CTA 요금제 버튼 */}
                     <div className="mt-auto pt-5">
-                      <button
-                        type="button"
+                      <Button
+                        variant={isCurrent ? "outline" : isUpgrade ? "default" : "secondary"}
                         className={cn(
-                          "flex h-9 w-full items-center justify-center rounded-lg text-sm font-medium transition-colors",
-                          plan.tier === "free"
-                            ? "border border-border bg-background text-foreground hover:bg-accent"
-                            : "bg-primary text-primary-foreground hover:bg-primary/90"
+                          "w-full",
+                          isCurrent
+                            ? cn(currentButtonClass(planTier), "cursor-default hover:bg-transparent")
+                            : isUpgrade
+                              ? upgradeButtonClass(planTier)
+                              : ""
                         )}
                         onClick={() => {
-                          if (plan.tier === "free") return
-                          onOpenChange(false)
-                          navigate("/billing/card", {
-                            state: {
-                              planId: plan.id,
-                              planName: plan.name,
-                              billingCycle,
-                            },
-                          })
+                          if (isCurrent) return
+                          void (async () => {
+                            const target = await resolveNextRoute()
+                            onOpenChange(false)
+                            navigate(target, {
+                              state: {
+                                planId: plan.id,
+                                planName: plan.name,
+                                billingCycle,
+                                flow: appendVisited(undefined, "plan"),
+                              },
+                            })
+                          })()
                         }}
                       >
-                        {plan.tier === "free" ? "현재 요금제" : "업그레이드"}
-                      </button>
+                        {actionLabel}
+                      </Button>
                     </div>
                   </div>
                 )

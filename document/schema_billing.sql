@@ -192,6 +192,11 @@ CREATE TABLE billing_accounts (
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     billing_email VARCHAR(255),
     billing_name VARCHAR(255),
+    billing_postal_code VARCHAR(20),
+    billing_address1 VARCHAR(255),
+    billing_address2 VARCHAR(255),
+    billing_extra_address VARCHAR(255),
+    billing_phone VARCHAR(30),
     country_code VARCHAR(2),
     tax_country_code VARCHAR(2),
     tax_id VARCHAR(100),
@@ -209,6 +214,11 @@ COMMENT ON COLUMN billing_accounts.id IS '과금 계정 ID(UUID)';
 COMMENT ON COLUMN billing_accounts.tenant_id IS '테넌트 ID(tenants.id)';
 COMMENT ON COLUMN billing_accounts.billing_email IS '과금 이메일 주소';
 COMMENT ON COLUMN billing_accounts.billing_name IS '과금 담당자 이름';
+COMMENT ON COLUMN billing_accounts.billing_postal_code IS '청구지 우편번호';
+COMMENT ON COLUMN billing_accounts.billing_address1 IS '청구지 기본 주소';
+COMMENT ON COLUMN billing_accounts.billing_address2 IS '청구지 상세 주소';
+COMMENT ON COLUMN billing_accounts.billing_extra_address IS '청구지 참고 항목';
+COMMENT ON COLUMN billing_accounts.billing_phone IS '청구지 연락처';
 COMMENT ON COLUMN billing_accounts.country_code IS '국가 코드(ISO 3166-1 alpha-2)';
 COMMENT ON COLUMN billing_accounts.tax_country_code IS '세금 국가 코드(ISO 3166-1 alpha-2)';
 COMMENT ON COLUMN billing_accounts.tax_id IS '세금 고유번호';
@@ -260,6 +270,13 @@ COMMENT ON COLUMN payment_methods.status IS '결제 수단 상태(active, expire
 COMMENT ON COLUMN payment_methods.metadata IS '추가 메타데이터(JSON)';
 COMMENT ON COLUMN payment_methods.created_at IS '생성 시간(TIMESTAMP)';
 COMMENT ON COLUMN payment_methods.updated_at IS '수정 시간(TIMESTAMP)';
+
+ALTER TABLE billing_accounts
+  ADD COLUMN IF NOT EXISTS billing_postal_code VARCHAR(20),
+  ADD COLUMN IF NOT EXISTS billing_address1 VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS billing_address2 VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS billing_extra_address VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS billing_phone VARCHAR(30);
 
 ALTER TABLE billing_accounts
   ADD COLUMN IF NOT EXISTS default_payment_method_id UUID REFERENCES payment_methods(id) ON DELETE SET NULL;
