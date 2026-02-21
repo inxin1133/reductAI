@@ -281,6 +281,9 @@ ALTER TABLE billing_accounts
 ALTER TABLE billing_accounts
   ADD COLUMN IF NOT EXISTS default_payment_method_id UUID REFERENCES payment_methods(id) ON DELETE SET NULL;
 
+ALTER TABLE tax_rates
+  ADD COLUMN IF NOT EXISTS source VARCHAR(30) NOT NULL DEFAULT 'manual';
+
 -- ============================================
 -- 7. PAYMENT PROVIDER CONFIGS (결제 수단 설정)
 -- ============================================
@@ -312,6 +315,7 @@ CREATE TABLE tax_rates (
     name VARCHAR(100) NOT NULL,
     country_code VARCHAR(2) NOT NULL,
     rate_percent DECIMAL(5, 2) NOT NULL,
+    source VARCHAR(30) NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'market')),
     effective_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -326,6 +330,7 @@ COMMENT ON COLUMN tax_rates.id IS '세금 ID(UUID)';
 COMMENT ON COLUMN tax_rates.name IS '세금 이름';
 COMMENT ON COLUMN tax_rates.country_code IS '세금 국가 코드(ISO 3166-1 alpha-2)';
 COMMENT ON COLUMN tax_rates.rate_percent IS '세금 비율';
+COMMENT ON COLUMN tax_rates.source IS '세금 데이터 소스(manual, market)';
 COMMENT ON COLUMN tax_rates.effective_at IS '유효 시간(TIMESTAMP)';
 COMMENT ON COLUMN tax_rates.is_active IS '활성 여부(TRUE, FALSE)';
 COMMENT ON COLUMN tax_rates.created_at IS '생성 시간(TIMESTAMP)';
@@ -361,6 +366,33 @@ COMMENT ON COLUMN fx_rates.effective_at IS '유효 시간(TIMESTAMP)';
 COMMENT ON COLUMN fx_rates.is_active IS '활성 여부(TRUE, FALSE)';
 COMMENT ON COLUMN fx_rates.created_at IS '생성 시간(TIMESTAMP)';
 COMMENT ON COLUMN fx_rates.updated_at IS '수정 시간(TIMESTAMP)';
+
+-- ============================================
+-- 9.5 BILLING SYNC STATUS (동기화 상태)
+-- ============================================
+
+CREATE TABLE billing_sync_status (
+    sync_key VARCHAR(40) PRIMARY KEY,
+    is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    last_run_at TIMESTAMP WITH TIME ZONE,
+    last_success_at TIMESTAMP WITH TIME ZONE,
+    last_error TEXT,
+    last_source VARCHAR(30),
+    last_record_count INTEGER,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+COMMENT ON TABLE billing_sync_status IS '세율/환율 동기화 상태';
+COMMENT ON COLUMN billing_sync_status.sync_key IS '동기화 키(fx_rates, tax_rates)';
+COMMENT ON COLUMN billing_sync_status.is_enabled IS '자동 동기화 활성 여부';
+COMMENT ON COLUMN billing_sync_status.last_run_at IS '마지막 동기화 시도 시간';
+COMMENT ON COLUMN billing_sync_status.last_success_at IS '마지막 동기화 성공 시간';
+COMMENT ON COLUMN billing_sync_status.last_error IS '마지막 오류 메시지';
+COMMENT ON COLUMN billing_sync_status.last_source IS '마지막 동기화 소스';
+COMMENT ON COLUMN billing_sync_status.last_record_count IS '마지막 동기화 반영 건수';
+COMMENT ON COLUMN billing_sync_status.created_at IS '생성 시간(TIMESTAMP)';
+COMMENT ON COLUMN billing_sync_status.updated_at IS '수정 시간(TIMESTAMP)';
 
 -- ============================================
 -- 10. BILLING INVOICES (청구서)
@@ -540,6 +572,8 @@ CREATE TRIGGER update_tax_rates_updated_at BEFORE UPDATE ON tax_rates
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_fx_rates_updated_at BEFORE UPDATE ON fx_rates
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_billing_sync_status_updated_at BEFORE UPDATE ON billing_sync_status
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_billing_invoices_updated_at BEFORE UPDATE ON billing_invoices
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_payment_transactions_updated_at BEFORE UPDATE ON payment_transactions
@@ -603,9 +637,15 @@ VALUES
     ('stripe', FALSE, '{"note":"Global expansion"}'::jsonb)
 ON CONFLICT (provider) DO NOTHING;
 
-INSERT INTO tax_rates (name, country_code, rate_percent, is_active)
-VALUES ('KR VAT', 'KR', 10.00, TRUE)
+INSERT INTO tax_rates (name, country_code, rate_percent, source, is_active)
+VALUES ('KR VAT', 'KR', 10.00, 'manual', TRUE)
 ON CONFLICT DO NOTHING;
+
+INSERT INTO billing_sync_status (sync_key, is_enabled, last_source)
+VALUES
+    ('fx_rates', TRUE, 'market'),
+    ('tax_rates', TRUE, 'market')
+ON CONFLICT (sync_key) DO NOTHING;
 
 INSERT INTO fx_rates (base_currency, quote_currency, rate, source, is_active)
 VALUES ('USD', 'KRW', 1300.000000, 'operating', TRUE)

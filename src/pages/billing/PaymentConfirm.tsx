@@ -355,6 +355,11 @@ function currencyDecimals(currency: string) {
   return CURRENCY_DECIMALS[key] ?? 2
 }
 
+function roundMoney(value: number, currency: string) {
+  const factor = 10 ** currencyDecimals(currency)
+  return Math.round(value * factor) / factor
+}
+
 function currencySymbol(currency: string) {
   const key = String(currency || "").toUpperCase()
   switch (key) {
@@ -496,12 +501,16 @@ export default function PaymentConfirm() {
       })
       const data = (await res.json().catch(() => null)) as QuoteResponse | null
       if (!res.ok || !data?.ok) throw new Error(data?.message || "FAILED_QUOTE")
+      const currency = data.currency || "USD"
+      const amount = roundMoney(Number(data.amount ?? 0), currency)
+      const taxAmount = roundMoney(Number(data.tax_amount ?? 0), currency)
+      const totalAmount = roundMoney(Number(data.total_amount ?? 0), currency)
       const nextQuote: QuoteState = {
-        currency: data.currency || "USD",
-        amount: Number(data.amount ?? 0),
+        currency,
+        amount,
         tax_rate_percent: Number(data.tax_rate_percent ?? 0),
-        tax_amount: Number(data.tax_amount ?? 0),
-        total_amount: Number(data.total_amount ?? 0),
+        tax_amount: taxAmount,
+        total_amount: totalAmount,
         fx_rate: data.fx_rate ?? null,
         base_currency: data.base_currency ?? null,
         base_amount: data.base_amount ?? null,
@@ -1014,7 +1023,7 @@ export default function PaymentConfirm() {
                 <p className="text-sm text-muted-foreground">
                   <span className="text-primary">서비스 이용약관</span>,{" "}
                   <span className="text-primary">개인정보 처리방침</span>,{" "}
-                  <span className="text-primary">환불 정책</span>에 동의합니다.
+                  <span className="text-primary">자동결제 및 환불정책</span>에 동의합니다.
                 </p>
               </div>
 

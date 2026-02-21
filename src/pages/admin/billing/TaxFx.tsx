@@ -36,6 +36,7 @@ type TaxRateRow = {
   name: string
   country_code: string
   rate_percent: string | number
+  source?: "manual" | "market" | string
   effective_at: string
   is_active: boolean
   created_at: string
@@ -52,6 +53,23 @@ type FxRateRow = {
   is_active: boolean
   created_at: string
   updated_at: string
+}
+
+type SyncStatusRow = {
+  sync_key: string
+  is_enabled: boolean
+  last_run_at?: string | null
+  last_success_at?: string | null
+  last_error?: string | null
+  last_source?: string | null
+  last_record_count?: number | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+type SyncStatusResponse = {
+  ok: boolean
+  row?: SyncStatusRow | null
 }
 
 type ListResponse<T> = {
@@ -81,6 +99,10 @@ type FxForm = {
 
 const TAX_API = "/api/ai/billing/tax-rates"
 const FX_API = "/api/ai/billing/fx-rates"
+const TAX_SYNC_API = "/api/ai/billing/tax-rates/sync"
+const FX_SYNC_API = "/api/ai/billing/fx-rates/sync"
+const TAX_SYNC_STATUS_API = "/api/ai/billing/tax-rates/sync-status"
+const FX_SYNC_STATUS_API = "/api/ai/billing/fx-rates/sync-status"
 const FILTER_ALL = "__all__"
 
 const TAX_EMPTY: TaxForm = {
@@ -152,6 +174,10 @@ export default function TaxFx() {
   const [taxEditing, setTaxEditing] = useState<TaxRateRow | null>(null)
   const [taxForm, setTaxForm] = useState<TaxForm>(TAX_EMPTY)
   const [taxSaving, setTaxSaving] = useState(false)
+  const [taxSyncStatus, setTaxSyncStatus] = useState<SyncStatusRow | null>(null)
+  const [taxSyncLoading, setTaxSyncLoading] = useState(false)
+  const [taxSyncing, setTaxSyncing] = useState(false)
+  const [taxSyncSaving, setTaxSyncSaving] = useState(false)
 
   const [fxRows, setFxRows] = useState<FxRateRow[]>([])
   const [fxLoading, setFxLoading] = useState(false)
@@ -168,6 +194,10 @@ export default function TaxFx() {
   const [fxEditing, setFxEditing] = useState<FxRateRow | null>(null)
   const [fxForm, setFxForm] = useState<FxForm>(FX_EMPTY)
   const [fxSaving, setFxSaving] = useState(false)
+  const [fxSyncStatus, setFxSyncStatus] = useState<SyncStatusRow | null>(null)
+  const [fxSyncLoading, setFxSyncLoading] = useState(false)
+  const [fxSyncing, setFxSyncing] = useState(false)
+  const [fxSyncSaving, setFxSyncSaving] = useState(false)
 
   const taxQuery = useMemo(() => {
     const params = new URLSearchParams()
@@ -224,6 +254,112 @@ export default function TaxFx() {
     }
   }
 
+  async function fetchTaxSyncStatus() {
+    setTaxSyncLoading(true)
+    try {
+      const res = await adminFetch(TAX_SYNC_STATUS_API)
+      const json = (await res.json()) as SyncStatusResponse
+      if (!res.ok || !json.ok) throw new Error("FAILED")
+      setTaxSyncStatus(json.row ?? null)
+    } catch (e) {
+      console.error(e)
+      setTaxSyncStatus(null)
+    } finally {
+      setTaxSyncLoading(false)
+    }
+  }
+
+  async function updateTaxSyncEnabled(nextEnabled: boolean) {
+    try {
+      setTaxSyncSaving(true)
+      const res = await adminFetch(TAX_SYNC_STATUS_API, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_enabled: nextEnabled }),
+      })
+      const json = (await res.json()) as SyncStatusResponse
+      if (!res.ok || !json.ok) throw new Error("FAILED")
+      setTaxSyncStatus(json.row ?? null)
+    } catch (e) {
+      console.error(e)
+      alert("세율 자동 동기화 설정에 실패했습니다.")
+    } finally {
+      setTaxSyncSaving(false)
+    }
+  }
+
+  async function runTaxSync() {
+    try {
+      setTaxSyncing(true)
+      const res = await adminFetch(TAX_SYNC_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      })
+      const json = (await res.json()) as { ok?: boolean; message?: string }
+      if (!res.ok || !json?.ok) throw new Error(json?.message || "FAILED")
+      await Promise.all([fetchTaxRates(), fetchTaxSyncStatus()])
+    } catch (e) {
+      console.error(e)
+      alert("세율 동기화에 실패했습니다.")
+    } finally {
+      setTaxSyncing(false)
+    }
+  }
+
+  async function fetchFxSyncStatus() {
+    setFxSyncLoading(true)
+    try {
+      const res = await adminFetch(FX_SYNC_STATUS_API)
+      const json = (await res.json()) as SyncStatusResponse
+      if (!res.ok || !json.ok) throw new Error("FAILED")
+      setFxSyncStatus(json.row ?? null)
+    } catch (e) {
+      console.error(e)
+      setFxSyncStatus(null)
+    } finally {
+      setFxSyncLoading(false)
+    }
+  }
+
+  async function updateFxSyncEnabled(nextEnabled: boolean) {
+    try {
+      setFxSyncSaving(true)
+      const res = await adminFetch(FX_SYNC_STATUS_API, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_enabled: nextEnabled }),
+      })
+      const json = (await res.json()) as SyncStatusResponse
+      if (!res.ok || !json.ok) throw new Error("FAILED")
+      setFxSyncStatus(json.row ?? null)
+    } catch (e) {
+      console.error(e)
+      alert("환율 자동 동기화 설정에 실패했습니다.")
+    } finally {
+      setFxSyncSaving(false)
+    }
+  }
+
+  async function runFxSync() {
+    try {
+      setFxSyncing(true)
+      const res = await adminFetch(FX_SYNC_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      })
+      const json = (await res.json()) as { ok?: boolean; message?: string }
+      if (!res.ok || !json?.ok) throw new Error(json?.message || "FAILED")
+      await Promise.all([fetchFxRates(), fetchFxSyncStatus()])
+    } catch (e) {
+      console.error(e)
+      alert("환율 동기화에 실패했습니다.")
+    } finally {
+      setFxSyncing(false)
+    }
+  }
+
   useEffect(() => {
     fetchTaxRates()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -233,6 +369,11 @@ export default function TaxFx() {
     fetchFxRates()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fxQuery])
+
+  useEffect(() => {
+    fetchTaxSyncStatus()
+    fetchFxSyncStatus()
+  }, [])
 
   function openTaxCreate() {
     setTaxEditing(null)
@@ -346,6 +487,12 @@ export default function TaxFx() {
 
   const taxPageCount = Math.max(1, Math.ceil(taxTotal / taxLimit))
   const fxPageCount = Math.max(1, Math.ceil(fxTotal / fxLimit))
+  const taxLastSyncAt = taxSyncStatus?.last_success_at ?? taxSyncStatus?.last_run_at
+  const fxLastSyncAt = fxSyncStatus?.last_success_at ?? fxSyncStatus?.last_run_at
+  const taxLastSyncLabel = taxSyncLoading ? "로딩 중..." : taxLastSyncAt ? fmtDate(taxLastSyncAt) : "-"
+  const fxLastSyncLabel = fxSyncLoading ? "로딩 중..." : fxLastSyncAt ? fmtDate(fxLastSyncAt) : "-"
+  const taxSourceLabel = taxSyncLoading ? "로딩 중..." : taxSyncStatus?.last_source ?? "-"
+  const fxSourceLabel = fxSyncLoading ? "로딩 중..." : fxSyncStatus?.last_source ?? "-"
 
   return (
     <AdminPage
@@ -382,6 +529,35 @@ export default function TaxFx() {
         </TabsList>
 
         <TabsContent value="tax" className="space-y-4">
+          <div className="rounded-xl border border-border bg-background p-4 shadow-sm">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="space-y-1">
+                <div className="text-sm font-semibold text-foreground">동기화 상태</div>
+                <div className="text-xs text-muted-foreground">마지막 동기화: {taxLastSyncLabel}</div>
+                <div className="text-xs text-muted-foreground">소스: {taxSourceLabel}</div>
+                <div className="text-xs text-muted-foreground">동기화 주기: 24시간</div>
+                {taxSyncStatus?.last_error ? (
+                  <div className="text-xs text-red-600">실패: {taxSyncStatus.last_error}</div>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="tax-sync-enabled"
+                    checked={Boolean(taxSyncStatus?.is_enabled ?? true)}
+                    disabled={taxSyncSaving || taxSyncLoading}
+                    onCheckedChange={(v) => updateTaxSyncEnabled(v)}
+                  />
+                  <Label htmlFor="tax-sync-enabled">자동 동기화</Label>
+                </div>
+                <Button variant="outline" size="sm" onClick={runTaxSync} disabled={taxSyncing}>
+                  {taxSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+                  <span className="ml-2">지금 동기화</span>
+                </Button>
+              </div>
+            </div>
+          </div>
+
           <div className="flex flex-col gap-3 md:flex-row md:items-end">
             <div className="flex-1 space-y-1">
               <div className="text-xs text-muted-foreground">검색</div>
@@ -419,6 +595,7 @@ export default function TaxFx() {
                   <TableHead>이름</TableHead>
                   <TableHead>국가</TableHead>
                   <TableHead>세율</TableHead>
+                  <TableHead>소스</TableHead>
                   <TableHead>유효 시간</TableHead>
                   <TableHead>활성</TableHead>
                   <TableHead>업데이트</TableHead>
@@ -428,14 +605,14 @@ export default function TaxFx() {
               <TableBody>
                 {taxRows.length === 0 && !taxLoading ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="text-center text-muted-foreground">
                       표시할 세율이 없습니다.
                     </TableCell>
                   </TableRow>
                 ) : null}
                 {taxLoading ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="text-center text-muted-foreground">
                       <Loader2 className="h-4 w-4 inline-block animate-spin mr-2" />
                       로딩 중...
                     </TableCell>
@@ -446,6 +623,7 @@ export default function TaxFx() {
                     <TableCell className="font-medium">{row.name}</TableCell>
                     <TableCell className="font-mono">{row.country_code}</TableCell>
                     <TableCell className="font-mono">{fmtPercent(row.rate_percent)}</TableCell>
+                    <TableCell className="font-mono">{row.source || "manual"}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{fmtDate(row.effective_at)}</TableCell>
                     <TableCell>
                       <Badge variant="outline" className={badgeClass(row.is_active)}>
@@ -491,6 +669,35 @@ export default function TaxFx() {
         </TabsContent>
 
         <TabsContent value="fx" className="space-y-4">
+          <div className="rounded-xl border border-border bg-background p-4 shadow-sm">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="space-y-1">
+                <div className="text-sm font-semibold text-foreground">동기화 상태</div>
+                <div className="text-xs text-muted-foreground">마지막 동기화: {fxLastSyncLabel}</div>
+                <div className="text-xs text-muted-foreground">소스: {fxSourceLabel}</div>
+                <div className="text-xs text-muted-foreground">동기화 주기: 24시간</div>
+                {fxSyncStatus?.last_error ? (
+                  <div className="text-xs text-red-600">실패: {fxSyncStatus.last_error}</div>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="fx-sync-enabled"
+                    checked={Boolean(fxSyncStatus?.is_enabled ?? true)}
+                    disabled={fxSyncSaving || fxSyncLoading}
+                    onCheckedChange={(v) => updateFxSyncEnabled(v)}
+                  />
+                  <Label htmlFor="fx-sync-enabled">자동 동기화</Label>
+                </div>
+                <Button variant="outline" size="sm" onClick={runFxSync} disabled={fxSyncing}>
+                  {fxSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+                  <span className="ml-2">지금 동기화</span>
+                </Button>
+              </div>
+            </div>
+          </div>
+
           <div className="flex flex-col gap-3 md:flex-row md:items-end">
             <div className="w-full md:w-32 space-y-1">
               <div className="text-xs text-muted-foreground">기준 통화</div>

@@ -7,6 +7,8 @@ import {
   createPaymentProviderConfig,
   createTaxRate,
   createFxRate,
+  getFxSyncStatus,
+  getTaxSyncStatus,
   listBillingAccounts,
   listBillingInvoices,
   listInvoiceLineItems,
@@ -20,16 +22,20 @@ import {
   listPaymentTransactions,
   listTaxRates,
   listFxRates,
+  syncFxRates,
+  syncTaxRates,
   updateBillingAccount,
   updateBillingInvoice,
   updateBillingPlan,
   updateBillingPlanPrice,
   updateBillingSubscription,
   updateFxRate,
+  updateFxSyncStatus,
   updatePaymentMethod,
   updatePaymentProviderConfig,
   updatePaymentTransaction,
   updateTaxRate,
+  updateTaxSyncStatus,
 } from "../controllers/billingController"
 
 const router = express.Router()
@@ -48,9 +54,15 @@ router.put("/plan-prices/:id", updateBillingPlanPrice)
 router.get("/tax-rates", listTaxRates)
 router.post("/tax-rates", createTaxRate)
 router.put("/tax-rates/:id", updateTaxRate)
+router.get("/tax-rates/sync-status", getTaxSyncStatus)
+router.put("/tax-rates/sync-status", updateTaxSyncStatus)
+router.post("/tax-rates/sync", syncTaxRates)
 router.get("/fx-rates", listFxRates)
 router.post("/fx-rates", createFxRate)
 router.put("/fx-rates/:id", updateFxRate)
+router.get("/fx-rates/sync-status", getFxSyncStatus)
+router.put("/fx-rates/sync-status", updateFxSyncStatus)
+router.post("/fx-rates/sync", syncFxRates)
 
 // Provider configs
 router.get("/payment-provider-configs", listPaymentProviderConfigs)

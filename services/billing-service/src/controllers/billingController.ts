@@ -247,12 +247,448 @@ const TENANT_TYPES = new Set(["personal", "team", "group"])
 const BILLING_CYCLES = new Set(["monthly", "yearly"])
 const PRICE_STATUSES = new Set(["active", "draft", "retired"])
 const FX_SOURCES = new Set(["operating", "market"])
+const TAX_SOURCES = new Set(["manual", "market"])
 const SUBSCRIPTION_STATUSES = new Set(["active", "cancelled", "past_due", "trialing", "suspended", "scheduled_cancel"])
 const CHANGE_TYPES = new Set(["upgrade", "downgrade", "cancel", "resume"])
 const CHANGE_STATUSES = new Set(["scheduled", "applied", "cancelled"])
 const INVOICE_STATUSES = new Set(["draft", "open", "paid", "void", "uncollectible"])
 const TRANSACTION_TYPES = new Set(["charge", "refund", "adjustment"])
 const TRANSACTION_STATUSES = new Set(["pending", "succeeded", "failed", "refunded", "cancelled"])
+
+const SYNC_KEYS = {
+  fx: "fx_rates",
+  tax: "tax_rates",
+}
+
+const FX_BASE_CURRENCY = "USD"
+const FX_TARGET_CURRENCIES = ["KRW", "USD", "JPY", "CNY", "SGD", "GBP", "EUR", "AUD", "CAD"]
+const FX_RATE_PRECISION = 6
+const FX_SYNC_LOOKBACK_DAYS = 7
+
+const KOREAEXIM_BASE_URL =
+  process.env.KOREAEXIM_BASE_URL || "https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON"
+const KOREAEXIM_AUTH_KEY = process.env.KOREAEXIM_AUTH_KEY || process.env.KOREAEXIM_API_KEY || ""
+const KOREAEXIM_DATA_CODE = process.env.KOREAEXIM_DATA_CODE || "AP01"
+
+const DEFAULT_TAX_RATES: Record<string, { name: string; rate_percent: number }> = {
+  KR: { name: "KR VAT", rate_percent: 10 },
+  US: { name: "US Sales Tax", rate_percent: 0 },
+  JP: { name: "JP Consumption Tax", rate_percent: 10 },
+  CN: { name: "CN VAT", rate_percent: 13 },
+  SG: { name: "SG GST", rate_percent: 9 },
+  GB: { name: "GB VAT", rate_percent: 20 },
+  DE: { name: "DE VAT", rate_percent: 19 },
+  FR: { name: "FR VAT", rate_percent: 20 },
+  AU: { name: "AU GST", rate_percent: 10 },
+  CA: { name: "CA GST", rate_percent: 5 },
+}
+
+function roundFxRate(value: number) {
+  const factor = 10 ** FX_RATE_PRECISION
+  return Math.round(value * factor) / factor
+}
+
+function parseRateNumber(value: unknown) {
+  if (value === null || value === undefined) return null
+  const cleaned = String(value).replace(/[^\d.-]/g, "")
+  const n = Number(cleaned)
+  if (!Number.isFinite(n)) return null
+  return n
+}
+
+function formatKstDateYYYYMMDD(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date)
+  const map: Record<string, string> = {}
+  for (const part of parts) {
+    if (part.type !== "literal") map[part.type] = part.value
+  }
+  return `${map.year}${map.month}${map.day}`
+}
+
+function toKstMidnightIso(ymd: string) {
+  if (!/^\d{8}$/.test(ymd)) return new Date().toISOString()
+  const year = Number(ymd.slice(0, 4))
+  const month = Number(ymd.slice(4, 6))
+  const day = Number(ymd.slice(6, 8))
+  const iso = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T00:00:00+09:00`
+  return new Date(iso).toISOString()
+}
+
+function parseEximUnit(raw: unknown) {
+  const unit = toStr(raw).toUpperCase()
+  const match = unit.match(/^([A-Z]{3})\s*\((\d+)\)$/)
+  if (match) {
+    return { code: match[1], scale: Number(match[2]) || 1 }
+  }
+  return { code: unit, scale: 1 }
+}
+
+async function fetchKoreaEximRates(searchDate: string) {
+  if (!KOREAEXIM_AUTH_KEY) throw new Error("KOREAEXIM_AUTH_KEY is required")
+  const url = new URL(KOREAEXIM_BASE_URL)
+  url.searchParams.set("authkey", KOREAEXIM_AUTH_KEY)
+  url.searchParams.set("searchdate", searchDate)
+  url.searchParams.set("data", KOREAEXIM_DATA_CODE)
+
+  const res = await fetch(url.toString())
+  const text = await res.text()
+  if (!res.ok) {
+    throw new Error(`KOREAEXIM API error: ${res.status} ${text}`)
+  }
+  try {
+    const json = JSON.parse(text)
+    if (!Array.isArray(json)) throw new Error("KOREAEXIM API response is not array")
+    return json
+  } catch (e) {
+    throw new Error("KOREAEXIM API JSON parse failed")
+  }
+}
+
+async function loadLatestKoreaEximRates() {
+  const today = new Date()
+  let lastError: unknown = null
+  for (let i = 0; i < FX_SYNC_LOOKBACK_DAYS; i += 1) {
+    const d = new Date(today)
+    d.setDate(d.getDate() - i)
+    const searchDate = formatKstDateYYYYMMDD(d)
+    try {
+      const rows = await fetchKoreaEximRates(searchDate)
+      if (Array.isArray(rows) && rows.length > 0) {
+        return { searchDate, rows }
+      }
+    } catch (e) {
+      lastError = e
+    }
+  }
+  if (lastError) throw lastError
+  throw new Error("KOREAEXIM API returned empty data")
+}
+
+function buildMarketFxRates(rows: any[]) {
+  const map = new Map<string, number>()
+  for (const row of rows) {
+    const { code, scale } = parseEximUnit(row?.cur_unit)
+    const raw = parseRateNumber(row?.deal_bas_r)
+    if (!code || !raw || scale <= 0) continue
+    map.set(code, raw / scale)
+  }
+
+  const krwPerUsd = map.get("USD")
+  if (!krwPerUsd) throw new Error("USD 환율을 찾을 수 없습니다.")
+
+  const rates: Array<{ quote_currency: string; rate: number }> = []
+  const missing: string[] = []
+
+  for (const currency of FX_TARGET_CURRENCIES) {
+    if (currency === "USD") {
+      rates.push({ quote_currency: currency, rate: 1 })
+      continue
+    }
+    if (currency === "KRW") {
+      rates.push({ quote_currency: currency, rate: krwPerUsd })
+      continue
+    }
+    const krwPerTarget = map.get(currency)
+    if (!krwPerTarget) {
+      missing.push(currency)
+      continue
+    }
+    const rate = krwPerUsd / krwPerTarget
+    rates.push({ quote_currency: currency, rate })
+  }
+
+  return { rates, missing }
+}
+
+async function ensureSyncStatus(client: any, syncKey: string) {
+  await client.query(
+    `
+    INSERT INTO billing_sync_status (sync_key, is_enabled)
+    VALUES ($1, TRUE)
+    ON CONFLICT (sync_key) DO NOTHING
+    `,
+    [syncKey]
+  )
+  const res = await client.query(`SELECT * FROM billing_sync_status WHERE sync_key = $1`, [syncKey])
+  return res.rows[0] || null
+}
+
+async function updateSyncStatus(
+  client: any,
+  syncKey: string,
+  input: {
+    is_enabled?: boolean
+    last_run_at?: string | null
+    last_success_at?: string | null
+    last_error?: string | null
+    last_source?: string | null
+    last_record_count?: number | null
+  }
+) {
+  const fields: string[] = []
+  const params: any[] = []
+  const setField = (name: string, value: any) => {
+    fields.push(`${name} = $${params.length + 1}`)
+    params.push(value)
+  }
+
+  if (input.is_enabled !== undefined) setField("is_enabled", input.is_enabled)
+  if (input.last_run_at !== undefined) setField("last_run_at", input.last_run_at)
+  if (input.last_success_at !== undefined) setField("last_success_at", input.last_success_at)
+  if (input.last_error !== undefined) setField("last_error", input.last_error)
+  if (input.last_source !== undefined) setField("last_source", input.last_source)
+  if (input.last_record_count !== undefined) setField("last_record_count", input.last_record_count)
+
+  if (fields.length === 0) return ensureSyncStatus(client, syncKey)
+
+  const res = await client.query(
+    `
+    UPDATE billing_sync_status
+    SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP
+    WHERE sync_key = $${params.length + 1}
+    RETURNING *
+    `,
+    [...params, syncKey]
+  )
+  return res.rows[0] || ensureSyncStatus(client, syncKey)
+}
+
+async function syncFxRatesInternal(client: any) {
+  const { searchDate, rows } = await loadLatestKoreaEximRates()
+  const effectiveAtBase = toKstMidnightIso(searchDate)
+  const { rates, missing } = buildMarketFxRates(rows)
+
+  let inserted = 0
+  let skipped = 0
+
+  await client.query("BEGIN")
+  try {
+    for (const entry of rates) {
+      const quoteCurrency = normalizeCurrency(entry.quote_currency)
+      const nextRate = roundFxRate(entry.rate)
+      if (!quoteCurrency || !Number.isFinite(nextRate) || nextRate <= 0) continue
+
+      const latestRes = await client.query(
+        `
+        SELECT rate, effective_at
+        FROM fx_rates
+        WHERE base_currency = $1 AND quote_currency = $2 AND source = 'market'
+        ORDER BY effective_at DESC NULLS LAST, created_at DESC
+        LIMIT 1
+        `,
+        [FX_BASE_CURRENCY, quoteCurrency]
+      )
+      const latestRow = latestRes.rows[0]
+      if (latestRow) {
+        const latestRate = roundFxRate(Number(latestRow.rate))
+        if (Number.isFinite(latestRate) && latestRate === nextRate) {
+          skipped += 1
+          continue
+        }
+      }
+
+      let effectiveAt = effectiveAtBase
+      if (latestRow?.effective_at) {
+        const latestIso = new Date(latestRow.effective_at).toISOString()
+        if (latestIso === effectiveAtBase) {
+          effectiveAt = new Date().toISOString()
+        }
+      }
+
+      await client.query(
+        `
+        UPDATE fx_rates
+        SET is_active = FALSE
+        WHERE base_currency = $1 AND quote_currency = $2 AND source = 'market' AND is_active = TRUE
+        `,
+        [FX_BASE_CURRENCY, quoteCurrency]
+      )
+      await client.query(
+        `
+        INSERT INTO fx_rates (base_currency, quote_currency, rate, source, effective_at, is_active)
+        VALUES ($1,$2,$3,$4,$5,$6)
+        `,
+        [FX_BASE_CURRENCY, quoteCurrency, nextRate, "market", effectiveAt, true]
+      )
+      inserted += 1
+    }
+
+    await client.query("COMMIT")
+  } catch (e) {
+    await client.query("ROLLBACK")
+    throw e
+  }
+
+  return { inserted, skipped, missing, effective_at: effectiveAtBase, search_date: searchDate }
+}
+
+async function syncTaxRatesInternal(client: any) {
+  const nowIso = new Date().toISOString()
+  let inserted = 0
+  let skipped = 0
+
+  await client.query("BEGIN")
+  try {
+    for (const [countryCode, entry] of Object.entries(DEFAULT_TAX_RATES)) {
+      const rate = Number(entry.rate_percent)
+      if (!Number.isFinite(rate) || rate < 0 || rate > 100) continue
+
+      const latestRes = await client.query(
+        `
+        SELECT rate_percent
+        FROM tax_rates
+        WHERE country_code = $1 AND source = 'market'
+        ORDER BY effective_at DESC NULLS LAST, created_at DESC
+        LIMIT 1
+        `,
+        [countryCode]
+      )
+      const latestRow = latestRes.rows[0]
+      if (latestRow) {
+        const latestRate = Number(latestRow.rate_percent)
+        if (Number.isFinite(latestRate) && latestRate === rate) {
+          skipped += 1
+          continue
+        }
+      }
+
+      await client.query(
+        `
+        UPDATE tax_rates
+        SET is_active = FALSE
+        WHERE country_code = $1 AND is_active = TRUE
+        `,
+        [countryCode]
+      )
+      await client.query(
+        `
+        INSERT INTO tax_rates (name, country_code, rate_percent, source, effective_at, is_active)
+        VALUES ($1,$2,$3,$4,$5,$6)
+        `,
+        [entry.name, countryCode, rate, "market", nowIso, true]
+      )
+      inserted += 1
+    }
+
+    await client.query("COMMIT")
+  } catch (e) {
+    await client.query("ROLLBACK")
+    throw e
+  }
+
+  return { inserted, skipped, effective_at: nowIso }
+}
+
+export async function getFxSyncStatus(req: Request, res: Response) {
+  try {
+    const row = await ensureSyncStatus(pool, SYNC_KEYS.fx)
+    return res.json({ ok: true, row })
+  } catch (e: any) {
+    console.error("getFxSyncStatus error:", e)
+    return res.status(500).json({ message: "Failed to load FX sync status", details: String(e?.message || e) })
+  }
+}
+
+export async function updateFxSyncStatus(req: Request, res: Response) {
+  try {
+    const isEnabled = toBool(req.body?.is_enabled)
+    if (isEnabled === null) return res.status(400).json({ message: "is_enabled is required" })
+    const row = await updateSyncStatus(pool, SYNC_KEYS.fx, { is_enabled: isEnabled })
+    return res.json({ ok: true, row })
+  } catch (e: any) {
+    console.error("updateFxSyncStatus error:", e)
+    return res.status(500).json({ message: "Failed to update FX sync status", details: String(e?.message || e) })
+  }
+}
+
+export async function syncFxRates(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const force = toBool(req.body?.force) ?? toBool(req.query?.force) ?? false
+    const status = await ensureSyncStatus(client, SYNC_KEYS.fx)
+    if (!status?.is_enabled && !force) {
+      return res.status(409).json({ message: "FX sync is disabled" })
+    }
+    const startedAt = new Date().toISOString()
+    await updateSyncStatus(client, SYNC_KEYS.fx, { last_run_at: startedAt, last_error: null })
+
+    const result = await syncFxRatesInternal(client)
+    const finishedAt = new Date().toISOString()
+    const row = await updateSyncStatus(client, SYNC_KEYS.fx, {
+      last_success_at: finishedAt,
+      last_error: null,
+      last_source: "market",
+      last_record_count: result.inserted,
+    })
+
+    return res.json({ ok: true, status: row, ...result })
+  } catch (e: any) {
+    const message = String(e?.message || e)
+    await updateSyncStatus(client, SYNC_KEYS.fx, { last_error: message })
+    console.error("syncFxRates error:", e)
+    return res.status(500).json({ message: "Failed to sync FX rates", details: message })
+  } finally {
+    client.release()
+  }
+}
+
+export async function getTaxSyncStatus(req: Request, res: Response) {
+  try {
+    const row = await ensureSyncStatus(pool, SYNC_KEYS.tax)
+    return res.json({ ok: true, row })
+  } catch (e: any) {
+    console.error("getTaxSyncStatus error:", e)
+    return res.status(500).json({ message: "Failed to load tax sync status", details: String(e?.message || e) })
+  }
+}
+
+export async function updateTaxSyncStatus(req: Request, res: Response) {
+  try {
+    const isEnabled = toBool(req.body?.is_enabled)
+    if (isEnabled === null) return res.status(400).json({ message: "is_enabled is required" })
+    const row = await updateSyncStatus(pool, SYNC_KEYS.tax, { is_enabled: isEnabled })
+    return res.json({ ok: true, row })
+  } catch (e: any) {
+    console.error("updateTaxSyncStatus error:", e)
+    return res.status(500).json({ message: "Failed to update tax sync status", details: String(e?.message || e) })
+  }
+}
+
+export async function syncTaxRates(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const force = toBool(req.body?.force) ?? toBool(req.query?.force) ?? false
+    const status = await ensureSyncStatus(client, SYNC_KEYS.tax)
+    if (!status?.is_enabled && !force) {
+      return res.status(409).json({ message: "Tax sync is disabled" })
+    }
+    const startedAt = new Date().toISOString()
+    await updateSyncStatus(client, SYNC_KEYS.tax, { last_run_at: startedAt, last_error: null })
+
+    const result = await syncTaxRatesInternal(client)
+    const finishedAt = new Date().toISOString()
+    const row = await updateSyncStatus(client, SYNC_KEYS.tax, {
+      last_success_at: finishedAt,
+      last_error: null,
+      last_source: "market",
+      last_record_count: result.inserted,
+    })
+
+    return res.json({ ok: true, status: row, ...result })
+  } catch (e: any) {
+    const message = String(e?.message || e)
+    await updateSyncStatus(client, SYNC_KEYS.tax, { last_error: message })
+    console.error("syncTaxRates error:", e)
+    return res.status(500).json({ message: "Failed to sync tax rates", details: message })
+  } finally {
+    client.release()
+  }
+}
 
 export async function listBillingPlans(req: Request, res: Response) {
   try {
@@ -1937,6 +2373,7 @@ export async function listTaxRates(req: Request, res: Response) {
   try {
     const q = toStr(req.query.q)
     const countryCode = toStr(req.query.country_code)
+    const source = toStr(req.query.source)
     const isActiveRaw = toStr(req.query.is_active)
     const isActive = isActiveRaw ? toBool(isActiveRaw) : null
 
@@ -1949,6 +2386,11 @@ export async function listTaxRates(req: Request, res: Response) {
     if (countryCode) {
       where.push(`country_code = $${params.length + 1}`)
       params.push(countryCode)
+    }
+    if (source) {
+      if (!TAX_SOURCES.has(source)) return res.status(400).json({ message: "invalid source" })
+      where.push(`source = $${params.length + 1}`)
+      params.push(source)
     }
     if (isActive !== null) {
       where.push(`is_active = $${params.length + 1}`)
@@ -1970,7 +2412,7 @@ export async function listTaxRates(req: Request, res: Response) {
 
     const listRes = await query(
       `
-      SELECT id, name, country_code, rate_percent, effective_at, is_active, created_at, updated_at
+      SELECT id, name, country_code, rate_percent, source, effective_at, is_active, created_at, updated_at
       FROM tax_rates
       ${whereSql}
       ORDER BY country_code ASC, effective_at DESC
@@ -1998,6 +2440,7 @@ export async function createTaxRate(req: Request, res: Response) {
     const countryCode = toStr(req.body?.country_code).toUpperCase()
     const rateRaw = req.body?.rate_percent
     const ratePercent = Number(rateRaw)
+    const source = toStr(req.body?.source) || "manual"
     const effectiveAt = req.body?.effective_at
     const isActive = toBool(req.body?.is_active)
 
@@ -2008,15 +2451,16 @@ export async function createTaxRate(req: Request, res: Response) {
     if (!Number.isFinite(ratePercent) || ratePercent < 0 || ratePercent > 100) {
       return res.status(400).json({ message: "rate_percent must be between 0 and 100" })
     }
+    if (!TAX_SOURCES.has(source)) return res.status(400).json({ message: "invalid source" })
     if (!effectiveAt) return res.status(400).json({ message: "effective_at is required" })
 
     const result = await query(
       `
-      INSERT INTO tax_rates (name, country_code, rate_percent, effective_at, is_active)
-      VALUES ($1,$2,$3,$4,$5)
-      RETURNING id, name, country_code, rate_percent, effective_at, is_active, created_at, updated_at
+      INSERT INTO tax_rates (name, country_code, rate_percent, source, effective_at, is_active)
+      VALUES ($1,$2,$3,$4,$5,$6)
+      RETURNING id, name, country_code, rate_percent, source, effective_at, is_active, created_at, updated_at
       `,
-      [name, countryCode, ratePercent, effectiveAt, isActive === null ? true : isActive]
+      [name, countryCode, ratePercent, source, effectiveAt, isActive === null ? true : isActive]
     )
 
     return res.status(201).json({ ok: true, row: result.rows[0] })
@@ -2059,6 +2503,11 @@ export async function updateTaxRate(req: Request, res: Response) {
       }
       setField("rate_percent", ratePercent)
     }
+    if (input.source !== undefined) {
+      const source = toStr(input.source)
+      if (!TAX_SOURCES.has(source)) return res.status(400).json({ message: "invalid source" })
+      setField("source", source)
+    }
     if (input.effective_at !== undefined) {
       if (!input.effective_at) return res.status(400).json({ message: "effective_at is required" })
       setField("effective_at", input.effective_at)
@@ -2076,7 +2525,7 @@ export async function updateTaxRate(req: Request, res: Response) {
       UPDATE tax_rates
       SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP
       WHERE id = $${params.length + 1}
-      RETURNING id, name, country_code, rate_percent, effective_at, is_active, created_at, updated_at
+      RETURNING id, name, country_code, rate_percent, source, effective_at, is_active, created_at, updated_at
       `,
       [...params, id]
     )
