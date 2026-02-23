@@ -45,7 +45,7 @@ export const sendVerificationEmail = async (to: string, code: string) => {
         <div style="background-color: #f5f5f5; padding: 20px; text-align: center; border-radius: 5px; margin: 20px 0;">
           <h1 style="letter-spacing: 5px; margin: 0;">${code}</h1>
         </div>
-        <p>이 코드는 3분간 유효합니다.</p>
+        <p>이 코드는 10분간 유효합니다.</p>
         <p>본인이 요청하지 않았다면 이 메일을 무시해주세요.</p>
       </div>
     `,

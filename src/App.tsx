@@ -1,6 +1,7 @@
 import { Outlet, createBrowserRouter, RouterProvider, useLocation, useNavigate } from "react-router-dom";
 import { useEffect } from "react";
 import Intro from "./pages/auth/Intro";
+import SsoEmail from "./pages/auth/SsoEmail";
 import FrontAI from "./pages/aiagent/FrontAI";
 import Timeline from "./pages/aiagent/Timeline";
 import AdminLogin from "./pages/admin/AdminLogin";
@@ -106,6 +107,10 @@ const router = createBrowserRouter([
       {
         path: "/",
         element: <Intro />,
+      },
+      {
+        path: "/sso-email",
+        element: <SsoEmail />,
       },
       {
         path: "/front-ai",

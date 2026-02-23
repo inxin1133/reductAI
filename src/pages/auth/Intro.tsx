@@ -1,5 +1,6 @@
 import * as React from "react"
 import { Eclipse } from "lucide-react"
+import { useLocation, useNavigate } from "react-router-dom"
 import { useTheme } from "@/hooks/useTheme"
 import { LoginModal } from "@/components/LoginModal"
 import { ChatInterface } from "@/components/ChatInterface"
@@ -32,6 +33,8 @@ interface Language {
 
 export default function Intro() {
   const { toggleTheme } = useTheme();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [isLoginModalOpen, setIsLoginModalOpen] = React.useState(false);
   const [languages, setLanguages] = React.useState<Language[]>([]);
   const [currentLang, setCurrentLang] = React.useState("");
@@ -63,6 +66,49 @@ export default function Intro() {
       setSessionExpiredOpen(true);
     }
   }, []);
+
+  React.useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const token = params.get("token");
+    const error = params.get("error");
+    const provider = params.get("provider");
+    if (error) {
+      const providerLabel =
+        provider === "naver" ? "네이버" : provider === "kakao" ? "카카오" : provider === "google" ? "구글" : "SSO";
+      const errorMessageMap: Record<string, string> = {
+        email_required: `${providerLabel} 로그인에 이메일 제공 동의가 필요합니다.`,
+        token_exchange_failed: `${providerLabel} 인증 토큰 발급에 실패했습니다.`,
+        invalid_state: `${providerLabel} 인증 상태값이 만료되었습니다. 다시 시도해 주세요.`,
+        oauth_not_configured: `${providerLabel} OAuth 설정이 누락되었습니다.`,
+        profile_missing: `${providerLabel} 프로필 정보를 가져오지 못했습니다.`,
+        oauth_failed: `${providerLabel} 인증 처리 중 오류가 발생했습니다.`,
+      };
+      const message = errorMessageMap[error] || "SSO 로그인 중 오류가 발생했습니다.";
+      console.error("SSO error:", error, provider);
+      alert(message);
+      navigate("/", { replace: true });
+      return;
+    }
+    if (!token) return;
+
+    const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+    localStorage.setItem("token", token);
+    localStorage.setItem("token_expires_at", String(expiresAt));
+
+    const userEmail = params.get("user_email");
+    const userName = params.get("user_name");
+    const userId = params.get("user_id");
+    const tenantId = params.get("tenant_id");
+    const platformRole = params.get("platform_role");
+
+    if (userEmail) localStorage.setItem("user_email", userEmail);
+    if (userName) localStorage.setItem("user_name", userName);
+    if (userId) localStorage.setItem("user_id", userId);
+    if (tenantId) localStorage.setItem("tenant_id", tenantId);
+    if (platformRole) localStorage.setItem("platform_role", platformRole);
+
+    navigate("/front-ai", { replace: true });
+  }, [location.search, navigate]);
 
   return (
     <div className="bg-background relative w-full h-screen overflow-hidden flex justify-center font-sans">

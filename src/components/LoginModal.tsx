@@ -26,7 +26,15 @@ interface LoginModalProps {
   onOpenChange: (open: boolean) => void
 }
 
-type Step = 'login' | 'password_input' | 'forgot_password_verify' | 'reset_password' | 'reset_complete' | 'verification' | 'info' | 'completion'
+type Step =
+  | 'login'
+  | 'password_input'
+  | 'forgot_password_verify'
+  | 'reset_password'
+  | 'reset_complete'
+  | 'verification'
+  | 'info'
+  | 'completion'
 
 export function LoginModal({ open, onOpenChange }: LoginModalProps) {
   const navigate = useNavigate()
@@ -50,6 +58,16 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
   const passwordInputRef = React.useRef<HTMLInputElement>(null)
   const REMEMBER_EMAIL_KEY = "reductai:login:rememberEmail"
   const REMEMBER_EMAIL_ENABLED_KEY = "reductai:login:rememberEmailEnabled"
+
+  const handleGoogleLogin = () => {
+    window.location.href = `${API_URL}/google`
+  }
+  const handleNaverLogin = () => {
+    window.location.href = `${API_URL}/naver`
+  }
+  const handleKakaoLogin = () => {
+    window.location.href = `${API_URL}/kakao`
+  }
 
   // Reset state when modal opens/closes
   React.useEffect(() => {
@@ -791,6 +809,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
               <button 
                 type="button"
                 className="flex items-center justify-center gap-2 w-full h-[40px] bg-primary-foreground text-primary border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 transition-colors"
+                onClick={handleGoogleLogin}
               >
                 <div className="size-[24px] flex items-center justify-center overflow-hidden">
                    <LogoGoogle className="relative shrink-0 size-[24px]" />
@@ -801,6 +820,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
               <button 
                 type="button"
                 className="flex items-center justify-center gap-2 w-full h-[40px] bg-primary-foreground text-primary border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 transition-colors"
+                onClick={handleNaverLogin}
               >
                 <div className="size-[24px] flex items-center justify-center overflow-hidden">
                    
@@ -812,6 +832,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
               <button 
                 type="button"
                 className="flex items-center justify-center gap-2 w-full h-[40px] bg-yellow-400 text-yellow-900 border border-gray-200 rounded-md shadow-sm hover:bg-yellow-300 transition-colors"
+                onClick={handleKakaoLogin}
               >
                 <div className="size-[24px] flex items-center justify-center overflow-hidden">
                    <LogoKakao className="relative shrink-0 size-[24px]" />
