@@ -1,5 +1,13 @@
 import { Router } from 'express';
-import { getUsers, getUser, updateUser, lookupUsers, listUserTenantMemberships, createUser } from '../controllers/userController';
+import {
+  getUsers,
+  getUser,
+  updateUser,
+  lookupUsers,
+  listUserTenantMemberships,
+  createUser,
+  hardDeleteUser,
+} from '../controllers/userController';
 import { listUserProviders, createUserProvider, deleteUserProvider } from '../controllers/providerController';
 
 const router = Router();
@@ -9,6 +17,7 @@ router.get('/', getUsers);
 router.post('/', createUser);
 router.post('/lookup', lookupUsers);
 router.get('/tenant-memberships', listUserTenantMemberships);
+router.post('/:id/hard-delete', hardDeleteUser);
 router.get('/providers', listUserProviders);
 router.post('/providers', createUserProvider);
 router.delete('/providers/:id', deleteUserProvider);

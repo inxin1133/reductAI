@@ -26,10 +26,11 @@ import {
 } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Pencil, Loader2, ChevronLeft, ChevronRight, Search, Plus } from "lucide-react"
+import { Pencil, Loader2, ChevronLeft, ChevronRight, Search, Plus, Trash2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { AdminPage } from "@/components/layout/AdminPage"
 import { type PlanTier, PLAN_TIER_LABELS, PLAN_TIER_STYLES } from "@/lib/planTier"
+import { ProviderBadge } from "@/lib/providerBadge"
 
 interface User {
   id: string
@@ -51,6 +52,10 @@ interface User {
   tenant_plan_tier?: string | null
   tenant_current_member_count?: number | null
   tenant_included_seats?: number | null
+  has_password?: boolean
+  providers?: string[] | null
+  can_hard_delete?: boolean
+  delete_block_reason?: string | null
 }
 
 interface Role {
@@ -109,6 +114,7 @@ export default function UserManager() {
   const [memberListByTenant, setMemberListByTenant] = useState<Record<string, TenantMemberRow[]>>({})
   const [memberLoadingByTenant, setMemberLoadingByTenant] = useState<Record<string, boolean>>({})
   const [memberErrorByTenant, setMemberErrorByTenant] = useState<Record<string, string>>({})
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false)
   
   // Dialog state
   const [isDialogOpen, setIsDialogOpen] = useState(false)
@@ -135,11 +141,31 @@ export default function UserManager() {
     tenant_domain: "",
   })
   const [isSaving, setIsSaving] = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<User | null>(null)
+  const [deletePassword, setDeletePassword] = useState("")
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [deleteLoading, setDeleteLoading] = useState(false)
 
   const authHeaders = (): HeadersInit => {
     const token = localStorage.getItem("token")
     return token ? { Authorization: `Bearer ${token}` } : {}
   }
+
+  useEffect(() => {
+    const id = String(localStorage.getItem("user_id") || "").trim()
+    if (!id) return
+    fetch(`${API_PATH}/${encodeURIComponent(id)}`, { headers: authHeaders() })
+      .then(async (res) => {
+        if (!res.ok) return
+        const data = await res.json().catch(() => null)
+        const slug = String(data?.role_slug || "").toLowerCase()
+        setIsSuperAdmin(slug === "super-admin")
+      })
+      .catch(() => {
+        setIsSuperAdmin(false)
+      })
+  }, [])
 
   useEffect(() => {
     fetchUsers()
@@ -225,20 +251,6 @@ export default function UserManager() {
     setPagination(prev => ({ ...prev, page: 1 })) // Reset to page 1 on search
   }
 
-  const getDefaultRoleId = () => {
-    const lower = roles.map(r => ({
-      ...r,
-      ln: r.name.toLowerCase(),
-      sl: (r.slug || "").toLowerCase(),
-    }))
-    return (
-      lower.find(r => r.sl === "user" || r.ln === "user")?.id ||
-      lower.find(r => r.sl.includes("user") || r.ln.includes("user"))?.id ||
-      roles[0]?.id ||
-      ""
-    )
-  }
-
   const handleEdit = (user: User) => {
     setEditingUser(user)
     setFormData({
@@ -247,7 +259,7 @@ export default function UserManager() {
       full_name: user.full_name || "",
       status: user.status,
       email_verified: user.email_verified,
-      role_id: user.role_id || getDefaultRoleId(),
+      role_id: user.role_id || "",
       tenant_name: user.tenant_name || "",
       tenant_slug: user.tenant_slug || "",
       tenant_domain: user.tenant_domain || "",
@@ -263,7 +275,7 @@ export default function UserManager() {
       full_name: "",
       status: "active",
       email_verified: false,
-      role_id: getDefaultRoleId(),
+      role_id: "",
       tenant_name: "",
       tenant_slug: "",
       tenant_domain: "",
@@ -271,39 +283,73 @@ export default function UserManager() {
     setIsDialogOpen(true)
   }
 
-  // If roles load after opening dialog and no role is selected, apply default role automatically
-  useEffect(() => {
-    if (isDialogOpen && !formData.role_id && roles.length > 0) {
-      setFormData(prev => ({ ...prev, role_id: prev.role_id || getDefaultRoleId() }))
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roles])
+  const openDeleteDialog = (user: User) => {
+    setDeleteTarget(user)
+    setDeletePassword("")
+    setDeleteError(null)
+    setDeleteDialogOpen(true)
+  }
 
-  const handleSubmit = async () => {
-    const roleToUse = formData.role_id || getDefaultRoleId()
-    if (!roleToUse) {
-      alert("부여할 역할을 선택해주세요. (roles에 등록된 역할 중 하나)")
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return
+    if (!deletePassword.trim()) {
+      setDeleteError("관리자 비밀번호를 입력해주세요.")
       return
     }
+    setDeleteLoading(true)
+    setDeleteError(null)
+    try {
+      const response = await fetch(`${API_PATH}/${deleteTarget.id}/hard-delete`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders(),
+        },
+        body: JSON.stringify({ admin_password: deletePassword }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok || !data?.ok) {
+        const msg = typeof data?.reason === "string" && data.reason ? data.reason : ""
+        const detail = typeof data?.message === "string" ? data.message : ""
+        setDeleteError(msg || detail || "삭제에 실패했습니다.")
+        return
+      }
+      setDeleteDialogOpen(false)
+      setDeleteTarget(null)
+      setDeletePassword("")
+      await fetchUsers()
+    } catch (error) {
+      console.error(error)
+      setDeleteError("삭제 중 오류가 발생했습니다.")
+    } finally {
+      setDeleteLoading(false)
+    }
+  }
+
+  const handleSubmit = async () => {
+    const roleToUse = formData.role_id
 
     try {
       setIsSaving(true)
       if (editingUser) {
+        const updateBody: Record<string, unknown> = {
+          full_name: formData.full_name,
+          status: formData.status,
+          email_verified: formData.email_verified,
+          tenant_name: formData.tenant_name,
+          tenant_slug: formData.tenant_slug,
+          tenant_domain: formData.tenant_domain,
+        }
+        if (roleToUse) {
+          updateBody.role_id = roleToUse
+        }
         const response = await fetch(`${API_PATH}/${editingUser.id}`, {
           method: "PUT",
           headers: {
             "Content-Type": "application/json",
             ...authHeaders(),
           },
-          body: JSON.stringify({
-            full_name: formData.full_name,
-            status: formData.status,
-            email_verified: formData.email_verified,
-            role_id: roleToUse,
-            tenant_name: formData.tenant_name,
-            tenant_slug: formData.tenant_slug,
-            tenant_domain: formData.tenant_domain,
-          }),
+          body: JSON.stringify(updateBody),
         })
 
         if (response.ok) {
@@ -331,7 +377,7 @@ export default function UserManager() {
             full_name: formData.full_name.trim(),
             status: formData.status,
             email_verified: formData.email_verified,
-            role_id: roleToUse,
+            ...(roleToUse ? { role_id: roleToUse } : {}),
           }),
         })
 
@@ -403,9 +449,11 @@ export default function UserManager() {
   return (
     <AdminPage
       headerContent={
-        <Button onClick={handleCreate} size="sm">
-          <Plus className="h-4 w-4 mr-2" /> 사용자 생성
-        </Button>
+        isSuperAdmin ? (
+          <Button onClick={handleCreate} size="sm">
+            <Plus className="h-4 w-4 mr-2" /> 사용자 생성
+          </Button>
+        ) : null
       }
     >
       <div className="flex items-center justify-between">
@@ -435,6 +483,8 @@ export default function UserManager() {
           <TableHeader>
             <TableRow>
               <TableHead>이름/이메일</TableHead>
+              <TableHead>비번여부</TableHead>
+              <TableHead>Provider</TableHead>
               <TableHead>테넌트/Slug</TableHead>
               <TableHead>테넌트 유형</TableHead>
               <TableHead>서비스 등급</TableHead>
@@ -450,19 +500,19 @@ export default function UserManager() {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={11} className="h-24 text-center">
+                <TableCell colSpan={13} className="h-24 text-center">
                   <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                 </TableCell>
               </TableRow>
             ) : errorMessage ? (
               <TableRow>
-                <TableCell colSpan={11} className="h-24 text-center text-destructive">
+                <TableCell colSpan={13} className="h-24 text-center text-destructive">
                   {errorMessage}
                 </TableCell>
               </TableRow>
             ) : users.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={11} className="h-24 text-center">
+                <TableCell colSpan={13} className="h-24 text-center">
                   등록된 사용자가 없습니다.
                 </TableCell>
               </TableRow>
@@ -472,6 +522,20 @@ export default function UserManager() {
                   <TableCell>
                     <div className="font-medium">{user.full_name || "-"}</div>
                     <div className="text-xs text-muted-foreground">{user.email}</div>
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {user.has_password ? "비번" : <span className="text-red-500">없음</span>}
+                  </TableCell>
+                  <TableCell>
+                    {Array.isArray(user.providers) && user.providers.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {user.providers.map((provider) => (
+                          <ProviderBadge key={`${user.id}-${provider}`} provider={provider} />
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">-</span>
+                    )}
                   </TableCell>
                   <TableCell>
                     <div>{user.tenant_name || "-"}</div>
@@ -602,9 +666,22 @@ export default function UserManager() {
                     {new Date(user.created_at).toLocaleDateString()}
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button variant="ghost" size="icon" onClick={() => handleEdit(user)}>
-                      <Pencil className="h-4 w-4" />
-                    </Button>
+                    <div className="flex items-center justify-end gap-1">
+                      <Button variant="ghost" size="icon" onClick={() => handleEdit(user)}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      {isSuperAdmin ? (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          disabled={!user.can_hard_delete}
+                          title={user.can_hard_delete ? "삭제" : user.delete_block_reason || "삭제할 수 없습니다."}
+                          onClick={() => openDeleteDialog(user)}
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      ) : null}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))
@@ -769,7 +846,7 @@ export default function UserManager() {
                 onValueChange={(value) => setFormData({ ...formData, role_id: value })}
               >
                 <SelectTrigger className="col-span-3">
-                  <SelectValue placeholder="Select role" />
+              <SelectValue placeholder="미지정" />
                 </SelectTrigger>
                 <SelectContent>
                   {roles.map((role) => (
@@ -822,6 +899,55 @@ export default function UserManager() {
             <Button onClick={handleSubmit} disabled={isSaving}>
               {isSaving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
               저장
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={deleteDialogOpen}
+        onOpenChange={(open) => {
+          setDeleteDialogOpen(open)
+          if (!open) {
+            setDeleteTarget(null)
+            setDeletePassword("")
+            setDeleteError(null)
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>사용자 삭제</DialogTitle>
+            <DialogDescription>
+              삭제하려면 최고관리자 비밀번호를 입력해야 합니다.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-2">
+            <div className="text-sm">
+              삭제 대상: <span className="font-medium">{deleteTarget?.full_name || deleteTarget?.email || "-"}</span>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="admin-delete-password">관리자 비밀번호</Label>
+              <Input
+                id="admin-delete-password"
+                type="password"
+                value={deletePassword}
+                onChange={(e) => setDeletePassword(e.target.value)}
+                disabled={deleteLoading}
+              />
+            </div>
+            {deleteError ? <div className="text-sm text-destructive">{deleteError}</div> : null}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDeleteDialogOpen(false)}
+              disabled={deleteLoading}
+            >
+              취소
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteConfirm} disabled={deleteLoading}>
+              {deleteLoading ? "삭제 중..." : "삭제"}
             </Button>
           </DialogFooter>
         </DialogContent>

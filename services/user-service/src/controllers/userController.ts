@@ -29,6 +29,172 @@ const buildPersonalTenantSlug = (nameOrEmail: string, userId: string) => {
   return base ? `${base}-${suffix}` : suffix;
 };
 
+type DeleteEligibility = {
+  ok: boolean;
+  reason?: string;
+  reasons: string[];
+  personalTenantId?: string | null;
+};
+
+const toCount = (value: unknown) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+};
+
+const getDeleteEligibility = async (
+  client: { query: (text: string, params?: unknown[]) => Promise<{ rows: any[] }> },
+  userId: string
+): Promise<DeleteEligibility> => {
+  const { rows } = await client.query(
+    `
+      SELECT
+        (
+          SELECT COUNT(*) FROM tenants t
+          WHERE t.owner_id = $1 AND t.deleted_at IS NULL
+        ) AS owned_tenants,
+        (
+          SELECT COUNT(*) FROM tenants t
+          WHERE t.owner_id = $1
+            AND t.deleted_at IS NULL
+            AND t.tenant_type = 'personal'
+            AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+        ) AS personal_tenants,
+        (
+          SELECT COUNT(*) FROM user_tenant_roles utr
+          WHERE utr.user_id = $1
+            AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+        ) AS membership_count,
+        (
+          SELECT COUNT(*) FROM user_tenant_roles utr
+          JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+          WHERE utr.user_id = $1
+            AND t.tenant_type <> 'personal'
+        ) AS non_personal_memberships,
+        (
+          SELECT COUNT(*) FROM tenant_invitations ti
+          WHERE ti.inviter_id = $1
+        ) AS invite_count,
+        (
+          SELECT COUNT(*) FROM board_categories bc
+          WHERE (bc.author_id = $1 OR bc.user_id = $1)
+            AND bc.category_type <> 'personal_page'
+            AND bc.deleted_at IS NULL
+        ) AS category_count,
+        (
+          SELECT COUNT(*) FROM posts p
+          WHERE p.author_id = $1
+            AND p.deleted_at IS NULL
+            AND p.status <> 'deleted'
+        ) AS post_count,
+        (
+          SELECT COUNT(*) FROM post_comments pc
+          WHERE pc.author_id = $1
+            AND pc.deleted_at IS NULL
+        ) AS comment_count,
+        (
+          SELECT COUNT(*) FROM post_revisions pr
+          WHERE pr.author_id = $1
+        ) AS revision_count,
+        (
+          SELECT COUNT(*) FROM model_conversations mc
+          WHERE mc.user_id = $1
+            AND mc.status <> 'deleted'
+        ) AS conversation_count,
+        (
+          SELECT COUNT(*) FROM model_conversation_reads mcr
+          WHERE mcr.user_id = $1
+        ) AS conversation_read_count,
+        (
+          SELECT COUNT(*) FROM llm_usage_logs lug
+          WHERE lug.user_id = $1
+        ) AS llm_usage_count,
+        (
+          SELECT COUNT(*) FROM credit_accounts ca
+          WHERE ca.owner_user_id = $1
+        ) AS credit_account_count,
+        (
+          SELECT COUNT(*) FROM credit_usage_allocations cua
+          WHERE cua.user_id = $1
+        ) AS credit_usage_count,
+        (
+          SELECT COUNT(*) FROM credit_transfers ct
+          WHERE ct.requested_by = $1 OR ct.approved_by = $1
+        ) AS credit_transfer_count,
+        (
+          SELECT COUNT(*) FROM credit_user_preferences cup
+          WHERE cup.user_id = $1
+        ) AS credit_pref_count,
+        (
+          SELECT COUNT(*) FROM billing_subscription_changes bsc
+          WHERE bsc.requested_by = $1
+        ) AS billing_change_count,
+        (
+          SELECT t.id FROM tenants t
+          WHERE t.owner_id = $1
+            AND t.deleted_at IS NULL
+            AND t.tenant_type = 'personal'
+            AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+          ORDER BY t.created_at ASC
+          LIMIT 1
+        ) AS personal_tenant_id
+    `,
+    [userId]
+  );
+
+  const row = rows[0];
+  if (!row) {
+    return { ok: false, reasons: ['사용자를 찾을 수 없습니다.'] };
+  }
+
+  const ownedTenants = toCount(row.owned_tenants);
+  const personalTenants = toCount(row.personal_tenants);
+  const membershipCount = toCount(row.membership_count);
+  const nonPersonalMemberships = toCount(row.non_personal_memberships);
+  const inviteCount = toCount(row.invite_count);
+  const categoryCount = toCount(row.category_count);
+  const postCount = toCount(row.post_count);
+  const commentCount = toCount(row.comment_count);
+  const revisionCount = toCount(row.revision_count);
+  const conversationCount = toCount(row.conversation_count);
+  const conversationReadCount = toCount(row.conversation_read_count);
+  const llmUsageCount = toCount(row.llm_usage_count);
+  const creditAccountCount = toCount(row.credit_account_count);
+  const creditUsageCount = toCount(row.credit_usage_count);
+  const creditTransferCount = toCount(row.credit_transfer_count);
+  const creditPrefCount = toCount(row.credit_pref_count);
+  const billingChangeCount = toCount(row.billing_change_count);
+
+  const reasons: string[] = [];
+  if (ownedTenants !== 1 || personalTenants !== 1) {
+    reasons.push('개인 테넌트가 1개여야 합니다.');
+  }
+  if (membershipCount !== 1 || nonPersonalMemberships > 0) {
+    reasons.push('다른 테넌트 소속이 있습니다.');
+  }
+  if (inviteCount > 0) {
+    reasons.push('초대 기록이 있습니다.');
+  }
+  if (categoryCount + postCount + commentCount + revisionCount > 0) {
+    reasons.push('게시글/카테고리 활동이 있습니다.');
+  }
+  if (conversationCount + conversationReadCount + llmUsageCount > 0) {
+    reasons.push('AI 사용 기록이 있습니다.');
+  }
+  if (creditAccountCount + creditUsageCount + creditTransferCount + creditPrefCount > 0) {
+    reasons.push('크레딧/정산 기록이 있습니다.');
+  }
+  if (billingChangeCount > 0) {
+    reasons.push('구독 변경 기록이 있습니다.');
+  }
+
+  return {
+    ok: reasons.length === 0,
+    reason: reasons[0],
+    reasons,
+    personalTenantId: row.personal_tenant_id || null,
+  };
+};
+
 export const getUsers = async (req: Request, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
@@ -39,6 +205,7 @@ export const getUsers = async (req: Request, res: Response) => {
     let query = `
       SELECT DISTINCT ON (u.id)
         u.id, u.email, u.full_name, u.status, u.email_verified, u.last_login_at, u.created_at, u.updated_at,
+        (u.password_hash IS NOT NULL AND u.password_hash <> '') AS has_password,
         r.name as role_name,
         r.slug as role_slug,
         r.id as role_id,
@@ -49,6 +216,7 @@ export const getUsers = async (req: Request, res: Response) => {
         pt.tenant_type as tenant_type,
         pt.current_member_count as tenant_current_member_count,
         COALESCE(bp.included_seats, pt.member_limit, 1) AS tenant_included_seats,
+        COALESCE(up.providers, ARRAY[]::text[]) AS providers,
         COALESCE(
           NULLIF(pt.metadata->>'plan_tier',''),
           NULLIF(pt.metadata->>'service_tier',''),
@@ -67,6 +235,11 @@ export const getUsers = async (req: Request, res: Response) => {
         ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC, utr.granted_at ASC
         LIMIT 1
       ) pt ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT ARRAY_AGG(DISTINCT up.provider) AS providers
+        FROM user_providers up
+        WHERE up.user_id = u.id
+      ) up ON TRUE
       LEFT JOIN LATERAL (
         SELECT bs.plan_id
         FROM billing_subscriptions bs
@@ -96,6 +269,26 @@ export const getUsers = async (req: Request, res: Response) => {
     params.push(limit, offset);
 
     const { rows } = await pool.query(query, params);
+
+    const users = await Promise.all(
+      rows.map(async (row: any) => {
+        try {
+          const eligibility = await getDeleteEligibility(pool, row.id);
+          return {
+            ...row,
+            can_hard_delete: eligibility.ok,
+            delete_block_reason: eligibility.reason || null,
+          };
+        } catch (error) {
+          console.error('Failed to evaluate delete eligibility:', error);
+          return {
+            ...row,
+            can_hard_delete: false,
+            delete_block_reason: '삭제 조건 확인 실패',
+          };
+        }
+      })
+    );
 
     // Get total count for pagination
     let countQuery = `
@@ -131,7 +324,7 @@ export const getUsers = async (req: Request, res: Response) => {
     const total = parseInt(countResult.rows[0].count);
 
     res.json({
-      users: rows,
+      users,
       pagination: {
         page,
         limit,
@@ -321,6 +514,80 @@ export const updateUser = async (req: Request, res: Response) => {
     await client.query('ROLLBACK');
     console.error('Error updating user:', error);
     res.status(500).json({ message: 'Internal server error' });
+  } finally {
+    client.release();
+  }
+};
+
+export const hardDeleteUser = async (req: Request, res: Response) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { id } = req.params;
+    const authedReq = req as AuthedRequest;
+    const platformRole = String(authedReq.platformRole || '').toLowerCase();
+
+    if (platformRole !== 'super-admin') {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ message: 'Super-admin role required' });
+    }
+    if (!id) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'User id is required' });
+    }
+    if (String(authedReq.userId) === String(id)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: '본인 계정은 삭제할 수 없습니다.' });
+    }
+
+    const adminPassword = typeof req.body?.admin_password === 'string' ? req.body.admin_password.trim() : '';
+    if (!adminPassword) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: '관리자 비밀번호를 입력해주세요.' });
+    }
+
+    const adminRes = await client.query(
+      'SELECT password_hash FROM users WHERE id = $1 AND deleted_at IS NULL',
+      [authedReq.userId]
+    );
+    const adminHash = adminRes.rows[0]?.password_hash;
+    if (!adminHash) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: '비밀번호가 설정되지 않은 계정입니다.' });
+    }
+    const passwordOk = await bcrypt.compare(adminPassword, adminHash);
+    if (!passwordOk) {
+      await client.query('ROLLBACK');
+      return res.status(401).json({ message: '관리자 비밀번호가 올바르지 않습니다.' });
+    }
+
+    const eligibility = await getDeleteEligibility(client, id);
+    if (!eligibility.ok) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        message: '삭제 조건을 만족하지 않습니다.',
+        reason: eligibility.reason,
+        reasons: eligibility.reasons,
+      });
+    }
+    if (!eligibility.personalTenantId) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: '삭제할 개인 테넌트를 찾지 못했습니다.' });
+    }
+
+    await client.query('DELETE FROM tenants WHERE id = $1', [eligibility.personalTenantId]);
+    await client.query('DELETE FROM user_providers WHERE user_id = $1', [id]);
+    await client.query('DELETE FROM user_sessions WHERE user_id = $1', [id]);
+    await client.query('DELETE FROM user_roles WHERE user_id = $1', [id]);
+    await client.query('DELETE FROM user_tenant_roles WHERE user_id = $1', [id]);
+    await client.query('DELETE FROM users WHERE id = $1', [id]);
+
+    await client.query('COMMIT');
+    return res.json({ ok: true, id });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error hard deleting user:', error);
+    return res.status(500).json({ message: 'Internal server error' });
   } finally {
     client.release();
   }

@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/dialog"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, Plus, RefreshCcw, Trash2 } from "lucide-react"
+import { Loader2, Plus, RefreshCcw } from "lucide-react"
 
 type UserProviderRow = {
   id: string
@@ -193,22 +193,6 @@ export default function UserProviders() {
     }
   }
 
-  async function removeProvider(row: UserProviderRow) {
-    const label = row.user_email || row.user_id
-    if (!confirm(`"${label}" 연동을 해제할까요?`)) return
-    try {
-      const res = await adminFetch(`${API_URL}/${row.id}`, { method: "DELETE" })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok || !json.ok) {
-        return alert(json.message || "삭제에 실패했습니다.")
-      }
-      await fetchProviders()
-    } catch (e) {
-      console.error(e)
-      alert("삭제 중 오류가 발생했습니다.")
-    }
-  }
-
   useEffect(() => {
     fetchProviders()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -275,20 +259,19 @@ export default function UserProviders() {
               <TableHead>Provider User ID</TableHead>
               <TableHead>Extra Data</TableHead>
               <TableHead>생성일</TableHead>
-              <TableHead>관리</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {rows.length === 0 && !loading ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground">
+                <TableCell colSpan={5} className="text-center text-muted-foreground">
                   표시할 연동 정보가 없습니다.
                 </TableCell>
               </TableRow>
             ) : null}
             {loading ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground">
+                <TableCell colSpan={5} className="text-center text-muted-foreground">
                   <Loader2 className="h-4 w-4 inline-block animate-spin mr-2" />
                   로딩 중...
                 </TableCell>
@@ -306,11 +289,6 @@ export default function UserProviders() {
                 <TableCell className="text-xs text-muted-foreground">{row.provider_user_id}</TableCell>
                 <TableCell className="text-xs text-muted-foreground">{formatJsonPreview(row.extra_data)}</TableCell>
                 <TableCell className="text-sm">{fmtDate(row.created_at)}</TableCell>
-                <TableCell>
-                  <Button variant="ghost" size="icon" onClick={() => removeProvider(row)}>
-                    <Trash2 className="h-4 w-4 text-destructive" />
-                  </Button>
-                </TableCell>
               </TableRow>
             ))}
           </TableBody>
