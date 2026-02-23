@@ -49,6 +49,8 @@ services:
       - "3001:3001"
     volumes:
       - ./services/auth-service/src:/app/src
+    env_file:
+      - ./services/auth-service/.env
     environment:
       - PORT=3001
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
@@ -57,8 +59,6 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_HOST=${POSTGRES_HOST}
       - POSTGRES_PORT=${POSTGRES_PORT}
-      - EMAIL_USER=${EMAIL_USER}
-      - EMAIL_PASS=${EMAIL_PASS}
       - JWT_SECRET=${JWT_SECRET}
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -110,7 +110,7 @@ export default function Intro() {
             <div className="flex items-start relative shrink-0 w-full">
               <div className="flex flex-[1_0_0] flex-col items-start justify-center relative shrink-0 text-primary">
                 <p className="font-black leading-[36px] text-[30px]">
-                  reduct
+                  reduct<span className="text-primary text-[18px] font-normal">.page</span>
                 </p>
                 <p className="font-normal leading-[28px] text-[18px]">
                   AI Agent

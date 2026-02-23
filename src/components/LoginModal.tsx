@@ -163,16 +163,18 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
   };
 
   const handleLoginContinue = async () => {
-    if (!email) {
+    const trimmedEmail = email.trim()
+    if (!trimmedEmail) {
       setError("이메일을 입력해주세요.")
       return
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    if (!emailRegex.test(email)) {
+    if (!emailRegex.test(trimmedEmail)) {
       setError("이메일 형식이 아닙니다. 다시 작성해 주세요")
       return
     }
+    if (trimmedEmail !== email) setEmail(trimmedEmail)
     
     setIsLoading(true)
     setError(null)
@@ -181,7 +183,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       const checkResponse = await fetch(`${API_URL}/check-email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email })
+        body: JSON.stringify({ email: trimmedEmail })
       })
       
       const checkData = await checkResponse.json()
@@ -198,7 +200,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
         const response = await fetch(`${API_URL}/send-verification-code`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email })
+          body: JSON.stringify({ email: trimmedEmail })
         })
         
         const data = await response.json()
@@ -221,13 +223,19 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
   }
 
   const handleResendOTP = async () => {
+    const trimmedEmail = email.trim()
+    if (!trimmedEmail) {
+      setError("이메일을 입력해주세요.")
+      return
+    }
+    if (trimmedEmail !== email) setEmail(trimmedEmail)
     setIsLoading(true)
     setError(null)
     try {
       const response = await fetch(`${API_URL}/send-verification-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email })
+        body: JSON.stringify({ email: trimmedEmail })
       })
       
       const data = await response.json()
@@ -253,6 +261,12 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       setError("인증번호 6자리를 입력해주세요.")
       return
     }
+    const trimmedEmail = email.trim()
+    if (!trimmedEmail) {
+      setError("이메일을 입력해주세요.")
+      return
+    }
+    if (trimmedEmail !== email) setEmail(trimmedEmail)
 
     setIsLoading(true)
     setError(null)
@@ -260,7 +274,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       const response = await fetch(`${API_URL}/verify-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, code: otp })
+        body: JSON.stringify({ email: trimmedEmail, code: otp })
       })
       
       const data = await response.json()
@@ -435,6 +449,12 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
   }
 
   const handleForgotPassword = async () => {
+    const trimmedEmail = email.trim()
+    if (!trimmedEmail) {
+      setError("이메일을 입력해주세요.")
+      return
+    }
+    if (trimmedEmail !== email) setEmail(trimmedEmail)
     setIsLoading(true)
     setError(null)
     setOtp("") // Reset OTP
@@ -442,7 +462,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       const response = await fetch(`${API_URL}/send-verification-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email })
+        body: JSON.stringify({ email: trimmedEmail })
       })
       
       const data = await response.json()
@@ -468,6 +488,12 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       setError("인증번호 6자리를 입력해주세요.")
       return
     }
+    const trimmedEmail = email.trim()
+    if (!trimmedEmail) {
+      setError("이메일을 입력해주세요.")
+      return
+    }
+    if (trimmedEmail !== email) setEmail(trimmedEmail)
 
     setIsLoading(true)
     setError(null)
@@ -475,7 +501,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       const response = await fetch(`${API_URL}/verify-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, code: otp })
+        body: JSON.stringify({ email: trimmedEmail, code: otp })
       })
       
       const data = await response.json()
@@ -513,13 +539,20 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       return
     }
 
+    const trimmedEmail = email.trim()
+    if (!trimmedEmail) {
+      setError("이메일을 입력해주세요.")
+      return
+    }
+    if (trimmedEmail !== email) setEmail(trimmedEmail)
+
     setIsLoading(true)
     setError(null)
     try {
       const response = await fetch(`${API_URL}/reset-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, code: otp, newPassword })
+        body: JSON.stringify({ email: trimmedEmail, code: otp, newPassword })
       })
       
       const data = await response.json()

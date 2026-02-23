@@ -76,11 +76,20 @@ const validatePassword = (password: string) => {
   return true;
 };
 
-export const sendVerificationCode = async (req: Request, res: Response) => {
-  const { email } = req.body;
+const normalizeEmail = (value: unknown) => {
+  if (typeof value !== 'string') return '';
+  return value.trim();
+};
 
+const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+
+export const sendVerificationCode = async (req: Request, res: Response) => {
+  const email = normalizeEmail(req.body?.email);
   if (!email) {
     return res.status(400).json({ message: 'Email is required' });
+  }
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ message: 'Invalid email format' });
   }
 
   // Check if user already exists
@@ -112,7 +121,8 @@ export const sendVerificationCode = async (req: Request, res: Response) => {
 };
 
 export const verifyCode = async (req: Request, res: Response) => {
-  const { email, code } = req.body;
+  const email = normalizeEmail(req.body?.email);
+  const { code } = req.body;
 
   if (!email || !code) {
     return res.status(400).json({ message: 'Email and code are required' });
@@ -149,10 +159,13 @@ export const verifyCode = async (req: Request, res: Response) => {
 };
 
 export const checkEmail = async (req: Request, res: Response) => {
-  const { email } = req.body;
+  const email = normalizeEmail(req.body?.email);
 
   if (!email) {
     return res.status(400).json({ message: 'Email is required' });
+  }
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ message: 'Invalid email format' });
   }
 
   try {
@@ -165,7 +178,8 @@ export const checkEmail = async (req: Request, res: Response) => {
 };
 
 export const resetPassword = async (req: Request, res: Response) => {
-  const { email, code, newPassword } = req.body;
+  const email = normalizeEmail(req.body?.email);
+  const { code, newPassword } = req.body;
 
   if (!email || !code || !newPassword) {
     return res.status(400).json({ message: 'Email, code, and new password are required' });
@@ -246,10 +260,14 @@ export const changePassword = async (req: Request, res: Response) => {
 };
 
 export const register = async (req: Request, res: Response) => {
-  const { email, password, name } = req.body;
+  const email = normalizeEmail(req.body?.email);
+  const { password, name } = req.body;
 
   if (!email || !password || !name) {
     return res.status(400).json({ message: 'All fields are required' });
+  }
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ message: 'Invalid email format' });
   }
 
   const client = await db.default.connect();
@@ -357,8 +375,15 @@ export const register = async (req: Request, res: Response) => {
 };
 
 export const login = async (req: Request, res: Response) => {
-  const { email, password } = req.body;
+  const email = normalizeEmail(req.body?.email);
+  const { password } = req.body;
 
+  if (!email || !password) {
+    return res.status(400).json({ message: 'Email and password are required' });
+  }
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ message: 'Invalid email format' });
+  }
   try {
     const result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
     const user = result.rows[0];
