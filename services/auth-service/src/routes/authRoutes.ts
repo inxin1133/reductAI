@@ -19,6 +19,7 @@ router.get('/kakao', authController.startKakaoOAuth);
 router.get('/kakao/callback', authController.handleKakaoOAuthCallback);
 router.post('/login', authController.login);
 router.post('/change-password', requireAuth, authController.changePassword);
+router.post('/set-password', requireAuth, authController.setPassword);
 
 export default router;
 

@@ -218,7 +218,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
         const response = await fetch(`${API_URL}/send-verification-code`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: trimmedEmail })
+          body: JSON.stringify({ email: trimmedEmail, purpose: 'signup' })
         })
         
         const data = await response.json()
@@ -250,10 +250,11 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
     setIsLoading(true)
     setError(null)
     try {
+      const purpose = step === 'forgot_password_verify' ? 'password_reset' : 'signup'
       const response = await fetch(`${API_URL}/send-verification-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: trimmedEmail })
+        body: JSON.stringify({ email: trimmedEmail, purpose })
       })
       
       const data = await response.json()
@@ -480,7 +481,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       const response = await fetch(`${API_URL}/send-verification-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: trimmedEmail })
+        body: JSON.stringify({ email: trimmedEmail, purpose: 'password_reset' })
       })
       
       const data = await response.json()
@@ -703,6 +704,13 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
               <p className="text-sm text-muted-foreground text-center mt-2">
                 {email} 주소로 받은 인증 코드를 입력하세요
               </p>
+              {/@(kakao\.com|daum\.net)$/i.test(email || "") ? (
+                <p className="text-xs text-muted-foreground text-center">
+                  카카오/다음 메일은 수신이 지연될 수 있습니다.<br />
+                  코드 유효시간은 20분입니다.<br />
+                  최대 20분까지 여유 있게 확인해주세요.<br />
+                </p>
+              ) : null}
             </div>
 
             <div className="flex gap-2 w-full">
@@ -895,6 +903,11 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
               <p className="text-sm text-muted-foreground text-center mt-2">
                 {email || "abc@naver.com"} 주소로 받은 인증 코드를 입력하세요
               </p>
+              {/@(kakao\.com|daum\.net)$/i.test(email || "") ? (
+                <p className="text-xs text-muted-foreground text-center">
+                  카카오/다음 메일은 수신이 지연될 수 있습니다. 최대 20분까지 여유 있게 확인해주세요.
+                </p>
+              ) : null}
             </div>
 
             <div className="flex gap-2 w-full">

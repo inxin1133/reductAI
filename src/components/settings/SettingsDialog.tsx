@@ -22,6 +22,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFooter } from "@/components/ui/table"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { BillingSettingsDialog } from "@/components/settings/BillingSettingsDialog"
 import {
   ArrowLeft,
   ChevronsUp,
@@ -51,6 +52,10 @@ import { Switch } from "@/components/ui/switch"
 // 예를 들어 조건부로 클래스를 추가하거나, 여러 클래스를 가독성 있게 합칠 때 사용합니다.
 import { cn } from "@/lib/utils"
 import { cardLabel, getCardBrandIcon, normalizeCardBrand } from "@/lib/card"
+import { ProviderBadge } from "@/lib/providerBadge"
+import { LogoGoogle } from "@/components/icons/LogoGoogle"
+import { LogoKakao } from "@/components/icons/LogoKakao"
+import { LogoNaver } from "@/components/icons/LogoNaver"
 
 type SettingsDialogProps = {
   open: boolean
@@ -151,6 +156,7 @@ type CurrentUserProfile = {
   full_name?: string | null
   profile_image_asset_id?: string | null
   profile_image_url?: string | null
+  has_password?: boolean
 }
 
 type CurrentTenantProfile = {
@@ -164,6 +170,7 @@ type TenantMembership = {
   id: string
   name?: string | null
   tenant_type?: string | null
+  current_member_count?: number | null
   membership_status?: string | null
   joined_at?: string | null
   expires_at?: string | null
@@ -172,6 +179,7 @@ type TenantMembership = {
   role_name?: string | null
   role_scope?: string | null
   member_count?: number | null
+  member_limit?: number | null
   plan_tier?: string | null
 }
 
@@ -219,12 +227,11 @@ const MEMBERSHIP_STATUS_STYLES: Record<string, string> = {
   inactive: "bg-slate-50 text-slate-500 ring-slate-300",
 }
 
-const PROVIDER_LABELS: Record<string, string> = {
-  google: "Google",
-  kakao: "Kakao",
-  naver: "Naver",
-  local: "Email",
-}
+const SSO_PROVIDERS_BY_EMAIL: { test: (email: string) => boolean; provider: string; label: string; Logo: React.ComponentType<React.SVGProps<SVGSVGElement>>; bg: string; text: string }[] = [
+  { test: (e) => e.endsWith("@naver.com"), provider: "naver", label: "네이버 연동", Logo: LogoNaver, bg: "bg-[#03C75A] hover:bg-[#02b351]", text: "text-white" },
+  { test: (e) => e.endsWith("@kakao.com"), provider: "kakao", label: "카카오 연동", Logo: LogoKakao, bg: "bg-[#FEE500] hover:bg-[#e6cf00]", text: "text-black" },
+  { test: (e) => /@g(oogle|mail)\b/.test(e), provider: "google", label: "구글 연동", Logo: LogoGoogle, bg: "bg-[#4285F4] hover:bg-[#3b78e0]", text: "text-white" },
+]
 
 function normalizePlanTier(value: unknown): PlanTier | null {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
@@ -300,6 +307,8 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     () => readSettingsMenuFromStorage() ?? "profile"
   )
   const [billingEditOpen, setBillingEditOpen] = useState(false)
+  const [billingSettingsOpen, setBillingSettingsOpen] = useState(false)
+  const [pendingBillingOpen, setPendingBillingOpen] = useState(false)
   const [billingForm, setBillingForm] = useState<BillingFormState>(INITIAL_BILLING_FORM)
   const [postcodeLoading, setPostcodeLoading] = useState(false)
   const [usagePage, setUsagePage] = useState(1)
@@ -324,6 +333,18 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     onOpenPlanDialog?.()
     onOpenChange(false)
   }, [onOpenPlanDialog, onOpenChange])
+
+  const handleOpenBillingSettings = useCallback(() => {
+    setPendingBillingOpen(true)
+    onOpenChange(false)
+  }, [onOpenChange])
+
+  useEffect(() => {
+    if (!open && pendingBillingOpen) {
+      setBillingSettingsOpen(true)
+      setPendingBillingOpen(false)
+    }
+  }, [open, pendingBillingOpen])
   const VisaIcon = getCardBrandIcon("visa")
   const MasterIcon = getCardBrandIcon("master")
   const AmexIcon = getCardBrandIcon("amex")
@@ -344,6 +365,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
   const [passwordError, setPasswordError] = useState<string | null>(null)
   const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null)
   const [passwordSaving, setPasswordSaving] = useState(false)
+  const [passwordCreateMode, setPasswordCreateMode] = useState(false)
   const usageRows = useMemo(
     () => [
       ["2026-02-10 10:12", "GPT-5.2", "입력 12K / 출력 4K", "3.20"],
@@ -435,6 +457,11 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     return TENANT_TYPE_LABELS[raw] || "-"
   }, [currentTenant?.tenant_type])
 
+  const isTeamTenant = useMemo(() => {
+    const raw = String(currentTenant?.tenant_type || "").trim().toLowerCase()
+    return raw === "team" || raw === "group"
+  }, [currentTenant?.tenant_type])
+
   const passwordChecks = useMemo(() => {
     const next = passwordForm.next
     return {
@@ -456,12 +483,15 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
 
   const canSubmitPassword = useMemo(() => {
     if (passwordSaving) return false
-    if (!passwordForm.current || !passwordForm.next || !passwordForm.confirm) return false
+    if (!passwordForm.next || !passwordForm.confirm) return false
     if (!isPasswordValid) return false
     if (!isPasswordMatch) return false
-    if (passwordForm.current === passwordForm.next) return false
+    if (!passwordCreateMode) {
+      if (!passwordForm.current) return false
+      if (passwordForm.current === passwordForm.next) return false
+    }
     return true
-  }, [isPasswordMatch, isPasswordValid, passwordForm, passwordSaving])
+  }, [isPasswordMatch, isPasswordValid, passwordCreateMode, passwordForm, passwordSaving])
 
   const loadProfile = useCallback(async () => {
     const headers = authHeaders()
@@ -491,12 +521,21 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
             : nextProfileAssetId
               ? `/api/ai/media/assets/${nextProfileAssetId}`
               : null
+          const hasPasswordRaw = (userJson as { has_password?: unknown })?.has_password
+          const hasPassword =
+            typeof hasPasswordRaw === "boolean"
+              ? hasPasswordRaw
+              : typeof hasPasswordRaw === "number"
+                ? hasPasswordRaw === 1
+                : undefined
+
           setCurrentUser({
             id: String(userJson.id),
             email: String(userJson.email || ""),
             full_name: userJson.full_name ?? null,
             profile_image_asset_id: nextProfileAssetId,
             profile_image_url: nextProfileUrl,
+            has_password: hasPassword,
           })
           setProfileImageAssetId(nextProfileAssetId)
           setProfileImageUrl(nextProfileUrl)
@@ -841,20 +880,24 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     setPasswordError(null)
     setPasswordSuccess(null)
 
-    if (!passwordForm.current || !passwordForm.next || !passwordForm.confirm) {
-      setPasswordError("모든 비밀번호 항목을 입력해 주세요.")
+    if (!passwordCreateMode && !passwordForm.current) {
+      setPasswordError("현재 비밀번호를 입력해 주세요.")
       return
     }
-    if (passwordForm.current === passwordForm.next) {
+    if (!passwordForm.next || !passwordForm.confirm) {
+      setPasswordError("비밀번호를 입력해 주세요.")
+      return
+    }
+    if (!passwordCreateMode && passwordForm.current === passwordForm.next) {
       setPasswordError("새 비밀번호는 현재 비밀번호와 달라야 합니다.")
       return
     }
     if (!isPasswordValid) {
-      setPasswordError("새 비밀번호 조건을 충족해 주세요.")
+      setPasswordError("비밀번호 조건을 충족해 주세요.")
       return
     }
     if (!isPasswordMatch) {
-      setPasswordError("새 비밀번호가 일치하지 않습니다.")
+      setPasswordError("비밀번호가 일치하지 않습니다.")
       return
     }
 
@@ -866,26 +909,44 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
 
     setPasswordSaving(true)
     try {
-      const res = await fetch(`${AUTH_API_BASE}/change-password`, {
+      const endpoint = passwordCreateMode ? "set-password" : "change-password"
+      const payload: Record<string, string> = {
+        newPassword: passwordForm.next,
+        confirmPassword: passwordForm.confirm,
+      }
+      if (!passwordCreateMode) payload.currentPassword = passwordForm.current
+
+      const res = await fetch(`${AUTH_API_BASE}/${endpoint}`, {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          currentPassword: passwordForm.current,
-          newPassword: passwordForm.next,
-          confirmPassword: passwordForm.confirm,
-        }),
+        body: JSON.stringify(payload),
       })
       if (!res.ok) {
-        const msg = await res.text().catch(() => "")
-        setPasswordError(msg || "비밀번호 변경에 실패했습니다.")
+        const body = await res.json().catch(() => null)
+        const message = (body as { message?: string })?.message
+        if (
+          passwordCreateMode &&
+          typeof message === "string" &&
+          message.includes("이미 비밀번호가 설정")
+        ) {
+          setPasswordCreateMode(false)
+          setCurrentUser((prev) => (prev ? { ...prev, has_password: true } : prev))
+          setPasswordError("이미 비밀번호가 설정되어 있어 비밀번호 변경 화면으로 전환했습니다.")
+          return
+        }
+        setPasswordError(message || "비밀번호 설정에 실패했습니다.")
         return
       }
-      setPasswordSuccess("비밀번호가 변경되었습니다.")
+      setPasswordSuccess(passwordCreateMode ? "비밀번호가 생성되었습니다." : "비밀번호가 변경되었습니다.")
       setPasswordForm({ current: "", next: "", confirm: "" })
+      if (passwordCreateMode) {
+        setPasswordCreateMode(false)
+        setCurrentUser((prev) => prev ? { ...prev, has_password: true } : prev)
+      }
     } finally {
       setPasswordSaving(false)
     }
-  }, [authHeaders, isPasswordMatch, isPasswordValid, passwordForm, passwordSaving])
+  }, [authHeaders, isPasswordMatch, isPasswordValid, passwordCreateMode, passwordForm, passwordSaving])
 
   useEffect(() => {
     if (!open) {
@@ -1008,6 +1069,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
   }, [open])
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
@@ -1190,50 +1252,52 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                         <div className="flex items-center gap-2">테넌트 유형</div>
                         <div className="flex items-center gap-2 text-foreground">{displayTenantType}</div>
                       </div>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">테넌트 이름</div>
-                        <div className="flex items-center gap-2 text-foreground min-w-0">
-                          {isEditingTenantName ? (
-                            <Input
-                              ref={tenantNameInputRef}
-                              value={tenantNameDraft}
-                              onChange={(e) => setTenantNameDraft(e.target.value)}
-                              onBlur={() => void commitTenantName()}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") {
-                                  e.preventDefault()
-                                  void commitTenantName()
-                                  return
-                                }
-                                if (e.key === "Escape") {
-                                  e.preventDefault()
-                                  cancelEditTenantName()
-                                }
-                              }}
-                              className="h-7 text-sm"
-                              disabled={isSavingTenantName}
-                            />
-                          ) : (
-                            <span className="truncate">{currentTenant?.name || "-"}</span>
-                          )}
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <button
-                                type="button"
-                                className="shrink-0"
-                                onClick={startEditTenantName}
+                      {isTeamTenant ? (
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">테넌트 이름</div>
+                          <div className="flex items-center gap-2 text-foreground min-w-0">
+                            {isEditingTenantName ? (
+                              <Input
+                                ref={tenantNameInputRef}
+                                value={tenantNameDraft}
+                                onChange={(e) => setTenantNameDraft(e.target.value)}
+                                onBlur={() => void commitTenantName()}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault()
+                                    void commitTenantName()
+                                    return
+                                  }
+                                  if (e.key === "Escape") {
+                                    e.preventDefault()
+                                    cancelEditTenantName()
+                                  }
+                                }}
+                                className="h-7 text-sm"
                                 disabled={isSavingTenantName}
-                                aria-label="테넌트 이름 변경"
-                              >
-                                <SquarePen className="size-3 text-blue-500" />
-                              </button>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              <p>이름 변경</p>
-                            </TooltipContent>
-                          </Tooltip>
+                              />
+                            ) : (
+                              <span className="truncate">{currentTenant?.name || "-"}</span>
+                            )}
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  className="shrink-0"
+                                  onClick={startEditTenantName}
+                                  disabled={isSavingTenantName}
+                                  aria-label="테넌트 이름 변경"
+                                >
+                                  <SquarePen className="size-3 text-blue-500" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <p>이름 변경</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          </div>
                         </div>
-                      </div>
+                      ) : null}
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">서비스 등급</div>
                         <div className="flex items-center gap-2 flex-wrap">
@@ -1264,7 +1328,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                         userProviders.map((provider) => (
                           <div key={provider.id} className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
-                              <span className="text-foreground">{PROVIDER_LABELS[provider.provider] || provider.provider}</span>
+                              <ProviderBadge provider={provider.provider} />
                               {provider.provider_user_id ? (
                                 <span className="text-xs text-muted-foreground">{provider.provider_user_id}</span>
                               ) : null}
@@ -1273,65 +1337,100 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                           </div>
                         ))
                       ) : (
-                        <div className="text-xs text-muted-foreground">
-                          {profileLoading ? "불러오는 중..." : "연동된 계정이 없습니다."}
+                        <div className="flex flex-col gap-2">
+                          {profileLoading ? (
+                            <span className="text-xs text-muted-foreground">불러오는 중...</span>
+                          ) : (() => {
+                            const email = resolvedUserEmail.toLowerCase()
+                            const match = SSO_PROVIDERS_BY_EMAIL.find((s) => s.test(email))
+                            return match ? (
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="text-xs text-muted-foreground">연동된 계정이 없습니다. {email}는 연동 가능계정입니다.</span>
+                                <Button
+                                  size="xs"
+                                  className={cn("gap-1.5 border-0 shadow-sm", match.bg, match.text)}
+                                  onClick={() => { window.location.href = `${AUTH_API_BASE}/${match.provider}` }}
+                                >
+                                  <match.Logo className="size-4" />
+                                  {match.label}
+                                </Button>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">연동된 계정이 없습니다<div className="12"></div></span>
+                            )
+                          })()}
                         </div>
                       )}
                     </div>
                   </div>
 
-                  <div className="p-4">
-                    <div className="text-sm font-semibold text-foreground border-b border-border pb-2">테넌트 정보</div>
-                    <div className="mt-3 grid gap-3 text-sm text-muted-foreground">
-                      {tenantMemberships.length ? (
-                        tenantMemberships.map((item) => {
-                          const roleSlug = String(item.role_slug || "").toLowerCase()
-                          const roleLabel = item.role_name || ROLE_LABELS[roleSlug] || "멤버"
-                          const statusKey = String(item.membership_status || "active").toLowerCase()
-                          const statusLabel = MEMBERSHIP_STATUS_LABELS[statusKey] || "활성"
-                          const statusStyle = MEMBERSHIP_STATUS_STYLES[statusKey] || MEMBERSHIP_STATUS_STYLES.active
-                          const memberCount =
-                            typeof item.member_count === "number" && Number.isFinite(item.member_count)
-                              ? item.member_count
-                              : null
-                          const canManage = roleSlug === "owner" || roleSlug === "admin"
-                          return (
-                            <div key={item.id} className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <span>{item.name || "-"}</span>
-                                <span className="text-xs">({roleLabel})</span>
-                                <span className={cn("inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1", statusStyle)}>
-                                  {statusLabel}
-                                </span>
+                  {isTeamTenant ? (
+                    <div className="p-4">
+                      <div className="text-sm font-semibold text-foreground border-b border-border pb-2">테넌트 정보</div>
+                      <div className="mt-3 grid gap-3 text-sm text-muted-foreground">
+                        {tenantMemberships.length ? (
+                          tenantMemberships.map((item) => {
+                            const roleSlug = String(item.role_slug || "").toLowerCase()
+                            const roleLabel = item.role_name || ROLE_LABELS[roleSlug] || "멤버"
+                            const statusKey = String(item.membership_status || "active").toLowerCase()
+                            const statusLabel = MEMBERSHIP_STATUS_LABELS[statusKey] || "활성"
+                            const statusStyle = MEMBERSHIP_STATUS_STYLES[statusKey] || MEMBERSHIP_STATUS_STYLES.active
+                            const memberCountRaw =
+                              typeof item.current_member_count === "number" && Number.isFinite(item.current_member_count)
+                                ? item.current_member_count
+                                : typeof item.member_count === "number" && Number.isFinite(item.member_count)
+                                  ? item.member_count
+                                  : null
+                            const memberLimit =
+                              typeof item.member_limit === "number" && Number.isFinite(item.member_limit)
+                                ? item.member_limit
+                                : null
+                            const canManage = roleSlug === "owner" || roleSlug === "admin"
+                            return (
+                              <div key={item.id} className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <span>{item.name || "-"}</span>
+                                  <span className="text-xs">({roleLabel})</span>
+                                  <span className={cn("inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1", statusStyle)}>
+                                    {statusLabel}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2 text-foreground">
+                                  {item.expires_at ? (
+                                    <span className="text-xs text-muted-foreground">만료 {formatDateTime(item.expires_at)}</span>
+                                  ) : null}
+                                  멤버 {memberCountRaw ?? "-"}/{memberLimit ?? "-"}
+                                  {canManage ? (
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <button
+                                          type="button"
+                                          className="inline-flex items-center justify-center rounded-sm p-1 text-muted-foreground hover:text-foreground hover:bg-muted"
+                                          onClick={handleOpenBillingSettings}
+                                        >
+                                          <Settings2 className="size-3" />
+                                        </button>
+                                      </TooltipTrigger>
+                                      <TooltipContent>
+                                        <p>설정 바로가기</p>
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  ) : null}
+                                </div>
                               </div>
-                              <div className="flex items-center gap-2 text-foreground">
-                                {item.expires_at ? (
-                                  <span className="text-xs text-muted-foreground">만료 {formatDateTime(item.expires_at)}</span>
-                                ) : null}
-                                멤버 {memberCount ?? "-"}명
-                                {canManage ? (
-                                  <Tooltip>
-                                    <TooltipTrigger>
-                                      <Settings2 className="size-3 text-muted-foreground" />
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      <p>설정 바로가기</p>
-                                    </TooltipContent>
-                                  </Tooltip>
-                                ) : null}
-                              </div>
-                            </div>
-                          )
-                        })
-                      ) : (
-                        <div className="text-xs text-muted-foreground">
-                          {profileLoading ? "불러오는 중..." : "가입된 테넌트가 없습니다."}
-                        </div>
-                      )}
+                            )
+                          })
+                        ) : (
+                          <div className="text-xs text-muted-foreground">
+                            {profileLoading ? "불러오는 중..." : "가입된 테넌트가 없습니다."}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
+                  ) : null}
 
-                  <div className="p-4">
+                  {/* 계정 삭제 부분 숨김 처리 */}
+                  {/* <div className="p-4">
                     <div className="text-sm font-semibold text-foreground border-b border-border pb-2">계정</div>
                     <div className="mt-3 grid gap-3 text-sm text-muted-foreground">
                       <div className="flex items-center justify-between">
@@ -1347,94 +1446,144 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                         </div>
                       </div>
                     </div>
-                  </div>
+                  </div> */}
 
                 </div>
               ) : null}
 
               {activeMenu === "password" ? (
-                // 비밀번호 관리
                 <div className="grid gap-3">
-
                   <div className="p-4">
-                    <div className="text-sm font-semibold text-foreground border-b border-border pb-2">비밀번호 변경</div>
-                    <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
-                      <div className="grid gap-1">
-                        <Label className="text-xs">현재 비밀번호</Label>
-                        <Input
-                          type="password"
-                          value={passwordForm.current}
-                          onChange={(e) => {
-                            setPasswordForm((prev) => ({ ...prev, current: e.target.value }))
-                            setPasswordError(null)
-                            setPasswordSuccess(null)
-                          }}
-                          placeholder="현재 비밀번호"
-                        />
-                      </div>
-                      <div className="grid gap-1">
-                        <Label className="text-xs">새 비밀번호</Label>
-                        <Input
-                          type="password"
-                          value={passwordForm.next}
-                          onChange={(e) => {
-                            setPasswordForm((prev) => ({ ...prev, next: e.target.value }))
-                            setPasswordError(null)
-                            setPasswordSuccess(null)
-                          }}
-                          placeholder="새 비밀번호"
-                        />
-                      </div>
-                      <div className="grid gap-1">
-                        <Label className="text-xs">새 비밀번호 확인</Label>
-                        <Input
-                          type="password"
-                          value={passwordForm.confirm}
-                          onChange={(e) => {
-                            setPasswordForm((prev) => ({ ...prev, confirm: e.target.value }))
-                            setPasswordError(null)
-                            setPasswordSuccess(null)
-                          }}
-                          placeholder="새 비밀번호 확인"
-                        />
-                      </div>
-                    </div>
-                    <div className="mt-3 text-xs text-muted-foreground grid gap-1">
-                      <div className={cn(passwordChecks.length ? "text-emerald-500" : "text-muted-foreground")}>
-                        8자 이상
-                      </div>
-                      <div className={cn(passwordChecks.letter ? "text-emerald-500" : "text-muted-foreground")}>
-                        영문 포함
-                      </div>
-                      <div className={cn(passwordChecks.number ? "text-emerald-500" : "text-muted-foreground")}>
-                        숫자 포함
-                      </div>
-                      <div className={cn(passwordChecks.special ? "text-emerald-500" : "text-muted-foreground")}>
-                        특수문자 포함
-                      </div>
-                      {passwordForm.confirm ? (
-                        <div className={cn(isPasswordMatch ? "text-emerald-500" : "text-destructive")}>
-                          {isPasswordMatch ? "새 비밀번호 일치" : "새 비밀번호 불일치"}
+                    {(currentUser?.has_password === false ||
+                      (currentUser?.has_password == null && userProviders.length > 0)) &&
+                    !passwordCreateMode ? (
+                      <>
+                        <div className="text-sm font-semibold text-foreground border-b border-border pb-2">비밀번호 설정</div>
+                        <div className="mt-4 rounded-lg border border-border bg-muted/40 p-4 grid gap-2">
+                          <p className="text-sm text-foreground font-medium">SSO로 생성된 계정이라 비밀번호 설정이 안되어있습니다.</p>
+                          <p className="text-xs text-muted-foreground leading-relaxed">
+                            비밀번호 설정을 하면 SSO 로그인은 물론 추가로 계정(이메일) + 비밀번호로 로그인 할 수 있습니다.
+                          </p>
+                          <div className="mt-2">
+                            <Button
+                              size="sm"
+                              onClick={() => {
+                                setPasswordCreateMode(true)
+                                setPasswordForm({ current: "", next: "", confirm: "" })
+                                setPasswordError(null)
+                                setPasswordSuccess(null)
+                              }}
+                            >
+                              <SquareAsterisk className="size-4" />
+                              비밀번호 생성
+                            </Button>
+                          </div>
                         </div>
-                      ) : null}
-                    </div>
-                    {passwordError ? (
-                      <div className="mt-3 text-xs text-destructive">{passwordError}</div>
-                    ) : null}
-                    {passwordSuccess ? (
-                      <div className="mt-3 text-xs text-emerald-500">{passwordSuccess}</div>
-                    ) : null}
-                    <button
-                      className={cn(
-                        "mt-4 rounded-md px-4 py-2 text-sm text-primary-foreground",
-                        canSubmitPassword ? "bg-primary hover:bg-primary/90" : "bg-muted text-muted-foreground"
-                      )}
-                      type="button"
-                      disabled={!canSubmitPassword}
-                      onClick={handleChangePassword}
-                    >
-                      {passwordSaving ? "변경 중..." : "비밀번호 변경"}
-                    </button>
+                      </>
+                    ) : (
+                      <>
+                        <div className="text-sm font-semibold text-foreground border-b border-border pb-2">
+                          {passwordCreateMode ? "비밀번호 생성" : "비밀번호 변경"}
+                        </div>
+                        <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
+                          {!passwordCreateMode ? (
+                            <div className="grid gap-1">
+                              <Label className="text-xs">현재 비밀번호</Label>
+                              <Input
+                                type="password"
+                                value={passwordForm.current}
+                                onChange={(e) => {
+                                  setPasswordForm((prev) => ({ ...prev, current: e.target.value }))
+                                  setPasswordError(null)
+                                  setPasswordSuccess(null)
+                                }}
+                                placeholder="현재 비밀번호"
+                              />
+                            </div>
+                          ) : null}
+                          <div className="grid gap-1">
+                            <Label className="text-xs">{passwordCreateMode ? "비밀번호" : "새 비밀번호"}</Label>
+                            <Input
+                              type="password"
+                              value={passwordForm.next}
+                              onChange={(e) => {
+                                setPasswordForm((prev) => ({ ...prev, next: e.target.value }))
+                                setPasswordError(null)
+                                setPasswordSuccess(null)
+                              }}
+                              placeholder={passwordCreateMode ? "비밀번호" : "새 비밀번호"}
+                            />
+                          </div>
+                          <div className="grid gap-1">
+                            <Label className="text-xs">{passwordCreateMode ? "비밀번호 확인" : "새 비밀번호 확인"}</Label>
+                            <Input
+                              type="password"
+                              value={passwordForm.confirm}
+                              onChange={(e) => {
+                                setPasswordForm((prev) => ({ ...prev, confirm: e.target.value }))
+                                setPasswordError(null)
+                                setPasswordSuccess(null)
+                              }}
+                              placeholder={passwordCreateMode ? "비밀번호 확인" : "새 비밀번호 확인"}
+                            />
+                          </div>
+                        </div>
+                        <div className="mt-3 text-xs text-muted-foreground grid gap-1">
+                          <div className={cn(passwordChecks.length ? "text-emerald-500" : "text-muted-foreground")}>
+                            8자 이상
+                          </div>
+                          <div className={cn(passwordChecks.letter ? "text-emerald-500" : "text-muted-foreground")}>
+                            영문 포함
+                          </div>
+                          <div className={cn(passwordChecks.number ? "text-emerald-500" : "text-muted-foreground")}>
+                            숫자 포함
+                          </div>
+                          <div className={cn(passwordChecks.special ? "text-emerald-500" : "text-muted-foreground")}>
+                            특수문자 포함
+                          </div>
+                          {passwordForm.confirm ? (
+                            <div className={cn(isPasswordMatch ? "text-emerald-500" : "text-destructive")}>
+                              {isPasswordMatch ? "비밀번호 일치" : "비밀번호 불일치"}
+                            </div>
+                          ) : null}
+                        </div>
+                        {passwordError ? (
+                          <div className="mt-3 text-xs text-destructive">{passwordError}</div>
+                        ) : null}
+                        {passwordSuccess ? (
+                          <div className="mt-3 text-xs text-emerald-500">{passwordSuccess}</div>
+                        ) : null}
+                        <div className="mt-4 flex items-center gap-2">
+                          <button
+                            className={cn(
+                              "rounded-md px-4 py-2 text-sm text-primary-foreground",
+                              canSubmitPassword ? "bg-primary hover:bg-primary/90" : "bg-muted text-muted-foreground"
+                            )}
+                            type="button"
+                            disabled={!canSubmitPassword}
+                            onClick={handleChangePassword}
+                          >
+                            {passwordSaving
+                              ? (passwordCreateMode ? "생성 중..." : "변경 중...")
+                              : (passwordCreateMode ? "비밀번호 생성" : "비밀번호 변경")}
+                          </button>
+                          {passwordCreateMode ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                setPasswordCreateMode(false)
+                                setPasswordForm({ current: "", next: "", confirm: "" })
+                                setPasswordError(null)
+                                setPasswordSuccess(null)
+                              }}
+                            >
+                              취소
+                            </Button>
+                          ) : null}
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               ) : null}
@@ -2037,5 +2186,11 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
         </div>
       </DialogContent>
     </Dialog>
+    <BillingSettingsDialog
+      open={billingSettingsOpen}
+      onOpenChange={setBillingSettingsOpen}
+      onOpenPlanDialog={onOpenPlanDialog}
+    />
+    </>
   )
 }

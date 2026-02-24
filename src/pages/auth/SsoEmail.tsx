@@ -172,7 +172,7 @@ export default function SsoEmail() {
                 onChange={(e) => setEmail(e.target.value)}
                 disabled={loading}
               />
-              <p className="text-xs text-muted-foreground">인증번호는 10분간 유효합니다.</p>
+              <p className="text-xs text-muted-foreground">인증번호는 20분간 유효합니다.</p>
               {isSlowMailDomain ? (
                 <p className="text-xs text-amber-600">
                   daum.net 또는 kakao.com 메일은 도착이 느릴 수 있습니다.
@@ -204,7 +204,7 @@ export default function SsoEmail() {
                 </InputOTPGroup>
               </InputOTP>
               <p className="text-xs text-muted-foreground">{email} 주소로 받은 인증 코드를 입력하세요.</p>
-              <p className="text-xs text-muted-foreground">인증번호는 10분간 유효합니다.</p>
+              <p className="text-xs text-muted-foreground">인증번호는 20분간 유효합니다.</p>
               {isSlowMailDomain ? (
                 <p className="text-xs text-amber-600">
                   daum.net 또는 kakao.com 메일은 도착이 느릴 수 있습니다.

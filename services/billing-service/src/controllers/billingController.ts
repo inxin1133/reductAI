@@ -348,7 +348,7 @@ async function loadCurrentSubscription(client: any, tenantId: string) {
 async function loadPlan(client: any, planId: string) {
   const res = await client.query(
     `
-    SELECT id, name, tier, sort_order, tenant_type, metadata
+    SELECT id, name, tier, sort_order, tenant_type, included_seats, max_seats, metadata
     FROM billing_plans
     WHERE id = $1
     `,
@@ -585,6 +585,7 @@ async function buildSubscriptionChangeQuote(
           price_monthly: roundMoney(targetMonthlyPrice, currency),
           price_yearly: roundMoney(targetYearlyPrice, currency),
           tenant_type: targetPlan.tenant_type || null,
+          included_seats: targetPlan.included_seats ?? null,
         }
       : null,
   }
@@ -1949,10 +1950,18 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
     const periodStartIso = periodStartDate.toISOString()
     const periodEndIso = periodEndDate.toISOString()
 
-    const planRes = await client.query(`SELECT id, tier, tenant_type FROM billing_plans WHERE id = $1`, [planId])
+    const planRes = await client.query(
+      `SELECT id, tier, tenant_type, included_seats FROM billing_plans WHERE id = $1`,
+      [planId]
+    )
     if (planRes.rows.length === 0) return res.status(404).json({ message: "Billing plan not found" })
     const planTier = String(planRes.rows[0]?.tier || "")
     const planTenantType = String(planRes.rows[0]?.tenant_type || "")
+    const planIncludedSeatsRaw = planRes.rows[0]?.included_seats
+    const planIncludedSeats =
+      typeof planIncludedSeatsRaw === "number" && Number.isFinite(planIncludedSeatsRaw)
+        ? Math.floor(planIncludedSeatsRaw)
+        : null
 
     await client.query("BEGIN")
     transactionStarted = true
@@ -2066,11 +2075,12 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
         `
         UPDATE tenants
         SET tenant_type = $1,
-            metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{plan_tier}', to_jsonb($2::text), TRUE),
+            member_limit = COALESCE($2, member_limit),
+            metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{plan_tier}', to_jsonb($3::text), TRUE),
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $3 AND deleted_at IS NULL
+        WHERE id = $4 AND deleted_at IS NULL
         `,
-        [planTenantType, planTier || "free", resolvedTenantId]
+        [planTenantType, planIncludedSeats, planTier || "free", resolvedTenantId]
       )
     }
 
@@ -3808,15 +3818,20 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
       )
 
       if (targetPlan.tenant_type) {
+        const includedSeats =
+          typeof targetPlan.included_seats === "number" && Number.isFinite(targetPlan.included_seats)
+            ? Math.floor(targetPlan.included_seats)
+            : null
         await client.query(
           `
           UPDATE tenants
           SET tenant_type = $1,
-              metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{plan_tier}', to_jsonb($2::text), TRUE),
+              member_limit = COALESCE($2, member_limit),
+              metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{plan_tier}', to_jsonb($3::text), TRUE),
               updated_at = CURRENT_TIMESTAMP
-          WHERE id = $3 AND deleted_at IS NULL
+          WHERE id = $4 AND deleted_at IS NULL
           `,
-          [targetPlan.tenant_type, targetPlan.plan_tier || "free", tenantId]
+          [targetPlan.tenant_type, includedSeats, targetPlan.plan_tier || "free", tenantId]
         )
       }
 
@@ -4012,11 +4027,19 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
       return res.status(400).json({ message: "system tenant cannot be billed" })
     }
 
-    const planRes = await client.query(`SELECT id, name, tier, tenant_type FROM billing_plans WHERE id = $1`, [planId])
+    const planRes = await client.query(
+      `SELECT id, name, tier, tenant_type, included_seats FROM billing_plans WHERE id = $1`,
+      [planId]
+    )
     if (planRes.rows.length === 0) return res.status(404).json({ message: "Billing plan not found" })
     const planTier = String(planRes.rows[0]?.tier || "")
     const planTenantType = String(planRes.rows[0]?.tenant_type || "")
     const planName = String(planRes.rows[0]?.name || "")
+    const planIncludedSeatsRaw = planRes.rows[0]?.included_seats
+    const planIncludedSeats =
+      typeof planIncludedSeatsRaw === "number" && Number.isFinite(planIncludedSeatsRaw)
+        ? Math.floor(planIncludedSeatsRaw)
+        : null
 
     const quote = await resolveUserQuote(client, tenantId, planId, billingCycle)
     const priceUsd = quote.amount
@@ -4120,11 +4143,12 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
         `
         UPDATE tenants
         SET tenant_type = $1,
-            metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{plan_tier}', to_jsonb($2::text), TRUE),
+            member_limit = COALESCE($2, member_limit),
+            metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{plan_tier}', to_jsonb($3::text), TRUE),
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $3 AND deleted_at IS NULL
+        WHERE id = $4 AND deleted_at IS NULL
         `,
-        [planTenantType, planTier || "free", tenantId]
+        [planTenantType, planIncludedSeats, planTier || "free", tenantId]
       )
     }
 

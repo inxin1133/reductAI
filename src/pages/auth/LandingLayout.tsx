@@ -1,6 +1,6 @@
 import { Outlet } from "react-router-dom"
-import { LandingHeader } from "./LandingHeader"
-import { LandingFooter } from "./LandingFooter"
+import { LandingHeader } from "@/components/LandingHeader"
+import { LandingFooter } from "@/components/LandingFooter"
 
 export default function LandingLayout() {
   return (

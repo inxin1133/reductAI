@@ -20,7 +20,34 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-export const sendVerificationEmail = async (to: string, code: string) => {
+type VerificationPurpose = 'signup' | 'password_reset' | 'sso_email';
+
+const VERIFICATION_COPY: Record<
+  VerificationPurpose,
+  { subject: string; title: string; description: string }
+> = {
+  signup: {
+    subject: '회원가입 인증번호',
+    title: 'ReductAI 회원가입 인증',
+    description: '요청하신 회원가입 인증번호입니다.',
+  },
+  password_reset: {
+    subject: '비밀번호 찾기 인증번호',
+    title: 'ReductAI 비밀번호 찾기 인증',
+    description: '요청하신 비밀번호 찾기 인증번호입니다.',
+  },
+  sso_email: {
+    subject: '이메일 인증번호',
+    title: 'ReductAI 이메일 인증',
+    description: '요청하신 이메일 인증번호입니다.',
+  },
+};
+
+export const sendVerificationEmail = async (
+  to: string,
+  code: string,
+  purpose: VerificationPurpose = 'signup'
+) => {
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
     console.error('Missing EMAIL_USER or EMAIL_PASS');
     return false;
@@ -30,22 +57,26 @@ export const sendVerificationEmail = async (to: string, code: string) => {
     console.error('Missing recipient email');
     return false;
   }
+  const copy = VERIFICATION_COPY[purpose] ?? VERIFICATION_COPY.signup;
   const mailOptions = {
     from: `${fromName} <${fromAddress}>`,
     sender: envelopeFrom,
     replyTo: fromAddress,
     to: recipient,
     envelope: { from: envelopeFrom, to: recipient },
-    subject: '[ReductAI] 회원가입 인증번호',
+    subject: `[ReductAI] ${copy.subject}`,
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2>ReductAI 회원가입 인증</h2>
+        <h2>${copy.title}</h2>
         <p>안녕하세요,</p>
-        <p>요청하신 회원가입 인증번호입니다.</p>
+        <p>${copy.description}</p>
         <div style="background-color: #f5f5f5; padding: 20px; text-align: center; border-radius: 5px; margin: 20px 0;">
           <h1 style="letter-spacing: 5px; margin: 0;">${code}</h1>
         </div>
-        <p>이 코드는 10분간 유효합니다.</p>
+        <p>이 코드는 20분간 유효합니다.</p>
+        <p style="font-size: 12px; color: #666;">
+          ※ 카카오/다음 메일은 수신까지 시간이 지연될 수 있습니다. 최대 20분까지 여유 있게 확인해주세요.
+        </p>
         <p>본인이 요청하지 않았다면 이 메일을 무시해주세요.</p>
       </div>
     `,

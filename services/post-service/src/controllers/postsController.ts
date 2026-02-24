@@ -935,6 +935,8 @@ export async function listTenantMemberships(req: Request, res: Response) {
         t.id,
         t.name,
         t.tenant_type,
+        t.current_member_count,
+        t.member_limit,
         COALESCE(utr.membership_status, 'active') AS membership_status,
         utr.joined_at,
         utr.expires_at,
@@ -1008,7 +1010,8 @@ export async function getCurrentUser(req: Request, res: Response) {
         id,
         email,
         full_name,
-        metadata->>'profile_image_asset_id' AS profile_image_asset_id
+        metadata->>'profile_image_asset_id' AS profile_image_asset_id,
+        (password_hash IS NOT NULL AND password_hash <> '') AS has_password
       FROM users
       WHERE id = $1 AND deleted_at IS NULL
       LIMIT 1
@@ -1021,14 +1024,22 @@ export async function getCurrentUser(req: Request, res: Response) {
       email: string
       full_name?: string | null
       profile_image_asset_id?: string | null
+      has_password?: boolean | number | string
     }
     const profileImageAssetId = row.profile_image_asset_id ? String(row.profile_image_asset_id) : null
+    const hasPassword =
+      row.has_password === true ||
+      row.has_password === 1 ||
+      row.has_password === "1" ||
+      row.has_password === "t" ||
+      row.has_password === "true"
     return res.json({
       id: row.id,
       email: row.email,
       full_name: row.full_name ?? null,
       profile_image_asset_id: profileImageAssetId,
       profile_image_url: profileImageAssetId ? `/api/ai/media/assets/${profileImageAssetId}` : null,
+      has_password: hasPassword,
     })
   } catch (e) {
     console.error("post-service getCurrentUser error:", e)

@@ -1,5 +1,6 @@
 import {
   BadgeDollarSign,
+  Mail,
   BookOpen,
   Bot,
   Check,
@@ -22,12 +23,13 @@ import {
   Share2,
   Sun,
   Trash2,
-  User,
+  User,  
   Wallet,
   X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { handleSessionExpired, isSessionExpired, resetSessionExpiredGuard } from "@/lib/session"
+import { type PlanTier, PLAN_TIER_LABELS, PLAN_TIER_ORDER, PLAN_TIER_STYLES } from "@/lib/planTier"
 import React, { useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -61,9 +63,11 @@ import {
 } from "@/components/ui/alert-dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
-import { Badge } from "@/components/ui/badge"
 import { useTheme } from "@/hooks/useTheme"
 import { IconReduct } from "@/components/icons/IconReduct"
+import { LogoGoogle } from "@/components/icons/LogoGoogle"
+import { LogoKakao } from "@/components/icons/LogoKakao"
+import { LogoNaver } from "@/components/icons/LogoNaver"
 import { SettingsDialog, type SettingsMenuId } from "@/components/settings/SettingsDialog"
 import { BillingSettingsDialog } from "@/components/settings/BillingSettingsDialog"
 import { PlanDialog } from "@/components/settings/PlanDialog"
@@ -98,24 +102,6 @@ type Language = {
   is_default: boolean
   flag_emoji: string
   is_active?: boolean
-}
-
-type PlanTier = "free" | "pro" | "premium" | "business" | "enterprise"
-
-const PLAN_TIER_ORDER: PlanTier[] = ["free", "pro", "premium", "business", "enterprise"]
-const PLAN_TIER_AVATAR_BG: Record<PlanTier, string> = {
-  free: "bg-muted-foreground",
-  pro: "bg-teal-500",
-  premium: "bg-indigo-500",
-  business: "bg-amber-500",
-  enterprise: "bg-rose-500",
-}
-const PLAN_TIER_LABELS: Record<PlanTier, string> = {
-  free: "Free",
-  pro: "Pro",
-  premium: "Premium",
-  business: "Business",
-  enterprise: "Enterprise",
 }
 
 function normalizePlanTier(value: unknown): PlanTier | null {
@@ -293,6 +279,8 @@ export function Sidebar({ className }: SidebarProps) {
     }
   })
   const [isProfileImageBroken, setIsProfileImageBroken] = useState(false)
+  const [authProviders, setAuthProviders] = useState<string[]>([])
+  const [hasPassword, setHasPassword] = useState(false)
   const [languages, setLanguages] = useState<Language[]>([])
   const [currentLang, setCurrentLang] = useState("")
   const LANGUAGE_STORAGE_KEY = "reductai.language.v1"
@@ -321,33 +309,36 @@ export function Sidebar({ className }: SidebarProps) {
     return name || "팀/그룹"
   }
 
-  const resolveServiceLabel = (t: { tenant_type?: string | null; plan_tier?: string | null }) => {
-    const tier = normalizePlanTier(t.plan_tier)
-    if (tier) return PLAN_TIER_LABELS[tier]
-    const type = String(t.tenant_type || "")
-    if (type === "personal") return "Free"
-    if (type === "team" || type === "group") return "Premium"
-    return "Basic"
-  }
+const resolveServiceTier = (t: { tenant_type?: string | null; plan_tier?: string | null }) => {
+  const tier = normalizePlanTier(t.plan_tier)
+  if (tier) return tier
+  const type = String(t.tenant_type || "")
+  if (type === "personal") return "free"
+  if (type === "team" || type === "group") return "premium"
+  return "free"
+}
 
-  const profileBadges = useMemo(() => {
-    if (tenantMemberships.length) {
-      return tenantMemberships.map((t) => ({
+const profileBadges = useMemo(() => {
+  if (tenantMemberships.length) {
+    return tenantMemberships.map((t) => {
+      const tier = resolveServiceTier(t)
+      return {
         key: String(t.id),
-        label: `${resolveTenantLabel(t)}:${resolveServiceLabel(t)}`,
-      }))
-    }
-    if (!tenantType) return []
-    return [
-      {
-        key: tenantType,
-        label: `${resolveTenantLabel({ tenant_type: tenantType, name: tenantName })}:${resolveServiceLabel({
-          tenant_type: tenantType,
-          plan_tier: tenantPlanTier,
-        })}`,
-      },
-    ]
-  }, [tenantMemberships, tenantName, tenantPlanTier, tenantType])
+        tier,
+        label: `${resolveTenantLabel(t)}:${PLAN_TIER_LABELS[tier]}`,
+      }
+    })
+  }
+  if (!tenantType) return []
+  const fallbackTier = resolveServiceTier({ tenant_type: tenantType, plan_tier: tenantPlanTier })
+  return [
+    {
+      key: tenantType,
+      tier: fallbackTier,
+      label: `${resolveTenantLabel({ tenant_type: tenantType, name: tenantName })}:${PLAN_TIER_LABELS[fallbackTier]}`,
+    },
+  ]
+}, [tenantMemberships, tenantName, tenantPlanTier, tenantType])
 
   useEffect(() => {
     const fetchLanguages = async () => {
@@ -642,17 +633,38 @@ export function Sidebar({ className }: SidebarProps) {
 
   const tierCandidates = useMemo(() => {
     const tiers: PlanTier[] = []
-    const currentTier = normalizePlanTier(tenantPlanTier)
-    if (currentTier) tiers.push(currentTier)
+    if (tenantType || tenantPlanTier) {
+      tiers.push(resolveServiceTier({ tenant_type: tenantType, plan_tier: tenantPlanTier }))
+    }
     tenantMemberships.forEach((t) => {
-      const tier = normalizePlanTier(t.plan_tier)
-      if (tier) tiers.push(tier)
+      tiers.push(resolveServiceTier(t))
     })
     return tiers
-  }, [tenantMemberships, tenantPlanTier])
+  }, [tenantMemberships, tenantPlanTier, tenantType])
 
   const highestTier = useMemo(() => pickHighestTier(tierCandidates), [tierCandidates])
-  const avatarBgClass = PLAN_TIER_AVATAR_BG[highestTier]
+  const avatarBgClass = PLAN_TIER_STYLES[highestTier]?.avatar || "bg-muted-foreground"
+
+  const authProviderIcons = useMemo(() => {
+    const items: Array<{ key: string; node: React.ReactNode }> = []
+    const providers = new Set(authProviders.map((p) => String(p || "").toLowerCase()))    
+    if (providers.has("google")) {
+      items.push({ key: "google", node: <LogoGoogle className="size-4" /> })
+    }
+    if (providers.has("naver")) {
+      items.push({ key: "naver", node: <LogoNaver className="size-4" /> })
+    }
+    if (providers.has("kakao")) {
+      items.push({ key: "kakao", node: <LogoKakao className="size-4" /> })
+    }
+    if (hasPassword) {
+      items.push({
+        key: "mail",
+        node: <Mail className="size-4 text-muted-foreground" />,
+      })
+    }
+    return items
+  }, [authProviders, hasPassword])
 
   const profileImageSrc = useMemo(() => {
     if (!profileImageUrl) return null
@@ -984,6 +996,7 @@ export function Sidebar({ className }: SidebarProps) {
           ? `/api/ai/media/assets/${String(j.profile_image_asset_id)}`
           : ""
     setProfileImageUrl(profileUrl || null)
+    setHasPassword(Boolean(j.has_password))
     try {
       if (profileUrl) {
         window.localStorage.setItem(PROFILE_IMAGE_CACHE_KEY, profileUrl)
@@ -995,6 +1008,19 @@ export function Sidebar({ className }: SidebarProps) {
     }
   }
 
+  const loadUserProviders = async () => {
+    const h = authHeaders()
+    if (!h.Authorization) return
+    const r = await fetch("/api/posts/user/providers", { headers: h }).catch(() => null)
+    if (!r || !r.ok) return
+    const rows = (await r.json().catch(() => [])) as Array<{ provider?: string | null }>
+    if (!Array.isArray(rows)) return
+    const providers = rows
+      .map((row) => String(row.provider || "").trim().toLowerCase())
+      .filter(Boolean)
+    setAuthProviders(Array.from(new Set(providers)))
+  }
+
   useEffect(() => {
     void loadTenantMemberships()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1002,6 +1028,7 @@ export function Sidebar({ className }: SidebarProps) {
 
   useEffect(() => {
     void loadUserProfile()
+    void loadUserProviders()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -1444,22 +1471,42 @@ export function Sidebar({ className }: SidebarProps) {
             <p className="text-lg font-bold text-popover-foreground truncate">{userProfile.name}</p>
           </div>
         </div>
-        <div className="flex gap-1 items-center px-2 py-1.5 rounded-sm">
-          <User className="size-4 text-muted-foreground shrink-0" />
-          <p className="text-xs text-muted-foreground truncate">{userProfile.email || "-"}</p>
+
+        <div className="flex gap-2 items-center pl-2 py-1.5 rounded-sm">
+          {authProviderIcons.length ? (
+            <div className="flex items-center gap-2 shrink-0">
+              {authProviderIcons.map((item) => (
+                <span key={item.key} className="inline-flex items-center">
+                  {item.node}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          <p className="text-xs text-muted-foreground truncate flex-1">{userProfile.email || "-"}</p>
         </div>
         <div className="flex gap-1 items-center px-2 py-1.5 rounded-sm">
           <div className="flex gap-1 items-center flex-wrap">
             {profileBadges.length ? (
               profileBadges.map((b) => (
-                <Badge key={b.key} variant="outline" className="h-[22px] px-2.5 py-0.5 text-xs font-medium">
+                <span
+                  key={b.key}
+                  className={cn(
+                    "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold",
+                    PLAN_TIER_STYLES[b.tier]?.badge || PLAN_TIER_STYLES.free.badge
+                  )}
+                >
                   {b.label}
-                </Badge>
+                </span>
               ))
             ) : (
-              <Badge variant="outline" className="h-[22px] px-2.5 py-0.5 text-xs font-medium">
-                개인:Basic
-              </Badge>
+              <span
+                className={cn(
+                  "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold",
+                  PLAN_TIER_STYLES.free.badge
+                )}
+              >
+                개인:{PLAN_TIER_LABELS.free}
+              </span>
             )}
           </div>
         </div>
@@ -1941,12 +1988,15 @@ export function Sidebar({ className }: SidebarProps) {
                   <ProfileAvatar sizeClass="size-10" roundedClass="rounded-lg" textClass="text-lg" />
                   <div className="flex flex-col flex-1 min-w-0">
                     <p className="text-sm text-left font-semibold text-sidebar-foreground truncate">{userProfile.name}</p>
-                    <div className="flex items-center text-xs text-muted-foreground flex-wrap gap-1">
-                      {profileBadges.length ? (
-                        profileBadges.map((b) => <span key={b.key}>{b.label}</span>)
-                      ) : (
-                        <span>개인:Basic</span>
-                      )}
+                    <div className="flex items-center flex-wrap gap-1">
+                      <span
+                        className={cn(
+                          "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                          PLAN_TIER_STYLES[highestTier]?.badge || PLAN_TIER_STYLES.free.badge
+                        )}
+                      >
+                        {PLAN_TIER_LABELS[highestTier]}
+                      </span>
                     </div>
                   </div>
                   <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">

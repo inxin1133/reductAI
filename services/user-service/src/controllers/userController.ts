@@ -274,8 +274,15 @@ export const getUsers = async (req: Request, res: Response) => {
       rows.map(async (row: any) => {
         try {
           const eligibility = await getDeleteEligibility(pool, row.id);
+          const hasPassword =
+            row.has_password === true ||
+            row.has_password === 1 ||
+            row.has_password === '1' ||
+            row.has_password === 't' ||
+            row.has_password === 'true';
           return {
             ...row,
+            has_password: hasPassword,
             can_hard_delete: eligibility.ok,
             delete_block_reason: eligibility.reason || null,
           };

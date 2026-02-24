@@ -10,7 +10,7 @@ const MAX_TENANT_SLUG_LENGTH = 24;
 const PERSONAL_SLUG_SUFFIX_LENGTH = 6;
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const SSO_PENDING_TTL_MS = 24 * 60 * 60 * 1000;
-const OTP_TTL_MS = 10 * 60 * 1000;
+const OTP_TTL_MS = 20 * 60 * 1000;
 
 const slugifyTenant = (value: string) =>
   value
@@ -299,6 +299,8 @@ const getSsoPendingByToken = async (token: string) => {
 
 export const sendVerificationCode = async (req: Request, res: Response) => {
   const email = normalizeEmail(req.body?.email);
+  const purposeRaw = normalizeEmail(req.body?.purpose);
+  const purpose = purposeRaw === 'password_reset' ? 'password_reset' : 'signup';
   if (!email) {
     return res.status(400).json({ message: 'Email is required' });
   }
@@ -321,7 +323,7 @@ export const sendVerificationCode = async (req: Request, res: Response) => {
   }
 
   const code = issueOtp(email);
-  const emailSent = await sendVerificationEmail(email, code);
+  const emailSent = await sendVerificationEmail(email, code, purpose);
 
   if (emailSent) {
     res.json({ message: 'Verification code sent', success: true });
@@ -389,7 +391,7 @@ export const sendSsoEmailCode = async (req: Request, res: Response) => {
     ]);
 
     const code = issueOtp(email);
-    const emailSent = await sendVerificationEmail(email, code);
+    const emailSent = await sendVerificationEmail(email, code, 'sso_email');
     if (!emailSent) return res.status(500).json({ message: 'Failed to send verification email' });
 
     return res.json({ success: true });
@@ -620,6 +622,47 @@ export const changePassword = async (req: Request, res: Response) => {
     return res.json({ success: true });
   } catch (error) {
     console.error('Change password error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const setPassword = async (req: Request, res: Response) => {
+  const { newPassword, confirmPassword } = req.body || {};
+  const authedReq = req as AuthedRequest;
+  const userId = authedReq.userId;
+
+  if (!userId) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  if (!newPassword || !confirmPassword) {
+    return res.status(400).json({ message: '비밀번호를 입력해 주세요.' });
+  }
+  if (newPassword !== confirmPassword) {
+    return res.status(400).json({ message: '비밀번호가 일치하지 않습니다.' });
+  }
+  if (!validatePassword(newPassword)) {
+    return res.status(400).json({ message: '비밀번호 조건을 충족해 주세요.' });
+  }
+
+  try {
+    const userRes = await db.query('SELECT password_hash FROM users WHERE id = $1 AND deleted_at IS NULL', [userId]);
+    if (!userRes.rows.length) {
+      return res.status(404).json({ message: '사용자를 찾을 수 없습니다.' });
+    }
+    const existingRaw = userRes.rows[0]?.password_hash;
+    const existing =
+      typeof existingRaw === 'string' ? existingRaw.trim() : existingRaw;
+    if (existing) {
+      return res.status(400).json({ message: '이미 비밀번호가 설정되어 있습니다. 비밀번호 변경을 이용해 주세요.' });
+    }
+
+    const saltRounds = 10;
+    const newHash = await bcrypt.hash(String(newPassword), saltRounds);
+    await db.query('UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [newHash, userId]);
+
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('Set password error:', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
