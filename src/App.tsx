@@ -2,6 +2,13 @@ import { Outlet, createBrowserRouter, RouterProvider, useLocation, useNavigate }
 import { useEffect } from "react";
 import Intro from "./pages/auth/Intro";
 import SsoEmail from "./pages/auth/SsoEmail";
+import LandingLayout from "./pages/auth/LandingLayout";
+import ProductPage from "./pages/auth/ProductPage";
+import PricingPage from "./pages/auth/PricingPage";
+import ModelsPage from "./pages/auth/ModelsPage";
+import AboutPage from "./pages/auth/AboutPage";
+import ContactPage from "./pages/auth/ContactPage";
+import PolicyPage from "./pages/auth/PolicyPage";
 import FrontAI from "./pages/aiagent/FrontAI";
 import Timeline from "./pages/aiagent/Timeline";
 import AdminLogin from "./pages/admin/AdminLogin";
@@ -105,8 +112,19 @@ const router = createBrowserRouter([
     element: <TitleLayout />,
     children: [
       {
-        path: "/",
-        element: <Intro />,
+        element: <LandingLayout />,
+        children: [
+          { path: "/", element: <Intro /> },
+          { path: "/product", element: <ProductPage /> },
+          { path: "/pricing", element: <PricingPage /> },
+          { path: "/models", element: <ModelsPage /> },
+          { path: "/about", element: <AboutPage /> },
+          { path: "/contact", element: <ContactPage /> },
+          { path: "/terms", element: <PolicyPage /> },
+          { path: "/privacy", element: <PolicyPage /> },
+          { path: "/cookies", element: <PolicyPage /> },
+          { path: "/refund-policy", element: <PolicyPage /> },
+        ],
       },
       {
         path: "/sso-email",
