@@ -147,6 +147,17 @@ type UserProvider = {
   created_at?: string | null
 }
 
+type UserSessionRow = {
+  id: string
+  ip_address?: string | null
+  user_agent?: string | null
+  expires_at?: string | null
+  last_activity_at?: string | null
+  created_at?: string | null
+  status?: "active" | "expired" | string | null
+  is_current?: boolean | null
+}
+
 type CreditSummary = {
   tenant_id: string
   subscription: {
@@ -236,6 +247,45 @@ function formatCredits(value?: number | null) {
   return Math.floor(value).toLocaleString()
 }
 
+function formatRelativeTime(value?: string | null) {
+  if (!value) return "-"
+  const ts = new Date(value).getTime()
+  if (!Number.isFinite(ts)) return "-"
+  const diffMs = Date.now() - ts
+  if (!Number.isFinite(diffMs)) return "-"
+  const minute = Math.floor(diffMs / 60000)
+  if (minute < 1) return "방금 전"
+  if (minute < 60) return `${minute}분 전`
+  const hour = Math.floor(minute / 60)
+  if (hour < 24) return `${hour}시간 전`
+  const day = Math.floor(hour / 24)
+  if (day < 30) return `${day}일 전`
+  const month = Math.floor(day / 30)
+  if (month < 12) return `${month}개월 전`
+  const year = Math.floor(month / 12)
+  return `${year}년 전`
+}
+
+function formatDeviceLabel(userAgent?: string | null) {
+  const ua = String(userAgent || "").toLowerCase()
+  if (!ua) return "알 수 없는 기기"
+  let os = "기기"
+  if (ua.includes("mac os x")) os = "macOS"
+  else if (ua.includes("windows")) os = "Windows"
+  else if (ua.includes("android")) os = "Android"
+  else if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ios")) os = "iOS"
+  else if (ua.includes("linux")) os = "Linux"
+
+  let browser = ""
+  if (ua.includes("edg")) browser = "Edge"
+  else if (ua.includes("opr") || ua.includes("opera")) browser = "Opera"
+  else if (ua.includes("chrome") && !ua.includes("edg") && !ua.includes("opr")) browser = "Chrome"
+  else if (ua.includes("safari") && !ua.includes("chrome")) browser = "Safari"
+  else if (ua.includes("firefox")) browser = "Firefox"
+
+  return browser ? `${os} · ${browser}` : os
+}
+
 const SettingsDialogSidebarMenu = ({
   activeId,
   onChange,
@@ -304,6 +354,10 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
   const [creditSummary, setCreditSummary] = useState<CreditSummary | null>(null)
   const [creditLoading, setCreditLoading] = useState(false)
   const [creditError, setCreditError] = useState<string | null>(null)
+  const [deviceSessions, setDeviceSessions] = useState<UserSessionRow[]>([])
+  const [deviceLoading, setDeviceLoading] = useState(false)
+  const [deviceError, setDeviceError] = useState<string | null>(null)
+  const [deviceRevokingId, setDeviceRevokingId] = useState<string | null>(null)
   const [profileImageUrl, setProfileImageUrl] = useState<string | null>(null)
   const [profileImageAssetId, setProfileImageAssetId] = useState<string | null>(null)
   const [profileImageLoading, setProfileImageLoading] = useState(false)
@@ -565,12 +619,21 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
           setTenantNameDraft(String(tenantJson.name || ""))
           if (typeof window !== "undefined") {
             try {
+              const cachedRaw = window.localStorage.getItem("reductai:sidebar:tenantInfo:v1")
+              const cached = cachedRaw ? JSON.parse(cachedRaw) : null
+              const cachedPlanTier =
+                typeof cached?.plan_tier === "string" ? String(cached.plan_tier).trim() : ""
+              const nextPlanTier =
+                typeof nextTenant.plan_tier === "string" && nextTenant.plan_tier.trim()
+                  ? nextTenant.plan_tier
+                  : cachedPlanTier
               window.localStorage.setItem(
                 "reductai:sidebar:tenantInfo:v1",
                 JSON.stringify({
                   id: nextTenant.id,
                   tenant_type: nextTenant.tenant_type || "",
                   name: nextTenant.name || "",
+                  plan_tier: nextPlanTier || "",
                 })
               )
             } catch {
@@ -638,6 +701,66 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
       setCreditLoading(false)
     }
   }, [authHeaders, currentTenant])
+
+  const loadDeviceSessions = useCallback(async () => {
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      setDeviceError("로그인이 필요합니다.")
+      return
+    }
+    setDeviceLoading(true)
+    setDeviceError(null)
+    try {
+      const res = await fetch("/api/posts/user/sessions?status=active", { headers })
+      const json = (await res.json().catch(() => null)) as
+        | { ok?: boolean; message?: string; rows?: UserSessionRow[] }
+        | null
+      if (!res.ok || !json?.ok) {
+        setDeviceError(json?.message || "접속 기기 정보를 불러오지 못했습니다.")
+        setDeviceSessions([])
+        return
+      }
+      setDeviceSessions(Array.isArray(json.rows) ? json.rows : [])
+    } catch (error) {
+      console.error(error)
+      setDeviceError("접속 기기 정보를 불러오지 못했습니다.")
+      setDeviceSessions([])
+    } finally {
+      setDeviceLoading(false)
+    }
+  }, [authHeaders])
+
+  const handleRevokeDeviceSession = useCallback(
+    async (session: UserSessionRow) => {
+      if (!session?.id) return
+      if (session.is_current) return
+      if (!confirm("이 기기를 로그아웃할까요?")) return
+      const headers = authHeaders()
+      if (!headers.Authorization) {
+        alert("로그인이 필요합니다.")
+        return
+      }
+      setDeviceRevokingId(session.id)
+      try {
+        const res = await fetch(`/api/posts/user/sessions/${encodeURIComponent(session.id)}`, {
+          method: "DELETE",
+          headers,
+        })
+        const json = (await res.json().catch(() => null)) as { ok?: boolean; message?: string } | null
+        if (!res.ok || !json?.ok) {
+          alert(json?.message || "로그아웃에 실패했습니다.")
+          return
+        }
+        await loadDeviceSessions()
+      } catch (error) {
+        console.error(error)
+        alert("로그아웃 처리 중 오류가 발생했습니다.")
+      } finally {
+        setDeviceRevokingId(null)
+      }
+    },
+    [authHeaders, loadDeviceSessions]
+  )
 
   const startEditUserName = useCallback(() => {
     if (isSavingUserName) return
@@ -764,12 +887,21 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
         )
         if (typeof window !== "undefined") {
           try {
+            const cachedRaw = window.localStorage.getItem("reductai:sidebar:tenantInfo:v1")
+            const cached = cachedRaw ? JSON.parse(cachedRaw) : null
+            const cachedPlanTier =
+              typeof cached?.plan_tier === "string" ? String(cached.plan_tier).trim() : ""
+            const nextPlanTier =
+              typeof nextTenant.plan_tier === "string" && nextTenant.plan_tier.trim()
+                ? nextTenant.plan_tier
+                : cachedPlanTier
             window.localStorage.setItem(
               "reductai:sidebar:tenantInfo:v1",
               JSON.stringify({
                 id: nextTenant.id,
                 tenant_type: nextTenant.tenant_type || "",
                 name: nextTenant.name || "",
+                plan_tier: nextPlanTier || "",
               })
             )
           } catch {
@@ -1035,6 +1167,12 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
 
   useEffect(() => {
     if (!open) return
+    if (activeMenu !== "devices") return
+    void loadDeviceSessions()
+  }, [activeMenu, loadDeviceSessions, open])
+
+  useEffect(() => {
+    if (!open) return
     if (activeMenu !== "profile") return
     if (isEditingUserName) userNameInputRef.current?.focus()
   }, [activeMenu, isEditingUserName, open])
@@ -1094,7 +1232,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
             <div className="mt-3 min-w-0 flex-1 overflow-y-auto pr-2">
               {activeMenu === "profile" ? (
                 // 사용자 정보
-                <div className="grid gap-3">
+                <div className="p-4 grid gap-3">
                   {profileError ? (
                     <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
                       {profileError}
@@ -1803,44 +1941,71 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
 
               {activeMenu === "devices" ? (
                 // 접속 기기 현황
-                <div className="p-4">
-                  <div className="text-sm font-semibold text-foreground">접속 기기 현황</div>
-                  <div className="mt-3 grid text-sm text-muted-foreground border border-border rounded-lg shadow-sm shadow-muted-foreground/10">
-                    {[
-                      { title: "MacBook Pro · Chrome", location: "서울, KR", status: "현재 사용 중", isCurrent: true },
-                      { title: "iPhone 16 · Safari", location: "부산, KR", status: "2일 전", isCurrent: false },
-                      { title: "Windows · Edge", location: "도쿄, JP", status: "7일 전", isCurrent: false },
-                    ].map((row, idx, arr) => (
-                      <div
-                        key={row.title}
-                        className={cn(
-                          "flex items-center justify-between px-3 py-3",
-                          idx < arr.length - 1 && "border-b border-border"
-                        )}
-                      >
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-foreground">{row.title}</span>
-                            {row.isCurrent ? (
-                              <span className="text-xs font-semibold text-blue-500">이 기기</span>
-                            ) : null}
+                <div className="grid gap-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-semibold text-foreground">접속 기기 현황</div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={loadDeviceSessions}
+                      disabled={deviceLoading}
+                    >
+                      새로고침
+                    </Button>
+                  </div>
+                  {deviceError ? (
+                    <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                      {deviceError}
+                    </div>
+                  ) : null}
+                  <div className="mt-1 grid text-sm text-muted-foreground border border-border rounded-lg shadow-sm shadow-muted-foreground/10">
+                    {deviceLoading ? (
+                      <div className="px-3 py-4 text-xs text-muted-foreground">불러오는 중...</div>
+                    ) : deviceSessions.length ? (
+                      deviceSessions.map((row, idx, arr) => {
+                        const title = formatDeviceLabel(row.user_agent)
+                        const location = row.ip_address ? row.ip_address : "IP 미확인"
+                        const status = row.is_current
+                          ? "현재 사용 중"
+                          : formatRelativeTime(row.last_activity_at || row.created_at)
+                        return (
+                          <div
+                            key={row.id}
+                            className={cn(
+                              "flex items-center justify-between px-3 py-3",
+                              idx < arr.length - 1 && "border-b border-border"
+                            )}
+                          >
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-foreground">{title}</span>
+                                {row.is_current ? (
+                                  <span className="text-xs font-semibold text-blue-500">이 기기</span>
+                                ) : null}
+                              </div>
+                              <div className="text-xs text-muted-foreground">{location}</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-muted-foreground">{status}</span>
+                              {!row.is_current ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="text-xs text-muted-foreground hover:text-foreground h-6 px-2"
+                                  onClick={() => handleRevokeDeviceSession(row)}
+                                  disabled={deviceRevokingId === row.id}
+                                >
+                                  {deviceRevokingId === row.id ? "처리 중..." : "로그아웃"}
+                                </Button>
+                              ) : null}
+                            </div>
                           </div>
-                          <div className="text-xs text-muted-foreground">{row.location}</div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-muted-foreground">{row.status}</span>
-                          {!row.isCurrent ? (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="text-xs text-muted-foreground hover:text-foreground h-6 px-2"
-                            >
-                              로그아웃
-                            </Button>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
+                        )
+                      })
+                    ) : (
+                      <div className="px-3 py-4 text-xs text-muted-foreground">접속 기기가 없습니다.</div>
+                    )}
                   </div>
                 </div>
               ) : null}
@@ -1911,6 +2076,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     <TenantSettingsDialog
       open={tenantSettingsOpen}
       onOpenChange={setTenantSettingsOpen}
+      onOpenPlanDialog={onOpenPlanDialog}
     />
     </>
   )

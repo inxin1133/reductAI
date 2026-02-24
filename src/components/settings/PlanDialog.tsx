@@ -351,7 +351,7 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
                 const actionLabel = isCurrent
                   ? "현재 요금제"
                   : isCycleChange
-                    ? `${cycleLabel}로 변경`
+                    ? `${cycleLabel}으로 변경`
                     : isUpgrade
                       ? "업그레이드"
                       : isDowngrade

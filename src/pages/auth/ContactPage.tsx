@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 
 const CONTACT_EMAIL = "admin@reduct.page"
+const CONTACT_API_URL = "http://localhost:3001/auth"
 
 type ContactCategory = "general" | "sales" | "support" | "partnership"
 
@@ -22,6 +23,7 @@ export default function ContactPage() {
   const [message, setMessage] = useState("")
   const [sending, setSending] = useState(false)
   const [sent, setSent] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const categoryLabels: Record<ContactCategory, string> = {
     general: "일반 문의",
@@ -30,22 +32,37 @@ export default function ContactPage() {
     partnership: "파트너십",
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim() || !email.trim() || !subject.trim() || !message.trim()) return
 
     setSending(true)
+    setError(null)
 
-    const mailSubject = encodeURIComponent(`[${categoryLabels[category]}] ${subject}`)
-    const mailBody = encodeURIComponent(
-      `이름: ${name}\n이메일: ${email}\n분류: ${categoryLabels[category]}\n\n${message}`
-    )
-    window.location.href = `mailto:${CONTACT_EMAIL}?subject=${mailSubject}&body=${mailBody}`
-
-    setTimeout(() => {
-      setSending(false)
+    try {
+      const res = await fetch(`${CONTACT_API_URL}/contact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          email: email.trim(),
+          category,
+          subject: subject.trim(),
+          message: message.trim(),
+        }),
+      })
+      const json = (await res.json().catch(() => null)) as { ok?: boolean; message?: string } | null
+      if (!res.ok || !json?.ok) {
+        setError(json?.message || "문의 전송에 실패했습니다.")
+        return
+      }
       setSent(true)
-    }, 500)
+    } catch (err) {
+      console.error(err)
+      setError("문의 전송 중 오류가 발생했습니다.")
+    } finally {
+      setSending(false)
+    }
   }
 
   return (
@@ -148,10 +165,10 @@ export default function ContactPage() {
                       <Send className="size-8" />
                     </div>
                     <h3 className="text-xl font-bold text-foreground">
-                      메일 클라이언트가 열렸습니다
+                      문의가 접수되었습니다
                     </h3>
                     <p className="mt-2 max-w-sm text-sm text-muted-foreground">
-                      기본 메일 앱에서 내용을 확인하고 전송해 주세요.
+                      접수된 내용은 {CONTACT_EMAIL}로 전달되었습니다.
                       빠른 시일 내에 답변 드리겠습니다.
                     </p>
                     <Button
@@ -159,6 +176,7 @@ export default function ContactPage() {
                       className="mt-6"
                       onClick={() => {
                         setSent(false)
+                        setError(null)
                         setName("")
                         setEmail("")
                         setSubject("")
@@ -171,8 +189,13 @@ export default function ContactPage() {
                 ) : (
                   <form onSubmit={handleSubmit} className="space-y-5">
                     <h3 className="text-lg font-bold text-card-foreground">
-                      {categoryLabels[category]} 메일 보내기
+                      {categoryLabels[category]} 문의 보내기
                     </h3>
+                    {error ? (
+                      <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                        {error}
+                      </div>
+                    ) : null}
 
                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                       <div className="space-y-1.5">
@@ -228,13 +251,13 @@ export default function ContactPage() {
                     <div className="flex items-center justify-between pt-2">
                       <p className="text-xs text-muted-foreground">
                         <Mail className="mr-1 inline size-3" />
-                        {CONTACT_EMAIL}으로 전송됩니다
+                        {CONTACT_EMAIL}로 바로 전송됩니다
                       </p>
                       <Button
                         type="submit"
                         disabled={sending || !name.trim() || !email.trim() || !subject.trim() || !message.trim()}
                       >
-                        {sending ? "전송 중..." : "메일 보내기"}
+                        {sending ? "전송 중..." : "문의 보내기"}
                         <Send className="ml-1 size-4" />
                       </Button>
                     </div>

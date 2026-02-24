@@ -26,6 +26,22 @@ function isUuid(v: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v)
 }
 
+const MEMBERSHIP_STATUSES = new Set(["active", "inactive", "suspended", "pending"])
+
+async function refreshTenantMemberCount(client: any, tenantId: string) {
+  const countRes = await client.query(
+    `
+      SELECT COUNT(DISTINCT user_id)::int AS total
+      FROM user_tenant_roles
+      WHERE tenant_id = $1
+        AND (membership_status IS NULL OR membership_status = 'active')
+    `,
+    [tenantId]
+  )
+  const total = countRes.rows[0]?.total ?? 0
+  await client.query(`UPDATE tenants SET current_member_count = $2 WHERE id = $1`, [tenantId, total])
+}
+
 async function assertCategoryAccess(args: {
   categoryId: string
   tenantId: string
@@ -977,6 +993,151 @@ export async function listTenantMemberships(req: Request, res: Response) {
   }
 }
 
+export async function listTenantMembers(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = await resolveTenantId(authed)
+    if (!tenantId) return res.status(400).json({ message: "Invalid tenant" })
+
+    const statusRaw = String(req.query?.status || "").trim().toLowerCase()
+    if (statusRaw && !MEMBERSHIP_STATUSES.has(statusRaw)) {
+      return res.status(400).json({ message: "invalid membership_status" })
+    }
+
+    const params: Array<string> = [tenantId]
+    const filters: string[] = ["utr.tenant_id = $1", "u.deleted_at IS NULL"]
+    if (statusRaw) {
+      filters.push(`COALESCE(utr.membership_status, 'active') = $2`)
+      params.push(statusRaw)
+    }
+
+    const r = await query(
+      `
+      SELECT
+        utr.id,
+        utr.user_id,
+        utr.role_id,
+        COALESCE(utr.membership_status, 'active') AS membership_status,
+        utr.joined_at,
+        utr.left_at,
+        utr.left_by,
+        utr.is_primary_tenant,
+        u.email AS user_email,
+        u.full_name AS user_name,
+        u.metadata->>'profile_image_asset_id' AS profile_image_asset_id,
+        r.slug AS role_slug,
+        r.name AS role_name
+      FROM user_tenant_roles utr
+      JOIN users u ON u.id = utr.user_id
+      LEFT JOIN roles r ON r.id = utr.role_id
+      WHERE ${filters.join(" AND ")}
+      ORDER BY utr.joined_at DESC NULLS LAST, utr.granted_at DESC NULLS LAST
+      `,
+      params
+    )
+    return res.json({ ok: true, rows: r.rows })
+  } catch (e) {
+    console.error("post-service listTenantMembers error:", e)
+    return res.status(500).json({ message: "Failed to load tenant members" })
+  }
+}
+
+export async function updateTenantMember(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+    const authed = req as AuthedRequest
+    const tenantId = await resolveTenantId(authed)
+    const actorId = String(authed.userId || "").trim()
+    const membershipId = String(req.params.id || "").trim()
+    if (!tenantId) return res.status(400).json({ message: "Invalid tenant" })
+    if (!actorId) return res.status(401).json({ message: "Unauthorized" })
+    if (!membershipId || !isUuid(membershipId)) return res.status(400).json({ message: "Invalid membership id" })
+
+    const roleRes = await client.query(
+      `
+      SELECT r.slug
+      FROM user_tenant_roles utr
+      JOIN roles r ON r.id = utr.role_id
+      WHERE utr.user_id = $1
+        AND utr.tenant_id = $2
+        AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+      ORDER BY utr.granted_at DESC NULLS LAST
+      LIMIT 1
+      `,
+      [actorId, tenantId]
+    )
+    const actorRole = String(roleRes.rows?.[0]?.slug || "").toLowerCase()
+    const canManage =
+      actorRole === "owner" || actorRole === "admin" || actorRole === "tenant_owner" || actorRole === "tenant_admin"
+    if (!canManage) return res.status(403).json({ message: "Forbidden" })
+
+    const currentRes = await client.query(
+      `
+      SELECT id
+      FROM user_tenant_roles
+      WHERE id = $1 AND tenant_id = $2
+      LIMIT 1
+      `,
+      [membershipId, tenantId]
+    )
+    if (currentRes.rows.length === 0) return res.status(404).json({ message: "Membership not found" })
+
+    const input = req.body || {}
+    const fields: string[] = []
+    const params: any[] = []
+    const setField = (name: string, value: any) => {
+      fields.push(`${name} = $${params.length + 1}`)
+      params.push(value)
+    }
+
+    if (input.role_slug !== undefined) {
+      const roleSlug = String(input.role_slug || "").trim().toLowerCase()
+      if (!roleSlug) return res.status(400).json({ message: "role_slug is required" })
+      const roleIdRes = await client.query(`SELECT id FROM roles WHERE slug = $1 LIMIT 1`, [roleSlug])
+      if (roleIdRes.rows.length === 0) return res.status(400).json({ message: "Invalid role_slug" })
+      setField("role_id", roleIdRes.rows[0].id)
+    }
+
+    if (input.membership_status !== undefined) {
+      const status = String(input.membership_status || "").trim().toLowerCase()
+      if (!MEMBERSHIP_STATUSES.has(status)) return res.status(400).json({ message: "invalid membership_status" })
+      setField("membership_status", status)
+      if (status === "inactive") {
+        fields.push(`left_at = CURRENT_TIMESTAMP`)
+        setField("left_by", actorId)
+      } else if (status === "active") {
+        setField("left_at", null)
+        setField("left_by", null)
+      }
+    }
+
+    if (fields.length === 0) {
+      return res.status(400).json({ message: "No fields to update" })
+    }
+
+    const updateRes = await client.query(
+      `
+      UPDATE user_tenant_roles
+      SET ${fields.join(", ")}
+      WHERE id = $${params.length + 1} AND tenant_id = $${params.length + 2}
+      RETURNING id, user_id, role_id, membership_status, joined_at, left_at, left_by, is_primary_tenant
+      `,
+      [...params, membershipId, tenantId]
+    )
+
+    await refreshTenantMemberCount(client, tenantId)
+    await client.query("COMMIT")
+    return res.json({ ok: true, row: updateRes.rows[0] })
+  } catch (e) {
+    await client.query("ROLLBACK")
+    console.error("post-service updateTenantMember error:", e)
+    return res.status(500).json({ message: "Failed to update tenant member" })
+  } finally {
+    client.release()
+  }
+}
+
 export async function listCurrentUserProviders(req: Request, res: Response) {
   try {
     const userId = (req as AuthedRequest).userId
@@ -998,6 +1159,71 @@ export async function listCurrentUserProviders(req: Request, res: Response) {
   } catch (e) {
     console.error("post-service listCurrentUserProviders error:", e)
     return res.status(500).json({ message: "Failed to load providers" })
+  }
+}
+
+export async function listCurrentUserSessions(req: Request, res: Response) {
+  try {
+    const userId = (req as AuthedRequest).userId
+    const tokenHash = (req as AuthedRequest).sessionTokenHash || ""
+    const status = String(req.query.status || "active").trim()
+    const limitRaw = Number(req.query.limit || 20)
+    const offsetRaw = Number(req.query.offset || 0)
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 100) : 20
+    const offset = Number.isFinite(offsetRaw) ? Math.max(0, Math.floor(offsetRaw)) : 0
+
+    if (!["active", "expired", "all"].includes(status)) {
+      return res.status(400).json({ message: "Invalid status" })
+    }
+
+    const where: string[] = ["user_id = $1"]
+    const params: any[] = [userId, tokenHash]
+
+    if (status === "active") where.push("expires_at > NOW()")
+    if (status === "expired") where.push("expires_at <= NOW()")
+
+    const listRes = await query(
+      `
+      SELECT
+        id,
+        ip_address::text AS ip_address,
+        user_agent,
+        expires_at,
+        last_activity_at,
+        created_at,
+        CASE WHEN expires_at <= NOW() THEN 'expired' ELSE 'active' END AS status,
+        CASE WHEN token_hash = $2 THEN TRUE ELSE FALSE END AS is_current
+      FROM user_sessions
+      WHERE ${where.join(" AND ")}
+      ORDER BY last_activity_at DESC NULLS LAST, created_at DESC
+      LIMIT $3 OFFSET $4
+      `,
+      [...params, limit, offset]
+    )
+
+    return res.json({ ok: true, rows: listRes.rows })
+  } catch (e) {
+    console.error("post-service listCurrentUserSessions error:", e)
+    return res.status(500).json({ message: "Failed to load sessions" })
+  }
+}
+
+export async function revokeCurrentUserSession(req: Request, res: Response) {
+  try {
+    const userId = (req as AuthedRequest).userId
+    const id = String(req.params.id || "").trim()
+    if (!id) return res.status(400).json({ message: "Session id is required" })
+
+    const result = await query(
+      `DELETE FROM user_sessions WHERE id = $1 AND user_id = $2 RETURNING id`,
+      [id, userId]
+    )
+    if (result.rows.length === 0) return res.status(404).json({ message: "Session not found" })
+
+    return res.json({ ok: true, id: result.rows[0].id })
+  } catch (e) {
+    console.error("post-service revokeCurrentUserSession error:", e)
+    return res.status(500).json({ message: "Failed to revoke session" })
   }
 }
 

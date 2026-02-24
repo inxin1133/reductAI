@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, } from "react"
-import { Dialog, DialogClose, DialogContent } from "@/components/ui/dialog"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
@@ -8,10 +8,12 @@ import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Box, CirclePause, Coins, Database, Gauge, HardDrive, Menu, PackageOpen, ShieldCheck, UserPlus, UserRoundCheck, Users, UsersRound, X, ChevronsUp, Settings2, HandCoins, EvCharger, } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { type PlanTier, PLAN_TIER_LABELS, PLAN_TIER_ORDER, PLAN_TIER_STYLES } from "@/lib/planTier"
 
 type TenantSettingsDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
+  onOpenPlanDialog?: () => void
 }
 
 type MenuId = "info" | "members" | "invitations" | "credits" | "topupCredits" | "usage"
@@ -28,6 +30,146 @@ const MENU_ITEMS: Array<{ id: MenuId; label: string; icon: typeof Box }> = [
 
 const TENANT_MENU_STORAGE_KEY = "reductai:tenantSettings:activeMenu"
 const TENANT_MENU_IDS = new Set<MenuId>(MENU_ITEMS.map((item) => item.id))
+
+type CurrentTenantProfile = {
+  id: string
+  name?: string | null
+  tenant_type?: string | null
+  plan_tier?: string | null
+}
+
+type TenantMembership = {
+  id: string
+  name?: string | null
+  tenant_type?: string | null
+  plan_tier?: string | null
+  member_limit?: number | null
+  current_member_count?: number | null
+  member_count?: number | null
+  role_slug?: string | null
+  is_primary?: boolean
+}
+
+type CreditSummary = {
+  ok?: boolean
+  message?: string
+  subscription?: {
+    grant_monthly?: number | null
+    plan_tier?: string | null
+  } | null
+}
+
+type TenantMemberRow = {
+  id: string
+  user_id?: string | null
+  user_name?: string | null
+  user_email?: string | null
+  profile_image_asset_id?: string | null
+  role_slug?: string | null
+  role_name?: string | null
+  membership_status?: string | null
+  joined_at?: string | null
+  left_at?: string | null
+}
+
+const TENANT_TYPE_LABELS: Record<string, string> = {
+  personal: "Personal",
+  team: "Team",
+  group: "Group",
+}
+
+const ROLE_LABELS: Record<string, string> = {
+  owner: "소유자",
+  admin: "관리자",
+  member: "멤버",
+  viewer: "뷰어",
+  tenant_owner: "소유자",
+  tenant_admin: "관리자",
+}
+
+const MEMBERSHIP_STATUS_LABELS: Record<string, string> = {
+  active: "활성",
+  pending: "대기",
+  suspended: "정지",
+  inactive: "비활성",
+}
+
+const MEMBERSHIP_STATUS_STYLES: Record<string, string> = {
+  active: "text-teal-600 bg-teal-50 ring-teal-500",
+  pending: "text-amber-600 bg-amber-50 ring-amber-500",
+  suspended: "text-rose-600 bg-rose-50 ring-rose-500",
+  inactive: "text-slate-500 bg-slate-50 ring-slate-300",
+}
+
+const ROLE_OPTIONS = [
+  { value: "owner", label: "소유자" },
+  { value: "admin", label: "관리자" },
+  { value: "member", label: "멤버" },
+  { value: "viewer", label: "뷰어" },
+] as const
+
+const STATUS_OPTIONS = [
+  { value: "active", label: "활성" },
+  { value: "pending", label: "대기" },
+  { value: "suspended", label: "정지" },
+  { value: "inactive", label: "비활성" },
+] as const
+
+function normalizePlanTier(value: unknown): PlanTier | null {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
+  if (!raw) return null
+  if (PLAN_TIER_ORDER.includes(raw as PlanTier)) return raw as PlanTier
+  return null
+}
+
+function resolveServiceTier(info: { tenant_type?: string | null; plan_tier?: string | null }): PlanTier {
+  const tier = normalizePlanTier(info.plan_tier)
+  if (tier) return tier
+  const type = String(info.tenant_type || "")
+  if (type === "personal") return "free"
+  if (type === "team" || type === "group") return "premium"
+  return "free"
+}
+
+const CANONICAL_ROLE_SLUGS = new Set(["owner", "admin", "member", "viewer"])
+const MANAGEMENT_ROLE_SLUGS = new Set(["owner", "admin", "tenant_owner", "tenant_admin"])
+
+function normalizeRoleSlug(value: unknown) {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
+  if (raw === "tenant_owner") return "owner"
+  if (raw === "tenant_admin") return "admin"
+  if (CANONICAL_ROLE_SLUGS.has(raw)) return raw
+  return "member"
+}
+
+function normalizeMembershipStatus(value: unknown) {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
+  if (raw === "pending" || raw === "suspended" || raw === "inactive") return raw
+  return "active"
+}
+
+function formatDate(value?: string | null) {
+  if (!value) return "-"
+  try {
+    return new Date(value).toLocaleDateString()
+  } catch {
+    return "-"
+  }
+}
+
+function resolveMemberName(row: TenantMemberRow) {
+  const name = String(row.user_name || "").trim()
+  if (name) return name
+  const email = String(row.user_email || "").trim()
+  if (email) return email.split("@")[0] || email
+  return "사용자"
+}
+
+function resolveMemberInitial(row: TenantMemberRow) {
+  const base = resolveMemberName(row)
+  const trimmed = String(base || "").trim()
+  return trimmed ? trimmed.slice(0, 1) : "?"
+}
 
 function readTenantMenuFromStorage(): MenuId | null {
   try {
@@ -83,10 +225,25 @@ const TenantSettingsSidebarMenu = ({
 
 
 
-export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialogProps) {
+export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: TenantSettingsDialogProps) {
   const [activeMenu, setActiveMenu] = useState<MenuId>(() => readTenantMenuFromStorage() ?? "info")
   const [usagePage, setUsagePage] = useState(1)
   const wasOpenRef = useRef(false)
+  const [currentTenant, setCurrentTenant] = useState<CurrentTenantProfile | null>(null)
+  const [tenantMemberships, setTenantMemberships] = useState<TenantMembership[]>([])
+  const [tenantInfoLoading, setTenantInfoLoading] = useState(false)
+  const [creditSummary, setCreditSummary] = useState<CreditSummary | null>(null)
+  const [creditLoading, setCreditLoading] = useState(false)
+  const [pendingPlanDialogOpen, setPendingPlanDialogOpen] = useState(false)
+  const [tenantMembers, setTenantMembers] = useState<TenantMemberRow[]>([])
+  const [membersLoading, setMembersLoading] = useState(false)
+  const [membersError, setMembersError] = useState<string | null>(null)
+  const [memberDialogOpen, setMemberDialogOpen] = useState(false)
+  const [memberDialogTarget, setMemberDialogTarget] = useState<TenantMemberRow | null>(null)
+  const [memberDialogRole, setMemberDialogRole] = useState("member")
+  const [memberDialogStatus, setMemberDialogStatus] = useState("active")
+  const [memberSaving, setMemberSaving] = useState(false)
+  const [memberActionError, setMemberActionError] = useState<string | null>(null)
 
   const activeLabel = useMemo(
     () => MENU_ITEMS.find((item) => item.id === activeMenu)?.label ?? "테넌트 정보",
@@ -114,13 +271,278 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
     const start = (usagePageSafe - 1) * usagePageSize
     return usageRows.slice(start, start + usagePageSize)
   }, [usagePageSafe, usagePageSize, usageRows])
-  const excludedMembers = useMemo(
-    () => [
-      { name: "박지민", email: "jung@example.com", removedAt: "2026-02-01" },
-      { name: "이수진", email: "kang@example.com", removedAt: "2026-01-21" },
-    ],
+  const authHeaders = useCallback(() => {
+    if (typeof window === "undefined") return {}
+    const token = window.localStorage.getItem("token")
+    const headers: Record<string, string> = {}
+    if (token) headers.Authorization = `Bearer ${token}`
+    return headers
+  }, [])
+
+  const loadTenantInfo = useCallback(async () => {
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      setCurrentTenant(null)
+      setTenantMemberships([])
+      return
+    }
+    setTenantInfoLoading(true)
+    try {
+      const [tenantRes, membershipsRes] = await Promise.all([
+        fetch("/api/posts/tenant/current", { headers }),
+        fetch("/api/posts/tenant/memberships", { headers }),
+      ])
+      if (tenantRes.ok) {
+        const tenantJson = (await tenantRes.json().catch(() => null)) as CurrentTenantProfile | null
+        if (tenantJson?.id) {
+          setCurrentTenant({
+            id: String(tenantJson.id),
+            name: tenantJson.name ?? null,
+            tenant_type: tenantJson.tenant_type ?? null,
+            plan_tier: tenantJson.plan_tier ?? null,
+          })
+        } else {
+          setCurrentTenant(null)
+        }
+      } else {
+        setCurrentTenant(null)
+      }
+
+      if (membershipsRes.ok) {
+        const membershipsJson = (await membershipsRes.json().catch(() => [])) as TenantMembership[]
+        setTenantMemberships(Array.isArray(membershipsJson) ? membershipsJson : [])
+      } else {
+        setTenantMemberships([])
+      }
+    } catch (error) {
+      console.error(error)
+      setCurrentTenant(null)
+      setTenantMemberships([])
+    } finally {
+      setTenantInfoLoading(false)
+    }
+  }, [authHeaders])
+
+  const loadCreditSummary = useCallback(async () => {
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      setCreditSummary(null)
+      return
+    }
+    setCreditLoading(true)
+    try {
+      const res = await fetch("/api/ai/credits/my/summary", { headers })
+      const json = (await res.json().catch(() => null)) as CreditSummary | null
+      if (!res.ok || !json?.ok) {
+        setCreditSummary(null)
+        return
+      }
+      setCreditSummary(json)
+    } catch (error) {
+      console.error(error)
+      setCreditSummary(null)
+    } finally {
+      setCreditLoading(false)
+    }
+  }, [authHeaders])
+
+  const loadTenantMembers = useCallback(async () => {
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      setTenantMembers([])
+      setMembersError("로그인이 필요합니다.")
+      return
+    }
+    setMembersLoading(true)
+    setMembersError(null)
+    try {
+      const res = await fetch("/api/posts/tenant/members", { headers })
+      const json = (await res.json().catch(() => null)) as { ok?: boolean; message?: string; rows?: TenantMemberRow[] } | null
+      if (!res.ok || !json?.ok) {
+        setMembersError(json?.message || "멤버 정보를 불러오지 못했습니다.")
+        setTenantMembers([])
+        return
+      }
+      setTenantMembers(Array.isArray(json.rows) ? json.rows : [])
+    } catch (error) {
+      console.error(error)
+      setMembersError("멤버 정보를 불러오지 못했습니다.")
+      setTenantMembers([])
+    } finally {
+      setMembersLoading(false)
+    }
+  }, [authHeaders])
+
+  const currentMembership = useMemo(() => {
+    if (!currentTenant?.id) return null
+    return tenantMemberships.find((item) => String(item.id) === String(currentTenant.id)) ?? null
+  }, [currentTenant?.id, tenantMemberships])
+
+  const isOwner = useMemo(() => {
+    const roleSlug = String(currentMembership?.role_slug || "").toLowerCase()
+    return roleSlug === "owner" || roleSlug === "tenant_owner"
+  }, [currentMembership?.role_slug])
+
+  const canManageMembers = useMemo(() => {
+    const roleSlug = String(currentMembership?.role_slug || "").toLowerCase()
+    return MANAGEMENT_ROLE_SLUGS.has(roleSlug)
+  }, [currentMembership?.role_slug])
+
+  const resolvedPlanTier = useMemo(
+    () =>
+      currentTenant
+        ? resolveServiceTier({
+            tenant_type: currentTenant.tenant_type,
+            plan_tier: currentMembership?.plan_tier ?? currentTenant.plan_tier,
+          })
+        : null,
+    [currentMembership?.plan_tier, currentTenant]
+  )
+
+  const tenantNameValue =
+    !currentTenant && tenantInfoLoading ? "불러오는 중..." : String(currentTenant?.name || "").trim() || "-"
+  const tenantTypeValue =
+    !currentTenant && tenantInfoLoading
+      ? "불러오는 중..."
+      : TENANT_TYPE_LABELS[String(currentTenant?.tenant_type || "")] || "-"
+  const planBadge = !currentTenant && tenantInfoLoading ? (
+    <span className="text-xs text-muted-foreground">불러오는 중...</span>
+  ) : resolvedPlanTier ? (
+    <span className={cn("rounded-full px-3 py-1 text-xs font-semibold", PLAN_TIER_STYLES[resolvedPlanTier].badge)}>
+      {PLAN_TIER_LABELS[resolvedPlanTier]}
+    </span>
+  ) : (
+    <span className="text-xs text-muted-foreground">-</span>
+  )
+
+  const memberCountRaw = currentMembership?.current_member_count ?? currentMembership?.member_count
+  const memberLimitRaw = currentMembership?.member_limit
+  const memberCount = typeof memberCountRaw === "number" ? memberCountRaw : 0
+  const memberLimit = typeof memberLimitRaw === "number" ? memberLimitRaw : null
+  const seatValue =
+    !currentMembership && tenantInfoLoading
+      ? "불러오는 중..."
+      : memberLimit
+        ? `${memberCount}/${memberLimit}명`
+        : memberCount
+          ? `${memberCount}명`
+          : "-"
+
+  const monthlyCredits = creditSummary?.subscription?.grant_monthly
+  const monthlyCreditsValue = creditLoading
+    ? "불러오는 중..."
+    : typeof monthlyCredits === "number"
+      ? `${monthlyCredits.toLocaleString()} 크레딧`
+      : "-"
+
+  const memberStatusCounts = useMemo(() => {
+    const counts = { active: 0, pending: 0, suspended: 0, inactive: 0 }
+    tenantMembers.forEach((row) => {
+      const status = normalizeMembershipStatus(row.membership_status)
+      if (status in counts) counts[status as keyof typeof counts] += 1
+    })
+    return counts
+  }, [tenantMembers])
+
+  const membersActiveRows = useMemo(
+    () => tenantMembers.filter((row) => normalizeMembershipStatus(row.membership_status) !== "inactive"),
+    [tenantMembers]
+  )
+
+  const membersInactiveRows = useMemo(
+    () => tenantMembers.filter((row) => normalizeMembershipStatus(row.membership_status) === "inactive"),
+    [tenantMembers]
+  )
+
+  const totalSeatsValue = membersLoading
+    ? "-"
+    : memberLimit !== null
+      ? String(memberLimit)
+      : String(memberStatusCounts.active + memberStatusCounts.pending + memberStatusCounts.suspended)
+
+  const handleOpenMemberDialog = useCallback(
+    (row: TenantMemberRow) => {
+      setMemberDialogTarget(row)
+      setMemberDialogRole(normalizeRoleSlug(row.role_slug))
+      setMemberDialogStatus(normalizeMembershipStatus(row.membership_status))
+      setMemberActionError(null)
+      setMemberDialogOpen(true)
+    },
     []
   )
+
+  const handleSaveMember = useCallback(async () => {
+    if (!memberDialogTarget || !canManageMembers) return
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      setMemberActionError("로그인이 필요합니다.")
+      return
+    }
+    setMemberSaving(true)
+    setMemberActionError(null)
+    try {
+      const res = await fetch(`/api/posts/tenant/members/${encodeURIComponent(memberDialogTarget.id)}`, {
+        method: "PUT",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          role_slug: memberDialogRole,
+          membership_status: memberDialogStatus,
+        }),
+      })
+      if (!res.ok) {
+        const msg = await res.text().catch(() => "")
+        setMemberActionError(msg || "멤버 정보를 저장하지 못했습니다.")
+        return
+      }
+      setMemberDialogOpen(false)
+      await loadTenantMembers()
+    } catch (error) {
+      console.error(error)
+      setMemberActionError("멤버 정보를 저장하지 못했습니다.")
+    } finally {
+      setMemberSaving(false)
+    }
+  }, [authHeaders, canManageMembers, loadTenantMembers, memberDialogRole, memberDialogStatus, memberDialogTarget])
+
+  const handleRemoveMember = useCallback(async () => {
+    if (!memberDialogTarget || !canManageMembers) return
+    const ok = window.confirm("해당 멤버를 테넌트에서 제외할까요?")
+    if (!ok) return
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      setMemberActionError("로그인이 필요합니다.")
+      return
+    }
+    setMemberSaving(true)
+    setMemberActionError(null)
+    try {
+      const res = await fetch(`/api/posts/tenant/members/${encodeURIComponent(memberDialogTarget.id)}`, {
+        method: "PUT",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          membership_status: "inactive",
+        }),
+      })
+      if (!res.ok) {
+        const msg = await res.text().catch(() => "")
+        setMemberActionError(msg || "멤버 제외에 실패했습니다.")
+        return
+      }
+      setMemberDialogOpen(false)
+      await loadTenantMembers()
+    } catch (error) {
+      console.error(error)
+      setMemberActionError("멤버 제외에 실패했습니다.")
+    } finally {
+      setMemberSaving(false)
+    }
+  }, [authHeaders, canManageMembers, loadTenantMembers, memberDialogTarget])
+
+  const handleUpgrade = useCallback(() => {
+    if (!onOpenPlanDialog) return
+    setPendingPlanDialogOpen(true)
+    onOpenChange(false)
+  }, [onOpenChange, onOpenPlanDialog])
 
   useEffect(() => {
     if (!open) {
@@ -139,6 +561,27 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
   useEffect(() => {
     if (usagePage > usageTotalPages) setUsagePage(usageTotalPages)
   }, [usagePage, usageTotalPages])
+  useEffect(() => {
+    if (!open) return
+    void loadTenantInfo()
+    void loadCreditSummary()
+  }, [loadCreditSummary, loadTenantInfo, open])
+  useEffect(() => {
+    if (!open) return
+    if (activeMenu !== "members") return
+    void loadTenantMembers()
+  }, [activeMenu, loadTenantMembers, open])
+  useEffect(() => {
+    if (memberDialogOpen) return
+    setMemberDialogTarget(null)
+    setMemberActionError(null)
+  }, [memberDialogOpen])
+  useEffect(() => {
+    if (open) return
+    if (!pendingPlanDialogOpen) return
+    onOpenPlanDialog?.()
+    setPendingPlanDialogOpen(false)
+  }, [onOpenPlanDialog, open, pendingPlanDialogOpen])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -187,17 +630,15 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
                     <div className="mt-3 grid gap-3 text-sm text-muted-foreground">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">테넌트 이름</div>
-                        <div className="flex items-center gap-2 text-foreground">리덕트</div>
+                        <div className="flex items-center gap-2 text-foreground">{tenantNameValue}</div>
                       </div>
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">테넌트 유형</div>
-                        <div className="flex items-center gap-2 text-foreground">Team</div>
+                        <div className="flex items-center gap-2 text-foreground">{tenantTypeValue}</div>
                       </div>
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">서비스 플랜</div>
-                        <div className="flex items-center gap-2 text-foreground">
-                          <span className="rounded-full px-3 py-1 text-xs font-semibold bg-indigo-50 text-indigo-600 ring-1 ring-indigo-500">Premium</span>
-                        </div>
+                        <div className="flex items-center gap-2 text-foreground">{planBadge}</div>
                       </div>
                     </div>
                   </div>
@@ -208,24 +649,31 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
                     <div className="mt-3 grid gap-3 text-sm text-muted-foreground">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">월 서비스 크레딧</div>
-                        <div className="flex items-center gap-2 text-foreground">50,000 크레딧</div>
+                        <div className="flex items-center gap-2 text-foreground">{monthlyCreditsValue}</div>
                       </div>
-                      <div className="flex items-center justify-between">
+                      {/* <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">스토리지 용량</div>
                         <div className="flex items-center gap-2 text-foreground">50GB</div>
-                      </div>
+                      </div> */}
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">좌석 수</div>
-                        <div className="flex items-center gap-2 text-foreground">4/5명</div>
+                        <div className="flex items-center gap-2 text-foreground">{seatValue}</div>
                       </div>
                     </div>
                   </div>
 
-                  <div className="flex justify-end px-4">
-                    <Button variant="outline" size="sm" className="text-blue-500 hover:text-blue-600">
-                      <ChevronsUp className="size-4" />업그레이드
-                    </Button>
-                  </div>
+                  {isOwner ? (
+                    <div className="flex justify-end px-4">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="text-blue-500 hover:text-blue-600"
+                        onClick={handleUpgrade}
+                      >
+                        <ChevronsUp className="size-4" />업그레이드
+                      </Button>
+                    </div>
+                  ) : null}
 
                 </div>
               ) : null}
@@ -238,10 +686,34 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
                     <div className="text-sm font-semibold text-foreground">멤버 현황</div>
                     <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
                       {[
-                        { label: "총 좌석", value: "5", sub: "명", icon: UsersRound, accent: "text-foreground", bg: "bg-muted/60", ring: "" },
-                        { label: "활성", value: "3", sub: "명", icon: UserRoundCheck, accent: "text-teal-600", bg: "bg-teal-50 dark:bg-teal-950/40", ring: "ring-1 ring-teal-200 dark:ring-teal-800" },
-                        { label: "대기", value: "1", sub: "명", icon: ShieldCheck, accent: "text-amber-600", bg: "bg-amber-50 dark:bg-amber-950/40", ring: "ring-1 ring-amber-200 dark:ring-amber-800" },
-                        { label: "정지", value: "1", sub: "명", icon: CirclePause, accent: "text-rose-600", bg: "bg-rose-50 dark:bg-rose-950/40", ring: "ring-1 ring-rose-200 dark:ring-rose-800" },
+                        { label: "총 좌석", value: totalSeatsValue, sub: "명", icon: UsersRound, accent: "text-foreground", bg: "bg-muted/60", ring: "" },
+                        {
+                          label: "활성",
+                          value: membersLoading ? "-" : String(memberStatusCounts.active),
+                          sub: "명",
+                          icon: UserRoundCheck,
+                          accent: "text-teal-600",
+                          bg: "bg-teal-50 dark:bg-teal-950/40",
+                          ring: "ring-1 ring-teal-200 dark:ring-teal-800",
+                        },
+                        {
+                          label: "대기",
+                          value: membersLoading ? "-" : String(memberStatusCounts.pending),
+                          sub: "명",
+                          icon: ShieldCheck,
+                          accent: "text-amber-600",
+                          bg: "bg-amber-50 dark:bg-amber-950/40",
+                          ring: "ring-1 ring-amber-200 dark:ring-amber-800",
+                        },
+                        {
+                          label: "정지",
+                          value: membersLoading ? "-" : String(memberStatusCounts.suspended),
+                          sub: "명",
+                          icon: CirclePause,
+                          accent: "text-rose-600",
+                          bg: "bg-rose-50 dark:bg-rose-950/40",
+                          ring: "ring-1 ring-rose-200 dark:ring-rose-800",
+                        },
                       ].map((item) => {
                         const Icon = item.icon
                         return (
@@ -262,6 +734,9 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
 
                   <div className="px-4 pb-4">
                     <div className="text-sm font-semibold text-foreground">멤버 목록</div>
+                    {membersError ? (
+                      <div className="mt-2 text-xs text-destructive">{membersError}</div>
+                    ) : null}
                     <div className="mt-3 overflow-x-auto rounded-md border border-border">
                       <Table className="text-sm">
                         <TableHeader className="bg-muted/50 text-xs font-medium text-muted-foreground">
@@ -269,51 +744,72 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
                             <TableHead className="">이름</TableHead>
                             <TableHead className="hidden sm:table-cell">이메일</TableHead>
                             <TableHead className="text-center">역할</TableHead>
-                            <TableHead className="w-[60px] text-center">스토리지</TableHead>
+                            {/* <TableHead className="w-[60px] text-center">스토리지</TableHead> */}
                             <TableHead className="w-[60px] text-center">상태</TableHead>
                             <TableHead className="hidden text-center sm:table-cell">가입일</TableHead>
                             <TableHead className="w-[40px] text-center">관리</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody className="text-muted-foreground">
-                          {[
-                            { name: "홍길동", email: "lee@example.com", role: "소유자", storage: "10GB", status: "활성", date: "2026-02-15", statusColor: "text-teal-600 bg-teal-50 ring-teal-500" },
-                            { name: "김하늘", email: "choi@example.com", role: "관리자", storage: "10GB", status: "활성", date: "2026-02-14", statusColor: "text-teal-600 bg-teal-50 ring-teal-500" },
-                            { name: "박지민", email: "jung@example.com", role: "멤버", storage: "10GB", status: "대기", date: "2026-02-12", statusColor: "text-amber-600 bg-amber-50 ring-amber-500" },
-                            { name: "이수진", email: "kang@example.com", role: "멤버", storage: "10GB", status: "정지", date: "2026-02-10", statusColor: "text-rose-600 bg-rose-50 ring-rose-500" },
-                            { name: "최민호", email: "yoon@example.com", role: "맴버", storage: "10GB", status: "활성", date: "2026-01-20", statusColor: "text-teal-600 bg-teal-50 ring-teal-500" },
-                          ].map((row) => (
-                            <TableRow key={row.email} className="hover:bg-accent/40">
-                              <TableCell className="text-foreground">
-                                <div className="flex items-center gap-1">
-                                  <div className="flex items-center justify-center gap-2 w-6 h-6 bg-teal-500 rounded-sm">
-                                    <span className="text-white font-semibold text-sm">이</span>
-                                  </div>
-                                  <div className="text-xs truncate">{row.name}</div>
-                                </div>
-                              </TableCell>
-                              <TableCell className="text-foreground hidden sm:table-cell">
-                                <span className="text-xs block w-[120px] truncate">{row.email}</span>
-                              </TableCell>
-                              <TableCell className="text-center">{row.role}</TableCell>
-                              <TableCell className="text-center">{row.storage}</TableCell>
-                              <TableCell className="text-center">
-                                <span className={cn("inline-block rounded-full px-2 py-0.5 text-xs font-semibold ring-1", row.statusColor)}>
-                                  {row.status}
-                                </span>
-                              </TableCell>
-                              <TableCell className="hidden text-xs text-center sm:table-cell">{row.date}</TableCell>
-                              <TableCell className="text-center">
-                                {row.role !== "소유자" ? (
-                                  <Button variant="outline" size="sm" className="text-blue-500 hover:text-blue-600">
-                                    <Settings2 className="size-4" />
-                                  </Button>
-                                ) : (
-                                  <span className="text-xs text-muted-foreground">—</span>
-                                )}
+                          {membersLoading ? (
+                            <TableRow>
+                              <TableCell colSpan={6} className="py-8 text-center text-xs text-muted-foreground">
+                                멤버 정보를 불러오는 중입니다.
                               </TableCell>
                             </TableRow>
-                          ))}
+                          ) : membersActiveRows.length ? (
+                            membersActiveRows.map((row) => {
+                              const roleSlugRaw = String(row.role_slug || "").toLowerCase()
+                              const statusKey = normalizeMembershipStatus(row.membership_status)
+                              const statusLabel = MEMBERSHIP_STATUS_LABELS[statusKey] || row.membership_status || "-"
+                              const statusStyle = MEMBERSHIP_STATUS_STYLES[statusKey] || MEMBERSHIP_STATUS_STYLES.inactive
+                              const roleLabel = ROLE_LABELS[roleSlugRaw] || row.role_name || row.role_slug || "-"
+                              const initial = resolveMemberInitial(row)
+                              return (
+                                <TableRow key={row.id} className="hover:bg-accent/40">
+                                  <TableCell className="text-foreground">
+                                    <div className="flex items-center gap-1">
+                                      <div className="flex items-center justify-center gap-2 w-6 h-6 bg-teal-500 rounded-sm">
+                                        <span className="text-white font-semibold text-sm">{initial}</span>
+                                      </div>
+                                      <div className="text-xs truncate">{resolveMemberName(row)}</div>
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="text-foreground hidden sm:table-cell">
+                                    <span className="text-xs block w-[120px] truncate">{row.user_email || "-"}</span>
+                                  </TableCell>
+                                  <TableCell className="text-center">{roleLabel}</TableCell>
+                                  {/* <TableCell className="text-center">{row.storage}</TableCell> */}
+                                  <TableCell className="text-center">
+                                    <span className={cn("inline-block rounded-full px-2 py-0.5 text-xs font-semibold ring-1", statusStyle)}>
+                                      {statusLabel}
+                                    </span>
+                                  </TableCell>
+                                  <TableCell className="hidden text-xs text-center sm:table-cell">{formatDate(row.joined_at)}</TableCell>
+                                  <TableCell className="text-center">
+                                    {canManageMembers && roleSlugRaw !== "owner" && roleSlugRaw !== "tenant_owner" ? (
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="text-blue-500 hover:text-blue-600"
+                                        onClick={() => handleOpenMemberDialog(row)}
+                                      >
+                                        <Settings2 className="size-4" />
+                                      </Button>
+                                    ) : (
+                                      <span className="text-xs text-muted-foreground">—</span>
+                                    )}
+                                  </TableCell>
+                                </TableRow>
+                              )
+                            })
+                          ) : (
+                            <TableRow>
+                              <TableCell colSpan={6} className="py-8 text-center text-xs text-muted-foreground">
+                                표시할 멤버가 없습니다.
+                              </TableCell>
+                            </TableRow>
+                          )}
                         </TableBody>
                       </Table>
                     </div>
@@ -335,14 +831,20 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
                           </TableRow>
                         </TableHeader>
                         <TableBody className="text-muted-foreground">
-                          {excludedMembers.length ? (
-                            excludedMembers.map((row) => (
-                              <TableRow key={row.email} className="hover:bg-accent/40">
-                                <TableCell className="text-foreground text-xs">{row.name}</TableCell>
+                          {membersLoading ? (
+                            <TableRow>
+                              <TableCell colSpan={4} className="py-8 text-center text-xs text-muted-foreground">
+                                제외 멤버를 불러오는 중입니다.
+                              </TableCell>
+                            </TableRow>
+                          ) : membersInactiveRows.length ? (
+                            membersInactiveRows.map((row) => (
+                              <TableRow key={row.id} className="hover:bg-accent/40">
+                                <TableCell className="text-foreground text-xs">{resolveMemberName(row)}</TableCell>
                                 <TableCell className="text-foreground">
-                                  <span className="text-xs block w-[160px] truncate">{row.email}</span>
+                                  <span className="text-xs block w-[160px] truncate">{row.user_email || "-"}</span>
                                 </TableCell>
-                                <TableCell className="text-center text-xs">{row.removedAt}</TableCell>
+                                <TableCell className="text-center text-xs">{formatDate(row.left_at)}</TableCell>
                                 <TableCell className="text-center">
                                   <Button variant="outline" size="sm" className="text-blue-500 hover:text-blue-600">
                                     다시 초대
@@ -827,6 +1329,65 @@ export function TenantSettingsDialog({ open, onOpenChange }: TenantSettingsDialo
           </div>
         </div>
       </DialogContent>
+      <Dialog open={memberDialogOpen} onOpenChange={setMemberDialogOpen}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>멤버 설정</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              <div className="text-foreground font-medium">{memberDialogTarget ? resolveMemberName(memberDialogTarget) : "-"}</div>
+              <div>{memberDialogTarget?.user_email || "-"}</div>
+            </div>
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-muted-foreground">역할</div>
+              <Select value={memberDialogRole} onValueChange={setMemberDialogRole} disabled={!canManageMembers || memberSaving}>
+                <SelectTrigger>
+                  <SelectValue placeholder="역할 선택" />
+                </SelectTrigger>
+                <SelectContent>
+                  {ROLE_OPTIONS.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-muted-foreground">상태</div>
+              <Select value={memberDialogStatus} onValueChange={setMemberDialogStatus} disabled={!canManageMembers || memberSaving}>
+                <SelectTrigger>
+                  <SelectValue placeholder="상태 선택" />
+                </SelectTrigger>
+                <SelectContent>
+                  {STATUS_OPTIONS.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {memberActionError ? (
+              <div className="text-xs text-destructive">{memberActionError}</div>
+            ) : null}
+          </div>
+          <DialogFooter className="mt-2">
+            <Button
+              variant="outline"
+              className="text-destructive hover:text-destructive"
+              onClick={handleRemoveMember}
+              disabled={memberSaving || !canManageMembers}
+            >
+              멤버 제외
+            </Button>
+            <Button onClick={handleSaveMember} disabled={memberSaving || !canManageMembers}>
+              {memberSaving ? "저장 중..." : "변경 적용"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog >
   )
 }

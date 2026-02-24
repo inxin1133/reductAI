@@ -6,6 +6,7 @@ const router = Router();
 
 router.post('/send-verification-code', authController.sendVerificationCode);
 router.post('/verify-code', authController.verifyCode);
+router.post('/contact', authController.sendContactMessage);
 router.post('/sso/email/send', authController.sendSsoEmailCode);
 router.post('/sso/email/verify', authController.verifySsoEmailCode);
 router.post('/check-email', authController.checkEmail);

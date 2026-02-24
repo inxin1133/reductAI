@@ -72,6 +72,7 @@ import { SettingsDialog, type SettingsMenuId } from "@/components/settings/Setti
 import { BillingSettingsDialog } from "@/components/settings/BillingSettingsDialog"
 import { PlanDialog } from "@/components/settings/PlanDialog"
 import { TenantSettingsDialog } from "@/components/settings/TenantSettingsDialog"
+import { ContactDialog } from "@/components/settings/ContactDialog"
 import EmojiPicker, { Theme } from "emoji-picker-react"
 import type { EmojiClickData } from "emoji-picker-react"
 
@@ -245,7 +246,17 @@ export function Sidebar({ className }: SidebarProps) {
       return ""
     }
   })
-  const [tenantPlanTier, setTenantPlanTier] = useState<string>("")
+  const [tenantPlanTier, setTenantPlanTier] = useState<string>(() => {
+    try {
+      if (typeof window === "undefined") return ""
+      const raw = window.localStorage.getItem(TENANT_INFO_CACHE_KEY)
+      const j = raw ? JSON.parse(raw) : null
+      const tier = typeof j?.plan_tier === "string" ? String(j.plan_tier).trim() : ""
+      return tier
+    } catch {
+      return ""
+    }
+  })
   const [tenantName, setTenantName] = useState<string>(() => {
     try {
       const raw = window.localStorage.getItem(TENANT_INFO_CACHE_KEY)
@@ -294,10 +305,9 @@ export function Sidebar({ className }: SidebarProps) {
 
   const canManageTenant = useMemo(() => {
     if (tenantType === "personal") return false
-    const targetId = tenantId || tenantMemberships.find((t) => t.is_primary)?.id || ""
-    if (!targetId) return false
+    if (!tenantId) return false
     const roleSlug = String(
-      tenantMemberships.find((t) => String(t.id) === String(targetId))?.role_slug || ""
+      tenantMemberships.find((t) => String(t.id) === String(tenantId))?.role_slug || ""
     ).toLowerCase()
     const elevated = new Set(["owner", "admin", "tenant_admin", "tenant_owner"])
     return elevated.has(roleSlug)
@@ -617,6 +627,7 @@ const profileBadges = useMemo(() => {
   const [settingsDialogInitialMenu, setSettingsDialogInitialMenu] = useState<SettingsMenuId>("profile")
   const [isPlanDialogOpen, setIsPlanDialogOpen] = useState(false)
   const [isTenantSettingsDialogOpen, setIsTenantSettingsDialogOpen] = useState(false)
+  const [isContactDialogOpen, setIsContactDialogOpen] = useState(false)
 
   const { theme, themeMode, setThemeMode } = useTheme()
   const userProfile = useMemo(() => {
@@ -948,9 +959,19 @@ const profileBadges = useMemo(() => {
     if (planTier) setTenantPlanTier(planTier)
     if (id || type || name) {
       try {
+        const cachedRaw = window.localStorage.getItem(TENANT_INFO_CACHE_KEY)
+        const cached = cachedRaw ? JSON.parse(cachedRaw) : null
+        const cachedPlanTier =
+          typeof cached?.plan_tier === "string" ? String(cached.plan_tier).trim() : ""
+        const nextPlanTier = planTier || cachedPlanTier
         window.localStorage.setItem(
           TENANT_INFO_CACHE_KEY,
-          JSON.stringify({ id: id || "", tenant_type: type || "", name: name || "" })
+          JSON.stringify({
+            id: id || "",
+            tenant_type: type || "",
+            name: name || "",
+            plan_tier: nextPlanTier || "",
+          })
         )
       } catch {
         // ignore
@@ -1397,7 +1418,14 @@ const profileBadges = useMemo(() => {
     <PlanDialog open={isPlanDialogOpen} onOpenChange={setIsPlanDialogOpen} currentTier={tenantPlanTier} />
   )
   const tenantSettingsDialog = (
-    <TenantSettingsDialog open={isTenantSettingsDialogOpen} onOpenChange={setIsTenantSettingsDialogOpen} />
+    <TenantSettingsDialog
+      open={isTenantSettingsDialogOpen}
+      onOpenChange={setIsTenantSettingsDialogOpen}
+      onOpenPlanDialog={openPlanDialog}
+    />
+  )
+  const contactDialog = (
+    <ContactDialog open={isContactDialogOpen} onOpenChange={setIsContactDialogOpen} />
   )
 
   const reorder = async (args: { type: "personal" | "team"; orderedIds: string[] }) => {
@@ -1663,6 +1691,7 @@ const profileBadges = useMemo(() => {
         {billingSettingsDialog}
         {planDialog}
         {tenantSettingsDialog}
+        {contactDialog}
       </div>
     )
   }
@@ -1929,7 +1958,10 @@ const profileBadges = useMemo(() => {
               <PieChart className="size-5" />
               <span className="text-base text-foreground">대시보드</span>
             </div>
-            <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800">
+            <div
+              className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800"
+              onClick={() => setIsContactDialogOpen(true)}
+            >
               <MessageSquareMore className="size-5" />
               <span className="text-base text-foreground">문의</span>
             </div>
@@ -1940,6 +1972,7 @@ const profileBadges = useMemo(() => {
         {settingsDialog}
         {planDialog}
         {tenantSettingsDialog}
+        {contactDialog}
       </div>
     )
   }
@@ -3083,6 +3116,7 @@ const profileBadges = useMemo(() => {
             "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800",
             !isOpen && "justify-center"
           )}
+          onClick={() => setIsContactDialogOpen(true)}
         >
           <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
             <MessageSquareMore className="size-full" />
@@ -3096,6 +3130,7 @@ const profileBadges = useMemo(() => {
       {billingSettingsDialog}
       {planDialog}
       {tenantSettingsDialog}
+      {contactDialog}
     </div>
   )
 }

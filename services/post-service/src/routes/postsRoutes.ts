@@ -10,6 +10,8 @@ import {
   getCurrentTenant,
   getCurrentUser,
   listCurrentUserProviders,
+  listCurrentUserSessions,
+  listTenantMembers,
   listTenantMemberships,
   listDeletedPages,
   listMyPageCategories,
@@ -17,12 +19,14 @@ import {
   movePage,
   purgeDeletedPage,
   reorderCategories,
+  revokeCurrentUserSession,
   restoreDeletedPage,
   savePostContent,
   updateCategory,
   updatePost,
   updatePostCategory,
   updateCurrentUser,
+  updateTenantMember,
   updateTenantName,
 } from "../controllers/postsController"
 
@@ -39,8 +43,12 @@ router.post("/categories/reorder", requireAuth, reorderCategories)
 router.get("/user/me", requireAuth, getCurrentUser)
 router.patch("/user/me", requireAuth, updateCurrentUser)
 router.get("/user/providers", requireAuth, listCurrentUserProviders)
+router.get("/user/sessions", requireAuth, listCurrentUserSessions)
+router.delete("/user/sessions/:id", requireAuth, revokeCurrentUserSession)
 router.get("/tenant/current", requireAuth, getCurrentTenant)
 router.get("/tenant/memberships", requireAuth, listTenantMemberships)
+router.get("/tenant/members", requireAuth, listTenantMembers)
+router.put("/tenant/members/:id", requireAuth, updateTenantMember)
 router.patch("/tenant/:id", requireAuth, updateTenantName)
 
 // Trash (deleted posts)

@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import * as db from '../config/db';
-import { sendVerificationEmail } from '../services/emailService';
+import { sendContactEmail, sendVerificationEmail } from '../services/emailService';
 import type { AuthedRequest } from '../middleware/requireAuth';
 import crypto from 'crypto';
 
@@ -89,6 +89,14 @@ const normalizeEmail = (value: unknown) => {
 
 const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 
+const CONTACT_CATEGORIES = new Set(['general', 'sales', 'support', 'partnership']);
+const CONTACT_CATEGORY_LABELS: Record<string, string> = {
+  general: '일반 문의',
+  sales: '요금제 상담',
+  support: '기술 지원',
+  partnership: '파트너십',
+};
+
 const toStr = (value: unknown) => {
   if (typeof value !== 'string') return '';
   return value.trim();
@@ -120,7 +128,67 @@ const buildFrontendUrl = (path: string, params: Record<string, string | null | u
   return url.toString();
 };
 
-const buildJwtRedirect = async (userRow: any, provider: string, tenantIdOverride?: string | null, isNewUser = false) => {
+const hashSessionToken = (token: string) => crypto.createHash('sha256').update(token).digest('hex');
+
+const resolveSessionExpiry = (token: string) => {
+  const decoded = jwt.decode(token) as { exp?: number } | null;
+  const exp = decoded?.exp;
+  if (typeof exp === 'number' && Number.isFinite(exp)) {
+    return new Date(exp * 1000);
+  }
+  return new Date(Date.now() + 24 * 60 * 60 * 1000);
+};
+
+const resolveClientIp = (req: Request) => {
+  const forwarded = req.headers['x-forwarded-for'];
+  const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+  const ip = typeof forwardedValue === 'string' ? forwardedValue.split(',')[0]?.trim() : '';
+  if (ip) return ip;
+  return typeof req.ip === 'string' ? req.ip : '';
+};
+
+const recordUserSession = async (args: {
+  userId: string;
+  tenantId?: string | null;
+  token: string;
+  req: Request;
+}) => {
+  const tokenHash = hashSessionToken(args.token);
+  const expiresAt = resolveSessionExpiry(args.token);
+  const ip = resolveClientIp(args.req);
+  const userAgent =
+    typeof args.req.headers['user-agent'] === 'string' ? args.req.headers['user-agent'] : '';
+  await db.query(
+    `
+    INSERT INTO user_sessions (user_id, tenant_id, token_hash, ip_address, user_agent, expires_at, last_activity_at)
+    VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+    ON CONFLICT (token_hash)
+    DO UPDATE SET
+      user_id = EXCLUDED.user_id,
+      tenant_id = EXCLUDED.tenant_id,
+      ip_address = EXCLUDED.ip_address,
+      user_agent = EXCLUDED.user_agent,
+      expires_at = EXCLUDED.expires_at,
+      last_activity_at = CURRENT_TIMESTAMP
+    `,
+    [
+      args.userId,
+      args.tenantId ?? null,
+      tokenHash,
+      ip || null,
+      userAgent || null,
+      expiresAt,
+    ]
+  );
+};
+
+const buildJwtRedirect = async (
+  req: Request,
+  userRow: any,
+  provider: string,
+  tenantIdOverride?: string | null,
+  isNewUser = false
+) => {
   const [resolvedTenantId, platformRole] = await Promise.all([
     tenantIdOverride || getPrimaryTenantId(userRow.id),
     getPlatformRoleSlug(userRow.id),
@@ -131,6 +199,13 @@ const buildJwtRedirect = async (userRow: any, provider: string, tenantIdOverride
     process.env.JWT_SECRET || 'secret',
     { expiresIn: '24h' }
   );
+
+  await recordUserSession({
+    userId: userRow.id,
+    tenantId: resolvedTenantId || null,
+    token,
+    req,
+  });
 
   return buildFrontendRedirect({
     token,
@@ -514,7 +589,7 @@ export const verifySsoEmailCode = async (req: Request, res: Response) => {
 
     delete otpStore[email];
 
-    const redirectUrl = await buildJwtRedirect(userRow, provider, tenantId, isNewUser);
+    const redirectUrl = await buildJwtRedirect(req, userRow, provider, tenantId, isNewUser);
     return res.json({ success: true, redirect_url: redirectUrl });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -541,6 +616,41 @@ export const checkEmail = async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Check email error:', error);
     res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+export const sendContactMessage = async (req: Request, res: Response) => {
+  const name = toStr(req.body?.name);
+  const email = normalizeEmail(req.body?.email);
+  const category = toStr(req.body?.category).toLowerCase();
+  const subject = toStr(req.body?.subject);
+  const message = toStr(req.body?.message);
+
+  if (!name || !email || !category || !subject || !message) {
+    return res.status(400).json({ message: 'All fields are required' });
+  }
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ message: 'Invalid email format' });
+  }
+  if (!CONTACT_CATEGORIES.has(category)) {
+    return res.status(400).json({ message: 'Invalid category' });
+  }
+
+  try {
+    const success = await sendContactEmail({
+      name,
+      email,
+      category: CONTACT_CATEGORY_LABELS[category] || category,
+      subject,
+      message,
+    });
+    if (!success) {
+      return res.status(500).json({ message: 'Failed to send contact email' });
+    }
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error('sendContactMessage error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
   }
 };
 
@@ -765,6 +875,13 @@ export const register = async (req: Request, res: Response) => {
       { expiresIn: '24h' }
     );
 
+    await recordUserSession({
+      userId: user.id,
+      tenantId,
+      token,
+      req,
+    });
+
     res.status(201).json({
       success: true,
       message: 'User registered successfully',
@@ -823,6 +940,13 @@ export const login = async (req: Request, res: Response) => {
       process.env.JWT_SECRET || 'secret',
       { expiresIn: '24h' }
     );
+
+    await recordUserSession({
+      userId: user.id,
+      tenantId,
+      token,
+      req,
+    });
 
     res.json({
       success: true,
@@ -1070,6 +1194,13 @@ export const handleGoogleOAuthCallback = async (req: Request, res: Response) => 
       { expiresIn: '24h' }
     );
 
+    await recordUserSession({
+      userId: userRow.id,
+      tenantId: resolvedTenantId || null,
+      token,
+      req,
+    });
+
     return res.redirect(
       buildFrontendRedirect({
         token,
@@ -1177,7 +1308,7 @@ export const handleNaverOAuthCallback = async (req: Request, res: Response) => {
       const userRes = await db.query('SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL', [providerUserIdRow]);
       const userRow = userRes.rows[0] || null;
       if (userRow?.email_verified) {
-        const redirectUrl = await buildJwtRedirect(userRow, 'naver', null, false);
+        const redirectUrl = await buildJwtRedirect(req, userRow, 'naver', null, false);
         return res.redirect(redirectUrl);
       }
     }
@@ -1301,7 +1432,7 @@ export const handleKakaoOAuthCallback = async (req: Request, res: Response) => {
       const userRes = await db.query('SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL', [providerUserIdRow]);
       const userRow = userRes.rows[0] || null;
       if (userRow?.email_verified) {
-        const redirectUrl = await buildJwtRedirect(userRow, 'kakao', null, false);
+        const redirectUrl = await buildJwtRedirect(req, userRow, 'kakao', null, false);
         return res.redirect(redirectUrl);
       }
     }
