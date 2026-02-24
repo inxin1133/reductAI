@@ -21,7 +21,6 @@ CREATE TABLE credit_settings (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     credits_per_usd INTEGER NOT NULL DEFAULT 1000,
     topup_expiry_months INTEGER NOT NULL DEFAULT 36,
-    subscription_expiry_days INTEGER NOT NULL DEFAULT 31,
     currency VARCHAR(3) NOT NULL DEFAULT 'USD',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -31,7 +30,6 @@ CREATE TABLE credit_settings (
 COMMENT ON TABLE credit_settings IS '글로벌 크레딧 변환 및 만료 설정.';
 COMMENT ON COLUMN credit_settings.credits_per_usd IS '1 USD당 크레딧 수.';
 COMMENT ON COLUMN credit_settings.topup_expiry_months IS '탑업 크레딧 만료 개월 수.';
-COMMENT ON COLUMN credit_settings.subscription_expiry_days IS '구독 크레딧 만료 일 수.';
 COMMENT ON COLUMN credit_settings.currency IS '크레딧 통화.';
 COMMENT ON COLUMN credit_settings.created_at IS '생성 시간.';
 COMMENT ON COLUMN credit_settings.updated_at IS '수정 시간.';
@@ -81,7 +79,6 @@ CREATE TABLE credit_plan_grants (
     monthly_credits BIGINT NOT NULL DEFAULT 0,
     initial_credits BIGINT NOT NULL DEFAULT 0,
     credit_type VARCHAR(20) NOT NULL DEFAULT 'subscription' CHECK (credit_type IN ('subscription', 'topup')),
-    expires_in_days INTEGER DEFAULT 31,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     metadata JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -96,7 +93,6 @@ COMMENT ON COLUMN credit_plan_grants.billing_cycle IS '결제 주기(billing_cyc
 COMMENT ON COLUMN credit_plan_grants.monthly_credits IS '월간 크레딧 수(monthly_credits)';
 COMMENT ON COLUMN credit_plan_grants.initial_credits IS '초기 크레딧 수(initial_credits)';
 COMMENT ON COLUMN credit_plan_grants.credit_type IS '크레딧 타입(credit_type)';
-COMMENT ON COLUMN credit_plan_grants.expires_in_days IS '만료 일 수(expires_in_days)';
 COMMENT ON COLUMN credit_plan_grants.is_active IS '활성 여부(TRUE, FALSE)';
 COMMENT ON COLUMN credit_plan_grants.metadata IS '추가 메타데이터(JSON)';
 COMMENT ON COLUMN credit_plan_grants.created_at IS '생성 시간(TIMESTAMP)';
@@ -155,6 +151,34 @@ COMMENT ON COLUMN credit_accounts.display_name IS '표시 이름(display_name)';
 COMMENT ON COLUMN credit_accounts.metadata IS '추가 메타데이터(JSON)';
 COMMENT ON COLUMN credit_accounts.created_at IS '생성 시간(TIMESTAMP)';
 COMMENT ON COLUMN credit_accounts.updated_at IS '수정 시간(TIMESTAMP)';
+
+-- ============================================
+-- 4-1. CREDIT ACCOUNT ACCESS (account priority & limits) (사용 권한/순서)
+-- ============================================
+
+CREATE TABLE credit_account_access (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    account_id UUID NOT NULL REFERENCES credit_accounts(id) ON DELETE CASCADE,
+    priority INTEGER NOT NULL DEFAULT 0 CHECK (priority >= 0),
+    max_per_period BIGINT,
+    allow_when_empty BOOLEAN NOT NULL DEFAULT FALSE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, account_id),
+    CHECK (max_per_period IS NULL OR max_per_period >= 0)
+);
+
+CREATE INDEX idx_credit_account_access_user_priority ON credit_account_access(user_id, priority);
+CREATE INDEX idx_credit_account_access_account ON credit_account_access(account_id);
+
+COMMENT ON TABLE credit_account_access IS '사용자별 크레딧 계정 접근/우선순위/한도 설정.';
+COMMENT ON COLUMN credit_account_access.user_id IS '사용자 ID(users.id)';
+COMMENT ON COLUMN credit_account_access.account_id IS '크레딧 계정 ID(credit_accounts.id)';
+COMMENT ON COLUMN credit_account_access.priority IS '사용 순서 우선순위(낮을수록 우선)';
+COMMENT ON COLUMN credit_account_access.max_per_period IS '기간별 사용 한도(NULL=무제한)';
+COMMENT ON COLUMN credit_account_access.allow_when_empty IS '우선 계정 소진 후 사용 허용 여부';
+COMMENT ON COLUMN credit_account_access.is_active IS '활성 여부(TRUE, FALSE)';
 
 
 -- ============================================
@@ -329,6 +353,8 @@ CREATE TRIGGER update_credit_plan_grants_updated_at BEFORE UPDATE ON credit_plan
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_credit_accounts_updated_at BEFORE UPDATE ON credit_accounts
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_credit_account_access_updated_at BEFORE UPDATE ON credit_account_access
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_credit_user_preferences_updated_at BEFORE UPDATE ON credit_user_preferences
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
@@ -336,8 +362,8 @@ CREATE TRIGGER update_credit_user_preferences_updated_at BEFORE UPDATE ON credit
 -- 10. SEED DATA
 -- ============================================
 
-INSERT INTO credit_settings (credits_per_usd, topup_expiry_months, subscription_expiry_days, currency)
-VALUES (1000, 36, 31, 'USD')
+INSERT INTO credit_settings (credits_per_usd, topup_expiry_months, currency)
+VALUES (1000, 36, 'USD')
 ON CONFLICT (currency) DO NOTHING;
 
 INSERT INTO credit_topup_products (sku_code, name, price_usd, credits, bonus_credits, currency)
@@ -348,11 +374,11 @@ VALUES
     ('topup-100', 'Top-up $100', 100, 120000, 20000, 'USD')
 ON CONFLICT (sku_code) DO NOTHING;
 
-INSERT INTO credit_plan_grants (plan_slug, billing_cycle, monthly_credits, initial_credits, credit_type, expires_in_days, is_active, metadata)
+INSERT INTO credit_plan_grants (plan_slug, billing_cycle, monthly_credits, initial_credits, credit_type, is_active, metadata)
 VALUES
-    ('free', 'monthly', 0, 500, 'subscription', 31, TRUE, '{"note":"initial free credits only"}'::jsonb),
-    ('pro', 'monthly', 20000, 0, 'subscription', 31, TRUE, '{}'::jsonb),
-    ('premium', 'monthly', 50000, 0, 'subscription', 31, TRUE, '{}'::jsonb),
-    ('business', 'monthly', 100000, 0, 'subscription', 31, TRUE, '{}'::jsonb),
-    ('enterprise', 'monthly', 0, 0, 'subscription', 31, FALSE, '{"note":"TBD"}'::jsonb)
+    ('free', 'monthly', 0, 500, 'subscription', TRUE, '{"note":"initial free credits only"}'::jsonb),
+    ('pro', 'monthly', 20000, 0, 'subscription', TRUE, '{}'::jsonb),
+    ('premium', 'monthly', 50000, 0, 'subscription', TRUE, '{}'::jsonb),
+    ('business', 'monthly', 100000, 0, 'subscription', TRUE, '{}'::jsonb),
+    ('enterprise', 'monthly', 0, 0, 'subscription', FALSE, '{"note":"TBD"}'::jsonb)
 ON CONFLICT (plan_slug, billing_cycle, credit_type) DO NOTHING;

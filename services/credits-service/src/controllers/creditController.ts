@@ -1,5 +1,6 @@
 import { Request, Response } from "express"
-import { query } from "../config/db"
+import type { AuthedRequest } from "../middleware/requireAuth"
+import pool, { query } from "../config/db"
 import { lookupTenants, lookupUsers } from "../services/identityClient"
 
 function toInt(v: unknown, fallback: number | null = null) {
@@ -345,7 +346,6 @@ export async function createPlanGrant(req: Request, res: Response) {
     const creditType = toStr(req.body?.credit_type)
     const monthlyRaw = req.body?.monthly_credits
     const initialRaw = req.body?.initial_credits
-    const expiresRaw = req.body?.expires_in_days
     const isActive = toBool(req.body?.is_active)
     const metadataInput = req.body?.metadata
     const metadataValue =
@@ -353,9 +353,6 @@ export async function createPlanGrant(req: Request, res: Response) {
 
     const monthlyCredits = Number(monthlyRaw)
     const initialCredits = Number(initialRaw)
-    const expiresInDays =
-      expiresRaw === null || expiresRaw === undefined || expiresRaw === "" ? null : Number(expiresRaw)
-
     if (!planSlug) return res.status(400).json({ message: "plan_slug is required" })
     if (!GRANT_BILLING_CYCLES.has(billingCycle)) {
       return res.status(400).json({ message: "billing_cycle must be monthly or yearly" })
@@ -369,17 +366,14 @@ export async function createPlanGrant(req: Request, res: Response) {
     if (!Number.isFinite(initialCredits) || initialCredits < 0) {
       return res.status(400).json({ message: "initial_credits must be >= 0" })
     }
-    if (expiresInDays !== null && (!Number.isFinite(expiresInDays) || expiresInDays < 0)) {
-      return res.status(400).json({ message: "expires_in_days must be >= 0" })
-    }
     if (metadataValue === null) return res.status(400).json({ message: "metadata must be object" })
 
     const result = await query(
       `
       INSERT INTO credit_plan_grants (
-        plan_slug, billing_cycle, credit_type, monthly_credits, initial_credits, expires_in_days, is_active, metadata
+        plan_slug, billing_cycle, credit_type, monthly_credits, initial_credits, is_active, metadata
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+      VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
       RETURNING *
       `,
       [
@@ -388,7 +382,6 @@ export async function createPlanGrant(req: Request, res: Response) {
         creditType,
         Math.floor(monthlyCredits),
         Math.floor(initialCredits),
-        expiresInDays,
         isActive === null ? true : isActive,
         JSON.stringify(metadataValue || {}),
       ]
@@ -450,14 +443,6 @@ export async function updatePlanGrant(req: Request, res: Response) {
         return res.status(400).json({ message: "initial_credits must be >= 0" })
       }
       setField("initial_credits", Math.floor(initialCredits))
-    }
-    if (input.expires_in_days !== undefined) {
-      const expiresInDays =
-        input.expires_in_days === null || input.expires_in_days === "" ? null : Number(input.expires_in_days)
-      if (expiresInDays !== null && (!Number.isFinite(expiresInDays) || expiresInDays < 0)) {
-        return res.status(400).json({ message: "expires_in_days must be >= 0" })
-      }
-      setField("expires_in_days", expiresInDays)
     }
     if (input.is_active !== undefined) {
       const isActive = toBool(input.is_active)
@@ -797,6 +782,351 @@ export async function updateCreditAccount(req: Request, res: Response) {
   } catch (e: any) {
     console.error("updateCreditAccount error:", e)
     return res.status(500).json({ message: "Failed to update credit account", details: String(e?.message || e) })
+  }
+}
+
+type GrantMode = "reset" | "increment"
+
+function normalizeUsageAmount(amount: number) {
+  if (!Number.isFinite(amount)) return 0
+  return amount < 0 ? -amount : amount
+}
+
+export async function getMyCreditSummary(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId || req.query?.tenant_id)
+    if (!tenantId) return res.status(400).json({ message: "tenant_id is required" })
+
+    const subscriptionRes = await query(
+      `
+      SELECT
+        s.id,
+        s.billing_cycle,
+        s.current_period_start,
+        s.current_period_end,
+        b.slug AS plan_slug,
+        b.tier AS plan_tier
+      FROM billing_subscriptions s
+      JOIN billing_plans b ON b.id = s.plan_id
+      WHERE s.tenant_id = $1
+        AND s.status <> 'cancelled'
+      ORDER BY s.created_at DESC
+      LIMIT 1
+      `,
+      [tenantId]
+    )
+    const subscription = subscriptionRes.rows[0] as
+      | {
+          id: string
+          billing_cycle: string
+          current_period_start: string
+          current_period_end: string
+          plan_slug: string
+          plan_tier: string
+        }
+      | undefined
+
+    const planGrant = subscription
+      ? (
+          await query(
+            `
+            SELECT monthly_credits, initial_credits
+            FROM credit_plan_grants
+            WHERE plan_slug = $1
+              AND billing_cycle = $2
+              AND credit_type = 'subscription'
+              AND is_active = TRUE
+            LIMIT 1
+            `,
+            [subscription.plan_slug, subscription.billing_cycle]
+          )
+        ).rows[0]
+      : null
+
+    const subscriptionAccountRes = await query(
+      `
+      SELECT id, balance_credits, reserved_credits, expires_at
+      FROM credit_accounts
+      WHERE owner_type = 'tenant' AND owner_tenant_id = $1 AND credit_type = 'subscription'
+      LIMIT 1
+      `,
+      [tenantId]
+    )
+    const subscriptionAccount = subscriptionAccountRes.rows[0] as
+      | { id: string; balance_credits: number; reserved_credits: number; expires_at?: string | null }
+      | undefined
+
+    const topupAccountRes = await query(
+      `
+      SELECT id, balance_credits, reserved_credits, expires_at
+      FROM credit_accounts
+      WHERE owner_type = 'tenant' AND owner_tenant_id = $1 AND credit_type = 'topup'
+      LIMIT 1
+      `,
+      [tenantId]
+    )
+    const topupAccount = topupAccountRes.rows[0] as
+      | { id: string; balance_credits: number; reserved_credits: number; expires_at?: string | null }
+      | undefined
+
+    let usedInPeriod = 0
+    let userUsedInPeriod = 0
+    if (subscription && subscriptionAccount?.id) {
+      const usageRes = await query(
+        `
+        SELECT COALESCE(SUM(amount_credits), 0) AS total
+        FROM credit_ledger_entries
+        WHERE account_id = $1
+          AND entry_type = 'usage'
+          AND occurred_at >= $2
+          AND occurred_at < $3
+        `,
+        [subscriptionAccount.id, subscription.current_period_start, subscription.current_period_end]
+      )
+      usedInPeriod = normalizeUsageAmount(Number(usageRes.rows[0]?.total ?? 0))
+
+      const userId = toStr((authed as AuthedRequest).userId)
+      if (userId) {
+        const userUsageRes = await query(
+          `
+          SELECT COALESCE(SUM(amount_credits), 0) AS total
+          FROM credit_usage_allocations
+          WHERE account_id = $1
+            AND user_id = $2
+            AND created_at >= $3
+            AND created_at < $4
+          `,
+          [subscriptionAccount.id, userId, subscription.current_period_start, subscription.current_period_end]
+        )
+        userUsedInPeriod = normalizeUsageAmount(Number(userUsageRes.rows[0]?.total ?? 0))
+      }
+    }
+
+    const subscriptionBalance = Number(subscriptionAccount?.balance_credits ?? 0)
+    const subscriptionReserved = Number(subscriptionAccount?.reserved_credits ?? 0)
+    const subscriptionRemaining = Math.max(0, subscriptionBalance - subscriptionReserved)
+
+    const topupBalance = Number(topupAccount?.balance_credits ?? 0)
+    const topupReserved = Number(topupAccount?.reserved_credits ?? 0)
+    const topupRemaining = Math.max(0, topupBalance - topupReserved)
+
+    return res.json({
+      ok: true,
+      tenant_id: tenantId,
+      subscription: subscription
+        ? {
+            subscription_id: subscription.id,
+            plan_slug: subscription.plan_slug,
+            plan_tier: subscription.plan_tier,
+            billing_cycle: subscription.billing_cycle,
+            period_start: subscription.current_period_start,
+            period_end: subscription.current_period_end,
+            next_charge_at: subscription.current_period_end,
+            expires_at: subscription.current_period_end,
+            grant_monthly: Number(planGrant?.monthly_credits ?? 0),
+            grant_initial: Number(planGrant?.initial_credits ?? 0),
+            account_id: subscriptionAccount?.id ?? null,
+            balance_credits: subscriptionBalance,
+            reserved_credits: subscriptionReserved,
+            remaining_credits: subscriptionRemaining,
+            used_credits: usedInPeriod,
+            user_used_credits: userUsedInPeriod,
+          }
+        : null,
+      topup: {
+        account_id: topupAccount?.id ?? null,
+        balance_credits: topupBalance,
+        reserved_credits: topupReserved,
+        remaining_credits: topupRemaining,
+        expires_at: topupAccount?.expires_at ?? null,
+      },
+    })
+  } catch (e: any) {
+    console.error("getMyCreditSummary error:", e)
+    return res.status(500).json({ message: "Failed to load credit summary", details: String(e?.message || e) })
+  }
+}
+
+export async function grantSubscriptionCredits(req: Request, res: Response) {
+  const client = await pool.connect()
+  let transactionStarted = false
+  try {
+    const tenantId = toStr(req.body?.tenant_id)
+    const subscriptionId = toStr(req.body?.subscription_id)
+    const planSlug = toStr(req.body?.plan_slug)
+    const billingCycle = toStr(req.body?.billing_cycle)
+    const creditType = toStr(req.body?.credit_type) || "subscription"
+    const grantMode = (toStr(req.body?.grant_mode) || "reset") as GrantMode
+    const grantKey = toStr(req.body?.grant_key)
+    const reason = toStr(req.body?.reason)
+    const periodStart = toStr(req.body?.period_start)
+    const periodEnd = toStr(req.body?.period_end)
+    const grantAmountRaw = req.body?.grant_amount
+
+    if (!tenantId) return res.status(400).json({ message: "tenant_id is required" })
+    if (!planSlug) return res.status(400).json({ message: "plan_slug is required" })
+    if (!GRANT_BILLING_CYCLES.has(billingCycle)) {
+      return res.status(400).json({ message: "invalid billing_cycle" })
+    }
+    if (!ACCOUNT_CREDIT_TYPES.has(creditType)) {
+      return res.status(400).json({ message: "invalid credit_type" })
+    }
+    if (grantMode !== "reset" && grantMode !== "increment") {
+      return res.status(400).json({ message: "invalid grant_mode" })
+    }
+    if (!periodEnd) return res.status(400).json({ message: "period_end is required" })
+
+    const periodEndDate = new Date(periodEnd)
+    if (Number.isNaN(periodEndDate.getTime())) {
+      return res.status(400).json({ message: "invalid period_end" })
+    }
+    const periodEndIso = periodEndDate.toISOString()
+
+    await client.query("BEGIN")
+    transactionStarted = true
+
+    if (grantKey) {
+      const existing = await client.query(
+        `SELECT id FROM credit_ledger_entries WHERE metadata->>'grant_key' = $1 LIMIT 1`,
+        [grantKey]
+      )
+      if (existing.rows.length > 0) {
+        await client.query("ROLLBACK")
+        transactionStarted = false
+        return res.json({ ok: true, duplicated: true })
+      }
+    }
+
+    const grantAmountOverride =
+      grantAmountRaw === null || grantAmountRaw === undefined || grantAmountRaw === ""
+        ? null
+        : Number(grantAmountRaw)
+    if (grantAmountOverride !== null && (!Number.isFinite(grantAmountOverride) || grantAmountOverride < 0)) {
+      return res.status(400).json({ message: "grant_amount must be >= 0" })
+    }
+
+    const planRes = await client.query(
+      `
+      SELECT monthly_credits, initial_credits
+      FROM credit_plan_grants
+      WHERE plan_slug = $1 AND billing_cycle = $2 AND credit_type = $3 AND is_active = TRUE
+      LIMIT 1
+      `,
+      [planSlug, billingCycle, creditType]
+    )
+    const planRow = planRes.rows[0] as { monthly_credits?: number; initial_credits?: number } | undefined
+    if (!planRow && grantAmountOverride === null) {
+      return res.status(404).json({ message: "plan grant not found" })
+    }
+
+    const baseGrant =
+      grantAmountOverride !== null
+        ? Math.floor(grantAmountOverride)
+        : Math.floor(Number(planRow?.monthly_credits ?? 0))
+    const initialCredits = Math.floor(Number(planRow?.initial_credits ?? 0))
+
+    const accountRes = await client.query(
+      `
+      SELECT id, balance_credits
+      FROM credit_accounts
+      WHERE owner_type = 'tenant' AND owner_tenant_id = $1 AND credit_type = $2
+      LIMIT 1
+      FOR UPDATE
+      `,
+      [tenantId, creditType]
+    )
+
+    let accountId = accountRes.rows[0]?.id as string | undefined
+    let balanceBefore = Number(accountRes.rows[0]?.balance_credits ?? 0)
+    const isNew = !accountId
+
+    if (!accountId) {
+      const insertRes = await client.query(
+        `
+        INSERT INTO credit_accounts
+          (owner_type, owner_tenant_id, credit_type, status, balance_credits, reserved_credits, expires_at, metadata)
+        VALUES
+          ('tenant', $1, $2, 'active', 0, 0, $3, $4::jsonb)
+        RETURNING id, balance_credits
+        `,
+        [
+          tenantId,
+          creditType,
+          periodEndIso,
+          JSON.stringify({ source: "subscription_grant", plan_slug: planSlug }),
+        ]
+      )
+      accountId = insertRes.rows[0]?.id
+      balanceBefore = Number(insertRes.rows[0]?.balance_credits ?? 0)
+    }
+
+    let totalGrant = baseGrant
+    if (isNew && initialCredits > 0 && creditType === "subscription") {
+      totalGrant += initialCredits
+    }
+
+    const balanceAfter =
+      grantMode === "reset" ? totalGrant : Math.max(0, balanceBefore + totalGrant)
+    const delta = balanceAfter - balanceBefore
+
+    await client.query(
+      `
+      UPDATE credit_accounts
+      SET balance_credits = $1,
+          expires_at = $2,
+          status = 'active',
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = $3
+      `,
+      [balanceAfter, periodEndIso, accountId]
+    )
+
+    if (delta !== 0) {
+      const entryType = delta >= 0 ? "subscription_grant" : "adjustment"
+      await client.query(
+        `
+        INSERT INTO credit_ledger_entries
+          (account_id, entry_type, amount_credits, balance_after, subscription_id, metadata)
+        VALUES
+          ($1,$2,$3,$4,$5,$6::jsonb)
+        `,
+        [
+          accountId,
+          entryType,
+          delta,
+          balanceAfter,
+          subscriptionId || null,
+          JSON.stringify({
+            grant_key: grantKey || null,
+            plan_slug: planSlug,
+            billing_cycle: billingCycle,
+            grant_mode: grantMode,
+            period_start: periodStart || null,
+            period_end: periodEndIso,
+            reason: reason || null,
+          }),
+        ]
+      )
+    }
+
+    await client.query("COMMIT")
+    transactionStarted = false
+
+    return res.json({
+      ok: true,
+      account_id: accountId,
+      granted: totalGrant,
+      balance_before: balanceBefore,
+      balance_after: balanceAfter,
+      grant_mode: grantMode,
+    })
+  } catch (e: any) {
+    if (transactionStarted) await client.query("ROLLBACK")
+    console.error("grantSubscriptionCredits error:", e)
+    return res.status(500).json({ message: "Failed to grant credits", details: String(e?.message || e) })
+  } finally {
+    client.release()
   }
 }
 

@@ -184,6 +184,44 @@ COMMENT ON COLUMN billing_subscription_changes.created_at IS '생성 시간(TIME
 COMMENT ON COLUMN billing_subscription_changes.updated_at IS '수정 시간(TIMESTAMP)';
 
 -- ============================================
+-- 4-1. SUBSCRIPTION SEAT ADD-ONS (추가 좌석)
+-- ============================================
+
+CREATE TABLE billing_subscription_seat_addons (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    subscription_id UUID NOT NULL REFERENCES billing_subscriptions(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    status VARCHAR(30) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'scheduled_cancel', 'cancelled')),
+    effective_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+    cancelled_at TIMESTAMP WITH TIME ZONE,
+    unit_price_usd DECIMAL(12,2) NOT NULL DEFAULT 0,
+    currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_billing_seat_addons_subscription ON billing_subscription_seat_addons(subscription_id);
+CREATE INDEX idx_billing_seat_addons_tenant ON billing_subscription_seat_addons(tenant_id);
+CREATE INDEX idx_billing_seat_addons_status ON billing_subscription_seat_addons(status);
+
+COMMENT ON TABLE billing_subscription_seat_addons IS '구독 좌석 추가 구매/해지 예약 관리.';
+COMMENT ON COLUMN billing_subscription_seat_addons.subscription_id IS '구독 ID(billing_subscriptions.id)';
+COMMENT ON COLUMN billing_subscription_seat_addons.tenant_id IS '테넌트 ID(tenants.id)';
+COMMENT ON COLUMN billing_subscription_seat_addons.quantity IS '추가 좌석 수';
+COMMENT ON COLUMN billing_subscription_seat_addons.status IS '상태(active, scheduled_cancel, cancelled)';
+COMMENT ON COLUMN billing_subscription_seat_addons.effective_at IS '적용 시작 시점';
+COMMENT ON COLUMN billing_subscription_seat_addons.cancel_at_period_end IS '기간 종료 시 해지 여부';
+COMMENT ON COLUMN billing_subscription_seat_addons.cancelled_at IS '해지 처리 시점';
+COMMENT ON COLUMN billing_subscription_seat_addons.unit_price_usd IS '좌석 단가(USD)';
+COMMENT ON COLUMN billing_subscription_seat_addons.currency IS '통화';
+COMMENT ON COLUMN billing_subscription_seat_addons.metadata IS '추가 메타데이터(JSON)';
+COMMENT ON COLUMN billing_subscription_seat_addons.created_at IS '생성 시간';
+COMMENT ON COLUMN billing_subscription_seat_addons.updated_at IS '수정 시간';
+
+-- ============================================
 -- 5. BILLING ACCOUNTS (과금 계정)
 -- ============================================
 
@@ -561,6 +599,8 @@ CREATE TRIGGER update_billing_plan_prices_updated_at BEFORE UPDATE ON billing_pl
 CREATE TRIGGER update_billing_subscriptions_updated_at BEFORE UPDATE ON billing_subscriptions
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_billing_subscription_changes_updated_at BEFORE UPDATE ON billing_subscription_changes
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_billing_subscription_seat_addons_updated_at BEFORE UPDATE ON billing_subscription_seat_addons
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_billing_accounts_updated_at BEFORE UPDATE ON billing_accounts
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

@@ -75,6 +75,51 @@ function getMonthlyCredits(metadata: unknown) {
   return typeof raw === "number" && Number.isFinite(raw) ? raw : 0
 }
 
+const CREDITS_SERVICE_URL = process.env.CREDITS_SERVICE_URL || "http://credits-service:3011"
+const CREDITS_SERVICE_KEY = process.env.CREDITS_SERVICE_KEY || ""
+
+type CreditGrantMode = "reset" | "increment"
+type SubscriptionCreditGrantPayload = {
+  tenant_id: string
+  subscription_id?: string | null
+  plan_slug: string
+  billing_cycle: string
+  period_start?: string | null
+  period_end: string
+  grant_mode: CreditGrantMode
+  grant_amount?: number | null
+  grant_key?: string | null
+  reason?: string | null
+  credit_type?: string | null
+}
+
+async function requestSubscriptionCreditGrant(payload: SubscriptionCreditGrantPayload) {
+  if (!CREDITS_SERVICE_KEY) {
+    console.warn("credits-service key not configured; skip credit grant")
+    return { ok: false, skipped: true, reason: "missing_service_key" }
+  }
+  const url = new URL("/api/ai/credits/internal/subscription-grant", CREDITS_SERVICE_URL)
+  try {
+    const res = await fetch(url.toString(), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-service-key": CREDITS_SERVICE_KEY,
+      },
+      body: JSON.stringify(payload),
+    })
+    const json = await res.json().catch(() => null)
+    if (!res.ok) {
+      console.error("credits-service grant failed:", res.status, json)
+      return { ok: false, status: res.status, response: json }
+    }
+    return { ok: true, response: json }
+  } catch (e) {
+    console.error("credits-service grant error:", e)
+    return { ok: false, error: String((e as Error)?.message || e) }
+  }
+}
+
 const CURRENCY_DECIMALS: Record<string, number> = {
   USD: 2,
   EUR: 2,
@@ -348,7 +393,7 @@ async function loadCurrentSubscription(client: any, tenantId: string) {
 async function loadPlan(client: any, planId: string) {
   const res = await client.query(
     `
-    SELECT id, name, tier, sort_order, tenant_type, included_seats, max_seats, metadata
+    SELECT id, slug, name, tier, sort_order, tenant_type, included_seats, max_seats, metadata
     FROM billing_plans
     WHERE id = $1
     `,
@@ -579,6 +624,7 @@ async function buildSubscriptionChangeQuote(
     target: targetPlan
       ? {
           plan_id: targetPlan.id,
+          plan_slug: targetPlan.slug ?? null,
           plan_name: targetPlan.name,
           plan_tier: targetPlan.tier,
           billing_cycle: targetCycle,
@@ -603,6 +649,7 @@ const CHANGE_STATUSES = new Set(["scheduled", "applied", "cancelled"])
 const INVOICE_STATUSES = new Set(["draft", "open", "paid", "void", "uncollectible"])
 const TRANSACTION_TYPES = new Set(["charge", "refund", "adjustment"])
 const TRANSACTION_STATUSES = new Set(["pending", "succeeded", "failed", "refunded", "cancelled"])
+const SEAT_ADDON_STATUSES = new Set(["active", "scheduled_cancel", "cancelled"])
 
 const SYNC_KEYS = {
   fx: "fx_rates",
@@ -1815,6 +1862,282 @@ export async function listBillingSubscriptions(req: Request, res: Response) {
   }
 }
 
+export async function listBillingSeatAddons(req: Request, res: Response) {
+  try {
+    const q = toStr(req.query.q)
+    const status = toStr(req.query.status)
+    const tenantId = toStr(req.query.tenant_id)
+    const subscriptionId = toStr(req.query.subscription_id)
+    const planId = toStr(req.query.plan_id)
+
+    const limit = Math.min(toInt(req.query.limit, 50) ?? 50, 200)
+    const offset = toInt(req.query.offset, 0) ?? 0
+
+    const where: string[] = []
+    const params: any[] = []
+
+    if (status) {
+      if (!SEAT_ADDON_STATUSES.has(status)) {
+        return res.status(400).json({ message: "invalid status" })
+      }
+      where.push(`ssa.status = $${params.length + 1}`)
+      params.push(status)
+    }
+    if (tenantId) {
+      where.push(`ssa.tenant_id = $${params.length + 1}`)
+      params.push(tenantId)
+    }
+    if (subscriptionId) {
+      where.push(`ssa.subscription_id = $${params.length + 1}`)
+      params.push(subscriptionId)
+    }
+    if (planId) {
+      where.push(`s.plan_id = $${params.length + 1}`)
+      params.push(planId)
+    }
+    if (q) {
+      where.push(
+        `(
+          b.name ILIKE $${params.length + 1}
+          OR b.slug ILIKE $${params.length + 1}
+          OR ssa.tenant_id::text ILIKE $${params.length + 1}
+          OR ssa.subscription_id::text ILIKE $${params.length + 1}
+        )`
+      )
+      params.push(`%${q}%`)
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : ""
+
+    const countRes = await query(
+      `
+      SELECT COUNT(*)::int AS total
+      FROM billing_subscription_seat_addons ssa
+      JOIN billing_subscriptions s ON s.id = ssa.subscription_id
+      JOIN billing_plans b ON b.id = s.plan_id
+      ${whereSql}
+      `,
+      params
+    )
+
+    const listRes = await query(
+      `
+      SELECT
+        ssa.*,
+        s.plan_id,
+        b.name AS plan_name,
+        b.slug AS plan_slug,
+        b.tier AS plan_tier
+      FROM billing_subscription_seat_addons ssa
+      JOIN billing_subscriptions s ON s.id = ssa.subscription_id
+      JOIN billing_plans b ON b.id = s.plan_id
+      ${whereSql}
+      ORDER BY ssa.created_at DESC
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `,
+      [...params, limit, offset]
+    )
+
+    const authHeader = String(req.headers.authorization || "")
+    const tenantIds = Array.from(
+      new Set(listRes.rows.map((row) => row.tenant_id).filter((id) => typeof id === "string" && id))
+    )
+    const tenantMap = await lookupTenants(tenantIds, authHeader)
+    const rows = listRes.rows.map((row) => {
+      const tenant = row.tenant_id ? tenantMap.get(String(row.tenant_id)) : undefined
+      return {
+        ...row,
+        tenant_name: tenant?.name ?? null,
+        tenant_slug: tenant?.slug ?? null,
+        tenant_type: tenant?.tenant_type ?? null,
+      }
+    })
+
+    return res.json({
+      ok: true,
+      total: countRes.rows[0]?.total ?? 0,
+      limit,
+      offset,
+      rows,
+    })
+  } catch (e: any) {
+    console.error("listBillingSeatAddons error:", e)
+    return res.status(500).json({ message: "Failed to list seat addons", details: String(e?.message || e) })
+  }
+}
+
+export async function createBillingSeatAddon(req: Request, res: Response) {
+  try {
+    const subscriptionId = toStr(req.body?.subscription_id)
+    const tenantIdInput = toStr(req.body?.tenant_id)
+    const statusInput = toStr(req.body?.status) || "active"
+    const quantityRaw = req.body?.quantity
+    const effectiveAt = req.body?.effective_at
+    const cancelAtRaw = toBool(req.body?.cancel_at_period_end)
+    const cancelledAt = req.body?.cancelled_at
+    const unitPriceRaw = req.body?.unit_price_usd
+    const currency = toStr(req.body?.currency).toUpperCase() || "USD"
+    const metadataInput = req.body?.metadata
+    const metadataValue =
+      metadataInput && typeof metadataInput === "object" ? metadataInput : metadataInput ? null : {}
+
+    if (!subscriptionId) return res.status(400).json({ message: "subscription_id is required" })
+    if (!SEAT_ADDON_STATUSES.has(statusInput)) {
+      return res.status(400).json({ message: "invalid status" })
+    }
+    const quantity = Number(quantityRaw)
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      return res.status(400).json({ message: "quantity must be > 0" })
+    }
+    const unitPrice =
+      unitPriceRaw === null || unitPriceRaw === undefined || unitPriceRaw === ""
+        ? 0
+        : Number(unitPriceRaw)
+    if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+      return res.status(400).json({ message: "unit_price_usd must be >= 0" })
+    }
+    if (metadataValue === null) return res.status(400).json({ message: "metadata must be object" })
+
+    const subRes = await query(`SELECT id, tenant_id FROM billing_subscriptions WHERE id = $1`, [subscriptionId])
+    const subRow = subRes.rows[0]
+    if (!subRow) return res.status(404).json({ message: "Subscription not found" })
+
+    const tenantId = tenantIdInput || String(subRow.tenant_id)
+    if (tenantId && String(subRow.tenant_id) !== tenantId) {
+      return res.status(400).json({ message: "tenant_id does not match subscription" })
+    }
+
+    const cancelAtPeriodEnd =
+      cancelAtRaw !== null
+        ? cancelAtRaw
+        : statusInput === "scheduled_cancel"
+          ? true
+          : false
+    const cancelledAtFinal =
+      statusInput === "cancelled" ? cancelledAt || new Date().toISOString() : cancelledAt || null
+
+    const result = await query(
+      `
+      INSERT INTO billing_subscription_seat_addons
+        (subscription_id, tenant_id, quantity, status, effective_at, cancel_at_period_end, cancelled_at,
+         unit_price_usd, currency, metadata)
+      VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+      RETURNING *
+      `,
+      [
+        subscriptionId,
+        tenantId,
+        Math.floor(quantity),
+        statusInput,
+        effectiveAt || new Date().toISOString(),
+        cancelAtPeriodEnd,
+        cancelledAtFinal,
+        unitPrice,
+        currency,
+        JSON.stringify(metadataValue || {}),
+      ]
+    )
+
+    return res.json({ ok: true, row: result.rows[0] })
+  } catch (e: any) {
+    console.error("createBillingSeatAddon error:", e)
+    return res.status(500).json({ message: "Failed to create seat addon", details: String(e?.message || e) })
+  }
+}
+
+export async function updateBillingSeatAddon(req: Request, res: Response) {
+  try {
+    const id = String(req.params.id || "")
+    if (!id) return res.status(400).json({ message: "id is required" })
+
+    const input = req.body || {}
+    const fields: string[] = []
+    const params: any[] = []
+
+    const setField = (name: string, value: any) => {
+      fields.push(`${name} = $${params.length + 1}`)
+      params.push(value)
+    }
+
+    if (input.quantity !== undefined) {
+      const quantity = Number(input.quantity)
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        return res.status(400).json({ message: "quantity must be > 0" })
+      }
+      setField("quantity", Math.floor(quantity))
+    }
+
+    let statusInput: string | null = null
+    if (input.status !== undefined) {
+      statusInput = toStr(input.status)
+      if (!SEAT_ADDON_STATUSES.has(statusInput)) {
+        return res.status(400).json({ message: "invalid status" })
+      }
+      setField("status", statusInput)
+    }
+
+    if (input.effective_at !== undefined) {
+      setField("effective_at", input.effective_at || null)
+    }
+
+    if (input.cancel_at_period_end !== undefined) {
+      const cancelAt = toBool(input.cancel_at_period_end)
+      if (cancelAt === null) return res.status(400).json({ message: "cancel_at_period_end must be boolean" })
+      setField("cancel_at_period_end", cancelAt)
+    }
+
+    if (input.cancelled_at !== undefined) {
+      setField("cancelled_at", input.cancelled_at || null)
+    } else if (statusInput === "cancelled") {
+      setField("cancelled_at", new Date().toISOString())
+    }
+
+    if (input.unit_price_usd !== undefined) {
+      const unitPrice =
+        input.unit_price_usd === null || input.unit_price_usd === "" ? 0 : Number(input.unit_price_usd)
+      if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+        return res.status(400).json({ message: "unit_price_usd must be >= 0" })
+      }
+      setField("unit_price_usd", unitPrice)
+    }
+
+    if (input.currency !== undefined) {
+      const currency = toStr(input.currency).toUpperCase()
+      if (!currency || currency.length !== 3) {
+        return res.status(400).json({ message: "currency must be 3 letters" })
+      }
+      setField("currency", currency)
+    }
+
+    if (input.metadata !== undefined) {
+      const metadataInput = input.metadata
+      const metadataValue =
+        metadataInput && typeof metadataInput === "object" ? metadataInput : metadataInput ? null : {}
+      if (metadataValue === null) return res.status(400).json({ message: "metadata must be object" })
+      setField("metadata", JSON.stringify(metadataValue || {}))
+    }
+
+    if (fields.length === 0) return res.status(400).json({ message: "No fields to update" })
+
+    const result = await query(
+      `
+      UPDATE billing_subscription_seat_addons
+      SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $${params.length + 1}
+      RETURNING *
+      `,
+      [...params, id]
+    )
+
+    if (result.rows.length === 0) return res.status(404).json({ message: "Seat addon not found" })
+    return res.json({ ok: true, row: result.rows[0] })
+  } catch (e: any) {
+    console.error("updateBillingSeatAddon error:", e)
+    return res.status(500).json({ message: "Failed to update seat addon", details: String(e?.message || e) })
+  }
+}
+
 export async function updateBillingSubscription(req: Request, res: Response) {
   try {
     const id = String(req.params.id || "")
@@ -1951,7 +2274,7 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
     const periodEndIso = periodEndDate.toISOString()
 
     const planRes = await client.query(
-      `SELECT id, tier, tenant_type, included_seats FROM billing_plans WHERE id = $1`,
+      `SELECT id, slug, tier, tenant_type, included_seats FROM billing_plans WHERE id = $1`,
       [planId]
     )
     if (planRes.rows.length === 0) return res.status(404).json({ message: "Billing plan not found" })
@@ -3866,12 +4189,41 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
     await client.query("COMMIT")
     transactionStarted = false
 
+    let creditGrantResult: any = null
+    if (
+      quote.action === "change" &&
+      quote.change_type !== "monthly_downgrade" &&
+      quote.target?.plan_slug &&
+      subscriptionRow?.current_period_end
+    ) {
+      const isReset =
+        quote.change_type === "annual_downgrade" || quote.change_type === "monthly_to_yearly"
+      const grantMode: CreditGrantMode = isReset ? "reset" : "increment"
+      const grantAmount = grantMode === "increment" ? quote.credit_delta : null
+      if (grantMode === "reset" || (grantAmount && grantAmount > 0)) {
+        const grantKey = `${subscriptionRow.id}:${subscriptionRow.current_period_end}:${grantMode}:${grantAmount ?? "reset"}`
+        creditGrantResult = await requestSubscriptionCreditGrant({
+          tenant_id: tenantId,
+          subscription_id: subscriptionRow.id,
+          plan_slug: String(quote.target.plan_slug),
+          billing_cycle: String(quote.target.billing_cycle),
+          period_start: subscriptionRow.current_period_start,
+          period_end: subscriptionRow.current_period_end,
+          grant_mode: grantMode,
+          grant_amount: grantAmount ?? undefined,
+          grant_key: grantKey,
+          reason: quote.change_type,
+        })
+      }
+    }
+
     return res.status(200).json({
       ok: true,
       quote,
       subscription: subscriptionRow,
       charge_transaction: chargeTransaction,
       refund_transaction: refundTransaction,
+      credit_grant: creditGrantResult,
     })
   } catch (e: any) {
     if (transactionStarted) await client.query("ROLLBACK")
@@ -4028,13 +4380,14 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
     }
 
     const planRes = await client.query(
-      `SELECT id, name, tier, tenant_type, included_seats FROM billing_plans WHERE id = $1`,
+      `SELECT id, slug, name, tier, tenant_type, included_seats FROM billing_plans WHERE id = $1`,
       [planId]
     )
     if (planRes.rows.length === 0) return res.status(404).json({ message: "Billing plan not found" })
     const planTier = String(planRes.rows[0]?.tier || "")
     const planTenantType = String(planRes.rows[0]?.tenant_type || "")
     const planName = String(planRes.rows[0]?.name || "")
+    const planSlug = String(planRes.rows[0]?.slug || "")
     const planIncludedSeatsRaw = planRes.rows[0]?.included_seats
     const planIncludedSeats =
       typeof planIncludedSeatsRaw === "number" && Number.isFinite(planIncludedSeatsRaw)
@@ -4303,6 +4656,22 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
     await client.query("COMMIT")
     transactionStarted = false
 
+    let creditGrantResult: any = null
+    if (planSlug && subscriptionRow?.current_period_end) {
+      const grantKey = `${subscriptionRow.id}:${periodEndIso}:reset`
+      creditGrantResult = await requestSubscriptionCreditGrant({
+        tenant_id: tenantId,
+        subscription_id: subscriptionRow.id,
+        plan_slug: planSlug,
+        billing_cycle: billingCycle,
+        period_start: periodStartIso,
+        period_end: periodEndIso,
+        grant_mode: "reset",
+        grant_key: grantKey,
+        reason: "checkout",
+      })
+    }
+
     return res.status(200).json({
       ok: true,
       subscription: subscriptionRow,
@@ -4313,6 +4682,7 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
       tax_rate_percent: taxRatePercent,
       currency,
       next_billing_date: periodEndIso,
+      credit_grant: creditGrantResult,
     })
   } catch (e: any) {
     if (transactionStarted) await client.query("ROLLBACK")

@@ -16,6 +16,8 @@ import {
   listBillingPlanPrices,
   listBillingSubscriptionChanges,
   listBillingSubscriptions,
+  listBillingSeatAddons,
+  createBillingSeatAddon,
   provisionBillingSubscription,
   listPaymentMethods,
   listPaymentProviderConfigs,
@@ -29,6 +31,7 @@ import {
   updateBillingPlan,
   updateBillingPlanPrice,
   updateBillingSubscription,
+  updateBillingSeatAddon,
   updateFxRate,
   updateFxSyncStatus,
   updatePaymentMethod,
@@ -84,6 +87,9 @@ router.get("/subscriptions", listBillingSubscriptions)
 router.post("/subscriptions/provision", provisionBillingSubscription)
 router.put("/subscriptions/:id", updateBillingSubscription)
 router.get("/subscription-changes", listBillingSubscriptionChanges)
+router.get("/seat-addons", listBillingSeatAddons)
+router.post("/seat-addons", createBillingSeatAddon)
+router.put("/seat-addons/:id", updateBillingSeatAddon)
 
 // Invoices
 router.get("/invoices", listBillingInvoices)

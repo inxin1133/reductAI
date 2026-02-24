@@ -41,7 +41,6 @@ type PlanGrantRow = {
   monthly_credits: string | number
   initial_credits: string | number
   credit_type: "subscription" | "topup"
-  expires_in_days?: number | null
   is_active: boolean
   metadata?: Record<string, unknown> | null
   created_at: string
@@ -96,7 +95,6 @@ type GrantForm = {
   credit_type: "subscription" | "topup"
   monthly_credits: string
   initial_credits: string
-  expires_in_days: string
   is_active: boolean
   metadata: string
 }
@@ -111,7 +109,6 @@ const EMPTY_FORM: GrantForm = {
   credit_type: "subscription",
   monthly_credits: "0",
   initial_credits: "0",
-  expires_in_days: "31",
   is_active: true,
   metadata: "",
 }
@@ -272,7 +269,6 @@ export default function CreditGrants() {
       credit_type: row.credit_type,
       monthly_credits: String(row.monthly_credits ?? 0),
       initial_credits: String(row.initial_credits ?? 0),
-      expires_in_days: row.expires_in_days !== null && row.expires_in_days !== undefined ? String(row.expires_in_days) : "",
       is_active: Boolean(row.is_active),
       metadata: row.metadata ? JSON.stringify(row.metadata, null, 2) : "",
     })
@@ -283,12 +279,8 @@ export default function CreditGrants() {
     if (!form.plan_slug.trim()) return alert("플랜 slug를 입력해주세요.")
     const monthlyCredits = Number(form.monthly_credits)
     const initialCredits = Number(form.initial_credits)
-    const expiresInDays = form.expires_in_days.trim() ? Number(form.expires_in_days) : null
     if (!Number.isFinite(monthlyCredits) || monthlyCredits < 0) return alert("월간 크레딧을 확인해주세요.")
     if (!Number.isFinite(initialCredits) || initialCredits < 0) return alert("초기 크레딧을 확인해주세요.")
-    if (expiresInDays !== null && (!Number.isFinite(expiresInDays) || expiresInDays < 0)) {
-      return alert("만료 일 수를 확인해주세요.")
-    }
     const metadataValue = parseJson(form.metadata)
     if (metadataValue === null) return alert("메타데이터 JSON 형식이 올바르지 않습니다.")
 
@@ -303,7 +295,6 @@ export default function CreditGrants() {
           credit_type: form.credit_type,
           monthly_credits: Math.floor(monthlyCredits),
           initial_credits: Math.floor(initialCredits),
-          expires_in_days: expiresInDays,
           is_active: form.is_active,
           metadata: metadataValue,
         }),
@@ -416,7 +407,6 @@ export default function CreditGrants() {
                   <TableHead>타입</TableHead>
                   <TableHead>월간</TableHead>
                   <TableHead>초기</TableHead>
-                  <TableHead>만료일</TableHead>
                   <TableHead>활성</TableHead>
                   <TableHead>업데이트</TableHead>
                   <TableHead className="text-right">액션</TableHead>
@@ -432,7 +422,7 @@ export default function CreditGrants() {
                 ) : null}
                 {grantLoading ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="text-center text-muted-foreground">
                       <Loader2 className="h-4 w-4 inline-block animate-spin mr-2" />
                       로딩 중...
                     </TableCell>
@@ -450,7 +440,6 @@ export default function CreditGrants() {
                     <TableCell className="font-mono">{row.credit_type}</TableCell>
                     <TableCell className="font-mono">{Number(row.monthly_credits).toLocaleString()}</TableCell>
                     <TableCell className="font-mono">{Number(row.initial_credits).toLocaleString()}</TableCell>
-                    <TableCell className="font-mono">{row.expires_in_days ?? "-"}</TableCell>
                     <TableCell>
                       <Badge variant="outline" className={badgeClass(row.is_active)}>
                         {row.is_active ? "활성" : "비활성"}
@@ -682,15 +671,6 @@ export default function CreditGrants() {
                   <SelectItem value="topup">topup</SelectItem>
                 </SelectContent>
               </Select>
-            </div>
-            <div className="space-y-1">
-              <div className="text-sm font-medium">만료 일수</div>
-              <Input
-                type="number"
-                min={0}
-                value={form.expires_in_days}
-                onChange={(e) => setForm((p) => ({ ...p, expires_in_days: e.target.value }))}
-              />
             </div>
             <div className="space-y-1">
               <div className="text-sm font-medium">월간 크레딧</div>

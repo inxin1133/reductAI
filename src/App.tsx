@@ -57,6 +57,7 @@ import BillingPaymentSettings from "./pages/admin/billing/PaymentSettings";
 import BillingSubscriptions from "./pages/admin/billing/Subscriptions";
 import BillingInvoices from "./pages/admin/billing/Invoices";
 import BillingTransactions from "./pages/admin/billing/Transactions";
+import BillingSeatAddons from "./pages/admin/billing/SeatAddons";
 import CreditTopupProducts from "./pages/admin/credits/TopupProducts";
 import CreditGrants from "./pages/admin/credits/Grants";
 import CreditAccounts from "./pages/admin/credits/Accounts";
@@ -349,6 +350,10 @@ const router = createBrowserRouter([
           {
             path: "billing/subscriptions",
             element: <BillingSubscriptions />,
+          },
+          {
+            path: "billing/seat-addons",
+            element: <BillingSeatAddons />,
           },
           {
             path: "billing/invoices",

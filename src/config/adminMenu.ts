@@ -93,6 +93,7 @@ export const adminMenuGroups: MenuGroup[] = [
           { title: "구독 플랜 관리", href: "/admin/billing/plans" },
           { title: "플랜 가격/버전", href: "/admin/billing/plan-prices" },
           { title: "구독 현황", href: "/admin/billing/subscriptions" },
+          { title: "좌석 추가 관리", href: "/admin/billing/seat-addons" },
           { title: "청구서(Invoices)", href: "/admin/billing/invoices" },
           { title: "결제 내역(Transactions)", href: "/admin/billing/transactions" },
           { title: "결제 수단/PG 설정", href: "/admin/billing/payment-settings" },

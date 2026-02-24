@@ -12,37 +12,20 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFooter } from "@/components/ui/table"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { BillingSettingsDialog } from "@/components/settings/BillingSettingsDialog"
+import { TenantSettingsDialog } from "@/components/settings/TenantSettingsDialog"
 import {
-  ArrowLeft,
   ChevronsUp,
-  ClipboardList,
   Coins,
-  CreditCard,
-  Ellipsis,
   Gauge,
-  HandHelping,
-  HardDrive,
   Menu,
   MonitorSmartphone,
-  NotebookPen,
-  Plus,
-  ReceiptText,
   Settings2,
   SquareAsterisk,
   SquarePen,
-  Star,
-  Trash2,
   User,
   X,
   EvCharger,
@@ -51,7 +34,6 @@ import { Switch } from "@/components/ui/switch"
 // cn: 여러 CSS 클래스 이름을 조건이나 배열 등 다양한 형태로 조합해서 하나의 문자열로 반환하는 유틸리티 함수입니다.
 // 예를 들어 조건부로 클래스를 추가하거나, 여러 클래스를 가독성 있게 합칠 때 사용합니다.
 import { cn } from "@/lib/utils"
-import { cardLabel, getCardBrandIcon, normalizeCardBrand } from "@/lib/card"
 import { ProviderBadge } from "@/lib/providerBadge"
 import { LogoGoogle } from "@/components/icons/LogoGoogle"
 import { LogoKakao } from "@/components/icons/LogoKakao"
@@ -71,11 +53,6 @@ export type SettingsMenuId =
   | "usage"
   | "devices"
   | "storage"
-  | "subscription"
-  | "invoices"
-  | "billing"
-  | "payments"
-  | "transactions"
 
 const PERSONAL_MENUS = [
   { id: "profile" as const, label: "사용자 정보", icon: User },
@@ -83,21 +60,12 @@ const PERSONAL_MENUS = [
   { id: "credits" as const, label: "크레딧 관리", icon: Coins },
   { id: "usage" as const, label: "사용내역", icon: Gauge },
   { id: "devices" as const, label: "접속기기", icon: MonitorSmartphone },
-  { id: "storage" as const, label: "스토리지", icon: HardDrive },
-]
-
-const BILLING_MENUS = [
-  { id: "subscription" as const, label: "구독 관리", icon: HandHelping },
-  { id: "invoices" as const, label: "청구서", icon: ReceiptText },
-  { id: "billing" as const, label: "청구 관리", icon: NotebookPen },
-  { id: "payments" as const, label: "결제 수단", icon: CreditCard },
-  { id: "transactions" as const, label: "결제 내역", icon: ClipboardList },
+  // { id: "storage" as const, label: "스토리지", icon: HardDrive }, // 차후 구현 예정임
 ]
 
 const SETTINGS_MENU_STORAGE_KEY = "reductai:settings:activeMenu"
 const SETTINGS_DIALOG_OPEN_KEY = "reductai:settings:isOpen"
-const SETTINGS_MENU_IDS = new Set<SettingsMenuId>([...PERSONAL_MENUS, ...BILLING_MENUS].map((item) => item.id))
-const DAUM_POSTCODE_SCRIPT_ID = "daum-postcode-script"
+const SETTINGS_MENU_IDS = new Set<SettingsMenuId>([...PERSONAL_MENUS].map((item) => item.id))
 const AUTH_API_BASE = "http://localhost:3001/auth"
 const PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 
@@ -139,17 +107,6 @@ function writeSettingsDialogOpenFlag(open: boolean) {
   }
 }
 
-type BillingFormState = {
-  name: string
-  email: string
-  postalCode: string
-  address1: string
-  address2: string
-  extraAddress: string
-  phone: string
-}
-
-
 type CurrentUserProfile = {
   id: string
   email: string
@@ -190,14 +147,33 @@ type UserProvider = {
   created_at?: string | null
 }
 
-const INITIAL_BILLING_FORM: BillingFormState = {
-  name: "홍길동",
-  email: "hong@example.com",
-  postalCode: "",
-  address1: "",
-  address2: "",
-  extraAddress: "",
-  phone: "",
+type CreditSummary = {
+  tenant_id: string
+  subscription: {
+    subscription_id?: string | null
+    plan_slug?: string | null
+    plan_tier?: string | null
+    billing_cycle?: string | null
+    period_start?: string | null
+    period_end?: string | null
+    next_charge_at?: string | null
+    expires_at?: string | null
+    grant_monthly?: number | null
+    grant_initial?: number | null
+    account_id?: string | null
+    balance_credits?: number | null
+    reserved_credits?: number | null
+    remaining_credits?: number | null
+    used_credits?: number | null
+    user_used_credits?: number | null
+  } | null
+  topup: {
+    account_id?: string | null
+    balance_credits?: number | null
+    reserved_credits?: number | null
+    remaining_credits?: number | null
+    expires_at?: string | null
+  }
 }
 
 const TENANT_TYPE_LABELS: Record<string, string> = {
@@ -254,6 +230,12 @@ function formatDateTime(value?: string | null) {
   }
 }
 
+function formatCredits(value?: number | null) {
+  if (value === null || value === undefined) return "-"
+  if (!Number.isFinite(value)) return "-"
+  return Math.floor(value).toLocaleString()
+}
+
 const SettingsDialogSidebarMenu = ({
   activeId,
   onChange,
@@ -306,14 +288,10 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
   const [activeMenu, setActiveMenu] = useState<SettingsMenuId>(
     () => readSettingsMenuFromStorage() ?? "profile"
   )
-  const [billingEditOpen, setBillingEditOpen] = useState(false)
-  const [billingSettingsOpen, setBillingSettingsOpen] = useState(false)
-  const [pendingBillingOpen, setPendingBillingOpen] = useState(false)
-  const [billingForm, setBillingForm] = useState<BillingFormState>(INITIAL_BILLING_FORM)
-  const [postcodeLoading, setPostcodeLoading] = useState(false)
+  const [tenantSettingsOpen, setTenantSettingsOpen] = useState(false)
+  const [pendingTenantSettingsOpen, setPendingTenantSettingsOpen] = useState(false)
   const [usagePage, setUsagePage] = useState(1)
   const wasOpenRef = useRef(false)
-  const detailAddressRef = useRef<HTMLInputElement | null>(null)
   const userNameInputRef = useRef<HTMLInputElement | null>(null)
   const tenantNameInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -323,6 +301,9 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
   const [currentTenant, setCurrentTenant] = useState<CurrentTenantProfile | null>(null)
   const [tenantMemberships, setTenantMemberships] = useState<TenantMembership[]>([])
   const [userProviders, setUserProviders] = useState<UserProvider[]>([])
+  const [creditSummary, setCreditSummary] = useState<CreditSummary | null>(null)
+  const [creditLoading, setCreditLoading] = useState(false)
+  const [creditError, setCreditError] = useState<string | null>(null)
   const [profileImageUrl, setProfileImageUrl] = useState<string | null>(null)
   const [profileImageAssetId, setProfileImageAssetId] = useState<string | null>(null)
   const [profileImageLoading, setProfileImageLoading] = useState(false)
@@ -334,20 +315,17 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     onOpenChange(false)
   }, [onOpenPlanDialog, onOpenChange])
 
-  const handleOpenBillingSettings = useCallback(() => {
-    setPendingBillingOpen(true)
+  const handleOpenTenantSettings = useCallback(() => {
+    setPendingTenantSettingsOpen(true)
     onOpenChange(false)
   }, [onOpenChange])
 
   useEffect(() => {
-    if (!open && pendingBillingOpen) {
-      setBillingSettingsOpen(true)
-      setPendingBillingOpen(false)
+    if (!open && pendingTenantSettingsOpen) {
+      setTenantSettingsOpen(true)
+      setPendingTenantSettingsOpen(false)
     }
-  }, [open, pendingBillingOpen])
-  const VisaIcon = getCardBrandIcon("visa")
-  const MasterIcon = getCardBrandIcon("master")
-  const AmexIcon = getCardBrandIcon("amex")
+  }, [open, pendingTenantSettingsOpen])
 
   const [isEditingUserName, setIsEditingUserName] = useState(false)
   const [isSavingUserName, setIsSavingUserName] = useState(false)
@@ -383,9 +361,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
   }, [usagePageSafe, usagePageSize, usageRows])
 
   const activeLabel = useMemo(() => {
-    const menu =
-      PERSONAL_MENUS.find((item) => item.id === activeMenu) ??
-      BILLING_MENUS.find((item) => item.id === activeMenu)
+    const menu = PERSONAL_MENUS.find((item) => item.id === activeMenu)
     return menu?.label ?? "사용자 정보"
   }, [activeMenu])
 
@@ -461,6 +437,34 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     const raw = String(currentTenant?.tenant_type || "").trim().toLowerCase()
     return raw === "team" || raw === "group"
   }, [currentTenant?.tenant_type])
+
+  const creditCard = useMemo(() => {
+    const subscription = creditSummary?.subscription ?? null
+    const planTier =
+      normalizePlanTier(subscription?.plan_tier ?? currentTenant?.plan_tier) ?? "free"
+    const totalRaw = Number(subscription?.grant_monthly ?? 0)
+    const usedRaw = Number(subscription?.used_credits ?? 0)
+    const remainingRaw =
+      subscription?.remaining_credits !== null && subscription?.remaining_credits !== undefined
+        ? Number(subscription?.remaining_credits ?? 0)
+        : Math.max(0, totalRaw - usedRaw)
+    const total = Number.isFinite(totalRaw) ? totalRaw : 0
+    const used = Number.isFinite(usedRaw) ? Math.max(0, usedRaw) : 0
+    const remaining = Number.isFinite(remainingRaw) ? Math.max(0, remainingRaw) : 0
+    const percent = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0
+    return {
+      subscription,
+      planTier,
+      planLabel: PLAN_TIER_LABELS[planTier],
+      planStyle: PLAN_TIER_STYLES[planTier],
+      total,
+      used,
+      remaining,
+      percent,
+      nextChargeAt: subscription?.next_charge_at || subscription?.period_end || null,
+      userUsed: subscription?.user_used_credits ?? null,
+    }
+  }, [creditSummary?.subscription, currentTenant?.plan_tier])
 
   const passwordChecks = useMemo(() => {
     const next = passwordForm.next
@@ -591,6 +595,49 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
       setProfileLoading(false)
     }
   }, [authHeaders])
+
+  const loadCreditSummary = useCallback(async () => {
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      setCreditError("로그인이 필요합니다.")
+      return
+    }
+    setCreditLoading(true)
+    setCreditError(null)
+    try {
+      const res = await fetch("/api/ai/credits/my/summary", { headers })
+      const json = (await res.json().catch(() => null)) as { ok?: boolean; message?: string } & CreditSummary | null
+      if (!res.ok || !json?.ok) {
+        setCreditError(json?.message || "크레딧 정보를 불러오지 못했습니다.")
+        setCreditSummary(null)
+        return
+      }
+      setCreditSummary(json)
+
+      if (!currentTenant) {
+        const tenantRes = await fetch("/api/posts/tenant/current", { headers })
+        if (tenantRes.ok) {
+          const tenantJson = (await tenantRes.json().catch(() => null)) as CurrentTenantProfile | null
+          if (tenantJson?.id) {
+            const nextTenant = {
+              id: String(tenantJson.id),
+              name: tenantJson.name ?? null,
+              tenant_type: tenantJson.tenant_type ?? null,
+              plan_tier: tenantJson.plan_tier ?? null,
+            }
+            setCurrentTenant(nextTenant)
+            setTenantNameDraft(String(tenantJson.name || ""))
+          }
+        }
+      }
+    } catch (error) {
+      console.error(error)
+      setCreditError("크레딧 정보를 불러오지 못했습니다.")
+      setCreditSummary(null)
+    } finally {
+      setCreditLoading(false)
+    }
+  }, [authHeaders, currentTenant])
 
   const startEditUserName = useCallback(() => {
     if (isSavingUserName) return
@@ -969,10 +1016,6 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
   }, [activeMenu])
 
   useEffect(() => {
-    if (activeMenu !== "billing") setBillingEditOpen(false)
-  }, [activeMenu])
-
-  useEffect(() => {
     if (open && activeMenu === "profile") return
     setIsEditingUserName(false)
     setIsEditingTenantName(false)
@@ -986,6 +1029,12 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
 
   useEffect(() => {
     if (!open) return
+    if (activeMenu !== "credits") return
+    void loadCreditSummary()
+  }, [activeMenu, loadCreditSummary, open])
+
+  useEffect(() => {
+    if (!open) return
     if (activeMenu !== "profile") return
     if (isEditingUserName) userNameInputRef.current?.focus()
   }, [activeMenu, isEditingUserName, open])
@@ -995,70 +1044,6 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     if (activeMenu !== "profile") return
     if (isEditingTenantName) tenantNameInputRef.current?.focus()
   }, [activeMenu, isEditingTenantName, open])
-
-  const loadDaumPostcode = useCallback(() => {
-    if (typeof window === "undefined") return Promise.reject(new Error("no-window"))
-    if ((window as Window & { daum?: { Postcode?: unknown } }).daum?.Postcode) {
-      return Promise.resolve()
-    }
-    return new Promise<void>((resolve, reject) => {
-      const existing = document.getElementById(DAUM_POSTCODE_SCRIPT_ID) as HTMLScriptElement | null
-      if (existing) {
-        existing.addEventListener("load", () => resolve(), { once: true })
-        existing.addEventListener("error", () => reject(new Error("postcode-load-failed")), { once: true })
-        return
-      }
-      const script = document.createElement("script")
-      script.id = DAUM_POSTCODE_SCRIPT_ID
-      script.async = true
-      script.src = "https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"
-      script.onload = () => resolve()
-      script.onerror = () => reject(new Error("postcode-load-failed"))
-      document.body.appendChild(script)
-    })
-  }, [])
-
-  const handleSearchPostcode = useCallback(async () => {
-    if (postcodeLoading) return
-    setPostcodeLoading(true)
-    try {
-      await loadDaumPostcode()
-      const PostcodeCtor = (window as Window & { daum?: { Postcode?: new (args: unknown) => { open: () => void } } }).daum
-        ?.Postcode
-      if (!PostcodeCtor) return
-      new PostcodeCtor({
-        oncomplete: (data: {
-          zonecode?: string
-          roadAddress?: string
-          jibunAddress?: string
-          userSelectedType?: "R" | "J"
-          bname?: string
-          buildingName?: string
-          apartment?: "Y" | "N"
-        }) => {
-          const address =
-            data.userSelectedType === "R" ? data.roadAddress || "" : data.jibunAddress || ""
-          let extra = ""
-          if (data.userSelectedType === "R") {
-            if (data.bname && /[동|로|가]$/g.test(data.bname)) extra += data.bname
-            if (data.buildingName && data.apartment === "Y") {
-              extra += extra ? `, ${data.buildingName}` : data.buildingName
-            }
-            if (extra) extra = `(${extra})`
-          }
-          setBillingForm((prev) => ({
-            ...prev,
-            postalCode: data.zonecode || "",
-            address1: address,
-            extraAddress: extra,
-          }))
-          window.setTimeout(() => detailAddressRef.current?.focus(), 0)
-        },
-      }).open()
-    } finally {
-      setPostcodeLoading(false)
-    }
-  }, [loadDaumPostcode, postcodeLoading])
 
   useEffect(() => {
     if (usagePage > usageTotalPages) setUsagePage(usageTotalPages)
@@ -1083,17 +1068,6 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
           <div className="flex min-w-0 flex-1 flex-col p-6">
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-2">
-                {activeMenu === "billing" && billingEditOpen ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="px-2"
-                    onClick={() => setBillingEditOpen(false)}
-                    aria-label="뒤로가기"
-                  >
-                    <ArrowLeft className="size-4" />
-                  </Button>
-                ) : null}
                 <Popover>
                   <PopoverTrigger
                     className="flex size-8 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:hidden"
@@ -1364,7 +1338,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                     </div>
                   </div>
 
-                  {isTeamTenant ? (
+                  {isTeamTenant ? (                    
                     <div className="p-4">
                       <div className="text-sm font-semibold text-foreground border-b border-border pb-2">테넌트 정보</div>
                       <div className="mt-3 grid gap-3 text-sm text-muted-foreground">
@@ -1406,7 +1380,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                                         <button
                                           type="button"
                                           className="inline-flex items-center justify-center rounded-sm p-1 text-muted-foreground hover:text-foreground hover:bg-muted"
-                                          onClick={handleOpenBillingSettings}
+                                          onClick={handleOpenTenantSettings}
                                         >
                                           <Settings2 className="size-3" />
                                         </button>
@@ -1452,6 +1426,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
               ) : null}
 
               {activeMenu === "password" ? (
+                // 비밀번호 관리
                 <div className="grid gap-3">
                   <div className="p-4">
                     {(currentUser?.has_password === false ||
@@ -1598,22 +1573,54 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                     <div className="mt-3 rounded-xl border border-border">
                       <div className="border-b border-border px-4 py-6">
                         <div className="flex items-center justify-between">
-                          <div className="text-sm font-semibold text-foreground">AA 팀 서비스 크레딧</div>
+                          <div className="text-sm font-semibold text-foreground">
+                            {currentTenant?.name || "테넌트"} 서비스 크레딧
+                          </div>
                           <div className="flex items-center gap-2">
-                            <span className="text-xs text-muted-foreground">50,000 크레딧</span>
-                            <span className="rounded-full px-3 py-1 text-xs font-semibold bg-indigo-50 text-indigo-600 ring-1 ring-indigo-500">Premium</span>
+                            <span className="text-xs text-muted-foreground">
+                              {creditCard.subscription ? `${formatCredits(creditCard.total)} 크레딧` : "-"}
+                            </span>
+                            {creditCard.subscription ? (
+                              <span
+                                className={cn(
+                                  "rounded-full px-3 py-1 text-xs font-semibold",
+                                  creditCard.planStyle.badge
+                                )}
+                              >
+                                {creditCard.planLabel}
+                              </span>
+                            ) : null}
                           </div>
                         </div>
+                        {creditLoading ? (
+                          <div className="mt-2 text-xs text-muted-foreground">불러오는 중...</div>
+                        ) : creditError ? (
+                          <div className="mt-2 text-xs text-destructive">{creditError}</div>
+                        ) : null}
                         <div className="mt-3 h-2 w-full rounded-full bg-muted">
-                          <div className="h-full w-[50%] rounded-full bg-indigo-500" />
+                          <div
+                            className={cn("h-full rounded-full", creditCard.planStyle.avatar)}
+                            style={{ width: `${creditCard.percent}%` }}
+                          />
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
-                          <div>이번달 50% 사용 (10,000 사용 / 10,000 남음 / 전체 20,000 크레딧)</div>
-                          <div>다음 충전일: <span className="text-foreground">2026-03-01</span></div>
+                          <div>
+                            {creditCard.subscription
+                              ? `이번달 ${creditCard.percent}% 사용 (${formatCredits(creditCard.used)} 사용 / ${formatCredits(creditCard.remaining)} 남음 / 전체 ${formatCredits(creditCard.total)} 크레딧)`
+                              : "구독 크레딧 정보가 없습니다."}
+                          </div>
+                          <div>
+                            다음 충전일:{" "}
+                            <span className="text-foreground">{formatDateTime(creditCard.nextChargeAt)}</span>
+                          </div>
                         </div>
-                        <div className="mt-2 flex text-sm text-foreground flex-1 items-center gap-2">                          
-                          <span className="font-bold">나의 사용</span> 
-                          <span className="">5,800 크레딧</span>
+                        <div className="mt-2 flex text-sm text-foreground flex-1 items-center gap-2">
+                          <span className="font-bold">나의 사용</span>
+                          <span className="">
+                            {creditCard.subscription
+                              ? `${formatCredits(creditCard.userUsed)} 크레딧`
+                              : "-"}
+                          </span>
                         </div>
                       </div>
 
@@ -1795,6 +1802,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
               ) : null}
 
               {activeMenu === "devices" ? (
+                // 접속 기기 현황
                 <div className="p-4">
                   <div className="text-sm font-semibold text-foreground">접속 기기 현황</div>
                   <div className="mt-3 grid text-sm text-muted-foreground border border-border rounded-lg shadow-sm shadow-muted-foreground/10">
@@ -1837,11 +1845,13 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                 </div>
               ) : null}
 
-              {activeMenu === "storage" ? (
+
+              {/* 스토리지는 차후 구현 예정임 */}
+              {/* {activeMenu === "storage" ? (
                 // 스토리지 사용량
                 <div className="grid gap-3">
 
-                  {/* 스토리지 */}
+                  
                   <div className="p-4">
                     <div className="rounded-xl border border-border p-4">
                       <div className="text-sm font-semibold text-foreground">스토리지 사용량</div>
@@ -1852,7 +1862,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                     </div>
                   </div>
 
-                  {/* 스토리지 제공목록 */}
+                  
                   <div className="p-4">
                     <div className="text-sm font-semibold text-foreground">스토리지 제공목록</div>
                     <div className="mt-3 border border-border rounded-lg shadow-sm shadow-muted-foreground/10">
@@ -1888,297 +1898,9 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                       </Table>
                     </div>
                   </div>
-
-
                 </div>
-              ) : null}
+              ) : null} */}
 
-              {activeMenu === "subscription" ? (
-                // 구독 관리
-                <div className="grid gap-4">
-                  <div className="p-4">
-                    <div className="text-sm font-semibold text-foreground border-b border-border pb-2">현재 구독</div>
-                    <div className="mt-3 flex items-center justify-between text-sm text-muted-foreground">
-                      <span>Premium · 연간</span>
-                      <span className="text-foreground">$600 / 년</span>
-                    </div>
-                    <div className="mt-2 text-xs text-muted-foreground">다음 결제일: 2026-07-29</div>
-                  </div>
-                  <Button variant="outline" className="w-fit">
-                    요금제 변경
-                  </Button>
-                </div>
-              ) : null}
-
-              {activeMenu === "invoices" ? (
-                // 청구서
-                <div className="">
-                  <Table className="">
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="text-sm">청구서 번호</TableHead>
-                        <TableHead className="text-sm">발행일</TableHead>                        
-                        <TableHead className="text-sm">상태</TableHead>
-                        <TableHead className="text-sm text-right">금액</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {[
-                        ["INV-2026-0201", "2026-02-01", "결제됨", "$50.00"],
-                        ["INV-2026-0101", "2026-01-01", "결제됨", "$50.00"],
-                        ["INV-2025-1201", "2025-12-01", "결제됨", "$50.00"],
-                      ].map((row) => (
-                        <TableRow key={row[0]}>
-                          <TableCell className="text-muted-foreground">{row[0]}</TableCell>
-                          <TableCell className="text-muted-foreground">{row[1]}</TableCell>
-                          <TableCell className="text-xs">
-                            <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-600 ring-1 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/30">
-                              {row[2]}
-                            </span>
-                          </TableCell>
-                          <TableCell className="text-right text-foreground">{row[3]}</TableCell>
-                          
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              ) : null}
-              {activeMenu === "billing" ? (
-                // 청구 관리
-                <div className="grid gap-3">
-                  {!billingEditOpen ? (
-                    <>
-                      <div className="p-4">
-                        <div className="text-sm font-semibold text-foreground border-b border-border pb-2">청구 정보</div>
-                        <div className="mt-3 flex items-center justify-between">
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground">이름(회사명)</div>
-                          <div className="flex items-center gap-2 text-sm text-foreground">홍길동</div>
-                        </div>
-                        <div className="mt-3 flex items-center justify-between">
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground">이메일</div>
-                          <div className="flex items-center gap-2 text-sm text-foreground">hong@example.com</div>
-                        </div>
-                        <div className="mt-3 flex items-center justify-between">
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground">청구주소</div>
-                          <div className="flex items-center gap-2 text-sm text-foreground">서울시 강남구 테헤란로 123, 7층</div>
-                        </div>
-                        <div className="mt-3 flex items-center justify-between">
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground">전화번호</div>
-                          <div className="flex items-center gap-2 text-sm text-foreground">82-10-1234-5678</div>
-                        </div>
-                      </div>
-                      <Button variant="outline" className="w-fit" onClick={() => setBillingEditOpen(true)}>
-                        청구 정보 업데이트
-                      </Button>
-                    </>
-                  ) : (
-
-                    <div className="p-4 flex flex-col gap-3">
-                      <div className="text-sm font-semibold">청구 정보 수정</div>
-                      <div className="mt-4 grid gap-4 text-sm">
-                        <div className="grid gap-2">
-                          <Label>이름(회사명)</Label>
-                          <Input
-                            value={billingForm.name}
-                            onChange={(e) => setBillingForm((prev) => ({ ...prev, name: e.target.value }))}
-                            placeholder="예: Reduct AI"
-                          />
-                        </div>
-                        <div className="grid gap-2">
-                          <Label>이메일</Label>
-                          <Input
-                            type="email"
-                            value={billingForm.email}
-                            onChange={(e) => setBillingForm((prev) => ({ ...prev, email: e.target.value }))}
-                            placeholder="billing@reduct.ai"
-                          />
-                        </div>
-                        <div className="grid gap-2">
-                          <Label>우편번호</Label>
-                          <div className="flex items-center gap-2">
-                            <Input value={billingForm.postalCode} readOnly placeholder="우편번호" />
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="shrink-0"
-                              onClick={handleSearchPostcode}
-                              disabled={postcodeLoading}
-                            >
-                              {postcodeLoading ? "검색 중..." : "주소 검색"}
-                            </Button>
-                          </div>
-                        </div>
-                        <div className="grid gap-2">
-                          <Label>주소</Label>
-                          <Input value={billingForm.address1} readOnly placeholder="도로명/지번 주소" />
-                        </div>
-                        <div className="grid gap-2">
-                          <Label>상세주소</Label>
-                          <Input
-                            ref={detailAddressRef}
-                            value={billingForm.address2}
-                            onChange={(e) => setBillingForm((prev) => ({ ...prev, address2: e.target.value }))}
-                            placeholder="상세주소 입력"
-                          />
-                        </div>
-                        <div className="grid gap-2">
-                          <Label>참고항목</Label>
-                          <Input value={billingForm.extraAddress} readOnly placeholder="참고항목" />
-                        </div>
-                        <div className="grid gap-2">
-                          <Label>전화번호</Label>
-                          <Input value={billingForm.phone} onChange={(e) => setBillingForm((prev) => ({ ...prev, phone: e.target.value }))} placeholder="전화번호" />
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-end gap-2">
-                        <Button variant="outline" onClick={() => setBillingEditOpen(false)}>
-                          취소
-                        </Button>
-                        <Button onClick={() => setBillingEditOpen(false)}>저장</Button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : null}
-
-              {activeMenu === "payments" ? (
-                // 결제 수단
-                <div className="grid gap-4">
-                  <div className="p-4">
-                    <div className="text-sm font-semibold text-foreground">등록된 결제 수단</div>
-                    <div className="mt-3 grid gap-3">
-                      {/* Visa - 기본 */}
-                      <div className="flex items-center gap-3 rounded-xl border border-border p-3 bg-card">
-                        <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[#1a1f71]">
-                          {VisaIcon ? <VisaIcon className="h-6 w-9" /> : <CreditCard className="size-5 text-white" />}
-                        </div>
-                        <div className="flex flex-1 flex-col min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-foreground">Visa •••• 1234</span>
-                            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 ring-1 ring-emerald-200 dark:bg-emerald-500/10 dark:ring-emerald-500/30">기본</span>
-                          </div>
-                          <span className="text-xs text-muted-foreground">만료 12/28</span>
-                        </div>
-                      </div>
-
-                      {/* Mastercard - 보조 */}
-                      <div className="flex items-center gap-3 rounded-xl border border-border p-3 bg-card">
-                        <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[#f5f5f5] dark:bg-neutral-800">
-                          {MasterIcon ? <MasterIcon className="h-6 w-9" /> : <CreditCard className="size-5 text-foreground" />}
-                        </div>
-                        <div className="flex flex-1 flex-col min-w-0">
-                          <span className="text-sm font-medium text-foreground">Mastercard •••• 5678</span>
-                          <span className="text-xs text-muted-foreground">만료 08/27</span>
-                        </div>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="sm" className="size-8 p-0">
-                              <Ellipsis className="size-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="w-40">
-                            <DropdownMenuItem className="flex items-center gap-2 text-sm">
-                              <Star className="size-4" />
-                              기본 카드 설정
-                            </DropdownMenuItem>
-                            <DropdownMenuItem className="flex items-center gap-2 text-sm text-destructive">
-                              <Trash2 className="size-4" />
-                              카드 삭제
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-
-                      {/* AMEX - 보조 */}
-                      <div className="flex items-center gap-3 rounded-xl border border-border p-3 bg-card">
-                        <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[#006fcf]">
-                          {AmexIcon ? <AmexIcon className="h-6 w-9" /> : <CreditCard className="size-5 text-white" />}
-                        </div>
-                        <div className="flex flex-1 flex-col min-w-0">
-                          <span className="text-sm font-medium text-foreground">Amex •••• 9012</span>
-                          <span className="text-xs text-muted-foreground">만료 03/26</span>
-                        </div>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="sm" className="size-8 p-0">
-                              <Ellipsis className="size-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="w-40">
-                            <DropdownMenuItem className="flex items-center gap-2 text-sm">
-                              <Star className="size-4" />
-                              기본 카드 설정
-                            </DropdownMenuItem>
-                            <DropdownMenuItem className="flex items-center gap-2 text-sm text-destructive">
-                              <Trash2 className="size-4" />
-                              카드 삭제
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-                    </div>
-                  </div>
-                  <Button variant="outline" className="w-fit">
-                    <Plus className="size-4 mr-2" />
-                    결제 수단 추가
-                  </Button>
-                </div>
-              ) : null}
-
-              {activeMenu === "transactions" ? (
-                // 결제 내역
-                <div className="">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-[100px]">날짜</TableHead>
-                        <TableHead className="w-[160px]">플랜</TableHead>
-                        <TableHead className="w-[140px]">결제 수단</TableHead>
-                        <TableHead className="text-right">금액</TableHead>
-                        <TableHead className="text-center">상태</TableHead>
-                        <TableHead className="w-[70px]" />
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {([
-                        { date: "2026-02-01", plan: "Premium 연간", card: "visa" as const, last4: "1234", amount: "$600.00", status: "결제됨" },
-                        { date: "2025-02-01", plan: "Premium 연간", card: "visa" as const, last4: "1234", amount: "$600.00", status: "결제됨" },
-                        { date: "2024-02-01", plan: "Premium 연간", card: "mastercard" as const, last4: "5678", amount: "$600.00", status: "결제됨" },
-                        { date: "2023-02-01", plan: "Premium 연간", card: "amex" as const, last4: "9012", amount: "$600.00", status: "결제됨" },
-                      ] as const).map((row) => {
-                        const brand = normalizeCardBrand(row.card) ?? "visa"
-                        const CardIcon = getCardBrandIcon(brand) ?? CreditCard
-                        const brandLabel = cardLabel(brand)
-                        return (
-                          <TableRow key={`${row.date}-${row.plan}`}>
-                            <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{row.date}</TableCell>
-                            <TableCell className="text-xs whitespace-normal break-words break-all">{row.plan}</TableCell>
-                            <TableCell className="whitespace-normal break-words">
-                              <div className="flex items-center gap-1">
-                                <CardIcon className="h-5 w-7 shrink-0 rounded-sm" />
-                                <span className="text-xs text-muted-foreground">{brandLabel} · {row.last4}</span>
-                              </div>
-                            </TableCell>
-                            <TableCell className="text-right font-medium">{row.amount}</TableCell>
-                            <TableCell className="text-center">
-                              <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-600 ring-1 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/30">
-                                {row.status}
-                              </span>
-                            </TableCell>
-                            <TableCell>
-                              <Button variant="outline" size="sm" className="h-7 text-xs">
-                                영수증
-                              </Button>
-                            </TableCell>
-                          </TableRow>
-                        )
-                      })}
-                    </TableBody>
-                  </Table>
-                </div>
-              ) : null}
 
 
             </div>
@@ -2186,10 +1908,9 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
         </div>
       </DialogContent>
     </Dialog>
-    <BillingSettingsDialog
-      open={billingSettingsOpen}
-      onOpenChange={setBillingSettingsOpen}
-      onOpenPlanDialog={onOpenPlanDialog}
+    <TenantSettingsDialog
+      open={tenantSettingsOpen}
+      onOpenChange={setTenantSettingsOpen}
     />
     </>
   )

@@ -207,6 +207,8 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - USER_SERVICE_URL=http://user-service:3002
       - TENANT_SERVICE_URL=http://tenant-service:3003
+      - CREDITS_SERVICE_URL=http://credits-service:3011
+      - CREDITS_SERVICE_KEY=reductai-credits-internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -233,6 +235,7 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - USER_SERVICE_URL=http://user-service:3002
       - TENANT_SERVICE_URL=http://tenant-service:3003
+      - CREDITS_SERVICE_KEY=reductai-credits-internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

@@ -37,7 +37,6 @@ CREATE TABLE credit_plan_grants (
     credit_type VARCHAR(20) NOT NULL CHECK (credit_type IN ('subscription', 'topup')),
     monthly_credits BIGINT NOT NULL DEFAULT 0 CHECK (monthly_credits >= 0),
     initial_credits BIGINT NOT NULL DEFAULT 0 CHECK (initial_credits >= 0),
-    expires_in_days INTEGER CHECK (expires_in_days IS NULL OR expires_in_days >= 0),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     metadata JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -65,6 +64,23 @@ CREATE TABLE credit_accounts (
 
 CREATE INDEX idx_credit_accounts_owner_tenant ON credit_accounts(owner_tenant_id);
 CREATE INDEX idx_credit_accounts_owner_user ON credit_accounts(owner_user_id);
+
+-- 4-1. CREDIT ACCOUNT ACCESS
+CREATE TABLE credit_account_access (
+    user_id UUID NOT NULL,
+    account_id UUID NOT NULL REFERENCES credit_accounts(id) ON DELETE CASCADE,
+    priority INTEGER NOT NULL DEFAULT 0 CHECK (priority >= 0),
+    max_per_period BIGINT,
+    allow_when_empty BOOLEAN NOT NULL DEFAULT FALSE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, account_id),
+    CHECK (max_per_period IS NULL OR max_per_period >= 0)
+);
+
+CREATE INDEX idx_credit_account_access_user_priority ON credit_account_access(user_id, priority);
+CREATE INDEX idx_credit_account_access_account ON credit_account_access(account_id);
 
 -- 5. CREDIT TRANSFERS
 CREATE TABLE credit_transfers (
@@ -158,6 +174,11 @@ FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
 DROP TRIGGER IF EXISTS update_credit_accounts_updated_at ON credit_accounts;
 CREATE TRIGGER update_credit_accounts_updated_at
 BEFORE UPDATE ON credit_accounts
+FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_credit_account_access_updated_at ON credit_account_access;
+CREATE TRIGGER update_credit_account_access_updated_at
+BEFORE UPDATE ON credit_account_access
 FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
 
 DROP TRIGGER IF EXISTS update_credit_transfers_updated_at ON credit_transfers;
