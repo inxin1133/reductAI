@@ -146,6 +146,8 @@ export default function TenantMemberships() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(0)
   const limit = 50
+  const [canManageMembership, setCanManageMembership] = useState(false)
+  const [leaveLoadingId, setLeaveLoadingId] = useState<string | null>(null)
 
   const [q, setQ] = useState("")
   const [membershipFilter, setMembershipFilter] = useState(FILTER_ALL)
@@ -165,7 +167,14 @@ export default function TenantMemberships() {
       const res = await adminFetch(`${API_URL}?${queryString}`)
       const json = (await res.json()) as ListResponse<UserMembershipRow>
       if (!res.ok || !json.ok) throw new Error("FAILED")
-      setRows(json.rows || [])
+      const filtered = (json.rows || []).map((row) => ({
+        ...row,
+        memberships: (row.memberships || []).filter(
+          (m) => (m.membership_status || "active").toLowerCase() !== "inactive"
+        ),
+      }))
+      filtered.forEach((row) => { row.membership_count = row.memberships.length })
+      setRows(filtered)
       setTotal(json.total || 0)
     } catch (e) {
       console.error(e)
@@ -173,6 +182,40 @@ export default function TenantMemberships() {
       setTotal(0)
     } finally {
       setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    const id = String(window.localStorage.getItem("user_id") || "").trim()
+    if (!id) return
+    adminFetch(`/api/users/${encodeURIComponent(id)}`)
+      .then(async (res) => {
+        if (!res.ok) return
+        const data = (await res.json()) as { role_slug?: string | null }
+        const roleSlug = String(data?.role_slug || "").toLowerCase()
+        setCanManageMembership(roleSlug === "admin" || roleSlug === "super-admin")
+      })
+      .catch(() => setCanManageMembership(false))
+  }, [])
+
+  const handleLeaveMembership = async (membership: MembershipItem) => {
+    if (!canManageMembership || !membership?.id) return
+    const ok = window.confirm("해당 멤버를 테넌트에서 제외할까요?")
+    if (!ok) return
+    setLeaveLoadingId(membership.id)
+    try {
+      const res = await adminFetch(`/api/tenants/memberships/${encodeURIComponent(membership.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ membership_status: "inactive" }),
+      })
+      if (!res.ok) throw new Error("FAILED")
+      await fetchMemberships()
+    } catch (e) {
+      console.error(e)
+      alert("멤버 탈퇴 처리에 실패했습니다.")
+    } finally {
+      setLeaveLoadingId(null)
     }
   }
 
@@ -281,7 +324,20 @@ export default function TenantMemberships() {
                             가입 {fmtDate(m.joined_at || null)}
                             {m.expires_at ? ` · 만료 ${fmtDate(m.expires_at)}` : ""}
                           </p>
-                          {planTierBadge(m.plan_tier)}
+                          <div className="flex items-center justify-between">
+                            {planTierBadge(m.plan_tier)}
+                            {canManageMembership && roleSlug !== "owner" && msKey === "active" ? (
+                              <Button
+                                size="xs"
+                                variant="ghost"
+                                className="text-destructive"
+                                disabled={leaveLoadingId === m.id}
+                                onClick={() => handleLeaveMembership(m)}
+                              >
+                                {leaveLoadingId === m.id ? "처리 중..." : "탈퇴"}
+                              </Button>
+                            ) : null}
+                          </div>
                         </div>
                       )
                     })}

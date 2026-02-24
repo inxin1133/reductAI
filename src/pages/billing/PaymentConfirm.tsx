@@ -48,6 +48,7 @@ type LocationState = {
   planId?: string
   planName?: string
   billingCycle?: "monthly" | "yearly"
+  action?: "new" | "change" | "cancel"
   flow?: CheckoutFlowState
 }
 
@@ -132,6 +133,52 @@ type QuoteResponse = {
   message?: string
 }
 
+type SubscriptionChangeQuote = {
+  action: "change" | "cancel"
+  change_type: string
+  schedule: boolean
+  currency: string
+  tax_rate_percent: number
+  charge_amount: number
+  tax_amount: number
+  total_amount: number
+  refund_amount: number
+  net_amount: number
+  credit_delta: number
+  effective_at: string
+  next_billing_date: string
+  current: {
+    plan_id: string
+    plan_name?: string | null
+    plan_tier?: string | null
+    billing_cycle?: string | null
+    price_monthly?: number
+    price_yearly?: number
+  }
+  target?: {
+    plan_id: string
+    plan_name?: string | null
+    plan_tier?: string | null
+    billing_cycle?: string | null
+    price_monthly?: number
+    price_yearly?: number
+  } | null
+}
+
+type SubscriptionChangeResponse = {
+  ok?: boolean
+  quote?: SubscriptionChangeQuote | null
+  message?: string
+}
+
+type ApplySubscriptionChangeResponse = {
+  ok?: boolean
+  quote?: SubscriptionChangeQuote | null
+  charge_transaction?: { id?: string | null } | null
+  refund_transaction?: { id?: string | null } | null
+  message?: string
+}
+
 type QuoteState = {
   currency: string
   amount: number
@@ -147,6 +194,8 @@ export default function PaymentConfirm() {
   const navigate = useNavigate()
   const location = useLocation()
   const state = useMemo(() => (location.state || {}) as LocationState, [location.state])
+  const action = state.action ?? "new"
+  const isChangeFlow = action === "change" || action === "cancel"
   const selectedPlanName = typeof state.planName === "string" ? state.planName : null
   const billingCycleLabel = state.billingCycle === "yearly" ? "연간 구독" : "월간 구독"
   const canGoBackToInfo = hasVisited(state.flow, "info")
@@ -164,14 +213,33 @@ export default function PaymentConfirm() {
     }
   })
   const [quote, setQuote] = useState<QuoteState | null>(null)
+  const [changeQuote, setChangeQuote] = useState<SubscriptionChangeQuote | null>(null)
   const [quoteLoading, setQuoteLoading] = useState(false)
   const [resolvedPlanName, setResolvedPlanName] = useState<string | null>(null)
-  const displayCurrency = quote?.currency || billingInfo.currency || "USD"
+  const displayCurrency = changeQuote?.currency || quote?.currency || billingInfo.currency || "USD"
   const basePrice = quote?.amount ?? null
-  const taxRatePercent = quote?.tax_rate_percent ?? 0
-  const taxAmount = quote?.tax_amount ?? 0
-  const totalAmount = quote?.total_amount ?? 0
-  const displayPlanName = resolvedPlanName ?? selectedPlanName ?? "Professional"
+  const taxRatePercent = isChangeFlow ? changeQuote?.tax_rate_percent ?? 0 : quote?.tax_rate_percent ?? 0
+  const taxAmount = isChangeFlow ? changeQuote?.tax_amount ?? 0 : quote?.tax_amount ?? 0
+  const totalAmount = isChangeFlow ? changeQuote?.total_amount ?? 0 : quote?.total_amount ?? 0
+  const refundAmount = changeQuote?.refund_amount ?? 0
+  const netAmount = changeQuote?.net_amount ?? 0
+  const creditDelta = changeQuote?.credit_delta ?? 0
+  const currentPlanName = changeQuote?.current?.plan_name ?? "-"
+  const targetPlanName = changeQuote?.target?.plan_name ?? "-"
+  const currentCycleLabel =
+    changeQuote?.current?.billing_cycle === "yearly" ? "연간" : changeQuote?.current?.billing_cycle === "monthly" ? "월간" : "-"
+  const targetCycleLabel =
+    changeQuote?.target?.billing_cycle === "yearly" ? "연간" : changeQuote?.target?.billing_cycle === "monthly" ? "월간" : "-"
+  const planCycleLabel = isChangeFlow
+    ? action === "cancel"
+      ? `${currentCycleLabel} 구독`
+      : `${currentCycleLabel} → ${targetCycleLabel}`
+    : billingCycleLabel
+  const displayPlanName = isChangeFlow
+    ? action === "cancel"
+      ? currentPlanName
+      : targetPlanName
+    : resolvedPlanName ?? selectedPlanName ?? "Professional"
   const [couponCode, setCouponCode] = useState("")
   const [agreeTerms, setAgreeTerms] = useState(true)
   const [isCardSelectOpen, setIsCardSelectOpen] = useState(false)
@@ -188,17 +256,29 @@ export default function PaymentConfirm() {
   const [cardOptions, setCardOptions] = useState<CardOption[]>([])
   const [cardSaving, setCardSaving] = useState(false)
   const [paying, setPaying] = useState(false)
-  const canPay = Boolean(
-    quote &&
-      Number.isFinite(quote.total_amount) &&
-      agreeTerms &&
-      card?.last4 &&
-      billingInfo.name &&
-      billingInfo.email &&
-      billingInfo.address1 &&
-      !paying &&
-      !quoteLoading
-  )
+  const requiresPayment = isChangeFlow
+    ? Boolean(changeQuote && Number.isFinite(changeQuote.total_amount) && changeQuote.total_amount > 0)
+    : Boolean(quote && Number.isFinite(quote.total_amount))
+  const canPay = isChangeFlow
+    ? Boolean(
+        changeQuote &&
+          agreeTerms &&
+          !paying &&
+          !quoteLoading &&
+          (!requiresPayment ||
+            (card?.last4 && billingInfo.name && billingInfo.email && billingInfo.address1))
+      )
+    : Boolean(
+        quote &&
+          Number.isFinite(quote.total_amount) &&
+          agreeTerms &&
+          card?.last4 &&
+          billingInfo.name &&
+          billingInfo.email &&
+          billingInfo.address1 &&
+          !paying &&
+          !quoteLoading
+      )
 
   const authHeaders = useCallback((): Record<string, string> => {
     if (typeof window === "undefined") return {}
@@ -207,7 +287,7 @@ export default function PaymentConfirm() {
   }, [])
 
   const loadPlanInfo = useCallback(async () => {
-    if (!state.planId) return
+    if (!state.planId || isChangeFlow) return
     try {
       const plans = await fetchBillingPlansWithPrices()
       const plan = plans.find((item) => item.id === state.planId)
@@ -216,17 +296,36 @@ export default function PaymentConfirm() {
     } catch (e) {
       console.error(e)
     }
-  }, [state.planId])
+  }, [isChangeFlow, state.planId])
 
   const loadQuote = useCallback(async () => {
-    if (!state.planId || !state.billingCycle) {
-      setQuote(null)
-      return null
-    }
     const headers = authHeaders()
     if (!headers.Authorization) return null
+
     try {
       setQuoteLoading(true)
+      if (isChangeFlow) {
+        setQuote(null)
+        const res = await fetch("/api/ai/billing/user/subscription-quote", {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: action === "cancel" ? "cancel" : "change",
+            target_plan_id: state.planId || null,
+            target_billing_cycle: state.billingCycle || null,
+          }),
+        })
+        const data = (await res.json().catch(() => null)) as SubscriptionChangeResponse | null
+        if (!res.ok || !data?.quote) throw new Error(data?.message || "FAILED_QUOTE")
+        setChangeQuote(data.quote)
+        return data.quote
+      }
+
+      if (!state.planId || !state.billingCycle) {
+        setQuote(null)
+        return null
+      }
+      setChangeQuote(null)
       const res = await fetch("/api/ai/billing/user/quote", {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
@@ -257,11 +356,12 @@ export default function PaymentConfirm() {
     } catch (e) {
       console.error(e)
       setQuote(null)
+      setChangeQuote(null)
       return null
     } finally {
       setQuoteLoading(false)
     }
-  }, [authHeaders, state.billingCycle, state.planId])
+  }, [action, authHeaders, isChangeFlow, state.billingCycle, state.planId])
 
   const loadBillingData = useCallback(async () => {
     const headers = authHeaders()
@@ -347,7 +447,7 @@ export default function PaymentConfirm() {
       try {
         const status = await loadBillingData()
         if (cancelled) return
-        if (!inFlow && status) {
+        if (!inFlow && status && !isChangeFlow) {
           if (!status.hasCard) {
             navigate("/billing/card", { replace: true, state })
             return
@@ -365,7 +465,7 @@ export default function PaymentConfirm() {
     return () => {
       cancelled = true
     }
-  }, [inFlow, loadBillingData, loadQuote, navigate, state])
+  }, [inFlow, isChangeFlow, loadBillingData, loadQuote, navigate, state])
 
   useEffect(() => {
     void loadPlanInfo()
@@ -577,10 +677,6 @@ export default function PaymentConfirm() {
 
   const handleCheckout = async () => {
     if (!canPay || paying) return
-    if (!state.planId || !state.billingCycle) {
-      alert("요금제 정보가 없습니다.")
-      return
-    }
     const headers = authHeaders()
     if (!headers.Authorization) {
       alert("로그인이 필요합니다.")
@@ -589,6 +685,52 @@ export default function PaymentConfirm() {
 
     try {
       setPaying(true)
+      if (isChangeFlow) {
+        const res = await fetch("/api/ai/billing/user/subscription-change", {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: action === "cancel" ? "cancel" : "change",
+            target_plan_id: state.planId || null,
+            target_billing_cycle: state.billingCycle || null,
+          }),
+        })
+        const data = (await res.json().catch(() => null)) as ApplySubscriptionChangeResponse | null
+        if (!res.ok || !data?.ok || !data?.quote) throw new Error(data?.message || "FAILED_CHANGE")
+        const nextBillingDate = data.quote.next_billing_date
+          ? new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "long", day: "numeric" }).format(
+              new Date(data.quote.next_billing_date)
+            )
+          : undefined
+        const effectiveAt = data.quote.effective_at
+          ? new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "long", day: "numeric" }).format(
+              new Date(data.quote.effective_at)
+            )
+          : undefined
+        const transactionId = data.charge_transaction?.id ?? data.refund_transaction?.id
+        navigate("/billing/complete", {
+          state: {
+            action,
+            changeType: data.quote.change_type,
+            schedule: data.quote.schedule,
+            planName: data.quote.target?.plan_name ?? data.quote.current?.plan_name,
+            billingCycle: data.quote.target?.billing_cycle ?? data.quote.current?.billing_cycle,
+            totalAmount: data.quote.total_amount,
+            currency: data.quote.currency,
+            nextBillingDate,
+            effectiveAt,
+            refundAmount: data.quote.refund_amount,
+            chargeAmount: data.quote.total_amount,
+            transactionId,
+          },
+        })
+        return
+      }
+
+      if (!state.planId || !state.billingCycle) {
+        alert("요금제 정보가 없습니다.")
+        return
+      }
       const res = await fetch("/api/ai/billing/user/checkout", {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
@@ -635,14 +777,38 @@ export default function PaymentConfirm() {
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.4fr_0.6fr]">
             <div className="flex flex-col gap-4">
               <div className="rounded-xl border border-border bg-background p-5 shadow-sm">
-                <div className="text-sm font-semibold text-foreground">선택한 플랜</div>
+                <div className="text-sm font-semibold text-foreground">
+                  {isChangeFlow ? (action === "cancel" ? "구독 취소" : "변경 요약") : "선택한 플랜"}
+                </div>
                 <div className="mt-3 flex items-center justify-between">
                   <div>
                     <div className="text-lg font-semibold text-foreground">{displayPlanName}</div>
-                    <div className="text-sm text-muted-foreground">{billingCycleLabel}</div>
+                    <div className="text-sm text-muted-foreground">{planCycleLabel}</div>
                   </div>
-                  <div className="text-lg font-semibold text-foreground">{formatAmountLabel(basePrice)}</div>
+                  <div className="text-lg font-semibold text-foreground">
+                    {formatAmountLabel(isChangeFlow ? changeQuote?.charge_amount : basePrice)}
+                  </div>
                 </div>
+                {isChangeFlow ? (
+                  <div className="mt-3 grid gap-1 text-xs text-muted-foreground">
+                    <div>
+                      현재: {currentPlanName} · {currentCycleLabel}
+                    </div>
+                    {action !== "cancel" ? (
+                      <div>
+                        변경: {targetPlanName} · {targetCycleLabel}
+                      </div>
+                    ) : null}
+                    {changeQuote?.effective_at ? (
+                      <div>
+                        적용일:{" "}
+                        {new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "long", day: "numeric" }).format(
+                          new Date(changeQuote.effective_at)
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
 
               <div className="rounded-xl border border-border bg-background p-5 shadow-sm">
@@ -755,42 +921,101 @@ export default function PaymentConfirm() {
 
             <div className="self-start rounded-xl border border-border bg-background p-5 shadow-sm">
               <div className="text-sm font-semibold text-foreground">결제 요약</div>
-              <div className="mt-4 grid gap-2">
-                <label className="text-xs font-medium text-muted-foreground">쿠폰 코드</label>
-                <div className="flex items-center gap-2">
-                  <Input
-                    value={couponCode}
-                    onChange={(event) => setCouponCode(event.target.value)}
-                    placeholder="쿠폰 코드 입력"
-                  />
-                  <Button type="button" variant="outline" size="sm">
-                    적용
-                  </Button>
-                </div>
-              </div>
-              <div className="mt-4 grid gap-2 text-sm text-muted-foreground">
-                <div className="flex items-center justify-between">
-                  <span>플랜 가격</span>
-                  <span className="text-foreground">{formatAmountLabel(basePrice)}</span>
-                </div>
-                {taxAmount > 0 ? (
-                  <div className="flex items-center justify-between">
-                    <span>세금 ({taxRatePercent || 0}%)</span>
-                    <span className="text-foreground">{formatAmountLabel(taxAmount)}</span>
+              {!isChangeFlow ? (
+                <div className="mt-4 grid gap-2">
+                  <label className="text-xs font-medium text-muted-foreground">쿠폰 코드</label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={couponCode}
+                      onChange={(event) => setCouponCode(event.target.value)}
+                      placeholder="쿠폰 코드 입력"
+                    />
+                    <Button type="button" variant="outline" size="sm">
+                      적용
+                    </Button>
                   </div>
-                ) : null}
+                </div>
+              ) : null}
+              <div className="mt-4 grid gap-2 text-sm text-muted-foreground">
+                {isChangeFlow ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span>차액 결제</span>
+                      <span className="text-foreground">{formatAmountLabel(changeQuote?.charge_amount)}</span>
+                    </div>
+                    {taxAmount > 0 ? (
+                      <div className="flex items-center justify-between">
+                        <span>세금 ({taxRatePercent || 0}%)</span>
+                        <span className="text-foreground">{formatAmountLabel(taxAmount)}</span>
+                      </div>
+                    ) : null}
+                    {refundAmount > 0 ? (
+                      <div className="flex items-center justify-between">
+                        <span>환불 예정</span>
+                        <span className="text-foreground">-{formatAmountLabel(refundAmount)}</span>
+                      </div>
+                    ) : null}
+                    {creditDelta > 0 ? (
+                      <div className="flex items-center justify-between">
+                        <span>추가 크레딧</span>
+                        <span className="text-foreground">+{creditDelta.toLocaleString()}</span>
+                      </div>
+                    ) : null}
+                    {changeQuote?.schedule ? (
+                      <div className="flex items-center justify-between">
+                        <span>적용 예정일</span>
+                        <span className="text-foreground">
+                          {changeQuote.effective_at
+                            ? new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "long", day: "numeric" }).format(
+                                new Date(changeQuote.effective_at)
+                              )
+                            : "-"}
+                        </span>
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span>플랜 가격</span>
+                      <span className="text-foreground">{formatAmountLabel(basePrice)}</span>
+                    </div>
+                    {taxAmount > 0 ? (
+                      <div className="flex items-center justify-between">
+                        <span>세금 ({taxRatePercent || 0}%)</span>
+                        <span className="text-foreground">{formatAmountLabel(taxAmount)}</span>
+                      </div>
+                    ) : null}
+                  </>
+                )}
               </div>
               <div className="mt-4 border-t border-border pt-4">
                 <div className="flex items-baseline justify-between">
-                  <span className="text-sm font-semibold text-foreground">총 결제 금액</span>
-                  <span className="text-2xl font-bold text-blue-600">{formatAmountLabel(totalAmount)}</span>
+                  <span className="text-sm font-semibold text-foreground">
+                    {isChangeFlow && refundAmount > 0 ? "최종 정산 금액" : "총 결제 금액"}
+                  </span>
+                  <span className="text-2xl font-bold text-blue-600">
+                    {formatAmountLabel(isChangeFlow && refundAmount > 0 ? netAmount : totalAmount)}
+                  </span>
                 </div>
               </div>
               <Button type="button" className="mt-4 w-full" onClick={handleCheckout} disabled={!canPay}>
-                결제하기
+                {action === "cancel"
+                  ? "구독 취소 요청"
+                  : isChangeFlow
+                    ? changeQuote?.schedule
+                      ? "변경 예약하기"
+                      : requiresPayment
+                        ? "변경 결제하기"
+                        : "변경 적용하기"
+                    : "결제하기"}
               </Button>
               <p className="mt-2 text-xs text-muted-foreground">
-                결제 시 자동으로 정기 구독이 시작됩니다. 언제든지 구독을 취소할 수 있습니다.
+                {action === "cancel"
+                  ? "구독은 지정된 종료일까지 유지되며, 환불 정책에 따라 처리됩니다."
+                  : isChangeFlow
+                    ? "변경 유형에 따라 차액 결제 또는 환불이 적용됩니다."
+                    : "결제 시 자동으로 정기 구독이 시작됩니다. 언제든지 구독을 취소할 수 있습니다."}
               </p>
             </div>
           </div>

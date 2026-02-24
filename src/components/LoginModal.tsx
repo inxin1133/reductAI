@@ -800,45 +800,40 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
         {step === 'login' && (
           <>
             <div className="flex flex-col gap-2">
-              <p className="text-sm text-left text-muted-foreground text-center break-keep">
+              <p className="text-sm text-left text-foreground text-center break-keep">
                 SSO 인증 또는 아이디를 통한 로그인 또는 신규계정 생성을 진행합니다.
+              </p>
+              <p className="text-xs text-left text-muted-foreground text-center break-keep">
+                네이버/카카오 SSO 인증은 이메일 인증을 추가로 진행합니다. 추가 인증 없이 로그인을 원하시면 구글 SSO 인증을 이용해주세요.
               </p>
             </div>
             
             <div className="flex flex-col gap-2 w-full">
-              <button 
-                type="button"
-                className="flex items-center justify-center gap-2 w-full h-[40px] bg-primary-foreground text-primary border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 transition-colors"
+              <Button 
+                variant="outline"
+                className="w-full h-[40px]"
                 onClick={handleGoogleLogin}
               >
-                <div className="size-[24px] flex items-center justify-center overflow-hidden">
-                   <LogoGoogle className="relative shrink-0 size-[24px]" />
-                </div>
+                <LogoGoogle className="relative shrink-0 size-[24px]" />
                 <span className="text-base text-primary">Google</span>
-              </button>
+              </Button>
 
-              <button 
-                type="button"
-                className="flex items-center justify-center gap-2 w-full h-[40px] bg-primary-foreground text-primary border border-gray-200 rounded-md shadow-sm hover:bg-gray-50 transition-colors"
+              <Button 
+                variant="outline"
+                className="w-full h-[40px]"
                 onClick={handleNaverLogin}
               >
-                <div className="size-[24px] flex items-center justify-center overflow-hidden">
-                   
-                   <LogoNaver className="relative shrink-0 size-[24px]" />
-                </div>
+                <LogoNaver className="relative shrink-0 size-[24px]" />
                 <span className="text-base text-primary">NAVER</span>
-              </button>
+              </Button>
 
-              <button 
-                type="button"
-                className="flex items-center justify-center gap-2 w-full h-[40px] bg-yellow-400 text-yellow-900 border border-gray-200 rounded-md shadow-sm hover:bg-yellow-300 transition-colors"
+              <Button 
+                className="w-full h-[40px] bg-yellow-400 border border-yellow-600 rounded-md shadow-sm hover:bg-yellow-500"
                 onClick={handleKakaoLogin}
               >
-                <div className="size-[24px] flex items-center justify-center overflow-hidden">
-                   <LogoKakao className="relative shrink-0 size-[24px]" />
-                </div>
+                <LogoKakao className="relative shrink-0 size-[24px]" />
                 <span className="text-base text-black">KAKAO</span>
-              </button>
+              </Button>
             </div>
 
             <div className="flex items-center gap-2 w-full">

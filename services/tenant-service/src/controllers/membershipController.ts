@@ -108,6 +108,7 @@ export const listTenantMemberships = async (req: Request, res: Response) => {
         COALESCE(utr.membership_status, 'active') AS membership_status,
         utr.joined_at,
         utr.left_at,
+        utr.left_by,
         utr.is_primary_tenant,
         utr.granted_at,
         utr.granted_by,
@@ -167,7 +168,7 @@ export const createTenantMembership = async (req: Request, res: Response) => {
         user_id, tenant_id, role_id, membership_status, is_primary_tenant, granted_by, expires_at
       )
       VALUES ($1,$2,$3,$4,$5,$6,$7)
-      RETURNING id, user_id, tenant_id, role_id, membership_status, joined_at, left_at, is_primary_tenant, granted_at, granted_by, expires_at
+      RETURNING id, user_id, tenant_id, role_id, membership_status, joined_at, left_at, left_by, is_primary_tenant, granted_at, granted_by, expires_at
       `,
       [userId, tenantId, roleId, status, isPrimary, grantedBy, expiresAt]
     );
@@ -207,6 +208,7 @@ export const updateTenantMembership = async (req: Request, res: Response) => {
     await client.query('BEGIN');
     const { id } = req.params;
     const input = req.body || {};
+    const actorId = toStr((req as AuthedRequest).userId);
 
     const fields: string[] = [];
     const params: any[] = [];
@@ -228,6 +230,14 @@ export const updateTenantMembership = async (req: Request, res: Response) => {
       if (status === 'inactive' && input.left_at === undefined) {
         fields.push(`left_at = CURRENT_TIMESTAMP`);
       }
+      if (status === 'inactive') {
+        if (!actorId) return res.status(401).json({ message: 'Missing actorId for leave action' });
+        setField('left_by', actorId);
+      }
+      if (status === 'active' && input.left_at === undefined) {
+        setField('left_at', null);
+        setField('left_by', null);
+      }
     }
     if (input.left_at !== undefined) {
       setField('left_at', input.left_at || null);
@@ -248,7 +258,7 @@ export const updateTenantMembership = async (req: Request, res: Response) => {
       UPDATE user_tenant_roles
       SET ${fields.join(', ')}
       WHERE id = $${params.length + 1}
-      RETURNING id, user_id, tenant_id, role_id, membership_status, joined_at, left_at, is_primary_tenant, granted_at, granted_by, expires_at
+      RETURNING id, user_id, tenant_id, role_id, membership_status, joined_at, left_at, left_by, is_primary_tenant, granted_at, granted_by, expires_at
       `,
       [...params, id]
     );

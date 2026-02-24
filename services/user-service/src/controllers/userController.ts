@@ -787,16 +787,24 @@ export const listUserTenantMemberships = async (req: Request, res: Response) => 
       params.push(`%${q}%`);
     }
     if (membershipFilter === 'has') {
-      where.push(`EXISTS (SELECT 1 FROM user_tenant_roles utr WHERE utr.user_id = u.id)`);
+      where.push(
+        `EXISTS (SELECT 1 FROM user_tenant_roles utr WHERE utr.user_id = u.id AND (utr.membership_status IS NULL OR utr.membership_status = 'active'))`
+      );
     }
     if (membershipFilter === 'none') {
-      where.push(`NOT EXISTS (SELECT 1 FROM user_tenant_roles utr WHERE utr.user_id = u.id)`);
+      where.push(
+        `NOT EXISTS (SELECT 1 FROM user_tenant_roles utr WHERE utr.user_id = u.id AND (utr.membership_status IS NULL OR utr.membership_status = 'active'))`
+      );
     }
     if (membershipFilter === 'single') {
-      where.push(`(SELECT COUNT(*) FROM user_tenant_roles utr WHERE utr.user_id = u.id) = 1`);
+      where.push(
+        `(SELECT COUNT(*) FROM user_tenant_roles utr WHERE utr.user_id = u.id AND (utr.membership_status IS NULL OR utr.membership_status = 'active')) = 1`
+      );
     }
     if (membershipFilter === 'multi') {
-      where.push(`(SELECT COUNT(*) FROM user_tenant_roles utr WHERE utr.user_id = u.id) >= 2`);
+      where.push(
+        `(SELECT COUNT(*) FROM user_tenant_roles utr WHERE utr.user_id = u.id AND (utr.membership_status IS NULL OR utr.membership_status = 'active')) >= 2`
+      );
     }
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -843,6 +851,7 @@ export const listUserTenantMemberships = async (req: Request, res: Response) => 
         COALESCE(utr.membership_status, 'active') AS membership_status,
         utr.joined_at,
         utr.left_at,
+        utr.left_by,
         utr.is_primary_tenant,
         utr.granted_at,
         utr.expires_at,
@@ -874,6 +883,7 @@ export const listUserTenantMemberships = async (req: Request, res: Response) => 
       LEFT JOIN billing_plans bp ON bp.id = latest_sub.plan_id
       LEFT JOIN roles r ON r.id = utr.role_id
       WHERE utr.user_id = ANY($1::uuid[])
+        AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
       ORDER BY utr.user_id, COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC NULLS LAST, utr.granted_at ASC NULLS LAST
       `,
       [userIds]

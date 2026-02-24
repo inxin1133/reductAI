@@ -31,6 +31,22 @@ type PaymentMethodsResponse = {
   rows?: Array<{ status?: string | null }>
 }
 
+type SubscriptionSummary = {
+  id: string
+  plan_id: string
+  plan_name?: string | null
+  plan_tier?: string | null
+  billing_cycle?: "monthly" | "yearly" | string | null
+  current_period_end?: string | null
+  status?: string | null
+}
+
+type SubscriptionResponse = {
+  ok?: boolean
+  row?: SubscriptionSummary | null
+  message?: string
+}
+
 function normalizePlanTier(value: unknown): PlanTier | null {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
   if (!raw) return null
@@ -132,7 +148,14 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [billingCycle, setBillingCycle] = useState<BillingCycle>("monthly")
-  const normalizedCurrentTier = useMemo(() => normalizePlanTier(currentTier) ?? "free", [currentTier])
+  const [currentSubscription, setCurrentSubscription] = useState<SubscriptionSummary | null>(null)
+  const [subscriptionLoading, setSubscriptionLoading] = useState(false)
+  const normalizedCurrentTier = useMemo(
+    () => normalizePlanTier(currentSubscription?.plan_tier ?? currentTier) ?? "free",
+    [currentSubscription?.plan_tier, currentTier]
+  )
+  const currentPlanId = currentSubscription?.plan_id ?? null
+  const currentBillingCycle = currentSubscription?.billing_cycle ?? null
 
   const authHeaders = useCallback((): Record<string, string> => {
     if (typeof window === "undefined") return {}
@@ -184,10 +207,35 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
       .finally(() => setLoading(false))
   }, [])
 
+  const loadCurrentSubscription = useCallback(() => {
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      setCurrentSubscription(null)
+      return
+    }
+    setSubscriptionLoading(true)
+    fetch("/api/ai/billing/user/subscription", { headers })
+      .then((res) => res.json().catch(() => null) as Promise<SubscriptionResponse | null>)
+      .then((data) => {
+        if (data?.row) setCurrentSubscription(data.row)
+        else setCurrentSubscription(null)
+      })
+      .catch((e) => {
+        console.error(e)
+        setCurrentSubscription(null)
+      })
+      .finally(() => setSubscriptionLoading(false))
+  }, [authHeaders])
+
   useEffect(() => {
     if (!open) return
     loadPlans()
   }, [open, loadPlans])
+
+  useEffect(() => {
+    if (!open) return
+    loadCurrentSubscription()
+  }, [open, loadCurrentSubscription])
 
   useEffect(() => {
     if (!open) return
@@ -294,9 +342,21 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
                 const planTier = normalizePlanTier(plan.tier) ?? "free"
                 const currentIndex = PLAN_TIER_ORDER.indexOf(normalizedCurrentTier)
                 const planIndex = PLAN_TIER_ORDER.indexOf(planTier)
-                const isCurrent = planIndex === currentIndex
+                const isCurrentPlan = currentPlanId ? plan.id === currentPlanId : planIndex === currentIndex
+                const isCycleChange = Boolean(isCurrentPlan && currentBillingCycle && currentBillingCycle !== billingCycle)
+                const isCurrent = isCurrentPlan && (!currentBillingCycle || currentBillingCycle === billingCycle)
                 const isUpgrade = planIndex > currentIndex
-                const actionLabel = isCurrent ? "현재 요금제" : isUpgrade ? "업그레이드" : "요금제 변경"
+                const isDowngrade = planIndex < currentIndex
+                const cycleLabel = billingCycle === "yearly" ? "연간" : "월간"
+                const actionLabel = isCurrent
+                  ? "현재 요금제"
+                  : isCycleChange
+                    ? `${cycleLabel}로 변경`
+                    : isUpgrade
+                      ? "업그레이드"
+                      : isDowngrade
+                        ? "다운그레이드"
+                        : "요금제 변경"
 
                 return (
                   <div
@@ -385,7 +445,7 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
                     {/* CTA 요금제 버튼 */}
                     <div className="mt-auto pt-5">
                       <Button
-                        variant={isCurrent ? "outline" : isUpgrade ? "default" : "secondary"}
+                        variant={isCurrent ? "outline" : isUpgrade || isCycleChange ? "default" : "secondary"}
                         className={cn(
                           "w-full",
                           isCurrent
@@ -404,11 +464,13 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
                                 planId: plan.id,
                                 planName: plan.name,
                                 billingCycle,
+                                action: currentSubscription ? "change" : undefined,
                                 flow: appendVisited(undefined, "plan"),
                               },
                             })
                           })()
                         }}
+                        disabled={subscriptionLoading}
                       >
                         {actionLabel}
                       </Button>

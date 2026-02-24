@@ -12,6 +12,12 @@ type LocationState = {
   currency?: string
   nextBillingDate?: string
   transactionId?: string
+  action?: "new" | "change" | "cancel"
+  changeType?: string
+  schedule?: boolean
+  effectiveAt?: string
+  refundAmount?: number
+  chargeAmount?: number
 }
 
 type CheckoutSummary = {
@@ -39,6 +45,8 @@ export default function PaymentComplete() {
   const navigate = useNavigate()
   const location = useLocation()
   const state = useMemo(() => (location.state || {}) as LocationState, [location.state])
+  const action = state.action ?? "new"
+  const isChangeFlow = action === "change" || action === "cancel"
   const [summary, setSummary] = useState<CheckoutSummary | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -64,6 +72,7 @@ export default function PaymentComplete() {
   useEffect(() => {
     const headers = authHeaders()
     if (!headers.Authorization) return
+    if (isChangeFlow && !state.transactionId) return
 
     const params = new URLSearchParams()
     const searchParams = new URLSearchParams(location.search)
@@ -101,7 +110,7 @@ export default function PaymentComplete() {
     return () => {
       active = false
     }
-  }, [authHeaders, location.search, state.transactionId])
+  }, [authHeaders, isChangeFlow, location.search, state.transactionId])
 
   const resolved = summary ?? fallbackSummary
   const planName = resolved.plan_name ?? "-"
@@ -110,20 +119,36 @@ export default function PaymentComplete() {
     resolved.billing_cycle === "yearly" ? "연간" : resolved.billing_cycle === "monthly" ? "월간" : "-"
   const currency = resolved.currency || "USD"
   const totalAmount = resolved.total_amount
+  const chargeAmount = typeof state.chargeAmount === "number" ? state.chargeAmount : totalAmount ?? 0
+  const refundAmount = typeof state.refundAmount === "number" ? state.refundAmount : 0
+  const netAmount = typeof chargeAmount === "number" ? chargeAmount - refundAmount : null
   const transactionId = resolved.transaction_id || "-"
   const nextBillingDate = (() => {
-    const value = resolved.next_billing_date
+    const value = resolved.next_billing_date || state.nextBillingDate
     if (!value) return "-"
     const parsed = new Date(value)
     if (Number.isNaN(parsed.getTime())) return value
     return new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "long", day: "numeric" }).format(parsed)
   })()
+  const effectiveAt = state.effectiveAt || "-"
   const totalLabel =
     typeof totalAmount === "number" && Number.isFinite(totalAmount)
       ? `${currencySymbol(currency)}${formatMoney(totalAmount, currency)}`
       : loading
         ? "불러오는 중"
         : "-"
+  const chargeLabel =
+    typeof chargeAmount === "number" && Number.isFinite(chargeAmount)
+      ? `${currencySymbol(currency)}${formatMoney(chargeAmount, currency)}`
+      : "-"
+  const refundLabel =
+    typeof refundAmount === "number" && Number.isFinite(refundAmount) && refundAmount > 0
+      ? `${currencySymbol(currency)}${formatMoney(refundAmount, currency)}`
+      : "-"
+  const netLabel =
+    typeof netAmount === "number" && Number.isFinite(netAmount)
+      ? `${currencySymbol(currency)}${formatMoney(netAmount, currency)}`
+      : "-"
 
   return (
     <div className="min-h-screen bg-muted/20">
@@ -134,8 +159,22 @@ export default function PaymentComplete() {
             <div className="flex size-16 items-center justify-center rounded-full bg-emerald-50">
               <CheckCircle2 className="size-8 text-emerald-600" />
             </div>
-            <h1 className="text-2xl font-bold text-foreground">결제가 완료되었습니다!</h1>
-            <p className="text-sm text-muted-foreground">환영합니다! {planLabel}이 성공적으로 활성화되었습니다.</p>
+            <h1 className="text-2xl font-bold text-foreground">
+              {action === "cancel"
+                ? "구독 취소 요청이 완료되었습니다!"
+                : isChangeFlow
+                  ? state.schedule
+                    ? "요금제 변경이 예약되었습니다!"
+                    : "요금제 변경이 완료되었습니다!"
+                  : "결제가 완료되었습니다!"}
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              {action === "cancel"
+                ? `${planLabel}은 종료일까지 유지됩니다.`
+                : isChangeFlow
+                  ? `${planLabel} 변경 내용이 반영되었습니다.`
+                  : `환영합니다! ${planLabel}이 성공적으로 활성화되었습니다.`}
+            </p>
             {error ? <p className="text-xs text-destructive">{error}</p> : null}
           </div>
 
@@ -147,9 +186,25 @@ export default function PaymentComplete() {
               </div>
               <div className="h-px w-full bg-border" />
               <div className="flex items-center justify-between">
-                <span className="text-sm text-muted-foreground">결제 금액</span>
-                <span className="text-lg font-semibold text-foreground">{totalLabel}</span>
+                <span className="text-sm text-muted-foreground">
+                  {isChangeFlow ? "결제 금액" : "결제 금액"}
+                </span>
+                <span className="text-lg font-semibold text-foreground">{isChangeFlow ? chargeLabel : totalLabel}</span>
               </div>
+              {isChangeFlow && refundAmount > 0 ? (
+                <>
+                  <div className="h-px w-full bg-border" />
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">환불 예정</span>
+                    <span className="text-lg font-semibold text-foreground">{refundLabel}</span>
+                  </div>
+                  <div className="h-px w-full bg-border" />
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">최종 정산 금액</span>
+                    <span className="text-lg font-semibold text-foreground">{netLabel}</span>
+                  </div>
+                </>
+              ) : null}
               <div className="h-px w-full bg-border" />
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">결제 주기</span>
@@ -157,8 +212,8 @@ export default function PaymentComplete() {
               </div>
               <div className="h-px w-full bg-border" />
               <div className="flex items-center justify-between">
-                <span className="text-sm text-muted-foreground">다음 결제일</span>
-                <span className="font-semibold text-foreground">{nextBillingDate}</span>
+                <span className="text-sm text-muted-foreground">{isChangeFlow ? "적용일" : "다음 결제일"}</span>
+                <span className="font-semibold text-foreground">{isChangeFlow ? effectiveAt : nextBillingDate}</span>
               </div>
               <div className="h-px w-full bg-border" />
               <div className="flex items-center justify-between">
@@ -182,11 +237,16 @@ export default function PaymentComplete() {
           <div className="w-full rounded-xl border border-blue-200 bg-blue-50 p-5">
             <div className="text-sm font-semibold text-foreground">다음 단계</div>
             <div className="mt-3 flex flex-col gap-2 text-sm text-muted-foreground">
-              {[
-                "이메일로 영수증과 구독 확인 이메일이 발송되었습니다.",
-                `대시보드에서 모든 ${planLabel} 기능을 사용할 수 있습니다.`,
-                "계정 설정에서 언제든지 플랜을 변경하거나 구독을 취소할 수 있습니다.",
-              ].map((item) => (
+              {(isChangeFlow
+                ? action === "cancel"
+                  ? ["구독은 적용일까지 유지됩니다.", "필요 시 언제든지 다시 구독할 수 있습니다."]
+                  : ["변경 내용이 적용되었습니다.", "계정 설정에서 언제든지 플랜을 다시 변경할 수 있습니다."]
+                : [
+                    "이메일로 영수증과 구독 확인 이메일이 발송되었습니다.",
+                    `대시보드에서 모든 ${planLabel} 기능을 사용할 수 있습니다.`,
+                    "계정 설정에서 언제든지 플랜을 변경하거나 구독을 취소할 수 있습니다.",
+                  ]
+              ).map((item) => (
                 <div key={item} className="flex items-start gap-2">
                   <span className="mt-0.5 flex size-5 items-center justify-center rounded-full bg-blue-100 text-blue-600">
                     <Check className="size-3" />

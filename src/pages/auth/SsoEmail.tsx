@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { Loader2 } from "lucide-react"
+import { Header } from "@/components/Header"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp"
@@ -127,26 +128,35 @@ export default function SsoEmail() {
 
   if (!ssoToken) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center p-6">
-        <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 text-center">
-          <p className="text-sm text-muted-foreground">SSO 세션이 만료되었습니다.</p>
-          <Button className="mt-4 w-full" onClick={handleCancel}>
-            로그인 화면으로 돌아가기
-          </Button>
+      <div className="min-h-screen bg-background">
+        <Header />
+        <div className="flex min-h-[calc(100vh-60px)] items-center justify-center p-6">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 text-center">
+            <p className="text-sm text-muted-foreground">SSO 세션이 만료되었습니다.</p>
+            <Button className="mt-4 w-full" onClick={handleCancel}>
+              로그인 화면으로 돌아가기
+            </Button>
+          </div>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-6">
-      <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-sm">
-        <div className="flex flex-col gap-2 text-center">
-          <h1 className="text-lg font-semibold">{providerLabel} 이메일 인증</h1>
-          <p className="text-sm text-muted-foreground">
-            이메일 인증 완료 후 로그인이 완료됩니다.
-          </p>
-        </div>
+    <div className="min-h-screen bg-background">
+      <Header />
+      <div className="flex min-h-[calc(100vh-60px)] items-center justify-center p-6">
+        <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-sm">
+          <div className="flex flex-col gap-2 text-center space-y-2">
+            <h1 className="text-lg font-semibold">{providerLabel} 이메일 인증</h1>          
+            <p className="text-sm text-muted-foreground">
+              {providerLabel} 정책상 아이디, 이메일을 제공받을 수 없어, <br />
+              이메일 인증을 추가로 진행합니다.
+            </p>
+            <p className="text-sm text-foreground">
+              이메일 인증 완료 후 로그인이 완료됩니다. 
+            </p>
+          </div>
 
         {error ? <p className="mt-4 text-xs text-destructive">{error}</p> : null}
 
@@ -212,6 +222,7 @@ export default function SsoEmail() {
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>
   )

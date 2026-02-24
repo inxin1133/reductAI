@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import {
   ArrowLeft,
   ClipboardList,
@@ -21,6 +22,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cardLabel, getCardBrandIcon, normalizeCardBrand } from "@/lib/card"
+import { currencySymbol, formatMoney, normalizeCurrency } from "@/lib/currency"
+import { PLAN_TIER_LABELS, type PlanTier } from "@/lib/planTier"
 import { cn } from "@/lib/utils"
 
 type BillingMenuId = "subscription" | "invoices" | "billing" | "payments" | "transactions"
@@ -29,6 +32,7 @@ type BillingSettingsDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   initialMenu?: BillingMenuId
+  onOpenPlanDialog?: () => void
 }
 
 const BILLING_MENUS: Array<{ id: BillingMenuId; label: string; icon: typeof CreditCard }> = [
@@ -50,6 +54,22 @@ type BillingFormState = {
   address2: string
   extraAddress: string
   phone: string
+}
+
+type CheckoutSummary = {
+  plan_name?: string | null
+  plan_tier?: string | null
+  billing_cycle?: "monthly" | "yearly" | string | null
+  total_amount?: number | null
+  currency?: string | null
+  next_billing_date?: string | null
+  transaction_id?: string | null
+}
+
+type CheckoutSummaryResponse = {
+  ok?: boolean
+  summary?: CheckoutSummary | null
+  message?: string
 }
 
 const INITIAL_BILLING_FORM: BillingFormState = {
@@ -114,10 +134,14 @@ const BillingSidebarMenu = ({
   </div>
 )
 
-export function BillingSettingsDialog({ open, onOpenChange, initialMenu }: BillingSettingsDialogProps) {
+export function BillingSettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDialog }: BillingSettingsDialogProps) {
+  const navigate = useNavigate()
   const [activeMenu, setActiveMenu] = useState<BillingMenuId>(() => readBillingMenuFromStorage() ?? "subscription")
   const [billingEditOpen, setBillingEditOpen] = useState(false)
   const [billingForm, setBillingForm] = useState<BillingFormState>(INITIAL_BILLING_FORM)
+  const [subscriptionSummary, setSubscriptionSummary] = useState<CheckoutSummary | null>(null)
+  const [subscriptionLoading, setSubscriptionLoading] = useState(false)
+  const [subscriptionError, setSubscriptionError] = useState<string | null>(null)
   const [postcodeLoading, setPostcodeLoading] = useState(false)
   const detailAddressRef = useRef<HTMLInputElement | null>(null)
   const wasOpenRef = useRef(false)
@@ -148,10 +172,107 @@ export function BillingSettingsDialog({ open, onOpenChange, initialMenu }: Billi
     if (activeMenu !== "billing") setBillingEditOpen(false)
   }, [activeMenu])
 
+  const authHeaders = useCallback((): Record<string, string> => {
+    if (typeof window === "undefined") return {}
+    const token = window.localStorage.getItem("token")
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  }, [])
+
+  const handleOpenPlanDialog = useCallback(() => {
+    onOpenChange(false)
+    onOpenPlanDialog?.()
+  }, [onOpenChange, onOpenPlanDialog])
+
+  const handleCancelSubscription = useCallback(() => {
+    onOpenChange(false)
+    navigate("/billing/confirm", { state: { action: "cancel" } })
+  }, [navigate, onOpenChange])
+
+  useEffect(() => {
+    if (!open || activeMenu !== "subscription") return
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      setSubscriptionSummary(null)
+      setSubscriptionError(null)
+      setSubscriptionLoading(false)
+      return
+    }
+
+    let active = true
+    setSubscriptionLoading(true)
+    setSubscriptionError(null)
+
+    void (async () => {
+      try {
+        const res = await fetch("/api/ai/billing/user/checkout-summary", { headers })
+        if (res.status === 404) {
+          if (active) setSubscriptionSummary(null)
+          return
+        }
+        const data = (await res.json().catch(() => null)) as CheckoutSummaryResponse | null
+        if (!res.ok || !data?.summary) {
+          throw new Error(data?.message || "FAILED_LOAD")
+        }
+        if (active) setSubscriptionSummary(data.summary)
+      } catch (e) {
+        console.error(e)
+        if (active) setSubscriptionError("구독 정보를 불러오지 못했습니다.")
+      } finally {
+        if (active) setSubscriptionLoading(false)
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [open, activeMenu, authHeaders])
+
   const activeLabel = useMemo(() => {
     const menu = BILLING_MENUS.find((item) => item.id === activeMenu)
     return menu?.label ?? "결제 관리"
   }, [activeMenu])
+
+  const planLabel = useMemo(() => {
+    const planName = subscriptionSummary?.plan_name?.trim()
+    if (planName) return planName
+    const tierRaw = typeof subscriptionSummary?.plan_tier === "string" ? subscriptionSummary.plan_tier.trim().toLowerCase() : ""
+    if (!tierRaw) return "-"
+    return PLAN_TIER_LABELS[tierRaw as PlanTier] || "-"
+  }, [subscriptionSummary])
+
+  const billingCycleLabel = useMemo(() => {
+    if (subscriptionSummary?.billing_cycle === "yearly") return "연간"
+    if (subscriptionSummary?.billing_cycle === "monthly") return "월간"
+    return "-"
+  }, [subscriptionSummary])
+
+  const planCycleLabel = useMemo(() => {
+    if (subscriptionLoading) return "불러오는 중"
+    if (planLabel !== "-" && billingCycleLabel !== "-") return `${planLabel} · ${billingCycleLabel}`
+    if (planLabel !== "-") return planLabel
+    if (billingCycleLabel !== "-") return billingCycleLabel
+    return "-"
+  }, [billingCycleLabel, planLabel, subscriptionLoading])
+
+  const priceLabel = useMemo(() => {
+    if (subscriptionLoading) return "불러오는 중"
+    const amount = subscriptionSummary?.total_amount
+    if (typeof amount !== "number" || !Number.isFinite(amount)) return "-"
+    const currency = normalizeCurrency(subscriptionSummary?.currency) || "USD"
+    const amountLabel = `${currencySymbol(currency)}${formatMoney(amount, currency)}`
+    const cycleUnit =
+      subscriptionSummary?.billing_cycle === "yearly" ? "년" : subscriptionSummary?.billing_cycle === "monthly" ? "월" : ""
+    return cycleUnit ? `${amountLabel} / ${cycleUnit}` : amountLabel
+  }, [subscriptionLoading, subscriptionSummary])
+
+  const nextBillingLabel = useMemo(() => {
+    if (subscriptionLoading) return "불러오는 중"
+    const value = subscriptionSummary?.next_billing_date
+    if (!value) return "-"
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) return value
+    return new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit" }).format(parsed)
+  }, [subscriptionLoading, subscriptionSummary])
 
   const loadDaumPostcode = useCallback(() => {
     if (typeof window === "undefined") return Promise.reject(new Error("no-window"))
@@ -271,12 +392,22 @@ export function BillingSettingsDialog({ open, onOpenChange, initialMenu }: Billi
                   <div className="p-4">
                     <div className="text-sm font-semibold text-foreground border-b border-border pb-2">현재 구독</div>
                     <div className="mt-3 flex items-center justify-between text-sm text-muted-foreground">
-                      <span>Premium · 연간</span>
-                      <span className="text-foreground">$600 / 년</span>
+                      <span>{planCycleLabel}</span>
+                      <span className="text-foreground">{priceLabel}</span>
                     </div>
-                    <div className="mt-2 text-xs text-muted-foreground">다음 결제일: 2026-07-29</div>
+                    <div className="flex gap-2 items-center justify-between">
+                      <div className="flex">
+                        <div className="mt-2 text-xs text-muted-foreground">다음 결제일: {nextBillingLabel}</div>
+                        {subscriptionError ? (
+                          <div className="mt-2 text-xs text-destructive">{subscriptionError}</div>
+                        ) : null}
+                      </div>
+                      <Button variant="ghost" size="xs" className="w-fit text-destructive" onClick={handleCancelSubscription}>
+                        구독 취소
+                      </Button>
+                    </div>
                   </div>
-                  <Button variant="outline" className="w-fit">
+                  <Button variant="outline" className="w-fit" onClick={handleOpenPlanDialog}>
                     요금제 변경
                   </Button>
                 </div>

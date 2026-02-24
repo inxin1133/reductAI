@@ -4,6 +4,8 @@ import { Eclipse, ImageOff } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/useTheme"
 import { isSessionExpired } from "@/lib/session"
+import { Button } from "@/components/ui/button"
+import { LoginModal } from "@/components/LoginModal"
 
 type HeaderProps = {
   className?: string
@@ -14,6 +16,7 @@ const PROFILE_IMAGE_CACHE_KEY = "reductai.user.profile_image_url.v1"
 export function Header({ className }: HeaderProps) {
   const navigate = useNavigate()
   const { toggleTheme } = useTheme()
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false)
   const profileImageUrl = useMemo(() => {
     if (typeof window === "undefined") return null
     try {
@@ -56,6 +59,21 @@ export function Header({ className }: HeaderProps) {
     navigate(isSessionExpired() ? "/" : "/front-ai")
   }
 
+  const authState = useMemo(() => {
+    if (typeof window === "undefined") {
+      return { isLoggedIn: false }
+    }
+    const token = String(localStorage.getItem("token") || "").trim()
+    const expiresAt = Number(localStorage.getItem("token_expires_at") || 0)
+    const email = String(localStorage.getItem("user_email") || "").trim()
+    const userId = String(localStorage.getItem("user_id") || "").trim()
+    const expired = !token || !expiresAt || Date.now() > expiresAt
+    const isLoggedIn = !expired && !!email && !!userId
+    return { isLoggedIn }
+  }, [])
+
+  const showLoginButton = !authState.isLoggedIn
+
   return (
     <header className={cn("flex h-[60px] items-center justify-between px-6", className)}>
       <button
@@ -67,35 +85,41 @@ export function Header({ className }: HeaderProps) {
         <span className="text-lg font-black">reduct</span>
       </button>
       <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2">
-          <div className="size-8 rounded-md flex items-center justify-center shrink-0 overflow-hidden bg-muted">
-            {profileImageSrc && !isProfileImageBroken ? (
-              <img
-                src={profileImageSrc}
-                alt="프로필 이미지"
-                className="size-8 object-cover"
-                onError={() => setIsProfileImageBroken(true)}
-              />
-            ) : profileImageSrc && isProfileImageBroken ? (
-              <ImageOff className="size-4 text-muted-foreground" />
-            ) : (
-              <span className="text-xs font-semibold text-foreground">{profile.initial}</span>
-            )}
+        {showLoginButton ? (
+          <Button variant="ghost" onClick={() => setIsLoginModalOpen(true)}>
+            로그인 및 회원가입
+          </Button>
+        ) : (
+          <div className="flex items-center gap-2">
+            <div className="size-8 rounded-md flex items-center justify-center shrink-0 overflow-hidden bg-muted">
+              {profileImageSrc && !isProfileImageBroken ? (
+                <img
+                  src={profileImageSrc}
+                  alt="프로필 이미지"
+                  className="size-8 object-cover"
+                  onError={() => setIsProfileImageBroken(true)}
+                />
+              ) : profileImageSrc && isProfileImageBroken ? (
+                <ImageOff className="size-4 text-muted-foreground" />
+              ) : (
+                <span className="text-xs font-semibold text-foreground">{profile.initial}</span>
+              )}
+            </div>
+            <div className="flex flex-col text-right">
+              <span className="text-sm font-semibold text-foreground">{profile.name}</span>            
+            </div>
           </div>
-          <div className="flex flex-col text-right">
-            <span className="text-sm font-semibold text-foreground">{profile.name}</span>            
-          </div>
-        </div>
-        <button
-          type="button"
-          className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        )}
+        <Button
+          variant="ghost" size="icon"
           onClick={toggleTheme}
           aria-label="테마 전환"
         >
           <Eclipse className="size-4 text-foreground" />
-        </button>
+        </Button>
 
       </div>
+      <LoginModal open={isLoginModalOpen} onOpenChange={setIsLoginModalOpen} />
     </header>
   )
 }

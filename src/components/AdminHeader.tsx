@@ -60,11 +60,11 @@ export function AdminHeader({ className, title, children }: AdminHeaderProps) {
         {children}
         <Button         
          variant="ghost"
-         className="size-8 shrink-0 hover:bg-accent"
+         size="icon"
          onClick={toggleTheme}
          aria-label="Toggle theme"
        >
-         <Eclipse className="size-4 text-foreground" />
+         <Eclipse className="size-4" />
        </Button>
       </div>
     </div>

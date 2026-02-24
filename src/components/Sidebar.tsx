@@ -1363,6 +1363,7 @@ export function Sidebar({ className }: SidebarProps) {
     <BillingSettingsDialog
       open={isBillingSettingsDialogOpen}
       onOpenChange={setIsBillingSettingsDialogOpen}
+      onOpenPlanDialog={openPlanDialog}
     />
   )
   const planDialog = (

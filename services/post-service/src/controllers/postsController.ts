@@ -963,6 +963,7 @@ export async function listTenantMemberships(req: Request, res: Response) {
       ) mc ON mc.tenant_id = t.id
       WHERE utr.user_id = $1
         AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+        AND COALESCE(utr.membership_status, 'active') <> 'inactive'
       ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC, utr.granted_at ASC
       `,
       [userId]

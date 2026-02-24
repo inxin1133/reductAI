@@ -5,6 +5,7 @@ import { useTheme } from "@/hooks/useTheme"
 import { LoginModal } from "@/components/LoginModal"
 import { ChatInterface } from "@/components/ChatInterface"
 import { consumeSessionExpiredNotice } from "@/lib/session"
+import { Button } from "@/components/ui/button"
 import {
   Select,
   SelectContent,
@@ -21,7 +22,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
- 
+
 interface Language {
   code: string
   name: string
@@ -48,7 +49,7 @@ export default function Intro() {
           const data = await res.json();
           const activeLangs = (data || []).filter((l: Language) => l.is_active !== false);
           setLanguages(activeLangs);
-          
+
           if (activeLangs.length > 0) {
             const def = activeLangs.find((l: Language) => l.is_default)?.code || activeLangs[0].code;
             setCurrentLang(def);
@@ -127,26 +128,27 @@ export default function Intro() {
               </p>
             </div>
           </a>
-            {/* 언어 선택 컴포넌트 */}
-            <Select value={currentLang} onValueChange={setCurrentLang}>
-              <SelectTrigger className="w-[120px] h-9">
-                <SelectValue placeholder="언어 선택" />
-              </SelectTrigger>
-              <SelectContent>
-                {languages.map(lang => (
-                  <SelectItem key={lang.code} value={lang.code}>
-                    {lang.flag_emoji} {lang.native_name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            
-          <div 
-            className="overflow-clip relative shrink-0 size-[16px] flex items-center justify-center cursor-pointer"
+          {/* 언어 선택 컴포넌트 */}
+          <Select value={currentLang} onValueChange={setCurrentLang}>
+            <SelectTrigger className="w-[120px] h-9">
+              <SelectValue placeholder="언어 선택" />
+            </SelectTrigger>
+            <SelectContent>
+              {languages.map(lang => (
+                <SelectItem key={lang.code} value={lang.code}>
+                  {lang.flag_emoji} {lang.native_name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Button
+            variant="ghost" size="icon"
             onClick={toggleTheme}
+            aria-label="테마 전환"
           >
-            <Eclipse className="size-full text-foreground" />
-          </div>
+            <Eclipse className="size-4" />
+          </Button>
         </div>
 
         {/* Main Content */}

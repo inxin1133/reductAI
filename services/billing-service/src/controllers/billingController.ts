@@ -24,6 +24,57 @@ function toBool(v: unknown): boolean | null {
   return null
 }
 
+const MS_PER_DAY = 1000 * 60 * 60 * 24
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}
+
+function safeNumber(value: unknown, fallback = 0) {
+  const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN
+  return Number.isFinite(n) ? n : fallback
+}
+
+function endOfMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999)
+}
+
+function startOfMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0)
+}
+
+function nextMonthStart(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 1, 0, 0, 0, 0)
+}
+
+function diffDaysCeil(start: Date, end: Date) {
+  const diff = end.getTime() - start.getTime()
+  return Math.max(0, Math.ceil(diff / MS_PER_DAY))
+}
+
+function countUsedMonths(start: Date, end: Date) {
+  if (end < start) return 0
+  return (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth()) + 1
+}
+
+function countRemainingFullMonths(startNextMonth: Date, periodEnd: Date) {
+  const endMonthStart = startOfMonth(periodEnd)
+  if (startNextMonth >= endMonthStart) return 0
+  let count = 0
+  const cursor = new Date(startNextMonth.getTime())
+  while (cursor < endMonthStart) {
+    count += 1
+    cursor.setMonth(cursor.getMonth() + 1)
+  }
+  return count
+}
+
+function getMonthlyCredits(metadata: unknown) {
+  if (!metadata || typeof metadata !== "object") return 0
+  const raw = (metadata as Record<string, unknown>)?.monthly_credits
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : 0
+}
+
 const CURRENCY_DECIMALS: Record<string, number> = {
   USD: 2,
   EUR: 2,
@@ -187,6 +238,37 @@ async function resolveUserQuote(client: any, tenantId: string, planId: string, b
   }
 }
 
+type SafePlanQuote = {
+  currency: string
+  amount: number | null
+  tax_rate_percent: number
+}
+
+async function safeResolveUserQuote(client: any, tenantId: string, planId: string, billingCycle: string): Promise<SafePlanQuote> {
+  try {
+    const quote = await resolveUserQuote(client, tenantId, planId, billingCycle)
+    return {
+      currency: quote.currency || "USD",
+      amount: typeof quote.amount === "number" ? quote.amount : null,
+      tax_rate_percent: safeNumber(quote.tax_rate_percent, 0),
+    }
+  } catch {
+    return { currency: "USD", amount: null, tax_rate_percent: 0 }
+  }
+}
+
+function pickMonthlyPrice(monthly: SafePlanQuote, yearly: SafePlanQuote) {
+  if (typeof monthly.amount === "number") return monthly.amount
+  if (typeof yearly.amount === "number") return yearly.amount / 12
+  return 0
+}
+
+function pickYearlyPrice(yearly: SafePlanQuote, monthly: SafePlanQuote) {
+  if (typeof yearly.amount === "number") return yearly.amount
+  if (typeof monthly.amount === "number") return monthly.amount * 12
+  return 0
+}
+
 async function pickLatestTaxRate(client: any, countryCode: string) {
   const code = toStr(countryCode).toUpperCase()
   if (!code) return null
@@ -240,6 +322,272 @@ function makeInvoiceNumber(prefix = "SVP") {
   const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`
   const rand = Math.random().toString(36).slice(2, 6).toUpperCase()
   return `${prefix}-${stamp}-${rand}`
+}
+
+async function loadCurrentSubscription(client: any, tenantId: string) {
+  const res = await client.query(
+    `
+    SELECT
+      s.*,
+      b.name AS plan_name,
+      b.tier AS plan_tier,
+      b.sort_order AS plan_sort_order,
+      b.tenant_type AS plan_tenant_type,
+      b.metadata AS plan_metadata
+    FROM billing_subscriptions s
+    JOIN billing_plans b ON b.id = s.plan_id
+    WHERE s.tenant_id = $1 AND s.status <> 'cancelled'
+    ORDER BY s.created_at DESC
+    LIMIT 1
+    `,
+    [tenantId]
+  )
+  return res.rows[0] || null
+}
+
+async function loadPlan(client: any, planId: string) {
+  const res = await client.query(
+    `
+    SELECT id, name, tier, sort_order, tenant_type, metadata
+    FROM billing_plans
+    WHERE id = $1
+    `,
+    [planId]
+  )
+  return res.rows[0] || null
+}
+
+async function ensureBillingAccount(client: any, tenantId: string, currency: string, userId?: string | null) {
+  const res = await client.query(`SELECT id FROM billing_accounts WHERE tenant_id = $1`, [tenantId])
+  let billingAccountId = res.rows[0]?.id
+  if (!billingAccountId) {
+    const createRes = await client.query(
+      `
+      INSERT INTO billing_accounts (tenant_id, currency, metadata)
+      VALUES ($1,$2,$3::jsonb)
+      RETURNING id
+      `,
+      [tenantId, currency, JSON.stringify({ source: "user_subscription_change", created_by: userId || null })]
+    )
+    billingAccountId = createRes.rows[0]?.id
+  }
+  return billingAccountId || null
+}
+
+async function insertPaymentTransaction(
+  client: any,
+  params: {
+    billing_account_id: string
+    amount: number
+    currency: string
+    transaction_type: "charge" | "refund" | "adjustment"
+    status?: "pending" | "succeeded" | "failed" | "refunded" | "cancelled"
+    provider?: string
+    metadata?: Record<string, unknown> | null
+    processed_at?: string | null
+  }
+) {
+  const status = params.status || (params.transaction_type === "refund" ? "refunded" : "succeeded")
+  const provider = params.provider || "toss"
+  const processedAt = params.processed_at || new Date().toISOString()
+  const result = await client.query(
+    `
+    INSERT INTO payment_transactions
+      (billing_account_id, provider, transaction_type, status, amount_usd, currency, processed_at, provider_transaction_id, metadata)
+    VALUES
+      ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+    RETURNING *
+    `,
+    [
+      params.billing_account_id,
+      provider,
+      params.transaction_type,
+      status,
+      params.amount,
+      params.currency,
+      processedAt,
+      makeInvoiceNumber(params.transaction_type === "refund" ? "USR-RF" : "USR-TX"),
+      JSON.stringify(params.metadata || {}),
+    ]
+  )
+  return result.rows[0] || null
+}
+
+function addBillingCycle(date: Date, billingCycle: string) {
+  const d = new Date(date.getTime())
+  if (billingCycle === "yearly") {
+    d.setFullYear(d.getFullYear() + 1)
+  } else {
+    d.setMonth(d.getMonth() + 1)
+  }
+  return d
+}
+
+async function buildSubscriptionChangeQuote(
+  client: any,
+  tenantId: string,
+  action: "change" | "cancel",
+  targetPlanId?: string,
+  targetBillingCycle?: string
+) {
+  const current = await loadCurrentSubscription(client, tenantId)
+  if (!current) throw quoteError(404, "Active subscription not found")
+
+  const now = new Date()
+  const currentPeriodStart = new Date(current.current_period_start)
+  const currentPeriodEnd = new Date(current.current_period_end)
+  const currentCycle = String(current.billing_cycle || "monthly")
+
+  const currentMonthlyQuote = await safeResolveUserQuote(client, tenantId, current.plan_id, "monthly")
+  const currentYearlyQuote = await safeResolveUserQuote(client, tenantId, current.plan_id, "yearly")
+  const currentMonthlyPrice = pickMonthlyPrice(currentMonthlyQuote, currentYearlyQuote)
+  const currentYearlyPrice = pickYearlyPrice(currentYearlyQuote, currentMonthlyQuote)
+  const currentCredits = getMonthlyCredits(current.plan_metadata)
+
+  let targetPlan: any | null = null
+  let targetCycle = currentCycle
+  if (action === "change") {
+    if (!targetPlanId) throw quoteError(400, "target_plan_id is required")
+    if (!targetBillingCycle) throw quoteError(400, "target_billing_cycle is required")
+    targetCycle = String(targetBillingCycle)
+    if (!BILLING_CYCLES.has(targetCycle)) throw quoteError(400, "invalid target_billing_cycle")
+    targetPlan = await loadPlan(client, targetPlanId)
+    if (!targetPlan) throw quoteError(404, "target plan not found")
+    if (String(targetPlan.id) === String(current.plan_id) && targetCycle === currentCycle) {
+      throw quoteError(400, "no changes requested")
+    }
+  }
+
+  const targetMonthlyQuote =
+    action === "change" && targetPlan ? await safeResolveUserQuote(client, tenantId, targetPlan.id, "monthly") : currentMonthlyQuote
+  const targetYearlyQuote =
+    action === "change" && targetPlan ? await safeResolveUserQuote(client, tenantId, targetPlan.id, "yearly") : currentYearlyQuote
+
+  const targetMonthlyPrice = pickMonthlyPrice(targetMonthlyQuote, targetYearlyQuote)
+  const targetYearlyPrice = pickYearlyPrice(targetYearlyQuote, targetMonthlyQuote)
+  const targetCredits = getMonthlyCredits(targetPlan?.metadata ?? null)
+
+  const currency =
+    (action === "change" && targetPlan ? targetMonthlyQuote.currency : currentMonthlyQuote.currency) ||
+    normalizeCurrency(current.currency) ||
+    "USD"
+  const taxRatePercent = safeNumber(
+    (action === "change" && targetPlan ? targetMonthlyQuote.tax_rate_percent : currentMonthlyQuote.tax_rate_percent) || 0,
+    0
+  )
+
+  const paidAmount = safeNumber(
+    current.price_usd,
+    currentCycle === "yearly" ? currentYearlyPrice : currentMonthlyPrice
+  )
+
+  const planOrderCurrent = safeNumber(current.plan_sort_order, 0)
+  const planOrderTarget = safeNumber(targetPlan?.sort_order, planOrderCurrent)
+  const isUpgrade = action === "change" ? planOrderTarget > planOrderCurrent : false
+
+  let changeType = action === "cancel" ? "cancel" : "change"
+  if (action === "change") {
+    if (currentCycle === "monthly" && targetCycle === "monthly") {
+      changeType = isUpgrade ? "monthly_upgrade" : "monthly_downgrade"
+    } else if (currentCycle === "monthly" && targetCycle === "yearly") {
+      changeType = "monthly_to_yearly"
+    } else if (currentCycle === "yearly" && targetCycle === "yearly") {
+      changeType = isUpgrade ? "annual_upgrade" : "annual_downgrade"
+    } else if (currentCycle === "yearly" && targetCycle === "monthly") {
+      changeType = "annual_downgrade"
+    }
+  }
+
+  let chargeAmount = 0
+  let refundAmount = 0
+  let creditDelta = 0
+  let schedule = false
+  let effectiveAt = now.toISOString()
+  let nextBillingDate = currentPeriodEnd.toISOString()
+
+  if (action === "cancel") {
+    schedule = true
+    if (currentCycle === "yearly") {
+      const usedMonths = countUsedMonths(currentPeriodStart, now)
+      refundAmount = Math.max(0, paidAmount - currentMonthlyPrice * usedMonths)
+      effectiveAt = endOfMonth(now).toISOString()
+    } else {
+      effectiveAt = currentPeriodEnd.toISOString()
+    }
+  } else if (changeType === "monthly_upgrade") {
+    const totalDays = Math.max(1, diffDaysCeil(currentPeriodStart, currentPeriodEnd))
+    const remainingDays = diffDaysCeil(now, currentPeriodEnd)
+    const ratio = clampNumber(remainingDays / totalDays, 0, 1)
+    const diff = targetMonthlyPrice - currentMonthlyPrice
+    chargeAmount = Math.max(0, diff * ratio)
+    creditDelta = Math.max(0, (targetCredits - currentCredits) * ratio)
+    nextBillingDate = currentPeriodEnd.toISOString()
+  } else if (changeType === "monthly_downgrade") {
+    schedule = true
+    effectiveAt = currentPeriodEnd.toISOString()
+    nextBillingDate = currentPeriodEnd.toISOString()
+  } else if (changeType === "monthly_to_yearly") {
+    chargeAmount = targetYearlyPrice
+    nextBillingDate = addBillingCycle(now, "yearly").toISOString()
+  } else if (changeType === "annual_upgrade") {
+    const monthEnd = endOfMonth(now)
+    const remainingDays = diffDaysCeil(now, monthEnd)
+    const daysInMonth = Math.max(1, monthEnd.getDate())
+    const ratio = clampNumber(remainingDays / daysInMonth, 0, 1)
+    const remainingMonths = countRemainingFullMonths(nextMonthStart(now), currentPeriodEnd)
+    const diff = targetMonthlyPrice - currentMonthlyPrice
+    chargeAmount = Math.max(0, diff * ratio + diff * remainingMonths)
+    creditDelta = Math.max(0, (targetCredits - currentCredits) * ratio)
+    nextBillingDate = currentPeriodEnd.toISOString()
+  } else if (changeType === "annual_downgrade") {
+    const usedMonths = countUsedMonths(currentPeriodStart, now)
+    refundAmount = Math.max(0, paidAmount - currentMonthlyPrice * usedMonths)
+    chargeAmount = targetCycle === "yearly" ? targetYearlyPrice : targetMonthlyPrice
+    nextBillingDate = addBillingCycle(now, targetCycle).toISOString()
+  }
+
+  chargeAmount = roundMoney(chargeAmount, currency)
+  refundAmount = roundMoney(refundAmount, currency)
+  creditDelta = Math.max(0, Math.round(creditDelta))
+  const taxAmount =
+    chargeAmount > 0 && taxRatePercent > 0 ? roundMoney(chargeAmount * (taxRatePercent / 100), currency) : 0
+  const totalAmount = roundMoney(chargeAmount + taxAmount, currency)
+  const netAmount = roundMoney(totalAmount - refundAmount, currency)
+
+  return {
+    action,
+    change_type: changeType,
+    schedule,
+    currency,
+    tax_rate_percent: taxRatePercent,
+    charge_amount: chargeAmount,
+    tax_amount: taxAmount,
+    total_amount: totalAmount,
+    refund_amount: refundAmount,
+    net_amount: netAmount,
+    credit_delta: creditDelta,
+    effective_at: effectiveAt,
+    next_billing_date: nextBillingDate,
+    current: {
+      plan_id: current.plan_id,
+      plan_name: current.plan_name,
+      plan_tier: current.plan_tier,
+      billing_cycle: currentCycle,
+      price_monthly: roundMoney(currentMonthlyPrice, currency),
+      price_yearly: roundMoney(currentYearlyPrice, currency),
+    },
+    target: targetPlan
+      ? {
+          plan_id: targetPlan.id,
+          plan_name: targetPlan.name,
+          plan_tier: targetPlan.tier,
+          billing_cycle: targetCycle,
+          price_monthly: roundMoney(targetMonthlyPrice, currency),
+          price_yearly: roundMoney(targetYearlyPrice, currency),
+          tenant_type: targetPlan.tenant_type || null,
+        }
+      : null,
+  }
 }
 
 const PLAN_TIERS = new Set(["free", "pro", "premium", "business", "enterprise"])
@@ -3256,6 +3604,267 @@ export async function getMyTaxRate(req: Request, res: Response) {
   } catch (e: any) {
     console.error("getMyTaxRate error:", e)
     return res.status(500).json({ message: "Failed to load tax rate", details: String(e?.message || e) })
+  }
+}
+
+export async function getMySubscription(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+    const row = await loadCurrentSubscription(client, tenantId)
+    return res.json({ ok: true, row: row || null })
+  } catch (e: any) {
+    console.error("getMySubscription error:", e)
+    return res.status(500).json({ message: "Failed to load subscription", details: String(e?.message || e) })
+  } finally {
+    client.release()
+  }
+}
+
+export async function quoteMySubscriptionChange(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    const action = toStr(req.body?.action || req.query?.action) || "change"
+    const targetPlanId = toStr(req.body?.target_plan_id || req.query?.target_plan_id)
+    const targetBillingCycle = toStr(req.body?.target_billing_cycle || req.query?.target_billing_cycle)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+    if (action !== "change" && action !== "cancel") return res.status(400).json({ message: "invalid action" })
+
+    const quote = await buildSubscriptionChangeQuote(
+      client,
+      tenantId,
+      action as "change" | "cancel",
+      targetPlanId || undefined,
+      targetBillingCycle || undefined
+    )
+
+    return res.status(200).json({ ok: true, quote })
+  } catch (e: any) {
+    if (e?.status) return res.status(e.status).json({ message: e?.message || "Failed to quote change" })
+    console.error("quoteMySubscriptionChange error:", e)
+    return res.status(500).json({ message: "Failed to quote change", details: String(e?.message || e) })
+  } finally {
+    client.release()
+  }
+}
+
+export async function applyMySubscriptionChange(req: Request, res: Response) {
+  const client = await pool.connect()
+  let transactionStarted = false
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    const userId = toStr(authed.userId)
+    const action = toStr(req.body?.action) || "change"
+    const targetPlanId = toStr(req.body?.target_plan_id)
+    const targetBillingCycle = toStr(req.body?.target_billing_cycle)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+    if (action !== "change" && action !== "cancel") return res.status(400).json({ message: "invalid action" })
+
+    const quote = await buildSubscriptionChangeQuote(
+      client,
+      tenantId,
+      action as "change" | "cancel",
+      targetPlanId || undefined,
+      targetBillingCycle || undefined
+    )
+
+    const current = await loadCurrentSubscription(client, tenantId)
+    if (!current) return res.status(404).json({ message: "Active subscription not found" })
+
+    const nowIso = new Date().toISOString()
+    const billingAccountId = await ensureBillingAccount(client, tenantId, quote.currency, userId)
+    if (!billingAccountId) return res.status(500).json({ message: "Failed to resolve billing account" })
+
+    await client.query("BEGIN")
+    transactionStarted = true
+
+    const metadataBase = {
+      source: "user_subscription_change",
+      action: quote.action,
+      change_type: quote.change_type,
+      plan_id: quote.target?.plan_id ?? current.plan_id,
+      plan_name: quote.target?.plan_name ?? current.plan_name,
+      billing_cycle: quote.target?.billing_cycle ?? current.billing_cycle,
+      credit_delta: quote.credit_delta,
+      effective_at: quote.effective_at,
+    }
+
+    let subscriptionRow = current
+    let chargeTransaction: any | null = null
+    let refundTransaction: any | null = null
+
+    if (quote.action === "cancel") {
+      await client.query(
+        `
+        UPDATE billing_subscriptions
+        SET status = $1,
+            cancel_at_period_end = $2,
+            auto_renew = $3,
+            cancelled_at = $4,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $5
+        `,
+        ["scheduled_cancel", true, false, nowIso, current.id]
+      )
+
+      await client.query(
+        `
+        INSERT INTO billing_subscription_changes
+          (subscription_id, change_type, status, from_plan_id, to_plan_id, requested_by, effective_at, metadata)
+        VALUES
+          ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+        `,
+        [current.id, "cancel", "scheduled", current.plan_id, null, userId || null, quote.effective_at, JSON.stringify(metadataBase)]
+      )
+    } else if (quote.change_type === "monthly_downgrade") {
+      await client.query(
+        `
+        INSERT INTO billing_subscription_changes
+          (subscription_id, change_type, status, from_plan_id, to_plan_id, requested_by, effective_at, metadata)
+        VALUES
+          ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+        `,
+        [
+          current.id,
+          "downgrade",
+          "scheduled",
+          current.plan_id,
+          quote.target?.plan_id || null,
+          userId || null,
+          quote.effective_at,
+          JSON.stringify(metadataBase),
+        ]
+      )
+    } else {
+      const targetPlan = quote.target
+      if (!targetPlan) throw quoteError(400, "target plan is required")
+
+      const resetPeriod = quote.change_type === "annual_downgrade" || quote.change_type === "monthly_to_yearly"
+      const nextPeriodStart = nowIso
+      const nextPeriodEnd = addBillingCycle(new Date(), targetPlan.billing_cycle).toISOString()
+
+      const metadata = {
+        ...metadataBase,
+        changed_by: userId || null,
+        changed_at: nowIso,
+      }
+
+      const updateFields = [
+        targetPlan.plan_id,
+        targetPlan.billing_cycle,
+        "active",
+        resetPeriod ? nextPeriodStart : current.current_period_start,
+        resetPeriod ? nextPeriodEnd : current.current_period_end,
+        false,
+        true,
+        targetPlan.billing_cycle === "yearly" ? targetPlan.price_yearly : targetPlan.price_monthly,
+        quote.currency,
+        JSON.stringify(metadata),
+        current.id,
+      ]
+
+      await client.query(
+        `
+        UPDATE billing_subscriptions
+        SET plan_id = $1,
+            billing_cycle = $2,
+            status = $3,
+            current_period_start = $4,
+            current_period_end = $5,
+            cancel_at_period_end = $6,
+            auto_renew = $7,
+            price_usd = $8,
+            currency = $9,
+            metadata = $10::jsonb,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $11
+        RETURNING *
+        `,
+        updateFields
+      )
+
+      await client.query(
+        `
+        INSERT INTO billing_subscription_changes
+          (subscription_id, change_type, status, from_plan_id, to_plan_id, requested_by, effective_at, metadata)
+        VALUES
+          ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+        `,
+        [
+          current.id,
+          quote.change_type === "annual_downgrade" ? "downgrade" : "upgrade",
+          "applied",
+          current.plan_id,
+          targetPlan.plan_id,
+          userId || null,
+          quote.effective_at,
+          JSON.stringify(metadataBase),
+        ]
+      )
+
+      if (targetPlan.tenant_type) {
+        await client.query(
+          `
+          UPDATE tenants
+          SET tenant_type = $1,
+              metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{plan_tier}', to_jsonb($2::text), TRUE),
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = $3 AND deleted_at IS NULL
+          `,
+          [targetPlan.tenant_type, targetPlan.plan_tier || "free", tenantId]
+        )
+      }
+
+      subscriptionRow = {
+        ...subscriptionRow,
+        plan_id: targetPlan.plan_id,
+        billing_cycle: targetPlan.billing_cycle,
+        current_period_start: resetPeriod ? nextPeriodStart : current.current_period_start,
+        current_period_end: resetPeriod ? nextPeriodEnd : current.current_period_end,
+      }
+    }
+
+    if (quote.charge_amount > 0) {
+      chargeTransaction = await insertPaymentTransaction(client, {
+        billing_account_id: billingAccountId,
+        amount: quote.total_amount,
+        currency: quote.currency,
+        transaction_type: "charge",
+        metadata: metadataBase,
+      })
+    }
+    if (quote.refund_amount > 0) {
+      refundTransaction = await insertPaymentTransaction(client, {
+        billing_account_id: billingAccountId,
+        amount: quote.refund_amount,
+        currency: quote.currency,
+        transaction_type: "refund",
+        metadata: metadataBase,
+      })
+    }
+
+    await client.query("COMMIT")
+    transactionStarted = false
+
+    return res.status(200).json({
+      ok: true,
+      quote,
+      subscription: subscriptionRow,
+      charge_transaction: chargeTransaction,
+      refund_transaction: refundTransaction,
+    })
+  } catch (e: any) {
+    if (transactionStarted) await client.query("ROLLBACK")
+    if (e?.status) return res.status(e.status).json({ message: e?.message || "Failed to apply change" })
+    console.error("applyMySubscriptionChange error:", e)
+    return res.status(500).json({ message: "Failed to apply change", details: String(e?.message || e) })
+  } finally {
+    client.release()
   }
 }
 
