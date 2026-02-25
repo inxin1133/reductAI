@@ -30,6 +30,7 @@ import {
 import { cn } from "@/lib/utils"
 import { handleSessionExpired, isSessionExpired, resetSessionExpiredGuard } from "@/lib/session"
 import { type PlanTier, PLAN_TIER_LABELS, PLAN_TIER_ORDER, PLAN_TIER_STYLES } from "@/lib/planTier"
+import { getActiveTenantId, setActiveTenantId, withActiveTenantHeader } from "@/lib/tenantContext"
 import React, { useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -63,6 +64,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
+import { Button } from "@/components/ui/button"
 import { useTheme } from "@/hooks/useTheme"
 import { IconReduct } from "@/components/icons/IconReduct"
 import { LogoGoogle } from "@/components/icons/LogoGoogle"
@@ -105,6 +107,24 @@ type Language = {
   is_active?: boolean
 }
 
+type TenantInvitationRow = {
+  id: string
+  tenant_id: string
+  tenant_name?: string | null
+  tenant_type?: string | null
+  inviter_name?: string | null
+  inviter_email?: string | null
+  membership_role?: string | null
+  expires_at?: string | null
+}
+
+const INVITATION_ROLE_LABELS: Record<string, string> = {
+  owner: "소유자",
+  admin: "관리자",
+  member: "멤버",
+  viewer: "뷰어",
+}
+
 function normalizePlanTier(value: unknown): PlanTier | null {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
   if (!raw) return null
@@ -115,6 +135,15 @@ function normalizePlanTier(value: unknown): PlanTier | null {
 function pickHighestTier(tiers: PlanTier[]): PlanTier {
   if (!tiers.length) return "free"
   return tiers.reduce((best, tier) => (PLAN_TIER_ORDER.indexOf(tier) > PLAN_TIER_ORDER.indexOf(best) ? tier : best), "free")
+}
+
+function formatDateShort(value?: string | null) {
+  if (!value) return "-"
+  try {
+    return new Date(value).toLocaleDateString()
+  } catch {
+    return "-"
+  }
 }
 
 export function Sidebar({ className }: SidebarProps) {
@@ -214,11 +243,15 @@ export function Sidebar({ className }: SidebarProps) {
   const [personalCatsLoading, setPersonalCatsLoading] = useState(false)
 
   type TeamCategory = { id: string; name: string; icon?: string | null; display_order?: number }
-  const TEAM_CATS_CACHE_KEY = "reductai:sidebar:teamCategories:v1"
+  const TEAM_CATS_CACHE_PREFIX = "reductai:sidebar:teamCategories:v2"
+  const buildTeamCatsCacheKey = (tenantId?: string) => {
+    const id = String(tenantId || "").trim()
+    return id ? `${TEAM_CATS_CACHE_PREFIX}:${id}` : TEAM_CATS_CACHE_PREFIX
+  }
   const [teamCategories, setTeamCategories] = useState<TeamCategory[]>(() => {
     try {
       if (typeof window === "undefined") return []
-      const raw = window.localStorage.getItem(TEAM_CATS_CACHE_KEY)
+      const raw = window.localStorage.getItem(buildTeamCatsCacheKey(getActiveTenantId()))
       const j = raw ? JSON.parse(raw) : null
       return Array.isArray(j) ? (j as TeamCategory[]) : []
     } catch {
@@ -236,16 +269,6 @@ export function Sidebar({ className }: SidebarProps) {
       return ""
     }
   }) // personal | team | group (or empty while loading)
-  const [tenantId, setTenantId] = useState<string>(() => {
-    try {
-      const raw = window.localStorage.getItem(TENANT_INFO_CACHE_KEY)
-      const j = raw ? JSON.parse(raw) : null
-      const id = typeof j?.id === "string" ? String(j.id) : ""
-      return id
-    } catch {
-      return ""
-    }
-  })
   const [tenantPlanTier, setTenantPlanTier] = useState<string>(() => {
     try {
       if (typeof window === "undefined") return ""
@@ -279,6 +302,13 @@ export function Sidebar({ className }: SidebarProps) {
       plan_tier?: string | null
     }>
   >([])
+  const [activeTeamTenantId, setActiveTeamTenantId] = useState<string>(() => getActiveTenantId())
+  const teamCatsCacheKey = useMemo(() => buildTeamCatsCacheKey(activeTeamTenantId), [activeTeamTenantId])
+  const [pendingInvitations, setPendingInvitations] = useState<TenantInvitationRow[]>([])
+  const [inviteLoading, setInviteLoading] = useState(false)
+  const [inviteError, setInviteError] = useState<string | null>(null)
+  const [isInviteDialogOpen, setIsInviteDialogOpen] = useState(false)
+  const [inviteActionLoadingId, setInviteActionLoadingId] = useState<string | null>(null)
   const PROFILE_IMAGE_CACHE_KEY = "reductai.user.profile_image_url.v1"
   const [profileImageUrl, setProfileImageUrl] = useState<string | null>(() => {
     if (typeof window === "undefined") return null
@@ -296,22 +326,37 @@ export function Sidebar({ className }: SidebarProps) {
   const [currentLang, setCurrentLang] = useState("")
   const LANGUAGE_STORAGE_KEY = "reductai.language.v1"
 
-  const tenantPageLabel = useMemo(() => {
-    const name = String(tenantName || "").trim()
-    if (name) return `${name} 페이지`
-    if (tenantType === "group") return "그룹 페이지"
-    return "팀 페이지"
-  }, [tenantName, tenantType])
+  const teamTenants = useMemo(() => {
+    return tenantMemberships.filter((t) => {
+      const type = String(t.tenant_type || "").toLowerCase()
+      return type === "team" || type === "group"
+    })
+  }, [tenantMemberships])
 
-  const canManageTenant = useMemo(() => {
-    if (tenantType === "personal") return false
-    if (!tenantId) return false
-    const roleSlug = String(
-      tenantMemberships.find((t) => String(t.id) === String(tenantId))?.role_slug || ""
-    ).toLowerCase()
+  const activeTeamTenant = useMemo(() => {
+    if (!teamTenants.length) return null
+    const matched = teamTenants.find((t) => String(t.id) === String(activeTeamTenantId))
+    return matched || teamTenants[0] || null
+  }, [activeTeamTenantId, teamTenants])
+
+  const hasTeamTenant = Boolean(activeTeamTenant)
+
+  const teamPageLabel = useMemo(() => {
+    if (!activeTeamTenant) return "팀 페이지"
+    const name = String(activeTeamTenant.name || "").trim()
+    if (name) return `${name} 페이지`
+    if (String(activeTeamTenant.tenant_type || "") === "group") return "그룹 페이지"
+    return "팀 페이지"
+  }, [activeTeamTenant])
+
+  const pendingInviteCount = pendingInvitations.length
+
+  const canManageTeamTenant = useMemo(() => {
+    if (!activeTeamTenant) return false
+    const roleSlug = String(activeTeamTenant.role_slug || "").toLowerCase()
     const elevated = new Set(["owner", "admin", "tenant_admin", "tenant_owner"])
     return elevated.has(roleSlug)
-  }, [tenantId, tenantMemberships, tenantType])
+  }, [activeTeamTenant])
 
   const resolveTenantLabel = (t: { name?: string | null; tenant_type?: string | null }) => {
     if (String(t.tenant_type || "") === "personal") return "개인"
@@ -349,6 +394,36 @@ const profileBadges = useMemo(() => {
     },
   ]
 }, [tenantMemberships, tenantName, tenantPlanTier, tenantType])
+
+  useEffect(() => {
+    if (!teamTenants.length) {
+      if (activeTeamTenantId) {
+        setActiveTeamTenantId("")
+        setActiveTenantId("")
+      }
+      return
+    }
+    const matched = teamTenants.find((t) => String(t.id) === String(activeTeamTenantId))
+    const nextId = matched?.id ? String(matched.id) : String(teamTenants[0]?.id || "")
+    if (nextId && nextId !== activeTeamTenantId) {
+      setActiveTeamTenantId(nextId)
+      setActiveTenantId(nextId)
+    }
+  }, [activeTeamTenantId, teamTenants])
+
+  useEffect(() => {
+    if (!activeTeamTenantId) {
+      setTeamCategories([])
+      return
+    }
+    try {
+      const raw = window.localStorage.getItem(teamCatsCacheKey)
+      const j = raw ? JSON.parse(raw) : null
+      setTeamCategories(Array.isArray(j) ? (j as TeamCategory[]) : [])
+    } catch {
+      setTeamCategories([])
+    }
+  }, [activeTeamTenantId, teamCatsCacheKey])
 
   useEffect(() => {
     const fetchLanguages = async () => {
@@ -496,7 +571,7 @@ const profileBadges = useMemo(() => {
           })
         if (changed) {
           try {
-            window.localStorage.setItem(TEAM_CATS_CACHE_KEY, JSON.stringify(next))
+            window.localStorage.setItem(teamCatsCacheKey, JSON.stringify(next))
           } catch {
             // ignore
           }
@@ -508,7 +583,7 @@ const profileBadges = useMemo(() => {
 
     window.addEventListener("reductai:categoryUpdated", onUpdated as EventListener)
     return () => window.removeEventListener("reductai:categoryUpdated", onUpdated as EventListener)
-  }, [PERSONAL_CATS_CACHE_KEY, TEAM_CATS_CACHE_KEY])
+  }, [PERSONAL_CATS_CACHE_KEY, teamCatsCacheKey])
 
   // Reset picker UI when closing / switching
   useEffect(() => {
@@ -580,8 +655,8 @@ const profileBadges = useMemo(() => {
   }, [LUCIDE_PRESET_MAP, catLucideAll, catLucideLoading, personalCategories, teamCategories])
 
   const saveCategoryIcon = async (args: { type: "personal" | "team"; id: string; choice: IconChoice | null }) => {
-    const h = authHeaders()
-    if (!h.Authorization) return
+    const h = args.type === "team" ? teamHeaders() : authHeaders()
+    if (!h || !h.Authorization) return
     const nextIcon = encodeIcon(args.choice)
     emitCategoryUpdated({ id: String(args.id), icon: nextIcon })
 
@@ -599,7 +674,7 @@ const profileBadges = useMemo(() => {
       setTeamCategories((prev) => {
         const next = prev.map((c) => (c.id === args.id ? { ...c, icon: nextIcon } : c))
         try {
-          window.localStorage.setItem(TEAM_CATS_CACHE_KEY, JSON.stringify(next))
+          window.localStorage.setItem(teamCatsCacheKey, JSON.stringify(next))
         } catch {
           // ignore
         }
@@ -801,6 +876,79 @@ const profileBadges = useMemo(() => {
     return headers
   }
 
+  const teamHeaders = () => {
+    const h = authHeaders()
+    if (!h.Authorization) return null
+    if (!activeTeamTenantId) return null
+    return withActiveTenantHeader(h, activeTeamTenantId)
+  }
+
+  const loadPendingInvitations = async () => {
+    const h = authHeaders()
+    if (!h.Authorization) {
+      setPendingInvitations([])
+      setInviteError(null)
+      return
+    }
+    setInviteLoading(true)
+    setInviteError(null)
+    try {
+      const r = await fetch("/api/posts/user/invitations?status=pending", { headers: h }).catch(() => null)
+      if (!r || !r.ok) {
+        const msg = r ? await r.text().catch(() => "") : ""
+        setInviteError(msg || "초대 정보를 불러오지 못했습니다.")
+        setPendingInvitations([])
+        return
+      }
+      const j = (await r.json().catch(() => null)) as { ok?: boolean; rows?: TenantInvitationRow[]; message?: string } | null
+      if (!j?.ok) {
+        setInviteError(j?.message || "초대 정보를 불러오지 못했습니다.")
+        setPendingInvitations([])
+        return
+      }
+      setPendingInvitations(Array.isArray(j.rows) ? j.rows : [])
+    } catch (e) {
+      console.error(e)
+      setInviteError("초대 정보를 불러오지 못했습니다.")
+      setPendingInvitations([])
+    } finally {
+      setInviteLoading(false)
+    }
+  }
+
+  const handleInvitationAction = async (id: string, action: "accept" | "reject") => {
+    const h = authHeaders()
+    if (!h.Authorization) {
+      alert("로그인이 필요합니다.")
+      return
+    }
+    const target = pendingInvitations.find((row) => row.id === id) || null
+    setInviteActionLoadingId(id)
+    try {
+      const r = await fetch(`/api/posts/user/invitations/${encodeURIComponent(id)}/${action}`, {
+        method: "POST",
+        headers: h,
+      }).catch(() => null)
+      if (!r || !r.ok) {
+        const msg = r ? await r.text().catch(() => "") : ""
+        alert(msg || "초대 처리에 실패했습니다.")
+        return
+      }
+      if (action === "accept") {
+        const nextTenantId = String(target?.tenant_id || "").trim()
+        if (nextTenantId) {
+          setActiveTeamTenantId(nextTenantId)
+          setActiveTenantId(nextTenantId)
+          setIsTeamOpen(true)
+        }
+        await loadTenantMemberships()
+      }
+      await loadPendingInvitations()
+    } finally {
+      setInviteActionLoadingId(null)
+    }
+  }
+
   const loadPersonalCategories = async () => {
     const h = authHeaders()
     if (!h.Authorization) {
@@ -840,6 +988,10 @@ const profileBadges = useMemo(() => {
   const [createCategoryBusy, setCreateCategoryBusy] = useState(false)
 
   const openCreateCategoryDialog = (type: "personal" | "team") => {
+    if (type === "team" && !activeTeamTenantId) {
+      alert("팀/그룹 테넌트를 선택해 주세요.")
+      return
+    }
     setCreateCategoryType(type)
     setCreateCategoryName("")
     setCreateCategoryIconChoice(null)
@@ -886,8 +1038,8 @@ const profileBadges = useMemo(() => {
   }, [createCategoryOpen])
 
   const performCreateCategory = async (args: { type: "personal" | "team"; name: string; icon: IconChoice }) => {
-    const h = authHeaders()
-    if (!h.Authorization) {
+    const h = args.type === "team" ? teamHeaders() : authHeaders()
+    if (!h || !h.Authorization) {
       alert("로그인이 필요합니다.")
       return
     }
@@ -936,12 +1088,12 @@ const profileBadges = useMemo(() => {
     if (!isMobile) return
     if (!isMobileMenuOpen) return
     if (isPersonalOpen) void loadPersonalCategories()
-    if (isTeamOpen && tenantType !== "personal") {
+    if (isTeamOpen && hasTeamTenant) {
       void loadTenantName()
       void loadTeamCategories()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMobile, isMobileMenuOpen, isPersonalOpen, isTeamOpen, tenantType])
+  }, [isMobile, isMobileMenuOpen, isPersonalOpen, isTeamOpen, hasTeamTenant, activeTeamTenantId])
 
   const loadTenantName = async () => {
     const h = authHeaders()
@@ -953,7 +1105,6 @@ const profileBadges = useMemo(() => {
     const type = typeof j.tenant_type === "string" ? String(j.tenant_type) : ""
     const name = typeof j.name === "string" ? String(j.name).trim() : ""
     const planTier = typeof j.plan_tier === "string" ? String(j.plan_tier).trim() : ""
-    if (id) setTenantId(id)
     if (type) setTenantType(type)
     if (name) setTenantName(name)
     if (planTier) setTenantPlanTier(planTier)
@@ -1050,8 +1201,14 @@ const profileBadges = useMemo(() => {
   useEffect(() => {
     void loadUserProfile()
     void loadUserProviders()
+    void loadPendingInvitations()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+  useEffect(() => {
+    if (!isInviteDialogOpen) return
+    void loadPendingInvitations()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isInviteDialogOpen])
 
   const goToTopCategory = async (kind: "personal" | "team") => {
     const list = kind === "personal" ? personalCategories : teamCategories
@@ -1061,8 +1218,8 @@ const profileBadges = useMemo(() => {
       return
     }
 
-    const h = authHeaders()
-    if (!h.Authorization) return
+    const h = kind === "team" ? teamHeaders() : authHeaders()
+    if (!h || !h.Authorization) return
     const url = kind === "personal" ? "/api/posts/categories/mine" : "/api/posts/categories/mine?type=team_page"
     const r = await fetch(url, { headers: h }).catch(() => null)
     if (!r || !r.ok) return
@@ -1074,8 +1231,8 @@ const profileBadges = useMemo(() => {
   }
 
   const loadTeamCategories = async () => {
-    const h = authHeaders()
-    if (!h.Authorization) return
+    const h = teamHeaders()
+    if (!h || !h.Authorization) return
     setTeamCatsLoading(true)
     try {
       const r = await fetch("/api/posts/categories/mine?type=team_page", { headers: h })
@@ -1084,7 +1241,7 @@ const profileBadges = useMemo(() => {
       const arr = Array.isArray(j) ? (j as TeamCategory[]) : []
       setTeamCategories(arr)
       try {
-        window.localStorage.setItem(TEAM_CATS_CACHE_KEY, JSON.stringify(arr))
+        window.localStorage.setItem(teamCatsCacheKey, JSON.stringify(arr))
       } catch {
         // ignore
       }
@@ -1299,14 +1456,15 @@ const profileBadges = useMemo(() => {
   useEffect(() => {
     if (!isOpen) return
     if (!isTeamOpen) return
+    if (!hasTeamTenant) return
     void loadTenantName()
     void loadTeamCategories()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, isTeamOpen])
+  }, [isOpen, isTeamOpen, hasTeamTenant, activeTeamTenantId])
 
   const renameCategory = async (args: { type: "personal" | "team"; id: string; name: string }) => {
-    const h = authHeaders()
-    if (!h.Authorization) return
+    const h = args.type === "team" ? teamHeaders() : authHeaders()
+    if (!h || !h.Authorization) return
     const next = String(args.name || "").trim()
     if (!next) return
     const r = await fetch(`/api/posts/categories/${encodeURIComponent(args.id)}`, {
@@ -1327,8 +1485,8 @@ const profileBadges = useMemo(() => {
   const [deleteCategoryBusy, setDeleteCategoryBusy] = useState(false)
 
   const performDeleteCategory = async (args: { type: "personal" | "team"; id: string }) => {
-    const h = authHeaders()
-    if (!h.Authorization) return
+    const h = args.type === "team" ? teamHeaders() : authHeaders()
+    if (!h || !h.Authorization) return
     const r = await fetch(`/api/posts/categories/${encodeURIComponent(args.id)}`, { method: "DELETE", headers: h }).catch(() => null)
     if (!r) {
       alert("카테고리 삭제에 실패했습니다.")
@@ -1427,10 +1585,67 @@ const profileBadges = useMemo(() => {
   const contactDialog = (
     <ContactDialog open={isContactDialogOpen} onOpenChange={setIsContactDialogOpen} />
   )
+  const inviteDialog = (
+    <Dialog open={isInviteDialogOpen} onOpenChange={setIsInviteDialogOpen}>
+      <DialogContent className="sm:max-w-[520px]">
+        <DialogHeader>
+          <DialogTitle>테넌트 초대 요청</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          {inviteError ? (
+            <div className="text-xs text-destructive">{inviteError}</div>
+          ) : inviteLoading ? (
+            <div className="text-xs text-muted-foreground">초대 정보를 불러오는 중입니다.</div>
+          ) : pendingInvitations.length ? (
+            pendingInvitations.map((row) => {
+              const roleLabel =
+                INVITATION_ROLE_LABELS[String(row.membership_role || "").toLowerCase()] || row.membership_role || "-"
+              return (
+                <div key={row.id} className="rounded-md border border-border p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-foreground truncate">
+                        {row.tenant_name || "테넌트"}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        역할: {roleLabel} · 초대한 사람: {row.inviter_name || row.inviter_email || "-"}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        만료일: {formatDateShort(row.expires_at)}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={inviteActionLoadingId === row.id}
+                        onClick={() => handleInvitationAction(row.id, "reject")}
+                      >
+                        거절
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={inviteActionLoadingId === row.id}
+                        onClick={() => handleInvitationAction(row.id, "accept")}
+                      >
+                        승인
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )
+            })
+          ) : (
+            <div className="text-xs text-muted-foreground">현재 대기 중인 초대가 없습니다.</div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
 
   const reorder = async (args: { type: "personal" | "team"; orderedIds: string[] }) => {
-    const h = authHeaders()
-    if (!h.Authorization) return
+    const h = args.type === "team" ? teamHeaders() : authHeaders()
+    if (!h || !h.Authorization) return
     const type = args.type === "team" ? "team_page" : "personal_page"
     await fetch("/api/posts/categories/reorder", {
       method: "POST",
@@ -1472,16 +1687,16 @@ const profileBadges = useMemo(() => {
   }
 
   const openTenantSettingsDialog = () => {
-    if (!canManageTenant) return
+    if (!canManageTeamTenant) return
     setIsTenantSettingsDialogOpen(true)
     setIsProfileOpen(false)
     setIsMobileProfileOpen(false)
   }
 
   useEffect(() => {
-    if (canManageTenant) return
+    if (canManageTeamTenant) return
     if (isTenantSettingsDialogOpen) setIsTenantSettingsDialogOpen(false)
-  }, [canManageTenant, isTenantSettingsDialogOpen])
+  }, [canManageTeamTenant, isTenantSettingsDialogOpen])
 
   // Profile Popover Content (Shared) - 프로필 팝오버 콘텐츠 (공유)
   const ProfilePopoverContent = () => (
@@ -1770,6 +1985,21 @@ const profileBadges = useMemo(() => {
               <div className="size-5 flex items-center justify-center"><Save className="size-full" /></div>
               <span className="text-base text-foreground">생성 파일</span>
             </div>
+            {pendingInviteCount > 0 ? (
+              <div
+                className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                onClick={() => {
+                  setIsMobileMenuOpen(false)
+                  setIsInviteDialogOpen(true)
+                }}
+              >
+                <div className="size-5 flex items-center justify-center"><Mail className="size-full" /></div>
+                <span className="text-base text-foreground flex-1">테넌트 초대 요청</span>
+                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
+                  {pendingInviteCount}
+                </span>
+              </div>
+            ) : null}
           </div>
 
           {/* 개인 페이지 */}
@@ -1846,17 +2076,17 @@ const profileBadges = useMemo(() => {
           </div>
 
           {/* 팀/그룹 페이지 */}
-          {tenantType && tenantType !== "personal" ? (
+          {hasTeamTenant ? (
             <div className="flex flex-col gap-1 mb-2">
               <div className="flex items-center justify-between px-2 h-8 opacity-70">
                 <span
                   className="text-sm text-foreground cursor-pointer select-none"
                   onClick={() => setIsTeamOpen(prev => !prev)}
                 >
-                  {tenantPageLabel}
+                  {teamPageLabel}
                 </span>
                 <div className="flex items-center gap-1">
-                  {canManageTenant ? (
+                  {canManageTeamTenant ? (
                     <button
                       type="button"
                       className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
@@ -1973,6 +2203,7 @@ const profileBadges = useMemo(() => {
         {planDialog}
         {tenantSettingsDialog}
         {contactDialog}
+        {inviteDialog}
       </div>
     )
   }
@@ -2086,6 +2317,26 @@ const profileBadges = useMemo(() => {
           </div>
           {isOpen && <span className="text-sm text-sidebar-foreground">생성 파일</span>}
         </div>
+        {pendingInviteCount > 0 ? (
+          <div
+            className={cn(
+              "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+              !isOpen && "justify-center",
+              "hover:bg-accent/50"
+            )}
+            onClick={() => setIsInviteDialogOpen(true)}
+          >
+            <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
+              <Mail className="size-full" />
+            </div>
+            {isOpen && <span className="text-sm text-sidebar-foreground flex-1">테넌트 초대 요청</span>}
+            {isOpen && (
+              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
+                {pendingInviteCount}
+              </span>
+            )}
+          </div>
+        ) : null}
       </div>
 
       {isOpen ? (
@@ -2476,13 +2727,13 @@ const profileBadges = useMemo(() => {
           </div>
 
           {/* Team Pages - 팀 페이지 (Team + Enterprise; exclude Personal) */}
-          {tenantType !== "personal" ? (
+          {hasTeamTenant ? (
             <div className="flex flex-col p-2 gap-1">
               <div className="flex items-center gap-2 px-2 h-8 opacity-70 cursor-pointer select-none group">
                 <span className="flex-1 text-left text-xs text-sidebar-foreground" onClick={() => setIsTeamOpen((prev) => !prev)}>
-                  {tenantPageLabel}
+                  {teamPageLabel}
                 </span>
-                {canManageTenant ? (
+                {canManageTeamTenant ? (
                   <div
                     className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
                     role="button"
@@ -2968,7 +3219,7 @@ const profileBadges = useMemo(() => {
             </HoverCardContent>
           </HoverCard>
 
-          {tenantType && tenantType !== "personal" ? (
+          {hasTeamTenant ? (
             <HoverCard
               openDelay={0}
               closeDelay={120}
@@ -2987,7 +3238,7 @@ const profileBadges = useMemo(() => {
                       ? "bg-neutral-200 dark:bg-neutral-800"
                       : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
                   )}
-                  title={tenantPageLabel}
+                  title={teamPageLabel}
                   onClick={() => {
                     void goToTopCategory("team")
                   }}
@@ -2997,9 +3248,9 @@ const profileBadges = useMemo(() => {
               </HoverCardTrigger>
               <HoverCardContent side="right" align="start" className="w-[280px] p-2">
                 <div className="flex items-center justify-between px-1 pb-2">
-                  <div className="text-sm font-semibold">{tenantPageLabel}</div>
+                  <div className="text-sm font-semibold">{teamPageLabel}</div>
                   <div className="flex items-center gap-1">
-                    {canManageTenant ? (
+                    {canManageTeamTenant ? (
                       <button
                         type="button"
                         className="size-8 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800 flex items-center justify-center"
@@ -3021,7 +3272,7 @@ const profileBadges = useMemo(() => {
                         e.preventDefault()
                         e.stopPropagation()
                         // Shared categories are allowed for team + group (exclude personal).
-                        if (tenantType === "personal") return
+                        if (!hasTeamTenant) return
                         openCreateCategoryDialog("team")
                       }}
                     >
@@ -3131,6 +3382,7 @@ const profileBadges = useMemo(() => {
       {planDialog}
       {tenantSettingsDialog}
       {contactDialog}
+      {inviteDialog}
     </div>
   )
 }

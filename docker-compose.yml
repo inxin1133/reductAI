@@ -146,7 +146,7 @@ services:
       # 라우트 추가/수정(예: /api/ai/chat)이 즉시 반영되도록 합니다.
       - ./services/ai-agent-service:/app
       - /app/node_modules
-    command: npm run dev
+    command: sh -c "npm ci --no-audit --no-fund || npm install --no-audit --no-fund; npm run dev"
     environment:
       - PORT=3007
       - POSTGRES_USER=${POSTGRES_USER}
@@ -172,7 +172,7 @@ services:
     volumes:
       - ./services/pricing-service:/app
       - /app/node_modules
-    command: npm run dev
+    command: sh -c "npm ci --no-audit --no-fund || npm install --no-audit --no-fund; npm run dev"
     environment:
       - PORT=3009
       - POSTGRES_USER=${POSTGRES_USER}
@@ -286,6 +286,15 @@ services:
       - POSTGRES_HOST=${POSTGRES_HOST}
       - POSTGRES_PORT=${POSTGRES_PORT}
       - JWT_SECRET=${JWT_SECRET}
+      - EMAIL_HOST=${EMAIL_HOST}
+      - EMAIL_PORT=${EMAIL_PORT}
+      - EMAIL_USER=${EMAIL_USER}
+      - EMAIL_PASS=${EMAIL_PASS}
+      - EMAIL_FROM=${EMAIL_FROM}
+      - EMAIL_FROM_NAME=${EMAIL_FROM_NAME}
+      - EMAIL_ENVELOPE_FROM=${EMAIL_ENVELOPE_FROM}
+      - FRONTEND_BASE_URL=${FRONTEND_BASE_URL}
+      - APP_BASE_URL=${APP_BASE_URL}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

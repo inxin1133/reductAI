@@ -25,15 +25,19 @@ import {
   getFileName,
   withAuthToken,
 } from "@/components/files/fileAssetUtils"
+import { withActiveTenantHeader } from "@/lib/tenantContext"
 
 const FILES_API_BASE = "/api/ai/media/assets"
 const PAGE_SIZE = 24
 
 type ListScope = "user" | "tenant"
 
-const authHeaders = (): HeadersInit => {
+const authHeaders = (scope?: ListScope): HeadersInit => {
   const token = localStorage.getItem("token")
-  return token ? { Authorization: `Bearer ${token}` } : {}
+  const headers: Record<string, string> = {}
+  if (token) headers.Authorization = `Bearer ${token}`
+  if (scope === "tenant") return withActiveTenantHeader(headers)
+  return headers
 }
 
 type PageAttachmentsPageProps = {
@@ -92,7 +96,7 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
         params.set("flag_scope", "page_personal")
       }
       const res = await fetch(`${FILES_API_BASE}?${params.toString()}`, {
-        headers: { ...authHeaders() },
+        headers: { ...authHeaders(scope) },
       })
       if (!res.ok) throw new Error("FILES_FETCH_FAILED")
       const json = (await res.json().catch(() => null)) as

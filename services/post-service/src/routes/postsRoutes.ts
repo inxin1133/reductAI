@@ -11,8 +11,10 @@ import {
   getCurrentUser,
   listCurrentUserProviders,
   listCurrentUserSessions,
+  listMyInvitations,
   listTenantMembers,
   listTenantMemberships,
+  listTenantInvitations,
   listDeletedPages,
   listMyPageCategories,
   listMyPages,
@@ -26,8 +28,12 @@ import {
   updatePost,
   updatePostCategory,
   updateCurrentUser,
+  updateTenantInvitation,
   updateTenantMember,
   updateTenantName,
+  acceptMyInvitation,
+  rejectMyInvitation,
+  createTenantInvitation,
 } from "../controllers/postsController"
 
 const router = express.Router()
@@ -48,8 +54,15 @@ router.delete("/user/sessions/:id", requireAuth, revokeCurrentUserSession)
 router.get("/tenant/current", requireAuth, getCurrentTenant)
 router.get("/tenant/memberships", requireAuth, listTenantMemberships)
 router.get("/tenant/members", requireAuth, listTenantMembers)
+router.get("/tenant/invitations", requireAuth, listTenantInvitations)
+router.post("/tenant/invitations", requireAuth, createTenantInvitation)
+router.put("/tenant/invitations/:id", requireAuth, updateTenantInvitation)
 router.put("/tenant/members/:id", requireAuth, updateTenantMember)
 router.patch("/tenant/:id", requireAuth, updateTenantName)
+
+router.get("/user/invitations", requireAuth, listMyInvitations)
+router.post("/user/invitations/:id/accept", requireAuth, acceptMyInvitation)
+router.post("/user/invitations/:id/reject", requireAuth, rejectMyInvitation)
 
 // Trash (deleted posts)
 router.get("/trash", requireAuth, listDeletedPages)

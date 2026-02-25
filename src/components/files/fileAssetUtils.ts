@@ -1,3 +1,5 @@
+import { getActiveTenantId } from "@/lib/tenantContext"
+
 export type FileAsset = {
   id: string
   url: string
@@ -66,7 +68,15 @@ export const withAuthToken = (url: string, extra?: Record<string, string | undef
   } catch {
     token = ""
   }
-  const merged = { ...(extra || {}), ...(token ? { token } : {}) }
+  const merged: Record<string, string> = { ...(extra || {}) } as Record<string, string>
+  const scope = String(merged.scope || "").toLowerCase()
+  const pageScope = String(merged.page_scope || "").toLowerCase()
+  const flagScope = String(merged.flag_scope || "").toLowerCase()
+  if (!merged.tenant_id && (scope === "tenant" || pageScope === "team" || flagScope === "page_team")) {
+    const tenantId = getActiveTenantId()
+    if (tenantId) merged.tenant_id = tenantId
+  }
+  if (token) merged.token = token
   return appendQueryParams(url, merged)
 }
 

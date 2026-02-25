@@ -38,6 +38,17 @@ export default function Intro() {
     const token = params.get("token")
     const error = params.get("error")
     const provider = params.get("provider")
+    const inviteEmail = params.get("invite_email")
+    const inviteToken = params.get("invite_token")
+    if (inviteEmail) {
+      try {
+        localStorage.setItem("reductai:invite:email", inviteEmail)
+        if (inviteToken) localStorage.setItem("reductai:invite:token", inviteToken)
+      } catch {
+        // ignore
+      }
+      setIsLoginModalOpen(true)
+    }
     if (error) {
       const providerLabel =
         provider === "naver" ? "네이버" : provider === "kakao" ? "카카오" : provider === "google" ? "구글" : "SSO"

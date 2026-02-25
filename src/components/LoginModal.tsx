@@ -58,6 +58,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
   const passwordInputRef = React.useRef<HTMLInputElement>(null)
   const REMEMBER_EMAIL_KEY = "reductai:login:rememberEmail"
   const REMEMBER_EMAIL_ENABLED_KEY = "reductai:login:rememberEmailEnabled"
+  const INVITE_EMAIL_KEY = "reductai:invite:email"
 
   const handleGoogleLogin = () => {
     window.location.href = `${API_URL}/google`
@@ -98,6 +99,8 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
         const saved = localStorage.getItem(REMEMBER_EMAIL_KEY) || ""
         if (saved) setEmail(saved)
       }
+      const invited = localStorage.getItem(INVITE_EMAIL_KEY) || ""
+      if (invited) setEmail(invited)
     } catch {
       // ignore
     }
@@ -372,6 +375,11 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       if (data.token) {
         localStorage.setItem('token', data.token)
       }
+      try {
+        localStorage.removeItem(INVITE_EMAIL_KEY)
+      } catch {
+        // ignore
+      }
       
       setStep('completion')
     } catch (err) {
@@ -403,6 +411,11 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
         localStorage.setItem('token', data.token)
         localStorage.setItem('token_expires_at', expiresAt.toString())
         localStorage.setItem('user_email', email)
+        try {
+          localStorage.removeItem(INVITE_EMAIL_KEY)
+        } catch {
+          // ignore
+        }
         if (data.user?.full_name) {
           localStorage.setItem('user_name', String(data.user.full_name))
         }
@@ -445,6 +458,11 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
         localStorage.setItem('token', data.token)
         localStorage.setItem('token_expires_at', expiresAt.toString())
         localStorage.setItem('user_email', email)
+        try {
+          localStorage.removeItem(INVITE_EMAIL_KEY)
+        } catch {
+          // ignore
+        }
         if (data.user?.full_name) {
           localStorage.setItem('user_name', String(data.user.full_name))
         }

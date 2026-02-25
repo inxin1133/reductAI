@@ -50,9 +50,44 @@ function parseList(raw: unknown): string[] {
     .filter(Boolean);
 }
 
+function resolveRequestedTenantId(req: AuthedRequest): string {
+  const headerRaw = req.headers?.["x-tenant-id"];
+  const header = Array.isArray(headerRaw) ? headerRaw[0] : headerRaw;
+  if (typeof header === "string" && header.trim()) return header.trim();
+  const q = (req.query || {}) as Record<string, unknown>;
+  const queryId =
+    typeof q.tenant_id === "string"
+      ? q.tenant_id
+      : typeof q.tenantId === "string"
+        ? q.tenantId
+        : "";
+  return String(queryId || "").trim();
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 async function resolveTenantId(req: AuthedRequest): Promise<{ tenantId: string; hasTenantId: boolean }> {
-  if (req.tenantId) return { tenantId: String(req.tenantId), hasTenantId: true };
+  const requested = resolveRequestedTenantId(req);
   const userId = req.userId ? String(req.userId) : "";
+  if (requested && isUuid(requested) && userId) {
+    const r = await query(
+      `
+      SELECT utr.tenant_id
+      FROM user_tenant_roles utr
+      JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+      WHERE utr.user_id = $1
+        AND utr.tenant_id = $2
+        AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+        AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+      LIMIT 1
+      `,
+      [userId, requested]
+    );
+    if (r.rows.length > 0) return { tenantId: String(r.rows[0].tenant_id), hasTenantId: true };
+  }
+  if (req.tenantId) return { tenantId: String(req.tenantId), hasTenantId: true };
   if (userId) {
     const r = await query(
       `

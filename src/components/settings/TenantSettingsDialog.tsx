@@ -4,11 +4,13 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Box, CirclePause, Coins, Database, Gauge, HardDrive, Menu, PackageOpen, ShieldCheck, UserPlus, UserRoundCheck, Users, UsersRound, X, ChevronsUp, Settings2, HandCoins, EvCharger, } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { type PlanTier, PLAN_TIER_LABELS, PLAN_TIER_ORDER, PLAN_TIER_STYLES } from "@/lib/planTier"
+import { withActiveTenantHeader } from "@/lib/tenantContext"
 
 type TenantSettingsDialogProps = {
   open: boolean
@@ -72,6 +74,19 @@ type TenantMemberRow = {
   left_at?: string | null
 }
 
+type TenantInvitationRow = {
+  id: string
+  tenant_id: string
+  invitee_email: string
+  invitee_user_id?: string | null
+  membership_role?: string | null
+  status?: string | null
+  expires_at?: string | null
+  created_at?: string | null
+  inviter_name?: string | null
+  inviter_email?: string | null
+}
+
 const TENANT_TYPE_LABELS: Record<string, string> = {
   personal: "Personal",
   team: "Team",
@@ -100,6 +115,35 @@ const MEMBERSHIP_STATUS_STYLES: Record<string, string> = {
   suspended: "text-rose-600 bg-rose-50 ring-rose-500",
   inactive: "text-slate-500 bg-slate-50 ring-slate-300",
 }
+
+const INVITATION_STATUS_LABELS: Record<string, string> = {
+  pending: "대기",
+  accepted: "수락",
+  rejected: "거절",
+  cancelled: "취소",
+  expired: "만료",
+}
+
+const INVITATION_STATUS_STYLES: Record<string, string> = {
+  pending: "text-amber-600 bg-amber-50 ring-amber-500",
+  accepted: "text-emerald-600 bg-emerald-50 ring-emerald-500",
+  rejected: "text-rose-600 bg-rose-50 ring-rose-500",
+  cancelled: "text-slate-500 bg-slate-100 ring-slate-300",
+  expired: "text-slate-400 bg-slate-50 ring-slate-200",
+}
+
+const INVITATION_ROLE_LABELS: Record<string, string> = {
+  owner: "소유자",
+  admin: "관리자",
+  member: "멤버",
+  viewer: "뷰어",
+}
+
+const INVITATION_ROLE_OPTIONS = [
+  { value: "admin", label: "관리자" },
+  { value: "member", label: "멤버" },
+  { value: "viewer", label: "뷰어" },
+] as const
 
 const ROLE_OPTIONS = [
   { value: "owner", label: "소유자" },
@@ -244,6 +288,15 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
   const [memberDialogStatus, setMemberDialogStatus] = useState("active")
   const [memberSaving, setMemberSaving] = useState(false)
   const [memberActionError, setMemberActionError] = useState<string | null>(null)
+  const [tenantInvitations, setTenantInvitations] = useState<TenantInvitationRow[]>([])
+  const [inviteLoading, setInviteLoading] = useState(false)
+  const [inviteError, setInviteError] = useState<string | null>(null)
+  const [inviteDialogOpen, setInviteDialogOpen] = useState(false)
+  const [inviteEmail, setInviteEmail] = useState("")
+  const [inviteRole, setInviteRole] = useState("member")
+  const [inviteSaving, setInviteSaving] = useState(false)
+  const [inviteActionLoadingId, setInviteActionLoadingId] = useState<string | null>(null)
+  const [inviteActionError, setInviteActionError] = useState<string | null>(null)
 
   const activeLabel = useMemo(
     () => MENU_ITEMS.find((item) => item.id === activeMenu)?.label ?? "테넌트 정보",
@@ -276,7 +329,7 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     const token = window.localStorage.getItem("token")
     const headers: Record<string, string> = {}
     if (token) headers.Authorization = `Bearer ${token}`
-    return headers
+    return withActiveTenantHeader(headers)
   }, [])
 
   const loadTenantInfo = useCallback(async () => {
@@ -373,6 +426,36 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     }
   }, [authHeaders])
 
+  const loadTenantInvitations = useCallback(async () => {
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      setTenantInvitations([])
+      setInviteError("로그인이 필요합니다.")
+      return
+    }
+    setInviteLoading(true)
+    setInviteError(null)
+    try {
+      const res = await fetch("/api/posts/tenant/invitations", { headers })
+      const json = (await res.json().catch(() => null)) as
+        | { ok?: boolean; message?: string; rows?: TenantInvitationRow[] }
+        | null
+      if (!res.ok || !json?.ok) {
+        setInviteError(json?.message || "초대 내역을 불러오지 못했습니다.")
+        setTenantInvitations([])
+        return
+      }
+      setTenantInvitations(Array.isArray(json.rows) ? json.rows : [])
+    } catch (error) {
+      console.error(error)
+      setInviteError("초대 내역을 불러오지 못했습니다.")
+      setTenantInvitations([])
+    } finally {
+      setInviteLoading(false)
+    }
+  }, [authHeaders])
+
+
   const currentMembership = useMemo(() => {
     if (!currentTenant?.id) return null
     return tenantMemberships.find((item) => String(item.id) === String(currentTenant.id)) ?? null
@@ -460,6 +543,18 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
       ? String(memberLimit)
       : String(memberStatusCounts.active + memberStatusCounts.pending + memberStatusCounts.suspended)
 
+  const invitationStatusCounts = useMemo(() => {
+    const counts = { pending: 0, accepted: 0, rejected: 0, cancelled: 0, expired: 0 }
+    tenantInvitations.forEach((row) => {
+      const key = String(row.status || "").toLowerCase()
+      if (key in counts) counts[key as keyof typeof counts] += 1
+    })
+    return counts
+  }, [tenantInvitations])
+
+  const invitationOtherCount =
+    invitationStatusCounts.rejected + invitationStatusCounts.cancelled + invitationStatusCounts.expired
+
   const handleOpenMemberDialog = useCallback(
     (row: TenantMemberRow) => {
       setMemberDialogTarget(row)
@@ -538,6 +633,69 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     }
   }, [authHeaders, canManageMembers, loadTenantMembers, memberDialogTarget])
 
+  const handleCreateInvitation = useCallback(async () => {
+    if (!canManageMembers) return
+    const email = inviteEmail.trim()
+    if (!email) {
+      setInviteActionError("초대할 이메일을 입력해 주세요.")
+      return
+    }
+    setInviteSaving(true)
+    setInviteActionError(null)
+    try {
+      const headers = authHeaders()
+      const res = await fetch("/api/posts/tenant/invitations", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ invitee_email: email, membership_role: inviteRole }),
+      })
+      const json = (await res.json().catch(() => null)) as { ok?: boolean; message?: string } | null
+      if (!res.ok || !json?.ok) {
+        setInviteActionError(json?.message || "초대 생성에 실패했습니다.")
+        return
+      }
+      setInviteDialogOpen(false)
+      setInviteEmail("")
+      setInviteRole("member")
+      await loadTenantInvitations()
+    } catch (error) {
+      console.error(error)
+      setInviteActionError("초대 생성에 실패했습니다.")
+    } finally {
+      setInviteSaving(false)
+    }
+  }, [authHeaders, canManageMembers, inviteEmail, inviteRole, loadTenantInvitations])
+
+  const handleCancelInvitation = useCallback(
+    async (invitationId: string) => {
+      if (!canManageMembers) return
+      const ok = window.confirm("해당 초대를 취소할까요?")
+      if (!ok) return
+      setInviteActionLoadingId(invitationId)
+      setInviteActionError(null)
+      try {
+        const headers = authHeaders()
+        const res = await fetch(`/api/posts/tenant/invitations/${encodeURIComponent(invitationId)}`, {
+          method: "PUT",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "cancelled" }),
+        })
+        const json = (await res.json().catch(() => null)) as { ok?: boolean; message?: string } | null
+        if (!res.ok || !json?.ok) {
+          setInviteActionError(json?.message || "초대 취소에 실패했습니다.")
+          return
+        }
+        await loadTenantInvitations()
+      } catch (error) {
+        console.error(error)
+        setInviteActionError("초대 취소에 실패했습니다.")
+      } finally {
+        setInviteActionLoadingId(null)
+      }
+    },
+    [authHeaders, canManageMembers, loadTenantInvitations]
+  )
+
   const handleUpgrade = useCallback(() => {
     if (!onOpenPlanDialog) return
     setPendingPlanDialogOpen(true)
@@ -572,10 +730,21 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     void loadTenantMembers()
   }, [activeMenu, loadTenantMembers, open])
   useEffect(() => {
+    if (!open) return
+    if (activeMenu !== "invitations") return
+    void loadTenantInvitations()
+  }, [activeMenu, loadTenantInvitations, open])
+  useEffect(() => {
     if (memberDialogOpen) return
     setMemberDialogTarget(null)
     setMemberActionError(null)
   }, [memberDialogOpen])
+  useEffect(() => {
+    if (inviteDialogOpen) return
+    setInviteEmail("")
+    setInviteRole("member")
+    setInviteActionError(null)
+  }, [inviteDialogOpen])
   useEffect(() => {
     if (open) return
     if (!pendingPlanDialogOpen) return
@@ -875,9 +1044,33 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                     <div className="text-sm font-semibold text-foreground">초대 현황</div>
                     <div className="mt-3 grid grid-cols-3 gap-3">
                       {[
-                        { label: "대기 중", value: "3", sub: "건", icon: UserPlus, accent: "text-amber-600", bg: "bg-amber-50 dark:bg-amber-950/40", ring: "ring-1 ring-amber-200 dark:ring-amber-800" },
-                        { label: "수락 완료", value: "9", sub: "건", icon: UserRoundCheck, accent: "text-emerald-600", bg: "bg-emerald-50 dark:bg-emerald-950/40", ring: "ring-1 ring-emerald-200 dark:ring-emerald-800" },
-                        { label: "만료/거절/취소", value: "2", sub: "건", icon: CirclePause, accent: "text-rose-600", bg: "bg-rose-50 dark:bg-rose-950/40", ring: "ring-1 ring-rose-200 dark:ring-rose-800" },
+                        {
+                          label: "대기 중",
+                          value: inviteLoading ? "-" : String(invitationStatusCounts.pending),
+                          sub: "건",
+                          icon: UserPlus,
+                          accent: "text-amber-600",
+                          bg: "bg-amber-50 dark:bg-amber-950/40",
+                          ring: "ring-1 ring-amber-200 dark:ring-amber-800",
+                        },
+                        {
+                          label: "수락 완료",
+                          value: inviteLoading ? "-" : String(invitationStatusCounts.accepted),
+                          sub: "건",
+                          icon: UserRoundCheck,
+                          accent: "text-emerald-600",
+                          bg: "bg-emerald-50 dark:bg-emerald-950/40",
+                          ring: "ring-1 ring-emerald-200 dark:ring-emerald-800",
+                        },
+                        {
+                          label: "만료/거절/취소",
+                          value: inviteLoading ? "-" : String(invitationOtherCount),
+                          sub: "건",
+                          icon: CirclePause,
+                          accent: "text-rose-600",
+                          bg: "bg-rose-50 dark:bg-rose-950/40",
+                          ring: "ring-1 ring-rose-200 dark:ring-rose-800",
+                        },
                       ].map((item) => {
                         const Icon = item.icon
                         return (
@@ -900,14 +1093,26 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                   <div className="px-4 pb-4">
                     <div className="flex items-center justify-between">
                       <div className="text-sm font-semibold text-foreground">초대 내역</div>
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                      >
-                        <UserPlus className="size-3.5" />
-                        새 초대
-                      </button>
+                      {canManageMembers ? (
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                          onClick={() => {
+                            setInviteDialogOpen(true)
+                            setInviteActionError(null)
+                          }}
+                        >
+                          <UserPlus className="size-3.5" />
+                          새 초대
+                        </button>
+                      ) : null}
                     </div>
+                    {inviteError ? (
+                      <div className="mt-2 text-xs text-destructive">{inviteError}</div>
+                    ) : null}
+                    {inviteActionError ? (
+                      <div className="mt-2 text-xs text-destructive">{inviteActionError}</div>
+                    ) : null}
 
                     <div className="mt-3 overflow-y-auto rounded-md border border-border">
                       <Table className="text-sm">
@@ -921,37 +1126,108 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                           </TableRow>
                         </TableHeader>
                         <TableBody className="text-muted-foreground">
-                          {[
-                            { email: "lee@example.com", role: "멤버", status: "대기 중", date: "2026-02-15", statusColor: "text-amber-600 bg-amber-50 ring-amber-500" },
-                            { email: "choi@example.com", role: "관리자", status: "대기 중", date: "2026-02-14", statusColor: "text-amber-600 bg-amber-50 ring-amber-500" },
-                            { email: "jung@example.com", role: "멤버", status: "대기 중", date: "2026-02-12", statusColor: "text-amber-600 bg-amber-50 ring-amber-500" },
-                            { email: "kang@example.com", role: "멤버", status: "수락", date: "2026-02-10", statusColor: "text-emerald-600 bg-emerald-50 ring-emerald-500" },
-                            { email: "yoon@example.com", role: "멤버", status: "만료", date: "2026-01-20", statusColor: "text-rose-600 bg-rose-50 ring-rose-500" },
-                          ].map((row) => (
-                            <TableRow key={row.email} className="hover:bg-accent/40">
-                              <TableCell className="text-foreground">
-                                <span className="text-xs block w-[120px] truncate">{row.email}</span>
-                              </TableCell>
-                              <TableCell className="text-center">{row.role}</TableCell>
-                              <TableCell className="text-center">
-                                <span className={cn("inline-block rounded-full px-2 py-0.5 text-xs font-semibold ring-1", row.statusColor)}>
-                                  {row.status}
-                                </span>
-                              </TableCell>
-                              <TableCell className="text-center text-xs">{row.date}</TableCell>
-                              <TableCell className="text-center">
-                                {row.status === "대기 중" ? (
-                                  <button type="button" className="text-xs text-destructive hover:underline">취소</button>
-                                ) : (
-                                  <span className="text-xs text-muted-foreground">—</span>
-                                )}
+                          {inviteLoading ? (
+                            <TableRow>
+                              <TableCell colSpan={5} className="py-8 text-center text-xs text-muted-foreground">
+                                초대 내역을 불러오는 중입니다.
                               </TableCell>
                             </TableRow>
-                          ))}
+                          ) : tenantInvitations.length ? (
+                            tenantInvitations.map((row) => {
+                              const statusKey = String(row.status || "").toLowerCase()
+                              const statusLabel = INVITATION_STATUS_LABELS[statusKey] || row.status || "-"
+                              const statusStyle = INVITATION_STATUS_STYLES[statusKey] || INVITATION_STATUS_STYLES.expired
+                              const roleLabel =
+                                INVITATION_ROLE_LABELS[String(row.membership_role || "").toLowerCase()] ||
+                                row.membership_role ||
+                                "-"
+                              return (
+                                <TableRow key={row.id} className="hover:bg-accent/40">
+                                  <TableCell className="text-foreground">
+                                    <span className="text-xs block w-[160px] truncate">{row.invitee_email}</span>
+                                  </TableCell>
+                                  <TableCell className="text-center">{roleLabel}</TableCell>
+                                  <TableCell className="text-center">
+                                    <span className={cn("inline-block rounded-full px-2 py-0.5 text-xs font-semibold ring-1", statusStyle)}>
+                                      {statusLabel}
+                                    </span>
+                                  </TableCell>
+                                  <TableCell className="text-center text-xs">{formatDate(row.created_at)}</TableCell>
+                                  <TableCell className="text-center">
+                                    {canManageMembers && statusKey === "pending" ? (
+                                      <button
+                                        type="button"
+                                        className="text-xs text-destructive hover:underline"
+                                        disabled={inviteActionLoadingId === row.id}
+                                        onClick={() => handleCancelInvitation(row.id)}
+                                      >
+                                        {inviteActionLoadingId === row.id ? "처리중" : "취소"}
+                                      </button>
+                                    ) : (
+                                      <span className="text-xs text-muted-foreground">—</span>
+                                    )}
+                                  </TableCell>
+                                </TableRow>
+                              )
+                            })
+                          ) : (
+                            <TableRow>
+                              <TableCell colSpan={5} className="py-8 text-center text-xs text-muted-foreground">
+                                표시할 초대가 없습니다.
+                              </TableCell>
+                            </TableRow>
+                          )}
                         </TableBody>
                       </Table>
                     </div>
                   </div>
+                  <Dialog open={inviteDialogOpen} onOpenChange={setInviteDialogOpen}>
+                    <DialogContent className="sm:max-w-[420px]">
+                      <DialogHeader>
+                        <DialogTitle>새 초대</DialogTitle>
+                      </DialogHeader>
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <div className="text-xs font-medium text-muted-foreground">초대 이메일</div>
+                          <Input
+                            value={inviteEmail}
+                            onChange={(e) => setInviteEmail(e.target.value)}
+                            placeholder="email@example.com"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <div className="text-xs font-medium text-muted-foreground">역할</div>
+                          <Select value={inviteRole} onValueChange={setInviteRole}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="역할 선택" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {INVITATION_ROLE_OPTIONS.map(({ value, label }) => (
+                                <SelectItem key={value} value={value}>
+                                  {label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="text-xs text-muted-foreground">초대 링크는 7일 동안 유효합니다.</div>
+                        <div className="text-xs text-muted-foreground">
+                          ※ 카카오/다음 메일은 수신까지 시간이 지연될 수 있습니다. 최대 20분까지 여유 있게 확인해주세요.
+                        </div>
+                        {inviteActionError ? (
+                          <div className="text-xs text-destructive">{inviteActionError}</div>
+                        ) : null}
+                      </div>
+                      <DialogFooter>
+                        <Button variant="outline" onClick={() => setInviteDialogOpen(false)}>
+                          취소
+                        </Button>
+                        <Button onClick={handleCreateInvitation} disabled={inviteSaving}>
+                          {inviteSaving ? "발송 중..." : "초대 보내기"}
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
                 </div>
               ) : null}
 

@@ -4,6 +4,7 @@ import { blocksToDocJson, docJsonToBlocks } from "../services/docMapping"
 import type { AuthedRequest } from "../middleware/requireAuth"
 import { ensureSystemTenantId } from "../services/systemTenantService"
 import { randomUUID } from "crypto"
+import nodemailer from "nodemailer"
 
 const MEDIA_ASSET_URL_RE = /(?:https?:\/\/[^/]+)?\/api\/ai\/media\/assets\/([0-9a-f-]{36})/gi
 
@@ -27,8 +28,215 @@ function isUuid(v: string) {
 }
 
 const MEMBERSHIP_STATUSES = new Set(["active", "inactive", "suspended", "pending"])
+const INVITATION_STATUSES = new Set(["pending", "accepted", "rejected", "expired", "cancelled"])
+const INVITATION_ROLES = new Set(["admin", "member", "viewer"])
+const TENANT_MANAGER_ROLES = new Set(["owner", "admin", "tenant_owner", "tenant_admin"])
 
-async function refreshTenantMemberCount(client: any, tenantId: string) {
+const EMAIL_HOST = process.env.EMAIL_HOST || "smtp.gmail.com"
+const EMAIL_PORT = Number(process.env.EMAIL_PORT) || 587
+const EMAIL_FROM = process.env.EMAIL_FROM || "noreply@reduct.page"
+const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "ReductAI"
+const EMAIL_ENVELOPE_FROM = process.env.EMAIL_ENVELOPE_FROM || process.env.EMAIL_USER || EMAIL_FROM
+const APP_BASE_URL = process.env.FRONTEND_BASE_URL || process.env.APP_BASE_URL || "http://localhost:5173"
+
+type QueryResultRow = Record<string, unknown>
+type Queryable = { query: (text: string, params?: unknown[]) => Promise<{ rows: QueryResultRow[] }> }
+
+const mailTransporter = nodemailer.createTransport({
+  host: EMAIL_HOST,
+  port: EMAIL_PORT,
+  secure: EMAIL_PORT === 465,
+  requireTLS: EMAIL_PORT === 587,
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+})
+
+const INVITE_ROLE_LABELS: Record<string, string> = {
+  owner: "소유자",
+  admin: "관리자",
+  member: "멤버",
+  viewer: "뷰어",
+}
+
+function resolveClientIp(req: Request) {
+  const header = req.headers["x-forwarded-for"]
+  if (typeof header === "string" && header.trim()) {
+    return header.split(",")[0].trim()
+  }
+  return req.socket?.remoteAddress || null
+}
+
+function resolveUserAgent(req: Request) {
+  return typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : null
+}
+
+async function insertAuditLog(args: {
+  client?: Queryable
+  tenantId?: string | null
+  userId?: string | null
+  action: string
+  resourceType: string
+  resourceId?: string | null
+  status: "success" | "failure" | "error"
+  req?: Request
+  requestData?: Record<string, unknown> | null
+  responseData?: Record<string, unknown> | null
+  errorMessage?: string | null
+}) {
+  const {
+    client,
+    tenantId,
+    userId,
+    action,
+    resourceType,
+    resourceId,
+    status,
+    req,
+    requestData,
+    responseData,
+    errorMessage,
+  } = args
+  try {
+    const ip = req ? resolveClientIp(req) : null
+    const userAgent = req ? resolveUserAgent(req) : null
+  const db = client ?? (pool as Queryable)
+    await db.query(
+      `
+      INSERT INTO audit_logs (
+        tenant_id,
+        user_id,
+        action,
+        resource_type,
+        resource_id,
+        status,
+        ip_address,
+        user_agent,
+        request_data,
+        response_data,
+        error_message
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      `,
+      [
+        tenantId || null,
+        userId || null,
+        action,
+        resourceType,
+        resourceId || null,
+        status,
+        ip,
+        userAgent,
+        requestData ? JSON.stringify(requestData) : null,
+        responseData ? JSON.stringify(responseData) : null,
+        errorMessage || null,
+      ]
+    )
+  } catch (error) {
+    console.error("audit_log insert error:", error)
+  }
+}
+
+async function getUserProfile(userId: string) {
+  const r = await query(`SELECT id, email, full_name FROM users WHERE id = $1 LIMIT 1`, [userId])
+  return r.rows[0] as { id: string; email: string; full_name?: string | null } | undefined
+}
+
+async function resolveTenantManagerRole(userId: string, tenantId: string) {
+  const r = await query(
+    `
+    SELECT r.slug
+    FROM user_tenant_roles utr
+    JOIN roles r ON r.id = utr.role_id
+    WHERE utr.user_id = $1
+      AND utr.tenant_id = $2
+      AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+    ORDER BY utr.granted_at DESC NULLS LAST
+    LIMIT 1
+    `,
+    [userId, tenantId]
+  )
+  return String(r.rows?.[0]?.slug || "").toLowerCase()
+}
+
+async function sendInvitationEmail(args: {
+  inviteeEmail: string
+  inviterName: string
+  tenantName: string
+  role: string
+  expiresAt: string
+  invitationToken: string
+}) {
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    console.error("Missing EMAIL_USER or EMAIL_PASS")
+    return false
+  }
+  const { inviteeEmail, inviterName, tenantName, role, expiresAt, invitationToken } = args
+  const inviteLink = `${APP_BASE_URL}/?invite_email=${encodeURIComponent(inviteeEmail)}&invite_token=${encodeURIComponent(
+    invitationToken
+  )}`
+  const roleLabel = INVITE_ROLE_LABELS[role] || role
+  const expiresLabel = (() => {
+    try {
+      return new Date(expiresAt).toLocaleDateString()
+    } catch {
+      return expiresAt
+    }
+  })()
+  const subject = `[ReductAI] ${tenantName} 테넌트 초대`
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
+      <h2>${tenantName} 테넌트 초대</h2>
+      <p>${inviterName || "관리자"}님이 ${roleLabel} 권한으로 초대했습니다.</p>
+      <p>만료일: <strong>${expiresLabel}</strong></p>
+      <div style="margin: 20px 0;">
+        <a href="${inviteLink}" style="display:inline-block;padding:12px 20px;border-radius:6px;background:#111827;color:#fff;text-decoration:none;">
+          초대 확인하기
+        </a>
+      </div>
+      <p style="font-size: 12px; color: #666;">
+        계정이 없다면 회원가입 후 로그인하면 좌측 “테넌트 초대 요청”에서 승인할 수 있습니다.
+      </p>
+      <p style="font-size: 12px; color: #666;">
+        ※ 카카오/다음 메일은 수신까지 시간이 지연될 수 있습니다. 최대 20분까지 여유 있게 확인해주세요.
+      </p>
+    </div>
+  `
+  const text = [
+    `${tenantName} 테넌트 초대`,
+    `${inviterName || "관리자"}님이 ${roleLabel} 권한으로 초대했습니다.`,
+    `만료일: ${expiresLabel}`,
+    `초대 확인: ${inviteLink}`,
+    `계정이 없다면 회원가입 후 로그인하면 좌측 “테넌트 초대 요청”에서 승인할 수 있습니다.`,
+    `※ 카카오/다음 메일은 수신까지 시간이 지연될 수 있습니다. 최대 20분까지 여유 있게 확인해주세요.`,
+  ].join("\n")
+
+  try {
+    await mailTransporter.sendMail({
+      from: `${EMAIL_FROM_NAME} <${EMAIL_FROM}>`,
+      sender: EMAIL_ENVELOPE_FROM,
+      replyTo: EMAIL_FROM,
+      to: inviteeEmail,
+      envelope: { from: EMAIL_ENVELOPE_FROM, to: inviteeEmail },
+      subject,
+      text,
+      html,
+    })
+    return true
+  } catch (error) {
+    const err = error as { message?: string; code?: string; response?: string; responseCode?: number }
+    console.error("Error sending invitation email:", {
+      message: err?.message,
+      code: err?.code,
+      responseCode: err?.responseCode,
+      response: err?.response,
+    })
+    return false
+  }
+}
+
+async function refreshTenantMemberCount(client: Queryable, tenantId: string) {
   const countRes = await client.query(
     `
       SELECT COUNT(DISTINCT user_id)::int AS total
@@ -64,13 +272,37 @@ async function assertCategoryAccess(args: {
   return { id: row.id, category_type: type }
 }
 
+function resolveRequestedTenantId(req: AuthedRequest): string {
+  const headerRaw = req.headers?.["x-tenant-id"]
+  const header = Array.isArray(headerRaw) ? headerRaw[0] : headerRaw
+  if (typeof header === "string" && header.trim()) return header.trim()
+  return ""
+}
+
 async function resolveTenantId(req: AuthedRequest): Promise<string> {
+  const requested = resolveRequestedTenantId(req)
+  const userId = req.userId ? String(req.userId) : ""
+  if (requested && isUuid(requested) && userId) {
+    const r = await query(
+      `
+      SELECT utr.tenant_id
+      FROM user_tenant_roles utr
+      JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+      WHERE utr.user_id = $1
+        AND utr.tenant_id = $2
+        AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+        AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+      LIMIT 1
+      `,
+      [userId, requested]
+    )
+    if (r.rows.length > 0) return String(r.rows[0].tenant_id)
+  }
   const tid = req.tenantId ? String(req.tenantId) : ""
   if (tid) {
     const r = await query(`SELECT id FROM tenants WHERE id = $1 AND deleted_at IS NULL LIMIT 1`, [tid])
     if (r.rows.length > 0) return tid
   }
-  const userId = req.userId ? String(req.userId) : ""
   if (userId) {
     const r = await query(
       `
@@ -1133,6 +1365,580 @@ export async function updateTenantMember(req: Request, res: Response) {
     await client.query("ROLLBACK")
     console.error("post-service updateTenantMember error:", e)
     return res.status(500).json({ message: "Failed to update tenant member" })
+  } finally {
+    client.release()
+  }
+}
+
+export async function listTenantInvitations(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const userId = String(authed.userId || "").trim()
+    const tenantId = await resolveTenantId(authed)
+    if (!tenantId) return res.status(400).json({ message: "Invalid tenant" })
+    if (!userId) return res.status(401).json({ message: "Unauthorized" })
+
+    const roleSlug = await resolveTenantManagerRole(userId, tenantId)
+    if (!TENANT_MANAGER_ROLES.has(roleSlug)) return res.status(403).json({ message: "Forbidden" })
+
+    await query(
+      `
+      UPDATE tenant_invitations
+      SET status = 'expired', updated_at = CURRENT_TIMESTAMP
+      WHERE tenant_id = $1
+        AND status = 'pending'
+        AND expires_at < CURRENT_TIMESTAMP
+      `,
+      [tenantId]
+    )
+
+    const r = await query(
+      `
+      SELECT
+        ti.id,
+        ti.tenant_id,
+        ti.inviter_id,
+        ti.invitee_email,
+        ti.invitee_user_id,
+        ti.invitation_token,
+        ti.membership_role,
+        ti.status,
+        ti.expires_at,
+        ti.accepted_at,
+        ti.rejected_at,
+        ti.cancelled_at,
+        ti.created_at,
+        ti.updated_at,
+        t.name AS tenant_name,
+        t.tenant_type AS tenant_type,
+        iu.full_name AS inviter_name,
+        iu.email AS inviter_email,
+        eu.full_name AS invitee_name
+      FROM tenant_invitations ti
+      JOIN tenants t ON t.id = ti.tenant_id AND t.deleted_at IS NULL
+      JOIN users iu ON iu.id = ti.inviter_id
+      LEFT JOIN users eu ON eu.id = ti.invitee_user_id
+      WHERE ti.tenant_id = $1
+      ORDER BY ti.created_at DESC
+      `,
+      [tenantId]
+    )
+    return res.json({ ok: true, rows: r.rows })
+  } catch (e) {
+    console.error("post-service listTenantInvitations error:", e)
+    return res.status(500).json({ message: "Failed to load tenant invitations" })
+  }
+}
+
+export async function createTenantInvitation(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+    const authed = req as AuthedRequest
+    const userId = String(authed.userId || "").trim()
+    const tenantId = await resolveTenantId(authed)
+    if (!tenantId) return res.status(400).json({ message: "Invalid tenant" })
+    if (!userId) return res.status(401).json({ message: "Unauthorized" })
+
+    const roleSlug = await resolveTenantManagerRole(userId, tenantId)
+    if (!TENANT_MANAGER_ROLES.has(roleSlug)) return res.status(403).json({ message: "Forbidden" })
+
+    const inviteeEmailRaw = typeof req.body?.invitee_email === "string" ? req.body.invitee_email : ""
+    const inviteeEmail = inviteeEmailRaw.trim().toLowerCase()
+    const membershipRoleRaw = typeof req.body?.membership_role === "string" ? req.body.membership_role : "member"
+    const membershipRole = membershipRoleRaw.trim().toLowerCase()
+    if (!inviteeEmail) return res.status(400).json({ message: "invitee_email is required" })
+    if (!INVITATION_ROLES.has(membershipRole)) {
+      return res.status(400).json({ message: "소유자는 초대할 수 없습니다." })
+    }
+
+    const tenantRes = await client.query(
+      `SELECT id, name, member_limit FROM tenants WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+      [tenantId]
+    )
+    if (tenantRes.rows.length === 0) return res.status(404).json({ message: "Tenant not found" })
+    const tenantName = String(tenantRes.rows[0]?.name || "")
+
+    const inviteeRes = await client.query(
+      `SELECT id, email, full_name FROM users WHERE LOWER(email) = $1 AND deleted_at IS NULL LIMIT 1`,
+      [inviteeEmail]
+    )
+    const inviteeUserId = inviteeRes.rows?.[0]?.id ? String(inviteeRes.rows[0].id) : null
+
+    if (inviteeUserId) {
+      const membershipRes = await client.query(
+        `
+        SELECT id
+        FROM user_tenant_roles
+        WHERE user_id = $1
+          AND tenant_id = $2
+          AND (membership_status IS NULL OR membership_status = 'active')
+        LIMIT 1
+        `,
+        [inviteeUserId, tenantId]
+      )
+      if (membershipRes.rows.length > 0) {
+        await insertAuditLog({
+          client,
+          tenantId,
+          userId,
+          action: "tenant_invitation.create",
+          resourceType: "tenant_invitation",
+          status: "failure",
+          req,
+          requestData: { invitee_email: inviteeEmail, membership_role: membershipRole },
+          errorMessage: "already_member",
+        })
+        await client.query("ROLLBACK")
+        return res.status(409).json({ message: "이미 멤버로 참여 중입니다." })
+      }
+    }
+
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+    const invitationToken = randomUUID()
+
+    const pendingRes = await client.query(
+      `
+      SELECT id
+      FROM tenant_invitations
+      WHERE tenant_id = $1
+        AND LOWER(invitee_email) = $2
+        AND status = 'pending'
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      [tenantId, inviteeEmail]
+    )
+
+    let invitationRow: Record<string, unknown> | null = null
+    let isResend = false
+    if (pendingRes.rows.length > 0) {
+      isResend = true
+      const existingId = String(pendingRes.rows[0].id)
+      const updateRes = await client.query(
+        `
+        UPDATE tenant_invitations
+        SET
+          invitee_user_id = $1,
+          invitation_token = $2,
+          membership_role = $3,
+          expires_at = $4,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $5
+        RETURNING id, tenant_id, inviter_id, invitee_email, invitee_user_id, invitation_token,
+          membership_role, status, expires_at, created_at, updated_at
+        `,
+        [inviteeUserId, invitationToken, membershipRole, expiresAt, existingId]
+      )
+      invitationRow = updateRes.rows[0]
+    } else {
+      const insertRes = await client.query(
+        `
+        INSERT INTO tenant_invitations (
+          tenant_id, inviter_id, invitee_email, invitee_user_id, invitation_token,
+          membership_role, status, expires_at
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,'pending',$7)
+        RETURNING id, tenant_id, inviter_id, invitee_email, invitee_user_id, invitation_token,
+          membership_role, status, expires_at, created_at, updated_at
+        `,
+        [tenantId, userId, inviteeEmail, inviteeUserId, invitationToken, membershipRole, expiresAt]
+      )
+      invitationRow = insertRes.rows[0]
+    }
+
+    const inviterProfile = await getUserProfile(userId)
+    const emailSent = await sendInvitationEmail({
+      inviteeEmail,
+      inviterName: inviterProfile?.full_name || inviterProfile?.email || "관리자",
+      tenantName: tenantName || "테넌트",
+      role: membershipRole,
+      expiresAt,
+      invitationToken,
+    })
+
+    await insertAuditLog({
+      client,
+      tenantId,
+      userId,
+      action: isResend ? "tenant_invitation.resend" : "tenant_invitation.create",
+      resourceType: "tenant_invitation",
+      resourceId: invitationRow && invitationRow.id ? String(invitationRow.id) : null,
+      status: "success",
+      req,
+      requestData: { invitee_email: inviteeEmail, membership_role: membershipRole, resend: isResend },
+      responseData: { email_sent: emailSent },
+    })
+
+    await client.query("COMMIT")
+    return res.status(isResend ? 200 : 201).json({ ok: true, row: invitationRow, resend: isResend, email_sent: emailSent })
+  } catch (e) {
+    await client.query("ROLLBACK")
+    console.error("post-service createTenantInvitation error:", e)
+    return res.status(500).json({ message: "Failed to create invitation" })
+  } finally {
+    client.release()
+  }
+}
+
+export async function updateTenantInvitation(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+    const authed = req as AuthedRequest
+    const userId = String(authed.userId || "").trim()
+    const tenantId = await resolveTenantId(authed)
+    if (!tenantId) return res.status(400).json({ message: "Invalid tenant" })
+    if (!userId) return res.status(401).json({ message: "Unauthorized" })
+
+    const roleSlug = await resolveTenantManagerRole(userId, tenantId)
+    if (!TENANT_MANAGER_ROLES.has(roleSlug)) return res.status(403).json({ message: "Forbidden" })
+
+    const invitationId = String(req.params.id || "").trim()
+    if (!invitationId || !isUuid(invitationId)) return res.status(400).json({ message: "Invalid invitation id" })
+
+    const statusRaw = typeof req.body?.status === "string" ? req.body.status : ""
+    const nextStatus = statusRaw.trim().toLowerCase()
+    if (!INVITATION_STATUSES.has(nextStatus)) return res.status(400).json({ message: "invalid status" })
+    if (nextStatus !== "cancelled") return res.status(400).json({ message: "only cancel is allowed" })
+
+    const updateRes = await client.query(
+      `
+      UPDATE tenant_invitations
+      SET status = 'cancelled', cancelled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1 AND tenant_id = $2
+      RETURNING id, tenant_id, invitee_email, status
+      `,
+      [invitationId, tenantId]
+    )
+    if (updateRes.rows.length === 0) return res.status(404).json({ message: "Invitation not found" })
+
+    await insertAuditLog({
+      client,
+      tenantId,
+      userId,
+      action: "tenant_invitation.cancel",
+      resourceType: "tenant_invitation",
+      resourceId: invitationId,
+      status: "success",
+      req,
+    })
+
+    await client.query("COMMIT")
+    return res.json({ ok: true, row: updateRes.rows[0] })
+  } catch (e) {
+    await client.query("ROLLBACK")
+    console.error("post-service updateTenantInvitation error:", e)
+    return res.status(500).json({ message: "Failed to update invitation" })
+  } finally {
+    client.release()
+  }
+}
+
+export async function listMyInvitations(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const userId = String(authed.userId || "").trim()
+    if (!userId) return res.status(401).json({ message: "Unauthorized" })
+    const userProfile = await getUserProfile(userId)
+    const userEmail = String(userProfile?.email || "").trim().toLowerCase()
+    if (!userEmail) return res.status(400).json({ message: "Invalid user" })
+
+    const statusRaw = typeof req.query?.status === "string" ? String(req.query.status) : ""
+    const statusFilter = statusRaw.trim().toLowerCase()
+    if (statusFilter && !INVITATION_STATUSES.has(statusFilter)) {
+      return res.status(400).json({ message: "invalid status" })
+    }
+
+    await query(
+      `
+      UPDATE tenant_invitations
+      SET status = 'expired', updated_at = CURRENT_TIMESTAMP
+      WHERE status = 'pending'
+        AND expires_at < CURRENT_TIMESTAMP
+        AND (invitee_user_id = $1 OR LOWER(invitee_email) = $2)
+      `,
+      [userId, userEmail]
+    )
+
+    const params: Array<string> = [userId, userEmail]
+    const filters: string[] = ["(ti.invitee_user_id = $1 OR LOWER(ti.invitee_email) = $2)"]
+    if (statusFilter) {
+      filters.push(`ti.status = $3`)
+      params.push(statusFilter)
+    }
+
+    const r = await query(
+      `
+      SELECT
+        ti.id,
+        ti.tenant_id,
+        ti.inviter_id,
+        ti.invitee_email,
+        ti.invitee_user_id,
+        ti.invitation_token,
+        ti.membership_role,
+        ti.status,
+        ti.expires_at,
+        ti.created_at,
+        t.name AS tenant_name,
+        t.tenant_type AS tenant_type,
+        iu.full_name AS inviter_name,
+        iu.email AS inviter_email
+      FROM tenant_invitations ti
+      JOIN tenants t ON t.id = ti.tenant_id AND t.deleted_at IS NULL
+      JOIN users iu ON iu.id = ti.inviter_id
+      WHERE ${filters.join(" AND ")}
+      ORDER BY ti.created_at DESC
+      `,
+      params
+    )
+    return res.json({ ok: true, rows: r.rows })
+  } catch (e) {
+    console.error("post-service listMyInvitations error:", e)
+    return res.status(500).json({ message: "Failed to load invitations" })
+  }
+}
+
+export async function acceptMyInvitation(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+    const authed = req as AuthedRequest
+    const userId = String(authed.userId || "").trim()
+    if (!userId) return res.status(401).json({ message: "Unauthorized" })
+    const userProfile = await getUserProfile(userId)
+    const userEmail = String(userProfile?.email || "").trim().toLowerCase()
+    const invitationId = String(req.params.id || "").trim()
+    if (!invitationId || !isUuid(invitationId)) return res.status(400).json({ message: "Invalid invitation id" })
+
+    const invitationRes = await client.query(
+      `
+      SELECT
+        ti.*,
+        t.name AS tenant_name,
+        t.member_limit,
+        t.deleted_at
+      FROM tenant_invitations ti
+      JOIN tenants t ON t.id = ti.tenant_id
+      WHERE ti.id = $1
+      LIMIT 1
+      `,
+      [invitationId]
+    )
+    if (invitationRes.rows.length === 0) return res.status(404).json({ message: "Invitation not found" })
+    const invitation = invitationRes.rows[0]
+    if (invitation.deleted_at) return res.status(404).json({ message: "Tenant not found" })
+
+    const inviteeEmail = String(invitation.invitee_email || "").trim().toLowerCase()
+    const inviteeUserId = invitation.invitee_user_id ? String(invitation.invitee_user_id) : null
+    if (inviteeUserId !== userId && inviteeEmail !== userEmail) {
+      return res.status(403).json({ message: "Forbidden" })
+    }
+    if (invitation.status !== "pending") {
+      return res.status(400).json({ message: "초대 상태가 유효하지 않습니다." })
+    }
+    const expiresAt = invitation.expires_at
+    if (expiresAt && new Date(expiresAt).getTime() < Date.now()) {
+      await client.query(
+        `UPDATE tenant_invitations SET status = 'expired', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+        [invitationId]
+      )
+      await client.query("COMMIT")
+      return res.status(400).json({ message: "초대가 만료되었습니다." })
+    }
+
+    const tenantId = String(invitation.tenant_id)
+    const membershipRole = String(invitation.membership_role || "member").toLowerCase()
+
+    const existingRes = await client.query(
+      `
+      SELECT id, membership_status
+      FROM user_tenant_roles
+      WHERE user_id = $1 AND tenant_id = $2
+      ORDER BY granted_at DESC NULLS LAST
+      LIMIT 1
+      `,
+      [userId, tenantId]
+    )
+    const existing = existingRes.rows[0] as { id: string; membership_status?: string | null } | undefined
+
+    if (!existing || (existing.membership_status && existing.membership_status !== "active")) {
+      const limitRes = await client.query(
+        `SELECT member_limit FROM tenants WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+        [tenantId]
+      )
+      const memberLimit = limitRes.rows[0]?.member_limit
+      const countRes = await client.query(
+        `
+        SELECT COUNT(DISTINCT user_id)::int AS total
+        FROM user_tenant_roles
+        WHERE tenant_id = $1
+          AND (membership_status IS NULL OR membership_status = 'active')
+        `,
+        [tenantId]
+      )
+      const total = countRes.rows[0]?.total ?? 0
+      if (typeof memberLimit === "number" && memberLimit > 0 && total >= memberLimit) {
+        await insertAuditLog({
+          client,
+          tenantId,
+          userId,
+          action: "tenant_invitation.accept",
+          resourceType: "tenant_invitation",
+          resourceId: invitationId,
+          status: "failure",
+          req,
+          errorMessage: "seat_limit_exceeded",
+        })
+        await client.query("ROLLBACK")
+        return res.status(409).json({
+          message: "좌석이 가득 찼습니다. 테넌트 소유자에게 좌석 추가를 요청해 주세요.",
+          code: "SEAT_LIMIT",
+        })
+      }
+    }
+
+    const roleRes = await client.query(
+      `
+      SELECT id
+      FROM roles
+      WHERE scope = 'tenant_base' AND slug = $1
+      LIMIT 1
+      `,
+      [membershipRole]
+    )
+    let roleId = roleRes.rows[0]?.id
+    if (!roleId) {
+      const createRes = await client.query(
+        `
+        INSERT INTO roles (name, slug, description, scope, tenant_id, is_system_role)
+        VALUES ($1, $2, $3, 'tenant_base', NULL, TRUE)
+        RETURNING id
+        `,
+        [INVITE_ROLE_LABELS[membershipRole] || membershipRole, membershipRole, `Tenant base role: ${membershipRole}`]
+      )
+      roleId = createRes.rows[0]?.id
+      if (!roleId) {
+        return res.status(500).json({ message: "Failed to resolve role" })
+      }
+    }
+
+    if (existing) {
+      await client.query(
+        `
+        UPDATE user_tenant_roles
+        SET role_id = $1, membership_status = 'active', left_at = NULL, left_by = NULL, granted_by = $2, granted_at = CURRENT_TIMESTAMP
+        WHERE id = $3
+        `,
+        [roleId, userId, existing.id]
+      )
+    } else {
+      await client.query(
+        `
+        INSERT INTO user_tenant_roles (
+          user_id, tenant_id, role_id, membership_status, is_primary_tenant, granted_by, granted_at
+        )
+        VALUES ($1,$2,$3,'active',FALSE,$4,CURRENT_TIMESTAMP)
+        `,
+        [userId, tenantId, roleId, userId]
+      )
+    }
+
+    await client.query(
+      `
+      UPDATE tenant_invitations
+      SET status = 'accepted',
+          invitee_user_id = $1,
+          accepted_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = $2
+      `,
+      [userId, invitationId]
+    )
+
+    await refreshTenantMemberCount(client, tenantId)
+    await insertAuditLog({
+      client,
+      tenantId,
+      userId,
+      action: "tenant_invitation.accept",
+      resourceType: "tenant_invitation",
+      resourceId: invitationId,
+      status: "success",
+      req,
+    })
+
+    await client.query("COMMIT")
+    return res.json({ ok: true })
+  } catch (e) {
+    await client.query("ROLLBACK")
+    console.error("post-service acceptMyInvitation error:", e)
+    return res.status(500).json({ message: "Failed to accept invitation" })
+  } finally {
+    client.release()
+  }
+}
+
+export async function rejectMyInvitation(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+    const authed = req as AuthedRequest
+    const userId = String(authed.userId || "").trim()
+    if (!userId) return res.status(401).json({ message: "Unauthorized" })
+    const userProfile = await getUserProfile(userId)
+    const userEmail = String(userProfile?.email || "").trim().toLowerCase()
+    const invitationId = String(req.params.id || "").trim()
+    if (!invitationId || !isUuid(invitationId)) return res.status(400).json({ message: "Invalid invitation id" })
+
+    const invitationRes = await client.query(
+      `
+      SELECT id, tenant_id, invitee_email, invitee_user_id, status
+      FROM tenant_invitations
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [invitationId]
+    )
+    if (invitationRes.rows.length === 0) return res.status(404).json({ message: "Invitation not found" })
+    const invitation = invitationRes.rows[0]
+    const inviteeEmail = String(invitation.invitee_email || "").trim().toLowerCase()
+    const inviteeUserId = invitation.invitee_user_id ? String(invitation.invitee_user_id) : null
+    if (inviteeUserId !== userId && inviteeEmail !== userEmail) {
+      return res.status(403).json({ message: "Forbidden" })
+    }
+    if (invitation.status !== "pending") {
+      return res.status(400).json({ message: "초대 상태가 유효하지 않습니다." })
+    }
+
+    await client.query(
+      `
+      UPDATE tenant_invitations
+      SET status = 'rejected', rejected_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
+          invitee_user_id = $1
+      WHERE id = $2
+      `,
+      [userId, invitationId]
+    )
+
+    await insertAuditLog({
+      client,
+      tenantId: invitation.tenant_id ? String(invitation.tenant_id) : null,
+      userId,
+      action: "tenant_invitation.reject",
+      resourceType: "tenant_invitation",
+      resourceId: invitationId,
+      status: "success",
+      req,
+    })
+
+    await client.query("COMMIT")
+    return res.json({ ok: true })
+  } catch (e) {
+    await client.query("ROLLBACK")
+    console.error("post-service rejectMyInvitation error:", e)
+    return res.status(500).json({ message: "Failed to reject invitation" })
   } finally {
     client.release()
   }
