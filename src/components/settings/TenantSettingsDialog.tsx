@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
@@ -7,10 +17,12 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { Box, CirclePause, Coins, Database, Gauge, HardDrive, Menu, PackageOpen, ShieldCheck, UserPlus, UserRoundCheck, Users, UsersRound, X, ChevronsUp, Settings2, HandCoins, EvCharger, } from "lucide-react"
+import { Box, CirclePause, Coins, Database, Gauge, HardDrive, Menu, PackageOpen, UserPlus, UserRoundCheck, Users, UsersRound, X, ChevronsUp, Settings2, HandCoins, EvCharger, RotateCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { type PlanTier, PLAN_TIER_LABELS, PLAN_TIER_ORDER, PLAN_TIER_STYLES } from "@/lib/planTier"
 import { withActiveTenantHeader } from "@/lib/tenantContext"
+import { ProfileAvatar } from "@/lib/ProfileAvatar"
+import { toast } from "sonner"
 
 type TenantSettingsDialogProps = {
   open: boolean
@@ -103,7 +115,7 @@ const ROLE_LABELS: Record<string, string> = {
 }
 
 const MEMBERSHIP_STATUS_LABELS: Record<string, string> = {
-  active: "활성",
+  active: "활동",
   pending: "대기",
   suspended: "정지",
   inactive: "비활성",
@@ -146,18 +158,22 @@ const INVITATION_ROLE_OPTIONS = [
 ] as const
 
 const ROLE_OPTIONS = [
-  { value: "owner", label: "소유자" },
   { value: "admin", label: "관리자" },
   { value: "member", label: "멤버" },
   { value: "viewer", label: "뷰어" },
 ] as const
 
 const STATUS_OPTIONS = [
-  { value: "active", label: "활성" },
-  { value: "pending", label: "대기" },
+  { value: "active", label: "활동" },
   { value: "suspended", label: "정지" },
-  { value: "inactive", label: "비활성" },
 ] as const
+
+const MEMBER_ROLE_PRIORITY: Record<string, number> = {
+  owner: 0,
+  admin: 1,
+  member: 2,
+  viewer: 3,
+}
 
 function normalizePlanTier(value: unknown): PlanTier | null {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
@@ -288,6 +304,12 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
   const [memberDialogStatus, setMemberDialogStatus] = useState("active")
   const [memberSaving, setMemberSaving] = useState(false)
   const [memberActionError, setMemberActionError] = useState<string | null>(null)
+  const [memberRemoveDialogOpen, setMemberRemoveDialogOpen] = useState(false)
+  const [memberRemovePassword, setMemberRemovePassword] = useState("")
+  const [memberRemoveError, setMemberRemoveError] = useState<string | null>(null)
+  const [resendInviteLoadingId, setResendInviteLoadingId] = useState<string | null>(null)
+  const [resendInviteDialogOpen, setResendInviteDialogOpen] = useState(false)
+  const [resendInviteTarget, setResendInviteTarget] = useState<TenantMemberRow | null>(null)
   const [tenantInvitations, setTenantInvitations] = useState<TenantInvitationRow[]>([])
   const [inviteLoading, setInviteLoading] = useState(false)
   const [inviteError, setInviteError] = useState<string | null>(null)
@@ -471,6 +493,16 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     return MANAGEMENT_ROLE_SLUGS.has(roleSlug)
   }, [currentMembership?.role_slug])
 
+  const currentUserId = useMemo(() => {
+    if (typeof window === "undefined") return ""
+    return String(window.localStorage.getItem("user_id") || "").trim()
+  }, [])
+
+  const isCurrentUserAdmin = useMemo(() => {
+    const roleSlug = String(currentMembership?.role_slug || "").toLowerCase()
+    return roleSlug === "admin" || roleSlug === "tenant_admin"
+  }, [currentMembership?.role_slug])
+
   const resolvedPlanTier = useMemo(
     () =>
       currentTenant
@@ -519,29 +551,51 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
       : "-"
 
   const memberStatusCounts = useMemo(() => {
-    const counts = { active: 0, pending: 0, suspended: 0, inactive: 0 }
+    const counts = { active: 0, suspended: 0, inactive: 0 }
     tenantMembers.forEach((row) => {
       const status = normalizeMembershipStatus(row.membership_status)
+      if (status === "pending") return
       if (status in counts) counts[status as keyof typeof counts] += 1
     })
     return counts
   }, [tenantMembers])
 
-  const membersActiveRows = useMemo(
-    () => tenantMembers.filter((row) => normalizeMembershipStatus(row.membership_status) !== "inactive"),
-    [tenantMembers]
-  )
+  const membersActiveRows = useMemo(() => {
+    const rows = tenantMembers.filter((row) => {
+      const status = normalizeMembershipStatus(row.membership_status)
+      return status !== "inactive" && status !== "pending"
+    })
+    return rows.sort((a, b) => {
+      const roleA = normalizeRoleSlug(a.role_slug)
+      const roleB = normalizeRoleSlug(b.role_slug)
+      const rankA = MEMBER_ROLE_PRIORITY[roleA] ?? 99
+      const rankB = MEMBER_ROLE_PRIORITY[roleB] ?? 99
+      if (rankA !== rankB) return rankA - rankB
+      const tA = a.joined_at ? new Date(a.joined_at).getTime() : Number.POSITIVE_INFINITY
+      const tB = b.joined_at ? new Date(b.joined_at).getTime() : Number.POSITIVE_INFINITY
+      return tA - tB
+    })
+  }, [tenantMembers])
 
-  const membersInactiveRows = useMemo(
-    () => tenantMembers.filter((row) => normalizeMembershipStatus(row.membership_status) === "inactive"),
-    [tenantMembers]
-  )
+  const membersInactiveRows = useMemo(() => {
+    const rows = tenantMembers.filter((row) => normalizeMembershipStatus(row.membership_status) === "inactive")
+    return rows.sort((a, b) => {
+      const roleA = normalizeRoleSlug(a.role_slug)
+      const roleB = normalizeRoleSlug(b.role_slug)
+      const rankA = MEMBER_ROLE_PRIORITY[roleA] ?? 99
+      const rankB = MEMBER_ROLE_PRIORITY[roleB] ?? 99
+      if (rankA !== rankB) return rankA - rankB
+      const tA = a.joined_at ? new Date(a.joined_at).getTime() : Number.POSITIVE_INFINITY
+      const tB = b.joined_at ? new Date(b.joined_at).getTime() : Number.POSITIVE_INFINITY
+      return tA - tB
+    })
+  }, [tenantMembers])
 
   const totalSeatsValue = membersLoading
     ? "-"
     : memberLimit !== null
       ? String(memberLimit)
-      : String(memberStatusCounts.active + memberStatusCounts.pending + memberStatusCounts.suspended)
+      : String(memberStatusCounts.active + memberStatusCounts.suspended)
 
   const invitationStatusCounts = useMemo(() => {
     const counts = { pending: 0, accepted: 0, rejected: 0, cancelled: 0, expired: 0 }
@@ -554,6 +608,17 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
 
   const invitationOtherCount =
     invitationStatusCounts.rejected + invitationStatusCounts.cancelled + invitationStatusCounts.expired
+
+  const pendingInviteEmails = useMemo(() => {
+    const set = new Set<string>()
+    tenantInvitations.forEach((row) => {
+      const status = String(row.status || "").toLowerCase()
+      if (status !== "pending") return
+      const email = String(row.invitee_email || "").trim().toLowerCase()
+      if (email) set.add(email)
+    })
+    return set
+  }, [tenantInvitations])
 
   const handleOpenMemberDialog = useCallback(
     (row: TenantMemberRow) => {
@@ -601,37 +666,105 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
 
   const handleRemoveMember = useCallback(async () => {
     if (!memberDialogTarget || !canManageMembers) return
-    const ok = window.confirm("해당 멤버를 테넌트에서 제외할까요?")
-    if (!ok) return
+    const password = memberRemovePassword.trim()
+    if (!password) {
+      setMemberRemoveError("비밀번호를 입력해 주세요.")
+      return
+    }
     const headers = authHeaders()
     if (!headers.Authorization) {
-      setMemberActionError("로그인이 필요합니다.")
+      setMemberRemoveError("로그인이 필요합니다.")
       return
     }
     setMemberSaving(true)
-    setMemberActionError(null)
+    setMemberRemoveError(null)
     try {
       const res = await fetch(`/api/posts/tenant/members/${encodeURIComponent(memberDialogTarget.id)}`, {
         method: "PUT",
         headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify({
           membership_status: "inactive",
+          password,
         }),
       })
       if (!res.ok) {
         const msg = await res.text().catch(() => "")
-        setMemberActionError(msg || "멤버 제외에 실패했습니다.")
+        setMemberRemoveError(msg || "멤버 제외에 실패했습니다.")
         return
       }
+      setMemberRemoveDialogOpen(false)
       setMemberDialogOpen(false)
+      setMemberRemovePassword("")
       await loadTenantMembers()
     } catch (error) {
       console.error(error)
-      setMemberActionError("멤버 제외에 실패했습니다.")
+      setMemberRemoveError("멤버 제외에 실패했습니다.")
     } finally {
       setMemberSaving(false)
     }
-  }, [authHeaders, canManageMembers, loadTenantMembers, memberDialogTarget])
+  }, [authHeaders, canManageMembers, loadTenantMembers, memberDialogTarget, memberRemovePassword])
+
+  const handleResendInvite = useCallback(
+    async (row: TenantMemberRow) => {
+      if (!canManageMembers) return
+      const email = String(row.user_email || "").trim()
+      if (!email) {
+        toast.error("초대할 이메일이 없습니다.")
+        return false
+      }
+      const role = normalizeRoleSlug(row.role_slug)
+      const nextRole = role === "owner" ? "member" : role
+      const headers = authHeaders()
+      if (!headers.Authorization) {
+        toast.error("로그인이 필요합니다.")
+        return false
+      }
+      setResendInviteLoadingId(row.id)
+      try {
+        const res = await fetch("/api/posts/tenant/invitations", {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ invitee_email: email, membership_role: nextRole }),
+        })
+        const json = (await res.json().catch(() => null)) as { ok?: boolean; message?: string } | null
+        if (!res.ok || !json?.ok) {
+          toast.error(json?.message || "초대 재발송에 실패했습니다.")
+          return false
+        }
+        await loadTenantInvitations()
+        toast.success("초대를 다시 보냈습니다.")
+        return true
+      } catch (error) {
+        console.error(error)
+        toast.error("초대 재발송에 실패했습니다.")
+        return false
+      } finally {
+        setResendInviteLoadingId(null)
+      }
+    },
+    [authHeaders, canManageMembers, loadTenantInvitations]
+  )
+
+  const handleRefresh = useCallback(() => {
+    if (!open) return
+    if (activeMenu === "info") {
+      void loadTenantInfo()
+      void loadCreditSummary()
+      return
+    }
+    if (activeMenu === "members") {
+      void loadTenantMembers()
+      void loadTenantInvitations()
+      return
+    }
+    if (activeMenu === "invitations") {
+      void loadTenantInvitations()
+      return
+    }
+    if (activeMenu === "credits" || activeMenu === "topupCredits" || activeMenu === "usage") {
+      void loadCreditSummary()
+    }
+  }, [activeMenu, loadCreditSummary, loadTenantInfo, loadTenantInvitations, loadTenantMembers, open])
 
   const handleCreateInvitation = useCallback(async () => {
     if (!canManageMembers) return
@@ -728,7 +861,8 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     if (!open) return
     if (activeMenu !== "members") return
     void loadTenantMembers()
-  }, [activeMenu, loadTenantMembers, open])
+    void loadTenantInvitations()
+  }, [activeMenu, loadTenantMembers, loadTenantInvitations, open])
   useEffect(() => {
     if (!open) return
     if (activeMenu !== "invitations") return
@@ -738,7 +872,19 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     if (memberDialogOpen) return
     setMemberDialogTarget(null)
     setMemberActionError(null)
+    setMemberRemoveDialogOpen(false)
+    setMemberRemovePassword("")
+    setMemberRemoveError(null)
   }, [memberDialogOpen])
+  useEffect(() => {
+    if (memberRemoveDialogOpen) return
+    setMemberRemovePassword("")
+    setMemberRemoveError(null)
+  }, [memberRemoveDialogOpen])
+  useEffect(() => {
+    if (resendInviteDialogOpen) return
+    setResendInviteTarget(null)
+  }, [resendInviteDialogOpen])
   useEffect(() => {
     if (inviteDialogOpen) return
     setInviteEmail("")
@@ -781,12 +927,22 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                 </Popover>
                 <h2 className="text-base font-bold text-foreground">{activeLabel}</h2>
               </div>
-              <DialogClose
-                className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                aria-label="Close"
-              >
-                <X className="size-4" />
-              </DialogClose>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  aria-label="새로고침"
+                  onClick={handleRefresh}
+                >
+                  <RotateCw className="size-4" />
+                </button>
+                <DialogClose
+                  className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  aria-label="Close"
+                >
+                  <X className="size-4" />
+                </DialogClose>
+              </div>
             </div>
 
             <div className="mt-6 flex-1 overflow-y-auto pr-2">
@@ -853,26 +1009,17 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
 
                   <div className="px-4 pb-4">
                     <div className="text-sm font-semibold text-foreground">멤버 현황</div>
-                    <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+                    <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3">
                       {[
                         { label: "총 좌석", value: totalSeatsValue, sub: "명", icon: UsersRound, accent: "text-foreground", bg: "bg-muted/60", ring: "" },
                         {
-                          label: "활성",
+                          label: "활동",
                           value: membersLoading ? "-" : String(memberStatusCounts.active),
                           sub: "명",
                           icon: UserRoundCheck,
                           accent: "text-teal-600",
                           bg: "bg-teal-50 dark:bg-teal-950/40",
                           ring: "ring-1 ring-teal-200 dark:ring-teal-800",
-                        },
-                        {
-                          label: "대기",
-                          value: membersLoading ? "-" : String(memberStatusCounts.pending),
-                          sub: "명",
-                          icon: ShieldCheck,
-                          accent: "text-amber-600",
-                          bg: "bg-amber-50 dark:bg-amber-950/40",
-                          ring: "ring-1 ring-amber-200 dark:ring-amber-800",
                         },
                         {
                           label: "정지",
@@ -933,14 +1080,25 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                               const statusLabel = MEMBERSHIP_STATUS_LABELS[statusKey] || row.membership_status || "-"
                               const statusStyle = MEMBERSHIP_STATUS_STYLES[statusKey] || MEMBERSHIP_STATUS_STYLES.inactive
                               const roleLabel = ROLE_LABELS[roleSlugRaw] || row.role_name || row.role_slug || "-"
+                              const isSelf = Boolean(currentUserId) && String(row.user_id || "") === String(currentUserId)
+                              const disableManage = isSelf && isCurrentUserAdmin
                               const initial = resolveMemberInitial(row)
+                              const profileSrc = row.profile_image_asset_id
+                                ? `/api/ai/media/assets/${String(row.profile_image_asset_id)}`
+                                : ""
                               return (
                                 <TableRow key={row.id} className="hover:bg-accent/40">
                                   <TableCell className="text-foreground">
                                     <div className="flex items-center gap-1">
-                                      <div className="flex items-center justify-center gap-2 w-6 h-6 bg-teal-500 rounded-sm">
-                                        <span className="text-white font-semibold text-sm">{initial}</span>
-                                      </div>
+                                      <ProfileAvatar
+                                        size={24}
+                                        rounded="sm"
+                                        src={profileSrc}
+                                        name={row.user_name || row.user_email}
+                                        initial={initial}
+                                        fallbackClassName="bg-teal-500"
+                                        textClassName="text-sm"
+                                      />
                                       <div className="text-xs truncate">{resolveMemberName(row)}</div>
                                     </div>
                                   </TableCell>
@@ -961,7 +1119,11 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                                         variant="outline"
                                         size="sm"
                                         className="text-blue-500 hover:text-blue-600"
-                                        onClick={() => handleOpenMemberDialog(row)}
+                                        disabled={disableManage}
+                                        onClick={() => {
+                                          if (disableManage) return
+                                          handleOpenMemberDialog(row)
+                                        }}
                                       >
                                         <Settings2 className="size-4" />
                                       </Button>
@@ -1015,9 +1177,26 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                                 </TableCell>
                                 <TableCell className="text-center text-xs">{formatDate(row.left_at)}</TableCell>
                                 <TableCell className="text-center">
-                                  <Button variant="outline" size="sm" className="text-blue-500 hover:text-blue-600">
-                                    다시 초대
-                                  </Button>
+                                  {(() => {
+                                    const email = String(row.user_email || "").trim().toLowerCase()
+                                    const isPending = email ? pendingInviteEmails.has(email) : false
+                                    const isLoading = resendInviteLoadingId === row.id
+                                    const label = isPending ? "초대 중" : "다시 초대"
+                                    return (
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="text-blue-500 hover:text-blue-600"
+                                        disabled={!canManageMembers || isPending || isLoading}
+                                        onClick={() => {
+                                          setResendInviteTarget(row)
+                                          setResendInviteDialogOpen(true)
+                                        }}
+                                      >
+                                        {label}
+                                      </Button>
+                                    )
+                                  })()}
                                 </TableCell>
                               </TableRow>
                             ))
@@ -1653,8 +1832,13 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
             <Button
               variant="outline"
               className="text-destructive hover:text-destructive"
-              onClick={handleRemoveMember}
-              disabled={memberSaving || !canManageMembers}
+              onClick={() => {
+                if (!memberDialogTarget || !canManageMembers) return
+                setMemberRemoveError(null)
+                setMemberRemovePassword("")
+                setMemberRemoveDialogOpen(true)
+              }}
+              disabled={memberSaving || !canManageMembers || !memberDialogTarget}
             >
               멤버 제외
             </Button>
@@ -1664,6 +1848,81 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <Dialog open={memberRemoveDialogOpen} onOpenChange={setMemberRemoveDialogOpen}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>멤버 제외</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              멤버 제외를 진행하려면 본인 비밀번호를 입력해 주세요.
+            </p>
+            <Input
+              type="password"
+              value={memberRemovePassword}
+              onChange={(e) => {
+                setMemberRemovePassword(e.target.value)
+                if (memberRemoveError) setMemberRemoveError(null)
+              }}
+              placeholder="비밀번호"
+              disabled={memberSaving}
+            />
+            {memberRemoveError ? <div className="text-xs text-destructive">{memberRemoveError}</div> : null}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setMemberRemoveDialogOpen(false)}
+              disabled={memberSaving}
+            >
+              취소
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleRemoveMember}
+              disabled={memberSaving}
+            >
+              멤버 제외
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <AlertDialog
+        open={resendInviteDialogOpen}
+        onOpenChange={(openValue) => {
+          if (!openValue) setResendInviteDialogOpen(false)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>다시 초대</AlertDialogTitle>
+            <AlertDialogDescription>
+              {resendInviteTarget ? (
+                <span>
+                  {resolveMemberName(resendInviteTarget)}({resendInviteTarget.user_email || "-"})을 초대 하시겠습니까?
+                </span>
+              ) : (
+                "초대를 다시 보내시겠습니까?"
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setResendInviteDialogOpen(false)}>취소</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={async () => {
+                if (!resendInviteTarget) {
+                  setResendInviteDialogOpen(false)
+                  return
+                }
+                const ok = await handleResendInvite(resendInviteTarget)
+                if (ok) setResendInviteDialogOpen(false)
+              }}
+            >
+              확인
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog >
   )
 }

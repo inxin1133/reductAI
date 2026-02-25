@@ -35,6 +35,7 @@ import {
 } from "lucide-react"
 
 import { AppShell } from "@/components/layout/AppShell"
+import { withActiveTenantHeader } from "@/lib/tenantContext"
 import { Button } from "@/components/ui/button"
 import {
   Breadcrumb,
@@ -114,6 +115,10 @@ function authHeaders() {
   const headers: Record<string, string> = {}
   if (token) headers.Authorization = `Bearer ${token}`
   return headers
+}
+
+function teamHeaders() {
+  return withActiveTenantHeader({ ...authHeaders() })
 }
 
 type MyPage = {
@@ -754,7 +759,7 @@ export default function PostEditorPage() {
         if (!h.Authorization) return
         void Promise.all([
           fetch("/api/posts/categories/mine", { headers: h }).catch(() => null),
-          fetch("/api/posts/categories/mine?type=team_page", { headers: h }).catch(() => null),
+          fetch("/api/posts/categories/mine?type=team_page", { headers: teamHeaders() }).catch(() => null),
         ]).then(async ([pRes, tRes]) => {
           const personal: MyPageCategory[] = pRes && pRes.ok ? ((await pRes.json().catch(() => [])) as MyPageCategory[]) : []
           const team: MyPageCategory[] = tRes && tRes.ok ? ((await tRes.json().catch(() => [])) as MyPageCategory[]) : []
@@ -863,7 +868,7 @@ export default function PostEditorPage() {
       try {
         const [pRes, tRes] = await Promise.all([
           fetch("/api/posts/categories/mine", { headers: h }).catch(() => null),
-          fetch("/api/posts/categories/mine?type=team_page", { headers: h }).catch(() => null),
+          fetch("/api/posts/categories/mine?type=team_page", { headers: teamHeaders() }).catch(() => null),
         ])
         const personal: MyPageCategory[] = pRes && pRes.ok ? ((await pRes.json().catch(() => [])) as MyPageCategory[]) : []
         const team: MyPageCategory[] = tRes && tRes.ok ? ((await tRes.json().catch(() => [])) as MyPageCategory[]) : []

@@ -23,6 +23,7 @@ import {
   Gauge,
   Menu,
   MonitorSmartphone,
+  RotateCw,
   Settings2,
   SquareAsterisk,
   SquarePen,
@@ -730,6 +731,22 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     }
   }, [authHeaders])
 
+  const handleRefresh = useCallback(() => {
+    if (!open) return
+    if (activeMenu === "profile" || activeMenu === "password") {
+      void loadProfile()
+      return
+    }
+    if (activeMenu === "credits") {
+      void loadCreditSummary()
+      return
+    }
+    if (activeMenu === "devices") {
+      void loadDeviceSessions()
+      return
+    }
+  }, [activeMenu, loadCreditSummary, loadDeviceSessions, loadProfile, open])
+
   const handleRevokeDeviceSession = useCallback(
     async (session: UserSessionRow) => {
       if (!session?.id) return
@@ -1221,12 +1238,22 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                 </Popover>
                 <h2 className="text-base font-bold text-foreground">{activeLabel}</h2>
               </div>
-              <DialogClose
-                className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                aria-label="Close"
-              >
-                <X className="size-4" />
-              </DialogClose>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  aria-label="새로고침"
+                  onClick={handleRefresh}
+                >
+                  <RotateCw className="size-4" />
+                </button>
+                <DialogClose
+                  className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  aria-label="Close"
+                >
+                  <X className="size-4" />
+                </DialogClose>
+              </div>
             </div>
 
             <div className="mt-3 min-w-0 flex-1 overflow-y-auto pr-2">

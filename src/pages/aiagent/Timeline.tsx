@@ -3,6 +3,7 @@ import { AppShell } from "@/components/layout/AppShell"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "sonner"
+import { withActiveTenantHeader } from "@/lib/tenantContext"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1674,7 +1675,9 @@ export default function Timeline() {
         : []
 
       // Load team categories
-      const teamRes = await fetch("/api/posts/categories/mine?type=team_page", { headers: { ...authHeaders() } })
+      const teamRes = await fetch("/api/posts/categories/mine?type=team_page", {
+        headers: withActiveTenantHeader({ ...authHeaders() }),
+      })
       const teamRows = teamRes.ok
         ? ((await teamRes.json().catch(() => [])) as Array<{ id: string; name: string; icon?: string | null }>)
         : []

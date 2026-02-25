@@ -8,7 +8,6 @@ import {
   ChevronsUpDown,
   Clock,
   Ellipsis,
-  ImageOff,
   LogOut,
   Menu,
   MessageSquareMore,
@@ -37,6 +36,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Input } from "@/components/ui/input"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
+import { ProfileAvatar } from "@/lib/ProfileAvatar"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -290,6 +290,27 @@ export function Sidebar({ className }: SidebarProps) {
       return ""
     }
   })
+  const TENANT_MEMBERSHIPS_CACHE_KEY = "reductai:sidebar:tenantMemberships:v1"
+  const initialTenantMemberships =
+    (() => {
+      try {
+        if (typeof window === "undefined") return []
+        const raw = window.localStorage.getItem(TENANT_MEMBERSHIPS_CACHE_KEY)
+        const j = raw ? JSON.parse(raw) : null
+        return Array.isArray(j) ? (j as Array<{
+          id: string
+          name?: string | null
+          tenant_type?: string | null
+          is_primary?: boolean
+          role_slug?: string | null
+          role_name?: string | null
+          role_scope?: string | null
+          plan_tier?: string | null
+        }>) : []
+      } catch {
+        return []
+      }
+    })()
   const [tenantMemberships, setTenantMemberships] = useState<
     Array<{
       id: string
@@ -300,8 +321,12 @@ export function Sidebar({ className }: SidebarProps) {
       role_name?: string | null
       role_scope?: string | null
       plan_tier?: string | null
+      membership_id?: string | null
+      membership_status?: string | null
+      user_id?: string | null
     }>
-  >([])
+  >(initialTenantMemberships)
+  const [tenantMembershipsLoaded, setTenantMembershipsLoaded] = useState(initialTenantMemberships.length > 0)
   const [activeTeamTenantId, setActiveTeamTenantId] = useState<string>(() => getActiveTenantId())
   const teamCatsCacheKey = useMemo(() => buildTeamCatsCacheKey(activeTeamTenantId), [activeTeamTenantId])
   const [pendingInvitations, setPendingInvitations] = useState<TenantInvitationRow[]>([])
@@ -319,7 +344,6 @@ export function Sidebar({ className }: SidebarProps) {
       return null
     }
   })
-  const [isProfileImageBroken, setIsProfileImageBroken] = useState(false)
   const [authProviders, setAuthProviders] = useState<string[]>([])
   const [hasPassword, setHasPassword] = useState(false)
   const [languages, setLanguages] = useState<Language[]>([])
@@ -339,24 +363,34 @@ export function Sidebar({ className }: SidebarProps) {
     return matched || teamTenants[0] || null
   }, [activeTeamTenantId, teamTenants])
 
-  const hasTeamTenant = Boolean(activeTeamTenant)
+  const hasTeamTenant = Boolean(activeTeamTenant) || (!tenantMembershipsLoaded && Boolean(activeTeamTenantId))
+
+  const activeTeamStatus = useMemo(() => {
+    const raw = String(activeTeamTenant?.membership_status || "").toLowerCase()
+    return raw || "active"
+  }, [activeTeamTenant?.membership_status])
+
+  const isSuspendedTeamMember = activeTeamStatus === "suspended"
+  const isActiveTeamMember = activeTeamStatus === "active"
 
   const teamPageLabel = useMemo(() => {
     if (!activeTeamTenant) return "팀 페이지"
     const name = String(activeTeamTenant.name || "").trim()
-    if (name) return `${name} 페이지`
-    if (String(activeTeamTenant.tenant_type || "") === "group") return "그룹 페이지"
-    return "팀 페이지"
-  }, [activeTeamTenant])
+    const base = name ? `${name} 페이지` : String(activeTeamTenant.tenant_type || "") === "group" ? "그룹 페이지" : "팀 페이지"
+    return isSuspendedTeamMember ? `(정지) ${base}` : base
+  }, [activeTeamTenant, isSuspendedTeamMember])
 
   const pendingInviteCount = pendingInvitations.length
 
   const canManageTeamTenant = useMemo(() => {
     if (!activeTeamTenant) return false
+    if (!isActiveTeamMember) return false
     const roleSlug = String(activeTeamTenant.role_slug || "").toLowerCase()
     const elevated = new Set(["owner", "admin", "tenant_admin", "tenant_owner"])
     return elevated.has(roleSlug)
-  }, [activeTeamTenant])
+  }, [activeTeamTenant, isActiveTeamMember])
+
+  const showTeamManageButton = canManageTeamTenant || isSuspendedTeamMember
 
   const resolveTenantLabel = (t: { name?: string | null; tenant_type?: string | null }) => {
     if (String(t.tenant_type || "") === "personal") return "개인"
@@ -377,10 +411,12 @@ const profileBadges = useMemo(() => {
   if (tenantMemberships.length) {
     return tenantMemberships.map((t) => {
       const tier = resolveServiceTier(t)
+      const status = String(t.membership_status || "").toLowerCase()
+      const prefix = status === "suspended" ? "(정지) " : ""
       return {
         key: String(t.id),
         tier,
-        label: `${resolveTenantLabel(t)}:${PLAN_TIER_LABELS[tier]}`,
+        label: `${prefix}${resolveTenantLabel(t)}:${PLAN_TIER_LABELS[tier]}`,
       }
     })
   }
@@ -396,6 +432,7 @@ const profileBadges = useMemo(() => {
 }, [tenantMemberships, tenantName, tenantPlanTier, tenantType])
 
   useEffect(() => {
+    if (!tenantMembershipsLoaded) return
     if (!teamTenants.length) {
       if (activeTeamTenantId) {
         setActiveTeamTenantId("")
@@ -409,7 +446,7 @@ const profileBadges = useMemo(() => {
       setActiveTeamTenantId(nextId)
       setActiveTenantId(nextId)
     }
-  }, [activeTeamTenantId, teamTenants])
+  }, [activeTeamTenantId, teamTenants, tenantMembershipsLoaded])
 
   useEffect(() => {
     if (!activeTeamTenantId) {
@@ -703,6 +740,9 @@ const profileBadges = useMemo(() => {
   const [isPlanDialogOpen, setIsPlanDialogOpen] = useState(false)
   const [isTenantSettingsDialogOpen, setIsTenantSettingsDialogOpen] = useState(false)
   const [isContactDialogOpen, setIsContactDialogOpen] = useState(false)
+  const [isSuspendedDialogOpen, setIsSuspendedDialogOpen] = useState(false)
+  const [suspendedActionBusy, setSuspendedActionBusy] = useState(false)
+  const [suspendedActionError, setSuspendedActionError] = useState<string | null>(null)
 
   const { theme, themeMode, setThemeMode } = useTheme()
   const userProfile = useMemo(() => {
@@ -752,56 +792,6 @@ const profileBadges = useMemo(() => {
     return items
   }, [authProviders, hasPassword])
 
-  const profileImageSrc = useMemo(() => {
-    if (!profileImageUrl) return null
-    if (typeof window === "undefined") return profileImageUrl
-    if (!profileImageUrl.startsWith("/api/ai/media/assets/")) return profileImageUrl
-    const token = window.localStorage.getItem("token")
-    if (!token) return profileImageUrl
-    const sep = profileImageUrl.includes("?") ? "&" : "?"
-    return `${profileImageUrl}${sep}token=${encodeURIComponent(token)}`
-  }, [profileImageUrl])
-  const fallbackInitial = (String(userProfile.initial || "").trim() || "NA")
-  useEffect(() => {
-    setIsProfileImageBroken(false)
-  }, [profileImageSrc])
-
-  const ProfileAvatar = ({
-    sizeClass,
-    roundedClass,
-    textClass,
-    className,
-    ...props
-  }: {
-    sizeClass: string
-    roundedClass: string
-    textClass: string
-    className?: string
-  } & React.ComponentProps<"div">) => (
-    <div
-      className={cn(
-        sizeClass,
-        roundedClass,
-        "flex items-center justify-center shrink-0 overflow-hidden",
-        avatarBgClass,
-        className
-      )}
-      {...props}
-    >
-      {profileImageSrc && !isProfileImageBroken ? (
-        <img
-          src={profileImageSrc}
-          alt="프로필 이미지"
-          className={cn(sizeClass, "object-cover")}
-          onError={() => setIsProfileImageBroken(true)}
-        />
-      ) : profileImageSrc && isProfileImageBroken ? (
-        <ImageOff className={cn("text-white/80", sizeClass === "size-10" ? "size-5" : "size-4")} />
-      ) : (
-        <span className={cn("text-white font-semibold", textClass)}>{fallbackInitial}</span>
-      )}
-    </div>
-  )
 
   // 현재 페이지에 따라 GNB 메뉴 활성화 표시를 결정
   const isFrontAIActive = location.pathname.startsWith("/front-ai")
@@ -949,6 +939,37 @@ const profileBadges = useMemo(() => {
     }
   }
 
+  const handleLeaveSuspendedTenant = async () => {
+    const membershipId = String(activeTeamTenant?.membership_id || "").trim()
+    if (!membershipId) return
+    const h = authHeaders()
+    if (!h.Authorization) {
+      alert("로그인이 필요합니다.")
+      return
+    }
+    setSuspendedActionBusy(true)
+    setSuspendedActionError(null)
+    try {
+      const r = await fetch(`/api/posts/tenant/members/${encodeURIComponent(membershipId)}`, {
+        method: "PUT",
+        headers: { ...h, "Content-Type": "application/json" },
+        body: JSON.stringify({ membership_status: "inactive" }),
+      }).catch(() => null)
+      if (!r || !r.ok) {
+        const msg = r ? await r.text().catch(() => "") : ""
+        setSuspendedActionError(msg || "멤버 탈퇴에 실패했습니다.")
+        return
+      }
+      setIsSuspendedDialogOpen(false)
+      await loadTenantMemberships()
+    } catch (error) {
+      console.error(error)
+      setSuspendedActionError("멤버 탈퇴에 실패했습니다.")
+    } finally {
+      setSuspendedActionBusy(false)
+    }
+  }
+
   const loadPersonalCategories = async () => {
     const h = authHeaders()
     if (!h.Authorization) {
@@ -990,6 +1011,10 @@ const profileBadges = useMemo(() => {
   const openCreateCategoryDialog = (type: "personal" | "team") => {
     if (type === "team" && !activeTeamTenantId) {
       alert("팀/그룹 테넌트를 선택해 주세요.")
+      return
+    }
+    if (type === "team" && !isActiveTeamMember) {
+      setIsSuspendedDialogOpen(true)
       return
     }
     setCreateCategoryType(type)
@@ -1088,12 +1113,12 @@ const profileBadges = useMemo(() => {
     if (!isMobile) return
     if (!isMobileMenuOpen) return
     if (isPersonalOpen) void loadPersonalCategories()
-    if (isTeamOpen && hasTeamTenant) {
+    if (isTeamOpen && hasTeamTenant && isActiveTeamMember) {
       void loadTenantName()
       void loadTeamCategories()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMobile, isMobileMenuOpen, isPersonalOpen, isTeamOpen, hasTeamTenant, activeTeamTenantId])
+  }, [isMobile, isMobileMenuOpen, isPersonalOpen, isTeamOpen, hasTeamTenant, activeTeamTenantId, isActiveTeamMember])
 
   const loadTenantName = async () => {
     const h = authHeaders()
@@ -1140,18 +1165,36 @@ const profileBadges = useMemo(() => {
 
   const loadTenantMemberships = async () => {
     const h = authHeaders()
-    if (!h.Authorization) return
-    const r = await fetch("/api/posts/tenant/memberships", { headers: h }).catch(() => null)
-    if (!r || !r.ok) return
-    const rows = (await r.json().catch(() => [])) as Array<{
-      id: string
-      name?: string | null
-      tenant_type?: string | null
-      is_primary?: boolean
-      plan_tier?: string | null
-    }>
-    if (Array.isArray(rows)) {
-      setTenantMemberships(rows)
+    if (!h.Authorization) {
+      setTenantMembershipsLoaded(true)
+      return
+    }
+    try {
+      const r = await fetch("/api/posts/tenant/memberships", { headers: h }).catch(() => null)
+      if (!r || !r.ok) return
+      const rows = (await r.json().catch(() => [])) as Array<{
+        id: string
+        name?: string | null
+        tenant_type?: string | null
+        is_primary?: boolean
+        plan_tier?: string | null
+        role_slug?: string | null
+        role_name?: string | null
+        role_scope?: string | null
+        membership_id?: string | null
+        membership_status?: string | null
+        user_id?: string | null
+      }>
+      if (Array.isArray(rows)) {
+        setTenantMemberships(rows)
+        try {
+          window.localStorage.setItem(TENANT_MEMBERSHIPS_CACHE_KEY, JSON.stringify(rows))
+        } catch {
+          // ignore
+        }
+      }
+    } finally {
+      setTenantMembershipsLoaded(true)
     }
   }
 
@@ -1211,6 +1254,10 @@ const profileBadges = useMemo(() => {
   }, [isInviteDialogOpen])
 
   const goToTopCategory = async (kind: "personal" | "team") => {
+    if (kind === "team" && !isActiveTeamMember) {
+      setIsSuspendedDialogOpen(true)
+      return
+    }
     const list = kind === "personal" ? personalCategories : teamCategories
     const fromState = list.length ? String(list[0]?.id || "") : ""
     if (fromState) {
@@ -1231,6 +1278,7 @@ const profileBadges = useMemo(() => {
   }
 
   const loadTeamCategories = async () => {
+    if (!isActiveTeamMember) return
     const h = teamHeaders()
     if (!h || !h.Authorization) return
     setTeamCatsLoading(true)
@@ -1457,10 +1505,11 @@ const profileBadges = useMemo(() => {
     if (!isOpen) return
     if (!isTeamOpen) return
     if (!hasTeamTenant) return
+    if (!isActiveTeamMember) return
     void loadTenantName()
     void loadTeamCategories()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, isTeamOpen, hasTeamTenant, activeTeamTenantId])
+  }, [isOpen, isTeamOpen, hasTeamTenant, activeTeamTenantId, isActiveTeamMember])
 
   const renameCategory = async (args: { type: "personal" | "team"; id: string; name: string }) => {
     const h = args.type === "team" ? teamHeaders() : authHeaders()
@@ -1642,6 +1691,31 @@ const profileBadges = useMemo(() => {
       </DialogContent>
     </Dialog>
   )
+  const suspendedDialog = (
+    <Dialog open={isSuspendedDialogOpen} onOpenChange={setIsSuspendedDialogOpen}>
+      <DialogContent className="sm:max-w-[480px]">
+        <DialogHeader>
+          <DialogTitle>정지 안내</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          <div className="text-foreground">
+            현재 <span className="font-semibold">{activeTeamTenant?.name || "해당"}</span> 테넌트에서 정지된 상태입니다.
+          </div>
+          {suspendedActionError ? (
+            <div className="text-xs text-destructive">{suspendedActionError}</div>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setIsSuspendedDialogOpen(false)} disabled={suspendedActionBusy}>
+            취소
+          </Button>
+          <Button variant="destructive" onClick={handleLeaveSuspendedTenant} disabled={suspendedActionBusy}>
+            멤버 탈퇴
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 
   const reorder = async (args: { type: "personal" | "team"; orderedIds: string[] }) => {
     const h = args.type === "team" ? teamHeaders() : authHeaders()
@@ -1709,7 +1783,16 @@ const profileBadges = useMemo(() => {
       {/* User Info Section - 유저 정보 섹션 */}
       <div className="flex flex-col gap-1 px-1 py-1">
         <div className="flex gap-2 items-center px-2 py-1.5 rounded-sm">
-          <ProfileAvatar sizeClass="size-10" roundedClass="rounded-lg" textClass="text-lg" />
+          <ProfileAvatar
+            size={40}
+            rounded="lg"
+            src={profileImageUrl}
+            name={userProfile.name}
+            initial={userProfile.initial}
+            fallbackClassName={avatarBgClass}
+            textClassName="text-lg"
+            showBrokenIcon
+          />
           <div className="flex flex-col flex-1 min-w-0">
             <p className="text-lg font-bold text-popover-foreground truncate">{userProfile.name}</p>
           </div>
@@ -1896,7 +1979,17 @@ const profileBadges = useMemo(() => {
         {/* Mobile Profile Popover Trigger */}
         <Popover open={isMobileProfileOpen} onOpenChange={setIsMobileProfileOpen}>
           <PopoverTrigger asChild>
-            <ProfileAvatar sizeClass="size-8" roundedClass="rounded-md" textClass="text-sm font-bold" className="cursor-pointer" />
+            <ProfileAvatar
+              size={32}
+              rounded="md"
+              src={profileImageUrl}
+              name={userProfile.name}
+              initial={userProfile.initial}
+              fallbackClassName={avatarBgClass}
+              textClassName="text-sm font-bold"
+              className="cursor-pointer"
+              showBrokenIcon
+            />
           </PopoverTrigger>
           <ProfilePopoverContent />
         </Popover>
@@ -1930,7 +2023,17 @@ const profileBadges = useMemo(() => {
           {/* Mobile Menu Profile Popover Trigger */}
           <Popover open={isMobileProfileOpen} onOpenChange={setIsMobileProfileOpen}>
             <PopoverTrigger asChild>
-              <ProfileAvatar sizeClass="size-8" roundedClass="rounded-md" textClass="text-sm font-bold" className="cursor-pointer" />
+              <ProfileAvatar
+                size={32}
+                rounded="md"
+                src={profileImageUrl}
+                name={userProfile.name}
+                initial={userProfile.initial}
+                fallbackClassName={avatarBgClass}
+                textClassName="text-sm font-bold"
+                className="cursor-pointer"
+                showBrokenIcon
+              />
             </PopoverTrigger>
             <ProfilePopoverContent />
           </Popover>
@@ -2086,7 +2189,7 @@ const profileBadges = useMemo(() => {
                   {teamPageLabel}
                 </span>
                 <div className="flex items-center gap-1">
-                  {canManageTeamTenant ? (
+                  {showTeamManageButton ? (
                     <button
                       type="button"
                       className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
@@ -2094,27 +2197,33 @@ const profileBadges = useMemo(() => {
                       onClick={(e) => {
                         e.preventDefault()
                         e.stopPropagation()
+                        if (isSuspendedTeamMember) {
+                          setIsSuspendedDialogOpen(true)
+                          return
+                        }
                         openTenantSettingsDialog()
                       }}
                     >
                       <Settings className="size-4" />
                     </button>
                   ) : null}
-                  <button
-                    type="button"
-                    className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
-                    title="카테고리 추가"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      openCreateCategoryDialog("team")
-                    }}
-                  >
-                    <Plus className="size-4" />
-                  </button>
+                  {isActiveTeamMember ? (
+                    <button
+                      type="button"
+                      className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                      title="카테고리 추가"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        openCreateCategoryDialog("team")
+                      }}
+                    >
+                      <Plus className="size-4" />
+                    </button>
+                  ) : null}
                 </div>
               </div>
-              {isTeamOpen && (
+              {isTeamOpen && isActiveTeamMember ? (
                 <>
                   {teamCatsLoading ? (
                     <div className="px-2 py-1 text-xs text-muted-foreground">Loading…</div>
@@ -2162,7 +2271,7 @@ const profileBadges = useMemo(() => {
                     <span className="text-base text-foreground">공유 파일</span>
                   </div>
                 </>
-              )}
+              ) : null}
             </div>
           ) : null}
 
@@ -2204,6 +2313,7 @@ const profileBadges = useMemo(() => {
         {tenantSettingsDialog}
         {contactDialog}
         {inviteDialog}
+        {suspendedDialog}
       </div>
     )
   }
@@ -2249,7 +2359,16 @@ const profileBadges = useMemo(() => {
             <div className={cn("flex items-center gap-2 p-2 cursor-pointer hover:bg-accent/50 rounded-md transition-colors", !isOpen && "justify-center p-0")}>
               {isOpen ? (
                 <>
-                  <ProfileAvatar sizeClass="size-10" roundedClass="rounded-lg" textClass="text-lg" />
+                  <ProfileAvatar
+                    size={40}
+                    rounded="lg"
+                    src={profileImageUrl}
+                    name={userProfile.name}
+                    initial={userProfile.initial}
+                    fallbackClassName={avatarBgClass}
+                    textClassName="text-lg"
+                    showBrokenIcon
+                  />
                   <div className="flex flex-col flex-1 min-w-0">
                     <p className="text-sm text-left font-semibold text-sidebar-foreground truncate">{userProfile.name}</p>
                     <div className="flex items-center flex-wrap gap-1">
@@ -2268,7 +2387,16 @@ const profileBadges = useMemo(() => {
                   </div>
                 </>
               ) : (
-                <ProfileAvatar sizeClass="size-8" roundedClass="rounded-md" textClass="text-base" />
+                <ProfileAvatar
+                  size={32}
+                  rounded="md"
+                  src={profileImageUrl}
+                  name={userProfile.name}
+                  initial={userProfile.initial}
+                  fallbackClassName={avatarBgClass}
+                  textClassName="text-base"
+                  showBrokenIcon
+                />
               )}
             </div>
           </PopoverTrigger>
@@ -2331,7 +2459,7 @@ const profileBadges = useMemo(() => {
             </div>
             {isOpen && <span className="text-sm text-sidebar-foreground flex-1">테넌트 초대 요청</span>}
             {isOpen && (
-              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
+              <span className="rounded-full bg-primary/10 h-4 w-4 flex items-center justify-center text-[10px] font-semibold text-primary">
                 {pendingInviteCount}
               </span>
             )}
@@ -2733,7 +2861,7 @@ const profileBadges = useMemo(() => {
                 <span className="flex-1 text-left text-xs text-sidebar-foreground" onClick={() => setIsTeamOpen((prev) => !prev)}>
                   {teamPageLabel}
                 </span>
-                {canManageTeamTenant ? (
+                {showTeamManageButton ? (
                   <div
                     className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
                     role="button"
@@ -2741,26 +2869,32 @@ const profileBadges = useMemo(() => {
                     onClick={(e) => {
                       e.preventDefault()
                       e.stopPropagation()
+                      if (isSuspendedTeamMember) {
+                        setIsSuspendedDialogOpen(true)
+                        return
+                      }
                       openTenantSettingsDialog()
                     }}
                   >
                     <Settings className="size-full" />
                   </div>
                 ) : null}
-                <div
-                  className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
-                  role="button"
-                  title="카테고리 추가"
-                  onClick={(e) => {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    openCreateCategoryDialog("team")
-                  }}
-                >
-                  <Plus className="size-full" />
-                </div>
+                {isActiveTeamMember ? (
+                  <div
+                    className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
+                    role="button"
+                    title="카테고리 추가"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      openCreateCategoryDialog("team")
+                    }}
+                  >
+                    <Plus className="size-full" />
+                  </div>
+                ) : null}
               </div>
-              {isTeamOpen && (
+              {isTeamOpen && isActiveTeamMember ? (
                 <>
                   <div
                     className="px-2 py-1 text-xs text-sidebar-foreground/60 h-6 hidden"
@@ -3122,7 +3256,7 @@ const profileBadges = useMemo(() => {
                     <span className="text-sm text-sidebar-foreground">공유 파일</span>
                   </div>
                 </>
-              )}
+              ) : null}
             </div>
           ) : null}
         </>
@@ -3226,7 +3360,7 @@ const profileBadges = useMemo(() => {
               open={collapsedTeamHoverOpen}
               onOpenChange={(open) => {
                 setCollapsedTeamHoverOpen(open)
-                if (open && teamCategories.length === 0) void loadTeamCategories()
+                if (open && teamCategories.length === 0 && isActiveTeamMember) void loadTeamCategories()
               }}
             >
               <HoverCardTrigger asChild>
@@ -3250,7 +3384,7 @@ const profileBadges = useMemo(() => {
                 <div className="flex items-center justify-between px-1 pb-2">
                   <div className="text-sm font-semibold">{teamPageLabel}</div>
                   <div className="flex items-center gap-1">
-                    {canManageTeamTenant ? (
+                    {showTeamManageButton ? (
                       <button
                         type="button"
                         className="size-8 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800 flex items-center justify-center"
@@ -3258,73 +3392,83 @@ const profileBadges = useMemo(() => {
                         onClick={(e) => {
                           e.preventDefault()
                           e.stopPropagation()
+                          if (isSuspendedTeamMember) {
+                            setIsSuspendedDialogOpen(true)
+                            return
+                          }
                           openTenantSettingsDialog()
                         }}
                       >
                         <Settings className="size-4" />
                       </button>
                     ) : null}
-                    <button
-                      type="button"
-                      className="size-8 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800 flex items-center justify-center"
-                      title="카테고리 추가"
-                      onClick={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        // Shared categories are allowed for team + group (exclude personal).
-                        if (!hasTeamTenant) return
-                        openCreateCategoryDialog("team")
-                      }}
-                    >
-                      <Plus className="size-4" />
-                    </button>
+                    {isActiveTeamMember ? (
+                      <button
+                        type="button"
+                        className="size-8 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800 flex items-center justify-center"
+                        title="카테고리 추가"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          // Shared categories are allowed for team + group (exclude personal).
+                          if (!hasTeamTenant) return
+                          openCreateCategoryDialog("team")
+                        }}
+                      >
+                        <Plus className="size-4" />
+                      </button>
+                    ) : null}
                   </div>
                 </div>
-                <Separator />
-                <ScrollArea className="h-[360px]">
-                  <div className="pt-2">
-                    {teamCategories.length === 0 ? (
-                      <div className="text-sm text-muted-foreground px-2 py-2">
-                        {teamCatsLoading ? "Loading…" : "아직 카테고리가 없습니다."}
+                {isActiveTeamMember ? (
+                  <>
+                    <Separator />
+                    <ScrollArea className="h-[360px]">
+                      <div className="pt-2">
+                        {teamCategories.length === 0 ? (
+                          <div className="text-sm text-muted-foreground px-2 py-2">
+                            {teamCatsLoading ? "Loading…" : "아직 카테고리가 없습니다."}
+                          </div>
+                        ) : (
+                          <div className="flex flex-col gap-1">
+                            {teamCategories.map((c) => {
+                              const isActive =
+                                isPostsActive && activeCategoryId && String(activeCategoryId) === String(c.id)
+                              const choice = decodeIcon(c.icon)
+                              const DefaultIcon = Share2
+                              const IconEl = (() => {
+                                if (!choice) return <DefaultIcon className="size-4" />
+                                if (choice.kind === "emoji") return <span className="text-[16px] leading-none">{choice.value}</span>
+                                const Preset = LUCIDE_PRESET_MAP[choice.value]
+                                const Dyn = Preset || catLucideAll?.[choice.value]
+                                if (!Dyn) return <DefaultIcon className="size-4" />
+                                return <Dyn className="size-4" />
+                              })()
+                              return (
+                                <div
+                                  key={c.id}
+                                  className={cn(
+                                    "flex items-center gap-2 px-2 h-8 rounded-md cursor-pointer",
+                                    isActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                                  )}
+                                  onClick={() => {
+                                    setCollapsedTeamHoverOpen(false)
+                                    navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
+                                  }}
+                                >
+                                  <div className="size-6 shrink-0 flex items-center justify-center text-sidebar-foreground">
+                                    {IconEl}
+                                  </div>
+                                  <span className="text-sm text-sidebar-foreground truncate">{c.name || "New category"}</span>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
                       </div>
-                    ) : (
-                      <div className="flex flex-col gap-1">
-                        {teamCategories.map((c) => {
-                          const isActive =
-                            isPostsActive && activeCategoryId && String(activeCategoryId) === String(c.id)
-                          const choice = decodeIcon(c.icon)
-                          const DefaultIcon = Share2
-                          const IconEl = (() => {
-                            if (!choice) return <DefaultIcon className="size-4" />
-                            if (choice.kind === "emoji") return <span className="text-[16px] leading-none">{choice.value}</span>
-                            const Preset = LUCIDE_PRESET_MAP[choice.value]
-                            const Dyn = Preset || catLucideAll?.[choice.value]
-                            if (!Dyn) return <DefaultIcon className="size-4" />
-                            return <Dyn className="size-4" />
-                          })()
-                          return (
-                            <div
-                              key={c.id}
-                              className={cn(
-                                "flex items-center gap-2 px-2 h-8 rounded-md cursor-pointer",
-                                isActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
-                              )}
-                              onClick={() => {
-                                setCollapsedTeamHoverOpen(false)
-                                navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
-                              }}
-                            >
-                              <div className="size-6 shrink-0 flex items-center justify-center text-sidebar-foreground">
-                                {IconEl}
-                              </div>
-                              <span className="text-sm text-sidebar-foreground truncate">{c.name || "New category"}</span>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    )}
-                  </div>
-                </ScrollArea>
+                    </ScrollArea>
+                  </>
+                ) : null}
               </HoverCardContent>
             </HoverCard>
           ) : null}
@@ -3383,6 +3527,7 @@ const profileBadges = useMemo(() => {
       {tenantSettingsDialog}
       {contactDialog}
       {inviteDialog}
+      {suspendedDialog}
     </div>
   )
 }

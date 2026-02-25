@@ -6,6 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { toast } from "sonner"
+import { withActiveTenantHeader } from "@/lib/tenantContext"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -191,7 +192,9 @@ export default function TrashPage() {
     try {
       const [pRes, tRes] = await Promise.all([
         fetch(`${POSTS_API_BASE}/categories/mine`, { headers: { ...authHeaders() } }),
-        fetch(`${POSTS_API_BASE}/categories/mine?type=team_page`, { headers: { ...authHeaders() } }),
+        fetch(`${POSTS_API_BASE}/categories/mine?type=team_page`, {
+          headers: withActiveTenantHeader({ ...authHeaders() }),
+        }),
       ])
       const pRows = pRes.ok ? ((await pRes.json().catch(() => [])) as CategoryRow[]) : []
       const tRows = tRes.ok ? ((await tRes.json().catch(() => [])) as CategoryRow[]) : []

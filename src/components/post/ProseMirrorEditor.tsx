@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { ButtonGroup, ButtonGroupItem } from "@/components/ui/button-group"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { withActiveTenantHeader } from "@/lib/tenantContext"
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   cmdBlockquote,
@@ -789,11 +790,12 @@ export function ProseMirrorEditor({ initialDocJson, onChange, toolbarOpen, postI
     if (!token) return
 
     const headers = { Authorization: `Bearer ${token}` }
+    const teamHeaders = withActiveTenantHeader({ ...headers })
 
     // Fetch personal and team categories in parallel
     Promise.all([
       fetch("/api/posts/categories/mine?type=personal_page", { headers }).then((r) => r.ok ? r.json() : []),
-      fetch("/api/posts/categories/mine?type=team_page", { headers }).then((r) => r.ok ? r.json() : []),
+      fetch("/api/posts/categories/mine?type=team_page", { headers: teamHeaders }).then((r) => r.ok ? r.json() : []),
     ])
       .then(([personalData, teamData]) => {
         const personal = (personalData || []).map((cat: Record<string, unknown>) => ({

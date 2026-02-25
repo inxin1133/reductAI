@@ -5,6 +5,7 @@ import type { AuthedRequest } from "../middleware/requireAuth"
 import { ensureSystemTenantId } from "../services/systemTenantService"
 import { randomUUID } from "crypto"
 import nodemailer from "nodemailer"
+import bcrypt from "bcrypt"
 
 const MEDIA_ASSET_URL_RE = /(?:https?:\/\/[^/]+)?\/api\/ai\/media\/assets\/([0-9a-f-]{36})/gi
 
@@ -728,21 +729,50 @@ export async function createPost(req: Request, res: Response) {
     let tenantId = ""
     let effectiveCategoryId = categoryId
 
-    // Validate parent_id (must exist and be owned by same user) if provided
+    // Validate parent_id (personal: owned by same user, team/group: member access) if provided
     // Also inherit parent's category_id if none provided explicitly
     if (parentId) {
       const p = await client.query(
-        `SELECT id, category_id, tenant_id
-         FROM posts
-         WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
+        `SELECT p.id, p.category_id, p.tenant_id, p.author_id, t.tenant_type
+         FROM posts p
+         JOIN tenants t ON t.id = p.tenant_id AND t.deleted_at IS NULL
+         WHERE p.id = $1 AND p.deleted_at IS NULL
          LIMIT 1`,
-        [parentId, userId]
+        [parentId]
       )
       if (p.rows.length === 0) {
         await client.query("ROLLBACK")
         return res.status(400).json({ message: "Invalid parent_id" })
       }
-      const parentRow = p.rows[0] as { category_id?: string | null; tenant_id?: string | null }
+      const parentRow = p.rows[0] as {
+        category_id?: string | null
+        tenant_id?: string | null
+        author_id?: string | null
+        tenant_type?: string | null
+      }
+      const parentTenantType = String(parentRow.tenant_type || "")
+      if (parentTenantType === "personal") {
+        if (String(parentRow.author_id || "") !== String(userId)) {
+          await client.query("ROLLBACK")
+          return res.status(403).json({ message: "Forbidden parent_id" })
+        }
+      } else {
+        const membershipRes = await client.query(
+          `
+          SELECT 1
+          FROM user_tenant_roles
+          WHERE user_id = $1
+            AND tenant_id = $2
+            AND (membership_status IS NULL OR membership_status = 'active')
+          LIMIT 1
+          `,
+          [userId, parentRow.tenant_id]
+        )
+        if (membershipRes.rows.length === 0) {
+          await client.query("ROLLBACK")
+          return res.status(403).json({ message: "Forbidden parent_id" })
+        }
+      }
       if (parentRow?.tenant_id) {
         tenantId = String(parentRow.tenant_id)
       }
@@ -792,6 +822,7 @@ export async function listMyPages(req: Request, res: Response) {
   try {
     const userId = (req as AuthedRequest).userId
     const categoryId = typeof req.query.categoryId === "string" ? String(req.query.categoryId).trim() : ""
+    let isTeamCategory = false
     let tenantId = ""
     if (categoryId) {
       const ctx = await resolveCategoryContext(categoryId)
@@ -801,6 +832,21 @@ export async function listMyPages(req: Request, res: Response) {
       if (ctx.categoryType === "team_page") {
         const ok = await tenantAllowsSharedPages(ctx.tenantId)
         if (!ok) return res.json([])
+        const membershipRes = await query(
+          `
+          SELECT 1
+          FROM user_tenant_roles
+          WHERE user_id = $1
+            AND tenant_id = $2
+            AND (membership_status IS NULL OR membership_status = 'active')
+          LIMIT 1
+          `,
+          [userId, ctx.tenantId]
+        )
+        if (membershipRes.rows.length === 0) {
+          return res.status(403).json({ message: "Forbidden" })
+        }
+        isTeamCategory = true
       }
       tenantId = ctx.tenantId
     }
@@ -811,14 +857,18 @@ export async function listMyPages(req: Request, res: Response) {
     let sql =
       `SELECT id, parent_id, category_id, title, icon, slug, page_type, status, visibility, child_count, page_order, updated_at
        FROM posts
-       WHERE tenant_id = $1 AND author_id = $2 AND deleted_at IS NULL AND COALESCE(status, '') <> 'deleted'`
-    const params: any[] = [tenantId, userId]
+       WHERE tenant_id = $1 AND deleted_at IS NULL AND COALESCE(status, '') <> 'deleted'`
+    const params: any[] = [tenantId]
+    if (!isTeamCategory) {
+      params.push(userId)
+      sql += ` AND author_id = $${params.length}`
+    }
     if (categoryId) {
       if (categoryId === "null") {
         sql += ` AND category_id IS NULL`
       } else {
-        sql += ` AND category_id = $3`
         params.push(categoryId)
+        sql += ` AND category_id = $${params.length}`
       }
     }
     sql += `
@@ -1180,6 +1230,8 @@ export async function listTenantMemberships(req: Request, res: Response) {
     const r = await query(
       `
       SELECT
+        utr.id AS membership_id,
+        utr.user_id,
         t.id,
         t.name,
         t.tenant_type,
@@ -1279,12 +1331,25 @@ export async function updateTenantMember(req: Request, res: Response) {
   try {
     await client.query("BEGIN")
     const authed = req as AuthedRequest
-    const tenantId = await resolveTenantId(authed)
     const actorId = String(authed.userId || "").trim()
     const membershipId = String(req.params.id || "").trim()
-    if (!tenantId) return res.status(400).json({ message: "Invalid tenant" })
     if (!actorId) return res.status(401).json({ message: "Unauthorized" })
     if (!membershipId || !isUuid(membershipId)) return res.status(400).json({ message: "Invalid membership id" })
+
+    const currentRes = await client.query(
+      `
+      SELECT utr.id, utr.user_id, utr.tenant_id
+      FROM user_tenant_roles utr
+      JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+      WHERE utr.id = $1
+      LIMIT 1
+      `,
+      [membershipId]
+    )
+    if (currentRes.rows.length === 0) return res.status(404).json({ message: "Membership not found" })
+    const tenantId = String(currentRes.rows[0]?.tenant_id || "")
+    if (!tenantId) return res.status(400).json({ message: "Invalid tenant" })
+    const targetUserId = String(currentRes.rows[0]?.user_id || "")
 
     const roleRes = await client.query(
       `
@@ -1302,18 +1367,8 @@ export async function updateTenantMember(req: Request, res: Response) {
     const actorRole = String(roleRes.rows?.[0]?.slug || "").toLowerCase()
     const canManage =
       actorRole === "owner" || actorRole === "admin" || actorRole === "tenant_owner" || actorRole === "tenant_admin"
-    if (!canManage) return res.status(403).json({ message: "Forbidden" })
-
-    const currentRes = await client.query(
-      `
-      SELECT id
-      FROM user_tenant_roles
-      WHERE id = $1 AND tenant_id = $2
-      LIMIT 1
-      `,
-      [membershipId, tenantId]
-    )
-    if (currentRes.rows.length === 0) return res.status(404).json({ message: "Membership not found" })
+    const isSelfTarget = targetUserId && actorId && targetUserId === actorId
+    if (!canManage && !isSelfTarget) return res.status(403).json({ message: "Forbidden" })
 
     const input = req.body || {}
     const fields: string[] = []
@@ -1324,6 +1379,7 @@ export async function updateTenantMember(req: Request, res: Response) {
     }
 
     if (input.role_slug !== undefined) {
+      if (!canManage) return res.status(403).json({ message: "Forbidden" })
       const roleSlug = String(input.role_slug || "").trim().toLowerCase()
       if (!roleSlug) return res.status(400).json({ message: "role_slug is required" })
       const roleIdRes = await client.query(`SELECT id FROM roles WHERE slug = $1 LIMIT 1`, [roleSlug])
@@ -1334,8 +1390,32 @@ export async function updateTenantMember(req: Request, res: Response) {
     if (input.membership_status !== undefined) {
       const status = String(input.membership_status || "").trim().toLowerCase()
       if (!MEMBERSHIP_STATUSES.has(status)) return res.status(400).json({ message: "invalid membership_status" })
+      if (!canManage && status !== "inactive") {
+        return res.status(403).json({ message: "Forbidden" })
+      }
+      if (!canManage && isSelfTarget && status !== "inactive") {
+        return res.status(403).json({ message: "Forbidden" })
+      }
       setField("membership_status", status)
       if (status === "inactive") {
+        if (!isSelfTarget) {
+          const password = typeof input.password === "string" ? input.password : ""
+          if (!password) {
+            return res.status(400).json({ message: "비밀번호를 입력해 주세요." })
+          }
+          const pwRes = await client.query(
+            `SELECT password_hash FROM users WHERE id = $1 AND deleted_at IS NULL`,
+            [actorId]
+          )
+          const passwordHash = pwRes.rows[0]?.password_hash
+          if (!passwordHash) {
+            return res.status(400).json({ message: "비밀번호가 설정되어 있지 않습니다." })
+          }
+          const isValid = await bcrypt.compare(String(password), String(passwordHash))
+          if (!isValid) {
+            return res.status(400).json({ message: "비밀번호가 올바르지 않습니다." })
+          }
+        }
         fields.push(`left_at = CURRENT_TIMESTAMP`)
         setField("left_by", actorId)
       } else if (status === "active") {

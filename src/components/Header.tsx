@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { Eclipse, ImageOff } from "lucide-react"
+import { Eclipse } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/useTheme"
 import { isSessionExpired } from "@/lib/session"
 import { Button } from "@/components/ui/button"
 import { LoginModal } from "@/components/LoginModal"
+import { ProfileAvatar } from "@/lib/ProfileAvatar"
 
 type HeaderProps = {
   className?: string
@@ -26,7 +27,6 @@ export function Header({ className }: HeaderProps) {
       return null
     }
   }, [])
-  const [isProfileImageBroken, setIsProfileImageBroken] = useState(false)
 
   const profile = useMemo(() => {
     if (typeof window === "undefined") {
@@ -40,19 +40,6 @@ export function Header({ className }: HeaderProps) {
     return { name, email: rawEmail, initial }
   }, [])
 
-  const profileImageSrc = useMemo(() => {
-    if (!profileImageUrl) return null
-    if (typeof window === "undefined") return profileImageUrl
-    if (!profileImageUrl.startsWith("/api/ai/media/assets/")) return profileImageUrl
-    const token = window.localStorage.getItem("token")
-    if (!token) return profileImageUrl
-    const sep = profileImageUrl.includes("?") ? "&" : "?"
-    return `${profileImageUrl}${sep}token=${encodeURIComponent(token)}`
-  }, [profileImageUrl])
-
-  useEffect(() => {
-    setIsProfileImageBroken(false)
-  }, [profileImageSrc])
 
   const handleLogoClick = () => {
     if (typeof window === "undefined") return
@@ -91,20 +78,16 @@ export function Header({ className }: HeaderProps) {
           </Button>
         ) : (
           <div className="flex items-center gap-2">
-            <div className="size-8 rounded-md flex items-center justify-center shrink-0 overflow-hidden bg-muted">
-              {profileImageSrc && !isProfileImageBroken ? (
-                <img
-                  src={profileImageSrc}
-                  alt="프로필 이미지"
-                  className="size-8 object-cover"
-                  onError={() => setIsProfileImageBroken(true)}
-                />
-              ) : profileImageSrc && isProfileImageBroken ? (
-                <ImageOff className="size-4 text-muted-foreground" />
-              ) : (
-                <span className="text-xs font-semibold text-foreground">{profile.initial}</span>
-              )}
-            </div>
+            <ProfileAvatar
+              size={24}
+              rounded="md"
+              src={profileImageUrl}
+              name={profile.name}
+              initial={profile.initial}
+              fallbackClassName="bg-muted"
+              textClassName="text-xs text-foreground"
+              showBrokenIcon
+            />
             <div className="flex flex-col text-right">
               <span className="text-sm font-semibold text-foreground">{profile.name}</span>            
             </div>
