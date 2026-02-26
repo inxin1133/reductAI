@@ -223,41 +223,27 @@ async function resolveUserQuote(client: any, tenantId: string, planId: string, b
   const targetCurrency = normalizeCurrency(accountRow.currency) || "USD"
   const taxCountryCode = toStr(accountRow.tax_country_code || accountRow.country_code).toUpperCase()
 
-  let priceRow = await pickLatestPlanPrice(client, planId, billingCycle, targetCurrency)
-  let baseCurrency = targetCurrency
-  let baseAmount = 0
-  let amount = 0
+  const priceRow = await pickLatestPlanPrice(client, planId, billingCycle, "USD")
+  if (!priceRow) throw quoteError(404, "Billing plan price not found")
+
+  const baseCurrency = "USD"
+  const rawAmount = priceRow.price_usd
+  const baseAmount = rawAmount === null || rawAmount === undefined || rawAmount === "" ? 0 : Number(rawAmount)
+  if (!Number.isFinite(baseAmount) || baseAmount < 0) {
+    throw quoteError(400, "price_usd must be >= 0")
+  }
+
+  let amount = roundMoney(baseAmount, targetCurrency)
   let fxRate: number | null = null
   let fxRateId: string | null = null
   let fxEffectiveAt: string | null = null
-
-  if (priceRow) {
-    const rawAmount = priceRow.price_usd
-    baseAmount = rawAmount === null || rawAmount === undefined || rawAmount === "" ? 0 : Number(rawAmount)
-    if (!Number.isFinite(baseAmount) || baseAmount < 0) {
-      throw quoteError(400, "price_usd must be >= 0")
-    }
-    amount = roundMoney(baseAmount, targetCurrency)
-  } else {
-    const usdRow = await pickLatestPlanPrice(client, planId, billingCycle, "USD")
-    if (!usdRow) throw quoteError(404, "Billing plan price not found")
-    priceRow = usdRow
-    baseCurrency = "USD"
-    const rawAmount = usdRow.price_usd
-    baseAmount = rawAmount === null || rawAmount === undefined || rawAmount === "" ? 0 : Number(rawAmount)
-    if (!Number.isFinite(baseAmount) || baseAmount < 0) {
-      throw quoteError(400, "price_usd must be >= 0")
-    }
-    if (targetCurrency === "USD") {
-      amount = roundMoney(baseAmount, targetCurrency)
-    } else {
-      const fx = await resolveFxRate(client, "USD", targetCurrency)
-      if (!fx) throw quoteError(404, "FX rate not found")
-      fxRate = fx.rate
-      fxRateId = fx.id
-      fxEffectiveAt = fx.effective_at ?? null
-      amount = roundMoney(baseAmount * fxRate, targetCurrency)
-    }
+  if (targetCurrency !== "USD") {
+    const fx = await resolveFxRate(client, "USD", targetCurrency)
+    if (!fx) throw quoteError(404, "FX rate not found")
+    fxRate = fx.rate
+    fxRateId = fx.id
+    fxEffectiveAt = fx.effective_at ?? null
+    amount = roundMoney(baseAmount * fxRate, targetCurrency)
   }
 
   const taxRateRow = taxCountryCode ? await pickLatestTaxRate(client, taxCountryCode) : null
@@ -286,6 +272,8 @@ async function resolveUserQuote(client: any, tenantId: string, planId: string, b
 type SafePlanQuote = {
   currency: string
   amount: number | null
+  base_amount: number | null
+  fx_rate: number | null
   tax_rate_percent: number
 }
 
@@ -295,10 +283,12 @@ async function safeResolveUserQuote(client: any, tenantId: string, planId: strin
     return {
       currency: quote.currency || "USD",
       amount: typeof quote.amount === "number" ? quote.amount : null,
+      base_amount: typeof quote.base_amount === "number" ? quote.base_amount : null,
+      fx_rate: typeof quote.fx_rate === "number" ? quote.fx_rate : null,
       tax_rate_percent: safeNumber(quote.tax_rate_percent, 0),
     }
   } catch {
-    return { currency: "USD", amount: null, tax_rate_percent: 0 }
+    return { currency: "USD", amount: null, base_amount: null, fx_rate: null, tax_rate_percent: 0 }
   }
 }
 
@@ -311,6 +301,18 @@ function pickMonthlyPrice(monthly: SafePlanQuote, yearly: SafePlanQuote) {
 function pickYearlyPrice(yearly: SafePlanQuote, monthly: SafePlanQuote) {
   if (typeof yearly.amount === "number") return yearly.amount
   if (typeof monthly.amount === "number") return monthly.amount * 12
+  return 0
+}
+
+function pickMonthlyBase(monthly: SafePlanQuote, yearly: SafePlanQuote) {
+  if (typeof monthly.base_amount === "number") return monthly.base_amount
+  if (typeof yearly.base_amount === "number") return yearly.base_amount / 12
+  return 0
+}
+
+function pickYearlyBase(yearly: SafePlanQuote, monthly: SafePlanQuote) {
+  if (typeof yearly.base_amount === "number") return yearly.base_amount
+  if (typeof monthly.base_amount === "number") return monthly.base_amount * 12
   return 0
 }
 
@@ -369,6 +371,70 @@ function makeInvoiceNumber(prefix = "SVP") {
   return `${prefix}-${stamp}-${rand}`
 }
 
+async function scheduleExcessSeatAddonCancellation(
+  client: any,
+  subscriptionId: string,
+  tenantId: string,
+  targetPlan: { tenant_type?: string; max_seats?: number | null; included_seats?: number | null } | null,
+  reason: string
+) {
+  const isPersonal = targetPlan?.tenant_type === "personal"
+  if (isPersonal) {
+    await client.query(
+      `
+      UPDATE billing_subscription_seat_addons
+      SET status = 'scheduled_cancel',
+          cancel_at_period_end = TRUE,
+          metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{auto_cancel_reason}', to_jsonb($3::text), TRUE),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE subscription_id = $1 AND tenant_id = $2 AND status = 'active'
+      `,
+      [subscriptionId, tenantId, reason]
+    )
+    return
+  }
+
+  const maxSeats = typeof targetPlan?.max_seats === "number" ? targetPlan.max_seats : null
+  const includedSeats = typeof targetPlan?.included_seats === "number" ? targetPlan.included_seats : 0
+  if (maxSeats === null) return
+
+  const maxExpandable = Math.max(0, maxSeats - includedSeats)
+
+  const addonsRes = await client.query(
+    `
+    SELECT id, quantity FROM billing_subscription_seat_addons
+    WHERE subscription_id = $1 AND tenant_id = $2 AND status = 'active'
+    ORDER BY effective_at ASC
+    `,
+    [subscriptionId, tenantId]
+  )
+
+  let remaining = maxExpandable
+  const toCancel: string[] = []
+  for (const addon of addonsRes.rows) {
+    const qty = Number(addon.quantity ?? 0)
+    if (remaining >= qty) {
+      remaining -= qty
+    } else {
+      toCancel.push(addon.id)
+    }
+  }
+
+  if (toCancel.length > 0) {
+    await client.query(
+      `
+      UPDATE billing_subscription_seat_addons
+      SET status = 'scheduled_cancel',
+          cancel_at_period_end = TRUE,
+          metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{auto_cancel_reason}', to_jsonb($3::text), TRUE),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ANY($1::uuid[]) AND subscription_id = $2
+      `,
+      [toCancel, subscriptionId, reason]
+    )
+  }
+}
+
 async function loadCurrentSubscription(client: any, tenantId: string) {
   const res = await client.query(
     `
@@ -393,7 +459,7 @@ async function loadCurrentSubscription(client: any, tenantId: string) {
 async function loadPlan(client: any, planId: string) {
   const res = await client.query(
     `
-    SELECT id, slug, name, tier, sort_order, tenant_type, included_seats, max_seats, metadata
+    SELECT id, slug, name, tier, sort_order, tenant_type, included_seats, max_seats, extra_seat_price_usd, metadata
     FROM billing_plans
     WHERE id = $1
     `,
@@ -487,6 +553,9 @@ async function buildSubscriptionChangeQuote(
   const currentYearlyQuote = await safeResolveUserQuote(client, tenantId, current.plan_id, "yearly")
   const currentMonthlyPrice = pickMonthlyPrice(currentMonthlyQuote, currentYearlyQuote)
   const currentYearlyPrice = pickYearlyPrice(currentYearlyQuote, currentMonthlyQuote)
+  const currentMonthlyBase = pickMonthlyBase(currentMonthlyQuote, currentYearlyQuote)
+  const currentYearlyBase = pickYearlyBase(currentYearlyQuote, currentMonthlyQuote)
+  const currentFxRate = currentMonthlyQuote.fx_rate ?? currentYearlyQuote.fx_rate ?? null
   const currentCredits = getMonthlyCredits(current.plan_metadata)
 
   let targetPlan: any | null = null
@@ -510,6 +579,9 @@ async function buildSubscriptionChangeQuote(
 
   const targetMonthlyPrice = pickMonthlyPrice(targetMonthlyQuote, targetYearlyQuote)
   const targetYearlyPrice = pickYearlyPrice(targetYearlyQuote, targetMonthlyQuote)
+  const targetMonthlyBase = pickMonthlyBase(targetMonthlyQuote, targetYearlyQuote)
+  const targetYearlyBase = pickYearlyBase(targetYearlyQuote, targetMonthlyQuote)
+  const targetFxRate = targetMonthlyQuote.fx_rate ?? targetYearlyQuote.fx_rate ?? null
   const targetCredits = getMonthlyCredits(targetPlan?.metadata ?? null)
 
   const currency =
@@ -522,7 +594,11 @@ async function buildSubscriptionChangeQuote(
   )
 
   const paidAmount = safeNumber(
-    current.price_usd,
+    current.price_local !== null && current.price_local !== undefined
+      ? current.price_local
+      : current.currency === "USD"
+        ? current.price_usd
+        : null,
     currentCycle === "yearly" ? currentYearlyPrice : currentMonthlyPrice
   )
 
@@ -620,6 +696,9 @@ async function buildSubscriptionChangeQuote(
       billing_cycle: currentCycle,
       price_monthly: roundMoney(currentMonthlyPrice, currency),
       price_yearly: roundMoney(currentYearlyPrice, currency),
+      price_monthly_usd: roundMoney(currentMonthlyBase, "USD"),
+      price_yearly_usd: roundMoney(currentYearlyBase, "USD"),
+      fx_rate: currentFxRate,
     },
     target: targetPlan
       ? {
@@ -630,6 +709,9 @@ async function buildSubscriptionChangeQuote(
           billing_cycle: targetCycle,
           price_monthly: roundMoney(targetMonthlyPrice, currency),
           price_yearly: roundMoney(targetYearlyPrice, currency),
+          price_monthly_usd: roundMoney(targetMonthlyBase, "USD"),
+          price_yearly_usd: roundMoney(targetYearlyBase, "USD"),
+          fx_rate: targetFxRate,
           tenant_type: targetPlan.tenant_type || null,
           included_seats: targetPlan.included_seats ?? null,
         }
@@ -1203,12 +1285,57 @@ export async function listPublicBillingPlans(req: Request, res: Response) {
       [...params, limit, offset]
     )
 
+    const slugs = Array.from(
+      new Set(listRes.rows.map((row) => String(row.slug || "").trim()).filter((slug) => slug))
+    )
+    const creditGrantMap = new Map<
+      string,
+      {
+        monthly?: { monthly_credits: number | null; initial_credits: number | null } | null
+        yearly?: { monthly_credits: number | null; initial_credits: number | null } | null
+      }
+    >()
+    if (slugs.length) {
+      const grantsRes = await query(
+        `
+        SELECT plan_slug, billing_cycle, monthly_credits, initial_credits
+        FROM credit_plan_grants
+        WHERE plan_slug = ANY($1)
+          AND credit_type = 'subscription'
+          AND is_active = TRUE
+        `,
+        [slugs]
+      )
+      grantsRes.rows.forEach((row) => {
+        const planSlug = String(row.plan_slug || "").trim()
+        if (!planSlug) return
+        const entry =
+          creditGrantMap.get(planSlug) || {
+            monthly: null,
+            yearly: null,
+          }
+        const monthlyCreditsRaw = row.monthly_credits
+        const initialCreditsRaw = row.initial_credits
+        const monthlyCredits = Number.isFinite(Number(monthlyCreditsRaw)) ? Number(monthlyCreditsRaw) : null
+        const initialCredits = Number.isFinite(Number(initialCreditsRaw)) ? Number(initialCreditsRaw) : null
+        const next = { monthly_credits: monthlyCredits, initial_credits: initialCredits }
+        if (String(row.billing_cycle) === "yearly") entry.yearly = next
+        else entry.monthly = next
+        creditGrantMap.set(planSlug, entry)
+      })
+    }
+
+    const rows = listRes.rows.map((row) => ({
+      ...row,
+      credit_grants: creditGrantMap.get(String(row.slug || "").trim()) ?? null,
+    }))
+
     return res.json({
       ok: true,
       total: countRes.rows[0]?.total ?? 0,
       limit,
       offset,
-      rows: listRes.rows,
+      rows,
     })
   } catch (e: any) {
     console.error("listPublicBillingPlans error:", e)
@@ -1734,6 +1861,22 @@ export async function updateBillingPlanPrice(req: Request, res: Response) {
       }
       setField("price_usd", priceUsd)
     }
+    if (input.price_local !== undefined) {
+      const priceLocal =
+        input.price_local === null || input.price_local === undefined || input.price_local === "" ? null : Number(input.price_local)
+      if (priceLocal !== null && (!Number.isFinite(priceLocal) || priceLocal < 0)) {
+        return res.status(400).json({ message: "price_local must be >= 0" })
+      }
+      setField("price_local", priceLocal)
+    }
+    if (input.fx_rate !== undefined) {
+      const fxRate =
+        input.fx_rate === null || input.fx_rate === undefined || input.fx_rate === "" ? null : Number(input.fx_rate)
+      if (fxRate !== null && (!Number.isFinite(fxRate) || fxRate < 0)) {
+        return res.status(400).json({ message: "fx_rate must be >= 0" })
+      }
+      setField("fx_rate", fxRate)
+    }
     if (input.metadata !== undefined) {
       const metadataInput = input.metadata
       const metadataValue =
@@ -1976,6 +2119,8 @@ export async function createBillingSeatAddon(req: Request, res: Response) {
     const cancelAtRaw = toBool(req.body?.cancel_at_period_end)
     const cancelledAt = req.body?.cancelled_at
     const unitPriceRaw = req.body?.unit_price_usd
+    const unitPriceLocalRaw = req.body?.unit_price_local
+    const fxRateRaw = req.body?.fx_rate
     const currency = toStr(req.body?.currency).toUpperCase() || "USD"
     const metadataInput = req.body?.metadata
     const metadataValue =
@@ -1995,6 +2140,17 @@ export async function createBillingSeatAddon(req: Request, res: Response) {
         : Number(unitPriceRaw)
     if (!Number.isFinite(unitPrice) || unitPrice < 0) {
       return res.status(400).json({ message: "unit_price_usd must be >= 0" })
+    }
+    const unitPriceLocal =
+      unitPriceLocalRaw === null || unitPriceLocalRaw === undefined || unitPriceLocalRaw === ""
+        ? null
+        : Number(unitPriceLocalRaw)
+    if (unitPriceLocal !== null && (!Number.isFinite(unitPriceLocal) || unitPriceLocal < 0)) {
+      return res.status(400).json({ message: "unit_price_local must be >= 0" })
+    }
+    const fxRate = fxRateRaw === null || fxRateRaw === undefined || fxRateRaw === "" ? null : Number(fxRateRaw)
+    if (fxRate !== null && (!Number.isFinite(fxRate) || fxRate < 0)) {
+      return res.status(400).json({ message: "fx_rate must be >= 0" })
     }
     if (metadataValue === null) return res.status(400).json({ message: "metadata must be object" })
 
@@ -2020,9 +2176,9 @@ export async function createBillingSeatAddon(req: Request, res: Response) {
       `
       INSERT INTO billing_subscription_seat_addons
         (subscription_id, tenant_id, quantity, status, effective_at, cancel_at_period_end, cancelled_at,
-         unit_price_usd, currency, metadata)
+         unit_price_usd, unit_price_local, fx_rate, currency, metadata)
       VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
       RETURNING *
       `,
       [
@@ -2034,6 +2190,8 @@ export async function createBillingSeatAddon(req: Request, res: Response) {
         cancelAtPeriodEnd,
         cancelledAtFinal,
         unitPrice,
+        unitPriceLocal,
+        fxRate,
         currency,
         JSON.stringify(metadataValue || {}),
       ]
@@ -2100,6 +2258,21 @@ export async function updateBillingSeatAddon(req: Request, res: Response) {
         return res.status(400).json({ message: "unit_price_usd must be >= 0" })
       }
       setField("unit_price_usd", unitPrice)
+    }
+    if (input.unit_price_local !== undefined) {
+      const unitPriceLocal =
+        input.unit_price_local === null || input.unit_price_local === "" ? null : Number(input.unit_price_local)
+      if (unitPriceLocal !== null && (!Number.isFinite(unitPriceLocal) || unitPriceLocal < 0)) {
+        return res.status(400).json({ message: "unit_price_local must be >= 0" })
+      }
+      setField("unit_price_local", unitPriceLocal)
+    }
+    if (input.fx_rate !== undefined) {
+      const fxRate = input.fx_rate === null || input.fx_rate === "" ? null : Number(input.fx_rate)
+      if (fxRate !== null && (!Number.isFinite(fxRate) || fxRate < 0)) {
+        return res.status(400).json({ message: "fx_rate must be >= 0" })
+      }
+      setField("fx_rate", fxRate)
     }
 
     if (input.currency !== undefined) {
@@ -2239,6 +2412,11 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
 
     const priceUsdRaw = req.body?.price_usd
     const priceUsd = priceUsdRaw === null || priceUsdRaw === undefined || priceUsdRaw === "" ? 0 : Number(priceUsdRaw)
+    const priceLocalRaw = req.body?.price_local
+    const priceLocal =
+      priceLocalRaw === null || priceLocalRaw === undefined || priceLocalRaw === "" ? null : Number(priceLocalRaw)
+    const fxRateRaw = req.body?.fx_rate
+    const fxRate = fxRateRaw === null || fxRateRaw === undefined || fxRateRaw === "" ? null : Number(fxRateRaw)
 
     const cancelAt = toBool(req.body?.cancel_at_period_end)
     const autoRenew = toBool(req.body?.auto_renew)
@@ -2256,6 +2434,12 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
     if (!PAYMENT_PROVIDERS.has(provider)) return res.status(400).json({ message: "invalid provider" })
     if (!Number.isFinite(priceUsd) || priceUsd < 0) {
       return res.status(400).json({ message: "price_usd must be >= 0" })
+    }
+    if (priceLocal !== null && (!Number.isFinite(priceLocal) || priceLocal < 0)) {
+      return res.status(400).json({ message: "price_local must be >= 0" })
+    }
+    if (fxRate !== null && (!Number.isFinite(fxRate) || fxRate < 0)) {
+      return res.status(400).json({ message: "fx_rate must be >= 0" })
     }
     if (!currency || currency.length !== 3) return res.status(400).json({ message: "currency must be 3 letters" })
     if (taxCountryCode && taxCountryCode.length !== 2) {
@@ -2333,6 +2517,9 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
       return res.status(400).json({ message: "system tenant cannot be billed" })
     }
 
+    const resolvedPriceLocal = priceLocal ?? (currency === "USD" ? priceUsd : null)
+    const resolvedFxRate = fxRate ?? null
+
     if (subscriptionRow) {
       const updateRes = await client.query(
         `
@@ -2345,10 +2532,12 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
             cancel_at_period_end = $6,
             auto_renew = $7,
             price_usd = $8,
-            currency = $9,
-            metadata = $10::jsonb,
+            price_local = $9,
+            fx_rate = $10,
+            currency = $11,
+            metadata = $12::jsonb,
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $11
+        WHERE id = $13
         RETURNING *
         `,
         [
@@ -2360,6 +2549,8 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
           cancelAt === null ? false : cancelAt,
           autoRenew === null ? true : autoRenew,
           priceUsd,
+          resolvedPriceLocal,
+          resolvedFxRate,
           currency,
           JSON.stringify(nextSubscriptionMeta),
           subscriptionRow.id,
@@ -2371,9 +2562,9 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
         `
         INSERT INTO billing_subscriptions
           (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end,
-           cancel_at_period_end, auto_renew, price_usd, currency, metadata)
+           cancel_at_period_end, auto_renew, price_usd, price_local, fx_rate, currency, metadata)
         VALUES
-          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
         RETURNING *
         `,
         [
@@ -2386,6 +2577,8 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
           cancelAt === null ? false : cancelAt,
           autoRenew === null ? true : autoRenew,
           priceUsd,
+          resolvedPriceLocal,
+          resolvedFxRate,
           currency,
           JSON.stringify({ service_provision: serviceMeta }),
         ]
@@ -4054,6 +4247,18 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
         `,
         [current.id, "cancel", "scheduled", current.plan_id, null, userId || null, quote.effective_at, JSON.stringify(metadataBase)]
       )
+
+      await client.query(
+        `
+        UPDATE billing_subscription_seat_addons
+        SET status = 'scheduled_cancel',
+            cancel_at_period_end = TRUE,
+            metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{auto_cancel_reason}', '"subscription_cancel"'::jsonb, TRUE),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE subscription_id = $1 AND tenant_id = $2 AND status = 'active'
+        `,
+        [current.id, tenantId]
+      )
     } else if (quote.change_type === "monthly_downgrade") {
       await client.query(
         `
@@ -4073,6 +4278,8 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
           JSON.stringify(metadataBase),
         ]
       )
+
+      await scheduleExcessSeatAddonCancellation(client, current.id, tenantId, quote.target ?? null, "downgrade")
     } else {
       const targetPlan = quote.target
       if (!targetPlan) throw quoteError(400, "target plan is required")
@@ -4087,6 +4294,12 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
         changed_at: nowIso,
       }
 
+      const nextPriceLocal =
+        targetPlan.billing_cycle === "yearly" ? quote.target?.price_yearly : quote.target?.price_monthly
+      const nextPriceUsd =
+        targetPlan.billing_cycle === "yearly" ? quote.target?.price_yearly_usd : quote.target?.price_monthly_usd
+      const nextFxRate = quote.target?.fx_rate ?? null
+
       const updateFields = [
         targetPlan.plan_id,
         targetPlan.billing_cycle,
@@ -4095,7 +4308,9 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
         resetPeriod ? nextPeriodEnd : current.current_period_end,
         false,
         true,
-        targetPlan.billing_cycle === "yearly" ? targetPlan.price_yearly : targetPlan.price_monthly,
+        nextPriceUsd ?? null,
+        nextPriceLocal ?? null,
+        nextFxRate,
         quote.currency,
         JSON.stringify(metadata),
         current.id,
@@ -4112,10 +4327,12 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
             cancel_at_period_end = $6,
             auto_renew = $7,
             price_usd = $8,
-            currency = $9,
-            metadata = $10::jsonb,
+            price_local = $9,
+            fx_rate = $10,
+            currency = $11,
+            metadata = $12::jsonb,
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $11
+        WHERE id = $13
         RETURNING *
         `,
         updateFields
@@ -4156,6 +4373,20 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
           `,
           [targetPlan.tenant_type, includedSeats, targetPlan.plan_tier || "free", tenantId]
         )
+      }
+
+      if (
+        quote.change_type === "annual_downgrade" ||
+        (quote.change_type !== "monthly_to_yearly" && quote.target)
+      ) {
+        const isDowngrade =
+          quote.change_type === "annual_downgrade" ||
+          (quote.change_type !== "monthly_to_yearly" &&
+            quote.target &&
+            Number(quote.target.plan_sort_order ?? 999) < Number(current.plan_sort_order ?? 0))
+        if (isDowngrade) {
+          await scheduleExcessSeatAddonCancellation(client, current.id, tenantId, targetPlan, "downgrade")
+        }
       }
 
       subscriptionRow = {
@@ -4395,7 +4626,9 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
         : null
 
     const quote = await resolveUserQuote(client, tenantId, planId, billingCycle)
-    const priceUsd = quote.amount
+    const priceUsd = safeNumber(quote.base_amount, 0)
+    const priceLocal = safeNumber(quote.amount, priceUsd)
+    const fxRate = typeof quote.fx_rate === "number" ? quote.fx_rate : null
     const currency = quote.currency
     const taxRatePercent = quote.tax_rate_percent
     const taxAmount = quote.tax_amount
@@ -4443,10 +4676,12 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
             cancel_at_period_end = $6,
             auto_renew = $7,
             price_usd = $8,
-            currency = $9,
-            metadata = $10::jsonb,
+            price_local = $9,
+            fx_rate = $10,
+            currency = $11,
+            metadata = $12::jsonb,
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $11
+        WHERE id = $13
         RETURNING *
         `,
         [
@@ -4458,6 +4693,8 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
           false,
           true,
           priceUsd,
+          priceLocal,
+          fxRate,
           currency,
           JSON.stringify(subscriptionMeta),
           subscriptionRow.id,
@@ -4469,9 +4706,9 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
         `
         INSERT INTO billing_subscriptions
           (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end,
-           cancel_at_period_end, auto_renew, price_usd, currency, metadata)
+           cancel_at_period_end, auto_renew, price_usd, price_local, fx_rate, currency, metadata)
         VALUES
-          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
         RETURNING *
         `,
         [
@@ -4484,6 +4721,8 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
           false,
           true,
           priceUsd,
+          priceLocal,
+          fxRate,
           currency,
           JSON.stringify(subscriptionMeta),
         ]
@@ -5084,5 +5323,727 @@ export async function updatePaymentMethod(req: Request, res: Response) {
     }
     console.error("updatePaymentMethod error:", e)
     return res.status(500).json({ message: "Failed to update payment method", details: String(e?.message || e) })
+  }
+}
+
+export async function quoteTopupPurchase(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    const productId = toStr(req.body?.product_id)
+
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+    if (!productId) return res.status(400).json({ message: "product_id is required" })
+
+    const productRes = await client.query(
+      `SELECT id, sku_code, name, price_usd, credits, bonus_credits, currency
+       FROM credit_topup_products WHERE id = $1 AND is_active = TRUE`,
+      [productId]
+    )
+    if (productRes.rows.length === 0) return res.status(404).json({ message: "Product not found" })
+    const product = productRes.rows[0]
+    const baseAmount = Number(product.price_usd)
+
+    const accountRes = await client.query(
+      `SELECT currency, tax_country_code, country_code FROM billing_accounts WHERE tenant_id = $1 LIMIT 1`,
+      [tenantId]
+    )
+    const accountRow = accountRes.rows[0] || {}
+    const targetCurrency = normalizeCurrency(accountRow.currency) || "USD"
+    const taxCountryCode = toStr(accountRow.tax_country_code || accountRow.country_code).toUpperCase()
+
+    let amount = roundMoney(baseAmount, targetCurrency)
+    let fxRate: number | null = null
+    let fxRateId: string | null = null
+    if (targetCurrency !== "USD") {
+      const fx = await resolveFxRate(client, "USD", targetCurrency)
+      if (fx) {
+        fxRate = fx.rate
+        fxRateId = fx.id
+        amount = roundMoney(baseAmount * fxRate, targetCurrency)
+      }
+    }
+    const taxRateRow = taxCountryCode ? await pickLatestTaxRate(client, taxCountryCode) : null
+    const taxRatePercent = taxRateRow ? Number(taxRateRow.rate_percent) : 0
+    const taxAmount =
+      Number.isFinite(taxRatePercent) && taxRatePercent > 0 ? roundMoney(amount * (taxRatePercent / 100), targetCurrency) : 0
+    const totalAmount = roundMoney(amount + taxAmount, targetCurrency)
+
+    return res.json({
+      ok: true,
+      product_id: product.id,
+      sku_code: product.sku_code,
+      product_name: product.name,
+      credits: Number(product.credits),
+      bonus_credits: Number(product.bonus_credits),
+      total_credits: Number(product.credits),
+      currency: targetCurrency,
+      amount,
+      base_currency: "USD",
+      base_amount: baseAmount,
+      fx_rate: fxRate,
+      tax_rate_percent: taxRatePercent,
+      tax_amount: taxAmount,
+      total_amount: totalAmount,
+    })
+  } catch (e: any) {
+    if (e?.status) return res.status(e.status).json({ message: e?.message })
+    console.error("quoteTopupPurchase error:", e)
+    return res.status(500).json({ message: "Failed to quote topup purchase" })
+  } finally {
+    client.release()
+  }
+}
+
+export async function checkoutTopupPurchase(req: Request, res: Response) {
+  const client = await pool.connect()
+  let transactionStarted = false
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    const productId = toStr(req.body?.product_id)
+    const provider = toStr(req.body?.provider) || "toss"
+
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+    if (!productId) return res.status(400).json({ message: "product_id is required" })
+    if (!PAYMENT_PROVIDERS.has(provider)) return res.status(400).json({ message: "invalid provider" })
+
+    const productRes = await client.query(
+      `SELECT id, sku_code, name, price_usd, credits, bonus_credits, currency
+       FROM credit_topup_products WHERE id = $1 AND is_active = TRUE`,
+      [productId]
+    )
+    if (productRes.rows.length === 0) return res.status(404).json({ message: "Product not found" })
+    const product = productRes.rows[0]
+    const baseAmount = Number(product.price_usd)
+    const totalCredits = Number(product.credits)
+
+    const accountRes = await client.query(
+      `SELECT currency, tax_country_code, country_code FROM billing_accounts WHERE tenant_id = $1 LIMIT 1`,
+      [tenantId]
+    )
+    const accountRow = accountRes.rows[0] || {}
+    const targetCurrency = normalizeCurrency(accountRow.currency) || "USD"
+    const taxCountryCode = toStr(accountRow.tax_country_code || accountRow.country_code).toUpperCase()
+
+    let amount = roundMoney(baseAmount, targetCurrency)
+    let fxRate: number | null = null
+    let fxRateId: string | null = null
+    if (targetCurrency !== "USD") {
+      const fx = await resolveFxRate(client, "USD", targetCurrency)
+      if (fx) {
+        fxRate = fx.rate
+        fxRateId = fx.id
+        amount = roundMoney(baseAmount * fxRate, targetCurrency)
+      }
+    }
+
+    const taxRateRow = taxCountryCode ? await pickLatestTaxRate(client, taxCountryCode) : null
+    const taxRatePercent = taxRateRow ? Number(taxRateRow.rate_percent) : 0
+    const taxAmount =
+      Number.isFinite(taxRatePercent) && taxRatePercent > 0 ? roundMoney(amount * (taxRatePercent / 100), targetCurrency) : 0
+    const totalAmount = roundMoney(amount + taxAmount, targetCurrency)
+
+    const now = new Date()
+    const nowIso = now.toISOString()
+
+    await client.query("BEGIN")
+    transactionStarted = true
+
+    let billingAccountId: string | null = null
+    const billingAccountRes = await client.query(`SELECT id FROM billing_accounts WHERE tenant_id = $1`, [tenantId])
+    billingAccountId = billingAccountRes.rows[0]?.id ?? null
+    if (!billingAccountId) {
+      const createAccountRes = await client.query(
+        `INSERT INTO billing_accounts (tenant_id, currency, metadata)
+         VALUES ($1,$2,$3::jsonb) RETURNING id`,
+        [tenantId, targetCurrency, JSON.stringify({ source: "topup_checkout", created_by: authed.userId })]
+      )
+      billingAccountId = createAccountRes.rows[0]?.id
+    }
+    if (!billingAccountId) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      return res.status(500).json({ message: "Failed to resolve billing account" })
+    }
+
+    const topupMeta = {
+      source: "topup_checkout",
+      product_id: productId,
+      sku_code: product.sku_code,
+      product_name: product.name,
+      credits: Number(product.credits),
+      bonus_credits: Number(product.bonus_credits),
+      total_credits: totalCredits,
+      checked_out_by: authed.userId,
+      checked_out_at: nowIso,
+    }
+
+    const invoiceColumns = await loadInvoiceColumns(client)
+    const invoiceCols: string[] = []
+    const invoiceVals: any[] = []
+    const invoicePlaceholders: string[] = []
+    const addInvoiceCol = (name: string, value: any, cast?: string) => {
+      if (!invoiceColumns.has(name)) return
+      invoiceCols.push(name)
+      invoiceVals.push(value)
+      invoicePlaceholders.push(cast ? `$${invoiceVals.length}::${cast}` : `$${invoiceVals.length}`)
+    }
+
+    addInvoiceCol("tenant_id", tenantId)
+    addInvoiceCol("billing_account_id", billingAccountId)
+    addInvoiceCol("invoice_number", makeInvoiceNumber("TOP"))
+    addInvoiceCol("status", "paid")
+    addInvoiceCol("currency", targetCurrency)
+    addInvoiceCol("subtotal_usd", amount)
+    addInvoiceCol("total_usd", totalAmount)
+    addInvoiceCol("issue_date", nowIso)
+    addInvoiceCol("paid_at", nowIso)
+    addInvoiceCol("metadata", JSON.stringify(topupMeta), "jsonb")
+    if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmount)
+    if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", taxAmount)
+    if (invoiceColumns.has("tax_rate_id")) addInvoiceCol("tax_rate_id", taxRateRow?.id ?? null)
+    if (invoiceColumns.has("fx_rate_id")) addInvoiceCol("fx_rate_id", fxRateId ?? null)
+    if (invoiceColumns.has("exchange_rate")) addInvoiceCol("exchange_rate", fxRate ?? null)
+    if (invoiceColumns.has("discount_usd")) addInvoiceCol("discount_usd", 0)
+    if (invoiceColumns.has("period_start")) addInvoiceCol("period_start", nowIso)
+    if (invoiceColumns.has("period_end")) addInvoiceCol("period_end", nowIso)
+    if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", targetCurrency)
+    if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", amount)
+    if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", taxAmount)
+    if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", totalAmount)
+
+    const invoiceInsertRes = await client.query(
+      `INSERT INTO billing_invoices (${invoiceCols.join(", ")})
+       VALUES (${invoicePlaceholders.join(", ")}) RETURNING *`,
+      invoiceVals
+    )
+    const invoiceRow = invoiceInsertRes.rows[0]
+    if (!invoiceRow) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      return res.status(500).json({ message: "Failed to create invoice" })
+    }
+
+    await client.query(
+      `INSERT INTO invoice_line_items
+        (invoice_id, line_type, description, quantity, unit_price_usd, amount_usd, currency, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+      [invoiceRow.id, "topup", product.name, 1, amount, amount, targetCurrency, JSON.stringify(topupMeta)]
+    )
+
+    const txRes = await client.query(
+      `INSERT INTO payment_transactions
+        (invoice_id, billing_account_id, provider, transaction_type, status, amount_usd, currency, processed_at, provider_transaction_id, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb) RETURNING *`,
+      [invoiceRow.id, billingAccountId, provider, "charge", "succeeded", totalAmount, targetCurrency, nowIso, makeInvoiceNumber("TOP-TX"), JSON.stringify(topupMeta)]
+    )
+    const txRow = txRes.rows[0]
+
+    const topupAccountRes = await client.query(
+      `SELECT id, balance_credits FROM credit_accounts
+       WHERE owner_type = 'tenant' AND owner_tenant_id = $1 AND credit_type = 'topup'
+       FOR UPDATE`,
+      [tenantId]
+    )
+
+    let topupAccountId = topupAccountRes.rows[0]?.id as string | undefined
+    let balanceBefore = Number(topupAccountRes.rows[0]?.balance_credits ?? 0)
+
+    const expiryMonths = 36
+    const expiresAt = new Date(now)
+    expiresAt.setMonth(expiresAt.getMonth() + expiryMonths)
+    const expiresAtIso = expiresAt.toISOString()
+
+    if (!topupAccountId) {
+      const insertAccountRes = await client.query(
+        `INSERT INTO credit_accounts
+          (owner_type, owner_tenant_id, credit_type, status, balance_credits, reserved_credits, expires_at, metadata)
+         VALUES ('tenant', $1, 'topup', 'active', 0, 0, $2, $3::jsonb)
+         RETURNING id, balance_credits`,
+        [tenantId, expiresAtIso, JSON.stringify({ source: "topup_purchase" })]
+      )
+      topupAccountId = insertAccountRes.rows[0]?.id
+      balanceBefore = 0
+    }
+
+    const balanceAfter = balanceBefore + totalCredits
+
+    await client.query(
+      `UPDATE credit_accounts
+       SET balance_credits = $1, expires_at = $2, status = 'active', updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3`,
+      [balanceAfter, expiresAtIso, topupAccountId]
+    )
+
+    await client.query(
+      `INSERT INTO credit_ledger_entries
+        (account_id, entry_type, amount_credits, balance_after, payment_transaction_id, invoice_id, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)`,
+      [
+        topupAccountId,
+        "topup_purchase",
+        totalCredits,
+        balanceAfter,
+        txRow?.id ?? null,
+        invoiceRow.id,
+        JSON.stringify({
+          product_id: productId,
+          sku_code: product.sku_code,
+          credits: Number(product.credits),
+          bonus_credits: Number(product.bonus_credits),
+        }),
+      ]
+    )
+
+    await client.query("COMMIT")
+    transactionStarted = false
+
+    return res.json({
+      ok: true,
+      invoice: invoiceRow,
+      transaction: txRow,
+      total_amount: totalAmount,
+      tax_amount: taxAmount,
+      currency: targetCurrency,
+      credits_granted: totalCredits,
+      balance_before: balanceBefore,
+      balance_after: balanceAfter,
+      transaction_id: txRow?.id,
+    })
+  } catch (e: any) {
+    if (transactionStarted) await client.query("ROLLBACK")
+    console.error("checkoutTopupPurchase error:", e)
+    return res.status(500).json({ message: "Failed to checkout topup purchase", details: String(e?.message || e) })
+  } finally {
+    client.release()
+  }
+}
+
+export async function quoteSeatAddonPurchase(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    const quantity = toInt(req.body?.quantity, null)
+
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+    if (!quantity || quantity <= 0) return res.status(400).json({ message: "quantity must be positive" })
+
+    const subscription = await loadCurrentSubscription(client, tenantId)
+    if (!subscription?.plan_id) return res.status(404).json({ message: "Subscription not found" })
+    const plan = await loadPlan(client, String(subscription.plan_id))
+    if (!plan) return res.status(404).json({ message: "Billing plan not found" })
+
+    const unitPriceUsd = Number(plan.extra_seat_price_usd ?? 0)
+    const baseAmount = roundMoney(unitPriceUsd * quantity, "USD")
+
+    const accountRes = await client.query(
+      `SELECT currency, tax_country_code, country_code FROM billing_accounts WHERE tenant_id = $1 LIMIT 1`,
+      [tenantId]
+    )
+    const accountRow = accountRes.rows[0] || {}
+    const targetCurrency = normalizeCurrency(accountRow.currency) || "USD"
+    const taxCountryCode = toStr(accountRow.tax_country_code || accountRow.country_code).toUpperCase()
+
+    let amount = roundMoney(baseAmount, targetCurrency)
+    let fxRate: number | null = null
+    if (targetCurrency !== "USD") {
+      const fx = await resolveFxRate(client, "USD", targetCurrency)
+      if (fx) {
+        fxRate = fx.rate
+        amount = roundMoney(baseAmount * fxRate, targetCurrency)
+      }
+    }
+    const unitPriceLocal = roundMoney(amount / quantity, targetCurrency)
+
+    const taxRateRow = taxCountryCode ? await pickLatestTaxRate(client, taxCountryCode) : null
+    const taxRatePercent = taxRateRow ? Number(taxRateRow.rate_percent) : 0
+    const taxAmount =
+      Number.isFinite(taxRatePercent) && taxRatePercent > 0 ? roundMoney(amount * (taxRatePercent / 100), targetCurrency) : 0
+    const totalAmount = roundMoney(amount + taxAmount, targetCurrency)
+
+    const tenantRes = await client.query(`SELECT member_limit FROM tenants WHERE id = $1`, [tenantId])
+    const memberLimitRaw = tenantRes.rows[0]?.member_limit
+    const includedSeats = Number(plan.included_seats ?? 0)
+    const maxSeats = plan.max_seats === null || plan.max_seats === undefined ? null : Number(plan.max_seats)
+    const currentSeats =
+      typeof memberLimitRaw === "number" && Number.isFinite(memberLimitRaw) ? Math.floor(memberLimitRaw) : includedSeats
+    const maxExpandableSeats = maxSeats !== null ? Math.max(0, maxSeats - currentSeats) : null
+    if (maxExpandableSeats !== null && quantity > maxExpandableSeats) {
+      return res.status(400).json({ message: "quantity exceeds max expandable seats" })
+    }
+
+    return res.json({
+      ok: true,
+      quantity,
+      unit_price_usd: unitPriceUsd,
+      unit_price_local: unitPriceLocal,
+      currency: targetCurrency,
+      amount,
+      base_currency: "USD",
+      base_amount: baseAmount,
+      fx_rate: fxRate,
+      tax_rate_percent: taxRatePercent,
+      tax_amount: taxAmount,
+      total_amount: totalAmount,
+      current_seats: currentSeats,
+      max_seats: maxSeats,
+      max_expandable_seats: maxExpandableSeats,
+    })
+  } catch (e: any) {
+    console.error("quoteSeatAddonPurchase error:", e)
+    return res.status(500).json({ message: "Failed to quote seat addon purchase", details: String(e?.message || e) })
+  } finally {
+    client.release()
+  }
+}
+
+export async function checkoutSeatAddonPurchase(req: Request, res: Response) {
+  const client = await pool.connect()
+  let transactionStarted = false
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    const quantity = toInt(req.body?.quantity, null)
+    const provider = toStr(req.body?.provider) || "toss"
+
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+    if (!quantity || quantity <= 0) return res.status(400).json({ message: "quantity must be positive" })
+    if (!PAYMENT_PROVIDERS.has(provider)) return res.status(400).json({ message: "invalid provider" })
+
+    const subscription = await loadCurrentSubscription(client, tenantId)
+    if (!subscription?.plan_id) return res.status(404).json({ message: "Subscription not found" })
+    const plan = await loadPlan(client, String(subscription.plan_id))
+    if (!plan) return res.status(404).json({ message: "Billing plan not found" })
+
+    const unitPriceUsd = Number(plan.extra_seat_price_usd ?? 0)
+    const baseAmount = roundMoney(unitPriceUsd * quantity, "USD")
+
+    const accountRes = await client.query(
+      `SELECT currency, tax_country_code, country_code FROM billing_accounts WHERE tenant_id = $1 LIMIT 1`,
+      [tenantId]
+    )
+    const accountRow = accountRes.rows[0] || {}
+    const targetCurrency = normalizeCurrency(accountRow.currency) || "USD"
+    const taxCountryCode = toStr(accountRow.tax_country_code || accountRow.country_code).toUpperCase()
+
+    let amount = roundMoney(baseAmount, targetCurrency)
+    let fxRate: number | null = null
+    let fxRateId: string | null = null
+    if (targetCurrency !== "USD") {
+      const fx = await resolveFxRate(client, "USD", targetCurrency)
+      if (fx) {
+        fxRate = fx.rate
+        fxRateId = fx.id
+        amount = roundMoney(baseAmount * fxRate, targetCurrency)
+      }
+    }
+
+    const taxRateRow = taxCountryCode ? await pickLatestTaxRate(client, taxCountryCode) : null
+    const taxRatePercent = taxRateRow ? Number(taxRateRow.rate_percent) : 0
+    const taxAmount =
+      Number.isFinite(taxRatePercent) && taxRatePercent > 0 ? roundMoney(amount * (taxRatePercent / 100), targetCurrency) : 0
+    const totalAmount = roundMoney(amount + taxAmount, targetCurrency)
+
+    const tenantRes = await client.query(`SELECT member_limit FROM tenants WHERE id = $1`, [tenantId])
+    const memberLimitRaw = tenantRes.rows[0]?.member_limit
+    const includedSeats = Number(plan.included_seats ?? 0)
+    const maxSeats = plan.max_seats === null || plan.max_seats === undefined ? null : Number(plan.max_seats)
+    const currentSeats =
+      typeof memberLimitRaw === "number" && Number.isFinite(memberLimitRaw) ? Math.floor(memberLimitRaw) : includedSeats
+    const newMemberLimit = currentSeats + quantity
+    if (maxSeats !== null && newMemberLimit > maxSeats) {
+      return res.status(400).json({ message: "quantity exceeds max seats" })
+    }
+
+    const now = new Date()
+    const nowIso = now.toISOString()
+
+    await client.query("BEGIN")
+    transactionStarted = true
+
+    let billingAccountId: string | null = null
+    const billingAccountRes = await client.query(`SELECT id FROM billing_accounts WHERE tenant_id = $1`, [tenantId])
+    billingAccountId = billingAccountRes.rows[0]?.id ?? null
+    if (!billingAccountId) {
+      const createAccountRes = await client.query(
+        `INSERT INTO billing_accounts (tenant_id, currency, metadata)
+         VALUES ($1,$2,$3::jsonb) RETURNING id`,
+        [tenantId, targetCurrency, JSON.stringify({ source: "seat_addon_checkout", created_by: authed.userId })]
+      )
+      billingAccountId = createAccountRes.rows[0]?.id
+    }
+    if (!billingAccountId) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      return res.status(500).json({ message: "Failed to resolve billing account" })
+    }
+
+    const addonMeta = {
+      source: "seat_addon_checkout",
+      subscription_id: subscription.id,
+      plan_id: subscription.plan_id,
+      quantity,
+      unit_price_usd: unitPriceUsd,
+      unit_price_local: unitPriceLocal,
+      fx_rate: fxRate,
+      base_currency: "USD",
+      local_currency: targetCurrency,
+      checked_out_by: authed.userId,
+      checked_out_at: nowIso,
+    }
+
+    const invoiceColumns = await loadInvoiceColumns(client)
+    const invoiceCols: string[] = []
+    const invoiceVals: any[] = []
+    const invoicePlaceholders: string[] = []
+    const addInvoiceCol = (name: string, value: any, cast?: string) => {
+      if (!invoiceColumns.has(name)) return
+      invoiceCols.push(name)
+      invoiceVals.push(value)
+      invoicePlaceholders.push(cast ? `$${invoiceVals.length}::${cast}` : `$${invoiceVals.length}`)
+    }
+
+    addInvoiceCol("tenant_id", tenantId)
+    addInvoiceCol("subscription_id", subscription.id)
+    addInvoiceCol("billing_account_id", billingAccountId)
+    addInvoiceCol("invoice_number", makeInvoiceNumber("SEAT"))
+    addInvoiceCol("status", "paid")
+    addInvoiceCol("currency", targetCurrency)
+    addInvoiceCol("subtotal_usd", amount)
+    addInvoiceCol("total_usd", totalAmount)
+    addInvoiceCol("issue_date", nowIso)
+    addInvoiceCol("paid_at", nowIso)
+    addInvoiceCol("metadata", JSON.stringify(addonMeta), "jsonb")
+    if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmount)
+    if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", taxAmount)
+    if (invoiceColumns.has("tax_rate_id")) addInvoiceCol("tax_rate_id", taxRateRow?.id ?? null)
+    if (invoiceColumns.has("fx_rate_id")) addInvoiceCol("fx_rate_id", fxRateId ?? null)
+    if (invoiceColumns.has("exchange_rate")) addInvoiceCol("exchange_rate", fxRate ?? null)
+    if (invoiceColumns.has("discount_usd")) addInvoiceCol("discount_usd", 0)
+    if (invoiceColumns.has("period_start")) addInvoiceCol("period_start", nowIso)
+    if (invoiceColumns.has("period_end")) addInvoiceCol("period_end", nowIso)
+    if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", targetCurrency)
+    if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", amount)
+    if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", taxAmount)
+    if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", totalAmount)
+
+    const invoiceInsertRes = await client.query(
+      `INSERT INTO billing_invoices (${invoiceCols.join(", ")})
+       VALUES (${invoicePlaceholders.join(", ")}) RETURNING *`,
+      invoiceVals
+    )
+    const invoiceRow = invoiceInsertRes.rows[0]
+    if (!invoiceRow) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      return res.status(500).json({ message: "Failed to create invoice" })
+    }
+
+    await client.query(
+      `INSERT INTO invoice_line_items
+        (invoice_id, line_type, description, quantity, unit_price_usd, amount_usd, currency, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+      [
+        invoiceRow.id,
+        "seat_overage",
+        "좌석 추가",
+        quantity,
+        unitPriceLocal,
+        amount,
+        targetCurrency,
+        JSON.stringify(addonMeta),
+      ]
+    )
+
+    const txRes = await client.query(
+      `INSERT INTO payment_transactions
+        (invoice_id, billing_account_id, provider, transaction_type, status, amount_usd, currency, processed_at, provider_transaction_id, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb) RETURNING *`,
+      [
+        invoiceRow.id,
+        billingAccountId,
+        provider,
+        "charge",
+        "succeeded",
+        totalAmount,
+        targetCurrency,
+        nowIso,
+        makeInvoiceNumber("SEAT-TX"),
+        JSON.stringify(addonMeta),
+      ]
+    )
+    const txRow = txRes.rows[0]
+
+    await client.query(
+      `INSERT INTO billing_subscription_seat_addons
+        (subscription_id, tenant_id, quantity, status, effective_at, unit_price_usd, unit_price_local, fx_rate, currency, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+      [
+        subscription.id,
+        tenantId,
+        quantity,
+        "active",
+        nowIso,
+        unitPriceUsd,
+        unitPriceLocal,
+        fxRate,
+        targetCurrency,
+        JSON.stringify(addonMeta),
+      ]
+    )
+
+    await client.query(
+      `UPDATE tenants SET member_limit = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND deleted_at IS NULL`,
+      [newMemberLimit, tenantId]
+    )
+
+    await client.query("COMMIT")
+    transactionStarted = false
+
+    return res.json({
+      ok: true,
+      quantity,
+      unit_price_usd: unitPriceUsd,
+      unit_price_local: unitPriceLocal,
+      fx_rate: fxRate,
+      total_amount: totalAmount,
+      tax_amount: taxAmount,
+      currency: targetCurrency,
+      new_member_limit: newMemberLimit,
+      transaction_id: txRow?.id,
+    })
+  } catch (e: any) {
+    if (transactionStarted) await client.query("ROLLBACK")
+    console.error("checkoutSeatAddonPurchase error:", e)
+    return res.status(500).json({ message: "Failed to checkout seat addon purchase", details: String(e?.message || e) })
+  } finally {
+    client.release()
+  }
+}
+
+export async function getMySubscriptionOverview(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+
+    const subscription = await loadCurrentSubscription(client, tenantId)
+
+    let scheduledChanges: any[] = []
+    if (subscription?.id) {
+      const changesRes = await client.query(
+        `
+        SELECT sc.*, fp.name AS from_plan_name, fp.tier AS from_plan_tier,
+               tp.name AS to_plan_name, tp.tier AS to_plan_tier
+        FROM billing_subscription_changes sc
+        LEFT JOIN billing_plans fp ON fp.id = sc.from_plan_id
+        LEFT JOIN billing_plans tp ON tp.id = sc.to_plan_id
+        WHERE sc.subscription_id = $1 AND sc.status = 'scheduled'
+        ORDER BY sc.effective_at ASC
+        `,
+        [subscription.id]
+      )
+      scheduledChanges = changesRes.rows
+    }
+
+    let seatAddons: any[] = []
+    if (subscription?.id) {
+      const addonsRes = await client.query(
+        `
+        SELECT id, subscription_id, tenant_id, quantity, status, effective_at,
+               cancel_at_period_end, cancelled_at, unit_price_usd, unit_price_local, fx_rate, currency, metadata, created_at
+        FROM billing_subscription_seat_addons
+        WHERE subscription_id = $1 AND tenant_id = $2 AND status <> 'cancelled'
+        ORDER BY effective_at ASC
+        `,
+        [subscription.id, tenantId]
+      )
+      seatAddons = addonsRes.rows
+    }
+
+    const totalAddonSeats = seatAddons.reduce(
+      (sum: number, a: any) => sum + (a.status === "active" ? Number(a.quantity ?? 0) : 0),
+      0
+    )
+    const totalAddonMonthlyUsd = seatAddons.reduce((sum: number, a: any) => {
+      if (a.status !== "active") return sum
+      const qty = Number(a.quantity ?? 0)
+      const local =
+        typeof a.unit_price_local === "number"
+          ? Number(a.unit_price_local)
+          : typeof a.fx_rate === "number"
+            ? Number(a.unit_price_usd ?? 0) * Number(a.fx_rate)
+            : Number(a.unit_price_usd ?? 0)
+      return sum + qty * local
+    }, 0)
+
+    return res.json({
+      ok: true,
+      subscription: subscription || null,
+      scheduled_changes: scheduledChanges,
+      seat_addons: seatAddons,
+      seat_summary: {
+        total_addon_seats: totalAddonSeats,
+        total_addon_monthly_usd: roundMoney(totalAddonMonthlyUsd, "USD"),
+      },
+    })
+  } catch (e: any) {
+    console.error("getMySubscriptionOverview error:", e)
+    return res.status(500).json({ message: "Failed to load subscription overview" })
+  } finally {
+    client.release()
+  }
+}
+
+export async function cancelMySeatAddon(req: Request, res: Response) {
+  const client = await pool.connect()
+  let transactionStarted = false
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    const addonId = toStr(req.body?.addon_id || req.params?.id)
+
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+    if (!addonId) return res.status(400).json({ message: "addon_id is required" })
+
+    await client.query("BEGIN")
+    transactionStarted = true
+
+    const addonRes = await client.query(
+      `SELECT * FROM billing_subscription_seat_addons
+       WHERE id = $1 AND tenant_id = $2 AND status = 'active'
+       FOR UPDATE`,
+      [addonId, tenantId]
+    )
+    if (addonRes.rows.length === 0) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      return res.status(404).json({ message: "Seat addon not found or already cancelled" })
+    }
+
+    await client.query(
+      `UPDATE billing_subscription_seat_addons
+       SET status = 'scheduled_cancel',
+           cancel_at_period_end = TRUE,
+           metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{cancelled_by}', to_jsonb($1::text), TRUE),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2`,
+      [authed.userId, addonId]
+    )
+
+    await client.query("COMMIT")
+    transactionStarted = false
+
+    return res.json({ ok: true, addon_id: addonId, status: "scheduled_cancel" })
+  } catch (e: any) {
+    if (transactionStarted) await client.query("ROLLBACK")
+    console.error("cancelMySeatAddon error:", e)
+    return res.status(500).json({ message: "Failed to cancel seat addon" })
+  } finally {
+    client.release()
   }
 }

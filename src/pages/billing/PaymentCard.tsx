@@ -13,6 +13,14 @@ type LocationState = {
   billingCycle?: "monthly" | "yearly"
   allowEdit?: boolean
   flow?: CheckoutFlowState
+  action?: string
+  topupProductId?: string
+  topupProductName?: string
+  topupCredits?: number
+  topupPrice?: number
+  seatQuantity?: number
+  seatUnitPrice?: number
+  seatMax?: number | null
 }
 
 type BillingAccountResponse = {
@@ -161,9 +169,7 @@ export default function PaymentCard() {
       const target = status?.hasInfo ? "/billing/confirm" : "/billing/info"
       navigate(target, {
         state: {
-          planId: state.planId,
-          planName: state.planName,
-          billingCycle: state.billingCycle,
+          ...state,
           flow: appendVisited(state.flow, "card"),
         },
       })

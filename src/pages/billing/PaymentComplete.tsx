@@ -12,12 +12,15 @@ type LocationState = {
   currency?: string
   nextBillingDate?: string
   transactionId?: string
-  action?: "new" | "change" | "cancel"
+  action?: "new" | "change" | "cancel" | "topup" | "seat_add"
   changeType?: string
   schedule?: boolean
   effectiveAt?: string
   refundAmount?: number
   chargeAmount?: number
+  topupProductName?: string
+  topupCredits?: number
+  seatQuantity?: number
 }
 
 type CheckoutSummary = {
@@ -47,6 +50,8 @@ export default function PaymentComplete() {
   const state = useMemo(() => (location.state || {}) as LocationState, [location.state])
   const action = state.action ?? "new"
   const isChangeFlow = action === "change" || action === "cancel"
+  const isTopupFlow = action === "topup"
+  const isSeatFlow = action === "seat_add"
   const [summary, setSummary] = useState<CheckoutSummary | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -72,7 +77,7 @@ export default function PaymentComplete() {
   useEffect(() => {
     const headers = authHeaders()
     if (!headers.Authorization) return
-    if (isChangeFlow && !state.transactionId) return
+    if ((isChangeFlow || isTopupFlow || isSeatFlow) && !state.transactionId) return
 
     const params = new URLSearchParams()
     const searchParams = new URLSearchParams(location.search)
@@ -160,35 +165,82 @@ export default function PaymentComplete() {
               <CheckCircle2 className="size-8 text-emerald-600" />
             </div>
             <h1 className="text-2xl font-bold text-foreground">
-              {action === "cancel"
-                ? "구독 취소 요청이 완료되었습니다!"
-                : isChangeFlow
-                  ? state.schedule
-                    ? "요금제 변경이 예약되었습니다!"
-                    : "요금제 변경이 완료되었습니다!"
-                  : "결제가 완료되었습니다!"}
+              {isTopupFlow
+                ? "크레딧 충전이 완료되었습니다!"
+                : isSeatFlow
+                  ? "좌석 추가가 완료되었습니다!"
+                  : action === "cancel"
+                    ? "구독 취소 요청이 완료되었습니다!"
+                    : isChangeFlow
+                      ? state.schedule
+                        ? "요금제 변경이 예약되었습니다!"
+                        : "요금제 변경이 완료되었습니다!"
+                      : "결제가 완료되었습니다!"}
             </h1>
             <p className="text-sm text-muted-foreground">
-              {action === "cancel"
-                ? `${planLabel}은 종료일까지 유지됩니다.`
-                : isChangeFlow
-                  ? `${planLabel} 변경 내용이 반영되었습니다.`
-                  : `환영합니다! ${planLabel}이 성공적으로 활성화되었습니다.`}
+              {isTopupFlow
+                ? `+${(state.topupCredits ?? 0).toLocaleString()} 크레딧이 계정에 충전되었습니다.`
+                : isSeatFlow
+                  ? `${state.seatQuantity ?? 0}석이 추가되었습니다.`
+                  : action === "cancel"
+                    ? `${planLabel}은 종료일까지 유지됩니다.`
+                    : isChangeFlow
+                      ? `${planLabel} 변경 내용이 반영되었습니다.`
+                      : `환영합니다! ${planLabel}이 성공적으로 활성화되었습니다.`}
             </p>
             {error ? <p className="text-xs text-destructive">{error}</p> : null}
           </div>
 
           <div className="w-full rounded-xl border border-border bg-background shadow-sm">
             <div className="grid gap-4 p-5">
+              {isTopupFlow ? (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">충전 상품</span>
+                    <span className="font-semibold text-foreground">{state.topupProductName || "크레딧 충전"}</span>
+                  </div>
+                  <div className="h-px w-full bg-border" />
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">충전 크레딧</span>
+                    <span className="text-lg font-semibold text-foreground">+{(state.topupCredits ?? 0).toLocaleString()}</span>
+                  </div>
+                  <div className="h-px w-full bg-border" />
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">결제 금액</span>
+                    <span className="text-lg font-semibold text-foreground">{totalLabel}</span>
+                  </div>
+                  <div className="h-px w-full bg-border" />
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">거래 번호</span>
+                    <span className="text-sm font-semibold text-foreground">{transactionId}</span>
+                  </div>
+                </>
+              ) : isSeatFlow ? (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">추가 좌석</span>
+                    <span className="font-semibold text-foreground">+{state.seatQuantity ?? 0}석</span>
+                  </div>
+                  <div className="h-px w-full bg-border" />
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">결제 금액</span>
+                    <span className="text-lg font-semibold text-foreground">{totalLabel}</span>
+                  </div>
+                  <div className="h-px w-full bg-border" />
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">거래 번호</span>
+                    <span className="text-sm font-semibold text-foreground">{transactionId}</span>
+                  </div>
+                </>
+              ) : (
+                <>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">플랜</span>
                 <span className="font-semibold text-foreground">{planName}</span>
               </div>
               <div className="h-px w-full bg-border" />
               <div className="flex items-center justify-between">
-                <span className="text-sm text-muted-foreground">
-                  {isChangeFlow ? "결제 금액" : "결제 금액"}
-                </span>
+                <span className="text-sm text-muted-foreground">결제 금액</span>
                 <span className="text-lg font-semibold text-foreground">{isChangeFlow ? chargeLabel : totalLabel}</span>
               </div>
               {isChangeFlow && refundAmount > 0 ? (
@@ -220,6 +272,8 @@ export default function PaymentComplete() {
                 <span className="text-sm text-muted-foreground">거래 번호</span>
                 <span className="text-sm font-semibold text-foreground">{transactionId}</span>
               </div>
+                </>
+              )}
             </div>
           </div>
 
@@ -237,15 +291,32 @@ export default function PaymentComplete() {
           <div className="w-full rounded-xl border border-blue-200 bg-blue-50 p-5">
             <div className="text-sm font-semibold text-foreground">다음 단계</div>
             <div className="mt-3 flex flex-col gap-2 text-sm text-muted-foreground">
-              {(isChangeFlow
-                ? action === "cancel"
-                  ? ["구독은 적용일까지 유지됩니다.", "필요 시 언제든지 다시 구독할 수 있습니다."]
-                  : ["변경 내용이 적용되었습니다.", "계정 설정에서 언제든지 플랜을 다시 변경할 수 있습니다."]
-                : [
-                    "이메일로 영수증과 구독 확인 이메일이 발송되었습니다.",
-                    `대시보드에서 모든 ${planLabel} 기능을 사용할 수 있습니다.`,
-                    "계정 설정에서 언제든지 플랜을 변경하거나 구독을 취소할 수 있습니다.",
+              {(isTopupFlow
+                ? [
+                    "충전된 크레딧은 즉시 사용 가능합니다.",
+                    "크레딧 잔액은 설정 > 크레딧 관리에서 확인할 수 있습니다.",
+                    "충전 크레딧의 유효기간은 36개월입니다.",
                   ]
+                : isSeatFlow
+                  ? [
+                      "추가된 좌석은 즉시 적용됩니다.",
+                      "좌석 현황은 설정 > 멤버 관리에서 확인할 수 있습니다.",
+                      "필요 시 언제든지 좌석 수를 추가할 수 있습니다.",
+                    ]
+                  : isChangeFlow
+                    ? action === "cancel"
+                      ? ["구독은 적용일까지 유지됩니다.", "필요 시 언제든지 다시 구독할 수 있습니다."]
+                      : state.schedule
+                        ? [
+                            "이번 달은 현재 등급이 유지됩니다.",
+                            "적용 예정일부터 새로운 등급이 적용됩니다.",
+                            "계정 설정에서 언제든지 플랜을 다시 변경할 수 있습니다.",
+                          ]
+                        : ["변경 내용이 적용되었습니다.", "계정 설정에서 언제든지 플랜을 다시 변경할 수 있습니다."]
+                    : [
+                        `대시보드에서 모든 ${planLabel} 기능을 사용할 수 있습니다.`,
+                        "계정 설정에서 언제든지 플랜을 변경하거나 구독을 취소할 수 있습니다.",
+                      ]
               ).map((item) => (
                 <div key={item} className="flex items-start gap-2">
                   <span className="mt-0.5 flex size-5 items-center justify-center rounded-full bg-blue-100 text-blue-600">

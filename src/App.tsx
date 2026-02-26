@@ -66,6 +66,8 @@ import CreditUsageAllocations from "./pages/admin/credits/UsageAllocations";
 import BillingInfo from "./pages/billing/BillingInfo";
 import PaymentConfirm from "./pages/billing/PaymentConfirm";
 import PaymentComplete from "./pages/billing/PaymentComplete";
+import CancelSubscription from "./pages/billing/CancelSubscription";
+import SubscriptionDowngrade from "./pages/billing/SubscriptionDowngrade";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 
@@ -146,6 +148,14 @@ const router = createBrowserRouter([
       {
         path: "/billing/confirm",
         element: <PaymentConfirm />,
+      },
+      {
+        path: "/billing/cancel",
+        element: <CancelSubscription />,
+      },
+      {
+        path: "/billing/downgrade",
+        element: <SubscriptionDowngrade />,
       },
       {
         path: "/billing/complete",

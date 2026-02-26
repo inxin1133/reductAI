@@ -8,6 +8,7 @@ import { appendVisited, hasBillingCard, hasBillingInfo } from "@/lib/billingFlow
 import { fetchBillingPlansWithPrices } from "@/services/billingService"
 import type { BillingPlanWithPrices } from "@/services/billingService"
 import { PLAN_TIER_ORDER, type PlanTier } from "@/lib/planTier"
+import { extractPlanHighlights, formatPlanCredits } from "@/lib/billingPlanContent"
 
 type PlanDialogProps = {
   open: boolean
@@ -58,18 +59,6 @@ function formatStorage(mb: number | null): string {
   if (mb == null) return "무제한"
   if (mb >= 1024) return `${Math.round(mb / 1024)} GB`
   return `${mb} MB`
-}
-
-function formatCredits(metadata: Record<string, unknown>): string {
-  const monthly = metadata?.monthly_credits
-  if (typeof monthly === "number" && monthly > 0) {
-    return monthly >= 1000 ? `${(monthly / 1000).toLocaleString()}K` : String(monthly)
-  }
-  const initial = metadata?.initial_credits
-  if (typeof initial === "number" && initial > 0) {
-    return `${initial.toLocaleString()} (최초)`
-  }
-  return "문의"
 }
 
 function formatPrice(price: number | null): string {
@@ -331,7 +320,12 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
                   billingCycle === "yearly" && price != null && price > 0
                     ? Math.round((price / 12) * 100) / 100
                     : null
-                const credits = formatCredits(plan.metadata || {})
+                const creditDisplay = formatPlanCredits({
+                  billingCycle,
+                  creditGrants: plan.credit_grants,
+                })
+                const credits = creditDisplay.label
+                const creditsIsMonthly = creditDisplay.isMonthly
                 const storage = formatStorage(plan.storage_limit_mb)
                 const seats =
                   plan.max_seats == null
@@ -340,6 +334,7 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
                       ? `${plan.included_seats}명`
                       : `${plan.included_seats}~${plan.max_seats}명`
                 const planTier = normalizePlanTier(plan.tier) ?? "free"
+                const highlights = extractPlanHighlights(plan.metadata)
                 const currentIndex = PLAN_TIER_ORDER.indexOf(normalizedCurrentTier)
                 const planIndex = PLAN_TIER_ORDER.indexOf(planTier)
                 const isCurrentPlan = currentPlanId ? plan.id === currentPlanId : planIndex === currentIndex
@@ -404,7 +399,7 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
                         <Zap className="mt-0.5 size-4 shrink-0 text-teal-500" />
                         <span>
                           크레딧 <span className="font-semibold">{credits}</span>
-                          {typeof (plan.metadata as Record<string, unknown>)?.monthly_credits === "number" ? "/월" : ""}
+                          {creditsIsMonthly ? "/월" : ""}
                         </span>
                       </li>
                       <li className="flex items-start gap-2">
@@ -441,6 +436,16 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
                         </span>
                       </li>
                     </ul>
+                    {highlights.length > 0 ? (
+                      <ul className="mt-4 flex flex-col gap-2 border-t border-border/40 pt-4 text-xs text-muted-foreground">
+                        {highlights.map((item, index) => (
+                          <li key={`${plan.id}-highlight-${index}`} className="flex items-start gap-2">
+                            <Check className="mt-0.5 size-4 shrink-0 text-primary" />
+                            <span>{item}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
 
                     {/* CTA 요금제 버튼 */}
                     <div className="mt-auto pt-5">
@@ -457,17 +462,27 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
                         onClick={() => {
                           if (isCurrent) return
                           void (async () => {
+                            const navState = {
+                              planId: plan.id,
+                              planName: plan.name,
+                              billingCycle,
+                              action: currentSubscription ? "change" : undefined,
+                              flow: appendVisited(undefined, "plan"),
+                            }
+
+                            if (currentSubscription && (isDowngrade || isCycleChange)) {
+                              const isCycleDowngrade =
+                                isCycleChange && currentBillingCycle === "yearly" && billingCycle === "monthly"
+                              if (isDowngrade || isCycleDowngrade) {
+                                onOpenChange(false)
+                                navigate("/billing/downgrade", { state: navState })
+                                return
+                              }
+                            }
+
                             const target = await resolveNextRoute()
                             onOpenChange(false)
-                            navigate(target, {
-                              state: {
-                                planId: plan.id,
-                                planName: plan.name,
-                                billingCycle,
-                                action: currentSubscription ? "change" : undefined,
-                                flow: appendVisited(undefined, "plan"),
-                              },
-                            })
+                            navigate(target, { state: navState })
                           })()
                         }}
                         disabled={subscriptionLoading}

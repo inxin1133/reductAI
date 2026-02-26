@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import {
   AlertDialog,
@@ -15,19 +16,37 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { Box, CirclePause, Coins, Database, Gauge, HardDrive, Menu, PackageOpen, UserPlus, UserRoundCheck, Users, UsersRound, X, ChevronsUp, Settings2, HandCoins, EvCharger, RotateCw } from "lucide-react"
+import { Box, CirclePause, Coins, Database, Gauge, HardDrive, Menu, PackageOpen, UserPlus, UserRoundCheck, Users, UsersRound, X, ChevronsUp, Settings2, HandCoins, EvCharger, RotateCw, Armchair } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { type PlanTier, PLAN_TIER_LABELS, PLAN_TIER_ORDER, PLAN_TIER_STYLES } from "@/lib/planTier"
 import { withActiveTenantHeader } from "@/lib/tenantContext"
 import { ProfileAvatar } from "@/lib/ProfileAvatar"
 import { toast } from "sonner"
+import { appendVisited } from "@/lib/billingFlow"
+import { fetchBillingPlansWithPrices, type BillingPlanWithPrices } from "@/services/billingService"
 
 type TenantSettingsDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   onOpenPlanDialog?: () => void
+}
+
+type SubscriptionSummary = {
+  id: string
+  plan_id: string
+  plan_name?: string | null
+  plan_tier?: string | null
+  billing_cycle?: "monthly" | "yearly" | string | null
+  status?: string | null
+}
+
+type SubscriptionResponse = {
+  ok?: boolean
+  row?: SubscriptionSummary | null
+  message?: string
 }
 
 type MenuId = "info" | "members" | "invitations" | "credits" | "topupCredits" | "usage"
@@ -71,6 +90,46 @@ type CreditSummary = {
     grant_monthly?: number | null
     plan_tier?: string | null
   } | null
+}
+
+type ServiceUsagePeriod = {
+  invoice_id?: string | null
+  period_start: string
+  period_end: string
+}
+
+type ServiceUsageSummary = {
+  period_start: string
+  period_end: string
+  plan_slug?: string | null
+  plan_tier?: string | null
+  billing_cycle?: string | null
+  total_credits?: number | null
+  used_credits?: number | null
+  remaining_credits?: number | null
+  usage_percent?: number | null
+  account_id?: string | null
+}
+
+type ServiceUsageMember = {
+  user_id: string
+  user_name?: string | null
+  user_email?: string | null
+  used_credits?: number | string | null
+  max_per_period?: number | string | null
+  is_active?: boolean | null
+  role_slug?: string | null
+  joined_at?: string | null
+  profile_image_url?: string | null
+}
+
+type ServiceUsageResponse = {
+  ok?: boolean
+  message?: string
+  current_period_end?: string | null
+  periods?: ServiceUsagePeriod[]
+  summary?: ServiceUsageSummary | null
+  members?: ServiceUsageMember[]
 }
 
 type TenantMemberRow = {
@@ -231,6 +290,43 @@ function resolveMemberInitial(row: TenantMemberRow) {
   return trimmed ? trimmed.slice(0, 1) : "?"
 }
 
+function resolveUsageMemberName(row: ServiceUsageMember) {
+  const name = String(row.user_name || "").trim()
+  if (name) return name
+  const email = String(row.user_email || "").trim()
+  if (email) return email.split("@")[0] || email
+  return "사용자"
+}
+
+function resolveUsageMemberInitial(row: ServiceUsageMember) {
+  const base = resolveUsageMemberName(row)
+  const trimmed = String(base || "").trim()
+  return trimmed ? trimmed.slice(0, 1) : "?"
+}
+
+function formatDateYmd(value?: string | null) {
+  if (!value) return "-"
+  try {
+    return new Date(value).toLocaleDateString("sv-SE")
+  } catch {
+    return "-"
+  }
+}
+
+function formatPeriodLabel(periodStart?: string | null, isCurrent?: boolean) {
+  if (!periodStart) return "-"
+  if (isCurrent) return "이번달"
+  const date = new Date(periodStart)
+  if (Number.isNaN(date.getTime())) return periodStart
+  return `${date.getFullYear()}년 ${date.getMonth() + 1}월`
+}
+
+function formatPercent(value: number) {
+  if (!Number.isFinite(value)) return "0"
+  const rounded = Math.round(value * 10) / 10
+  return rounded % 1 === 0 ? String(Math.trunc(rounded)) : rounded.toFixed(1)
+}
+
 function readTenantMenuFromStorage(): MenuId | null {
   try {
     if (typeof window === "undefined") return null
@@ -286,6 +382,7 @@ const TenantSettingsSidebarMenu = ({
 
 
 export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: TenantSettingsDialogProps) {
+  const navigate = useNavigate()
   const [activeMenu, setActiveMenu] = useState<MenuId>(() => readTenantMenuFromStorage() ?? "info")
   const [usagePage, setUsagePage] = useState(1)
   const wasOpenRef = useRef(false)
@@ -294,6 +391,10 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
   const [tenantInfoLoading, setTenantInfoLoading] = useState(false)
   const [creditSummary, setCreditSummary] = useState<CreditSummary | null>(null)
   const [creditLoading, setCreditLoading] = useState(false)
+  const [serviceUsage, setServiceUsage] = useState<ServiceUsageResponse | null>(null)
+  const [serviceUsageLoading, setServiceUsageLoading] = useState(false)
+  const [servicePeriods, setServicePeriods] = useState<ServiceUsagePeriod[]>([])
+  const [selectedServicePeriodEnd, setSelectedServicePeriodEnd] = useState("")
   const [pendingPlanDialogOpen, setPendingPlanDialogOpen] = useState(false)
   const [tenantMembers, setTenantMembers] = useState<TenantMemberRow[]>([])
   const [membersLoading, setMembersLoading] = useState(false)
@@ -319,6 +420,18 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
   const [inviteSaving, setInviteSaving] = useState(false)
   const [inviteActionLoadingId, setInviteActionLoadingId] = useState<string | null>(null)
   const [inviteActionError, setInviteActionError] = useState<string | null>(null)
+  const [creditAccessDialogOpen, setCreditAccessDialogOpen] = useState(false)
+  const [creditAccessTarget, setCreditAccessTarget] = useState<ServiceUsageMember | null>(null)
+  const [creditAccessIsActive, setCreditAccessIsActive] = useState(true)
+  const [creditAccessLimitEnabled, setCreditAccessLimitEnabled] = useState(false)
+  const [creditAccessLimitValue, setCreditAccessLimitValue] = useState("")
+  const [creditAccessLimitError, setCreditAccessLimitError] = useState<string | null>(null)
+  const [creditAccessSaving, setCreditAccessSaving] = useState(false)
+  const [currentBillingPlan, setCurrentBillingPlan] = useState<BillingPlanWithPrices | null>(null)
+  const [billingPlanLoading, setBillingPlanLoading] = useState(false)
+  const [seatDialogOpen, setSeatDialogOpen] = useState(false)
+  const [seatQuantity, setSeatQuantity] = useState(1)
+  const [seatDialogError, setSeatDialogError] = useState<string | null>(null)
 
   const activeLabel = useMemo(
     () => MENU_ITEMS.find((item) => item.id === activeMenu)?.label ?? "테넌트 정보",
@@ -421,6 +534,53 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     }
   }, [authHeaders])
 
+  const loadServiceUsage = useCallback(
+    async (periodEnd?: string) => {
+      const headers = authHeaders()
+      if (!headers.Authorization) {
+        setServiceUsage(null)
+        setServicePeriods([])
+        setSelectedServicePeriodEnd("")
+        return
+      }
+      setServiceUsageLoading(true)
+      try {
+        const params = new URLSearchParams()
+        if (periodEnd) params.set("period_end", periodEnd)
+        const query = params.toString()
+        const res = await fetch(`/api/ai/credits/my/service-usage${query ? `?${query}` : ""}`, { headers })
+        const json = (await res.json().catch(() => null)) as ServiceUsageResponse | null
+        if (!res.ok || !json?.ok) {
+          setServiceUsage(null)
+          setServicePeriods([])
+          return
+        }
+        const periods = Array.isArray(json.periods) ? json.periods : []
+        const summaryPeriodStart = json.summary?.period_start
+        const summaryPeriodEnd = json.summary?.period_end
+        const nextPeriods =
+          periods.length || !summaryPeriodEnd
+            ? periods
+            : [{ period_start: summaryPeriodStart || "", period_end: summaryPeriodEnd }]
+        setServiceUsage(json)
+        setServicePeriods(nextPeriods)
+        if (!periodEnd) {
+          const nextPeriodEnd = summaryPeriodEnd || nextPeriods[0]?.period_end
+          if (nextPeriodEnd) {
+            setSelectedServicePeriodEnd((prev) => prev || nextPeriodEnd)
+          }
+        }
+      } catch (error) {
+        console.error(error)
+        setServiceUsage(null)
+        setServicePeriods([])
+      } finally {
+        setServiceUsageLoading(false)
+      }
+    },
+    [authHeaders]
+  )
+
   const loadTenantMembers = useCallback(async () => {
     const headers = authHeaders()
     if (!headers.Authorization) {
@@ -477,6 +637,58 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     }
   }, [authHeaders])
 
+  const loadBillingPlan = useCallback(async () => {
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      setCurrentBillingPlan(null)
+      return
+    }
+    setBillingPlanLoading(true)
+    try {
+      const subRes = await fetch("/api/ai/billing/user/subscription", { headers })
+      const subData = (await subRes.json().catch(() => null)) as SubscriptionResponse | null
+      const subscription = subData?.row ?? null
+      if (!subscription?.plan_id) {
+        setCurrentBillingPlan(null)
+        return
+      }
+      const plans = await fetchBillingPlansWithPrices()
+      const plan = plans.find((item) => item.id === subscription.plan_id) ?? null
+      setCurrentBillingPlan(plan)
+    } catch (error) {
+      console.error(error)
+      setCurrentBillingPlan(null)
+    } finally {
+      setBillingPlanLoading(false)
+    }
+  }, [authHeaders])
+
+  const resolveNextBillingRoute = useCallback(async () => {
+    const headers = authHeaders()
+    if (!headers.Authorization) return "/billing/card"
+    try {
+      const [accountRes, methodsRes] = await Promise.all([
+        fetch("/api/ai/billing/user/billing-account", { headers }),
+        fetch("/api/ai/billing/user/payment-methods?limit=1", { headers }),
+      ])
+      let hasInfo = false
+      if (accountRes.ok) {
+        const data = (await accountRes.json().catch(() => null)) as { row?: { billing_name?: string; billing_email?: string; billing_address1?: string } } | null
+        const row = data?.row
+        hasInfo = Boolean(row?.billing_name && row?.billing_email && row?.billing_address1)
+      }
+      let hasCard = false
+      if (methodsRes.ok) {
+        const data = (await methodsRes.json().catch(() => null)) as { rows?: Array<unknown> } | null
+        hasCard = Array.isArray(data?.rows) && data.rows.length > 0
+      }
+      return !hasCard ? "/billing/card" : !hasInfo ? "/billing/info" : "/billing/confirm"
+    } catch (e) {
+      console.error(e)
+      return "/billing/card"
+    }
+  }, [authHeaders])
+
 
   const currentMembership = useMemo(() => {
     if (!currentTenant?.id) return null
@@ -507,9 +719,9 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     () =>
       currentTenant
         ? resolveServiceTier({
-            tenant_type: currentTenant.tenant_type,
-            plan_tier: currentMembership?.plan_tier ?? currentTenant.plan_tier,
-          })
+          tenant_type: currentTenant.tenant_type,
+          plan_tier: currentMembership?.plan_tier ?? currentTenant.plan_tier,
+        })
         : null,
     [currentMembership?.plan_tier, currentTenant]
   )
@@ -529,6 +741,7 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
   ) : (
     <span className="text-xs text-muted-foreground">-</span>
   )
+  const planAvatarClass = resolvedPlanTier ? PLAN_TIER_STYLES[resolvedPlanTier].avatar : "bg-primary"
 
   const memberCountRaw = currentMembership?.current_member_count ?? currentMembership?.member_count
   const memberLimitRaw = currentMembership?.member_limit
@@ -543,12 +756,88 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
           ? `${memberCount}명`
           : "-"
 
+  const includedSeats =
+    typeof currentBillingPlan?.included_seats === "number" ? Math.floor(currentBillingPlan.included_seats) : null
+  const maxSeats =
+    typeof currentBillingPlan?.max_seats === "number" ? Math.floor(currentBillingPlan.max_seats) : null
+  const extraSeatPrice =
+    typeof currentBillingPlan?.extra_seat_price_usd === "number"
+      ? Number(currentBillingPlan.extra_seat_price_usd)
+      : Number(currentBillingPlan?.extra_seat_price_usd ?? 0)
+  const addedSeats =
+    memberLimit !== null && includedSeats !== null ? Math.max(0, memberLimit - includedSeats) : 0
+  const maxExpandableSeats =
+    maxSeats !== null
+      ? Math.max(0, maxSeats - (memberLimit ?? includedSeats ?? 0))
+      : null
+  const currentSeatLimit = memberLimit ?? memberCount
+  const extraSeatPriceLabel = extraSeatPrice > 0 ? `$${extraSeatPrice}` : "-"
+
   const monthlyCredits = creditSummary?.subscription?.grant_monthly
   const monthlyCreditsValue = creditLoading
     ? "불러오는 중..."
     : typeof monthlyCredits === "number"
       ? `${monthlyCredits.toLocaleString()} 크레딧`
       : "-"
+
+  const serviceSummary = serviceUsage?.summary ?? null
+  const serviceTotals = useMemo(() => {
+    if (!serviceSummary) return null
+    const total = Number(serviceSummary.total_credits ?? 0)
+    const used = Number(serviceSummary.used_credits ?? 0)
+    const remaining = Number(serviceSummary.remaining_credits ?? Math.max(0, total - used))
+    const percent = total > 0 ? (used / total) * 100 : 0
+    return {
+      total,
+      used,
+      remaining,
+      percent,
+    }
+  }, [serviceSummary])
+  const serviceUsageLabel = serviceUsageLoading
+    ? "불러오는 중..."
+    : serviceTotals
+      ? `${serviceTotals.used.toLocaleString()} / ${serviceTotals.total.toLocaleString()} 크레딧`
+      : "-"
+  const serviceUsagePercentLabel = serviceUsageLoading
+    ? "불러오는 중..."
+    : serviceTotals
+      ? `${formatPercent(serviceTotals.percent)}% 사용 중`
+      : "-"
+  const serviceUsageProgress = serviceTotals ? Math.min(serviceTotals.percent, 100) : 0
+
+  const serviceMemberRows = useMemo(() => {
+    const rows = Array.isArray(serviceUsage?.members) ? serviceUsage.members : []
+    const totalUsed = serviceTotals?.used ?? 0
+    return rows.map((row) => {
+      const usedCredits = Number(row.used_credits ?? 0)
+      const maxPerPeriodRaw = row.max_per_period
+      const maxPerPeriod =
+        maxPerPeriodRaw === null || maxPerPeriodRaw === undefined ? null : Number(maxPerPeriodRaw)
+      const percent = totalUsed > 0 ? (usedCredits / totalUsed) * 100 : 0
+      return {
+        ...row,
+        used_credits: usedCredits,
+        max_per_period: Number.isFinite(maxPerPeriod as number) ? maxPerPeriod : null,
+        is_active: row.is_active !== false,
+        percent,
+      }
+    })
+  }, [serviceTotals?.used, serviceUsage?.members])
+
+  const selectedServicePeriod = useMemo(() => {
+    if (serviceSummary?.period_start && serviceSummary?.period_end) {
+      return { period_start: serviceSummary.period_start, period_end: serviceSummary.period_end }
+    }
+    if (selectedServicePeriodEnd) {
+      return servicePeriods.find((period) => period.period_end === selectedServicePeriodEnd) ?? null
+    }
+    return null
+  }, [selectedServicePeriodEnd, servicePeriods, serviceSummary?.period_end, serviceSummary?.period_start])
+
+  const selectedServicePeriodRange = selectedServicePeriod
+    ? `${formatDateYmd(selectedServicePeriod.period_start)} ~ ${formatDateYmd(selectedServicePeriod.period_end)}`
+    : "-"
 
   const memberStatusCounts = useMemo(() => {
     const counts = { active: 0, suspended: 0, inactive: 0 }
@@ -755,16 +1044,98 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     if (activeMenu === "members") {
       void loadTenantMembers()
       void loadTenantInvitations()
+      void loadBillingPlan()
       return
     }
     if (activeMenu === "invitations") {
       void loadTenantInvitations()
       return
     }
-    if (activeMenu === "credits" || activeMenu === "topupCredits" || activeMenu === "usage") {
+    if (activeMenu === "credits") {
+      void loadCreditSummary()
+      void loadServiceUsage(selectedServicePeriodEnd || undefined)
+      return
+    }
+    if (activeMenu === "topupCredits" || activeMenu === "usage") {
       void loadCreditSummary()
     }
-  }, [activeMenu, loadCreditSummary, loadTenantInfo, loadTenantInvitations, loadTenantMembers, open])
+  }, [
+    activeMenu,
+    loadCreditSummary,
+    loadBillingPlan,
+    loadServiceUsage,
+    loadTenantInfo,
+    loadTenantInvitations,
+    loadTenantMembers,
+    open,
+    selectedServicePeriodEnd,
+  ])
+
+  const openCreditAccessDialog = useCallback((member: ServiceUsageMember) => {
+    setCreditAccessTarget(member)
+    setCreditAccessIsActive(member.is_active !== false)
+    const hasLimit = member.max_per_period !== null && member.max_per_period !== undefined
+    setCreditAccessLimitEnabled(hasLimit)
+    setCreditAccessLimitValue(hasLimit ? String(member.max_per_period) : "")
+    setCreditAccessLimitError(null)
+    setCreditAccessDialogOpen(true)
+  }, [])
+
+  const handleSaveCreditAccess = useCallback(async () => {
+    if (!creditAccessTarget) return
+    const totalCredits = Number(serviceSummary?.total_credits ?? 0)
+    if (creditAccessLimitEnabled) {
+      const limitNumber = Number(creditAccessLimitValue)
+      if (!Number.isFinite(limitNumber) || limitNumber < 0) {
+        setCreditAccessLimitError("제한 한도는 0 이상의 숫자여야 합니다.")
+        return
+      }
+      if (totalCredits > 0 && limitNumber > totalCredits) {
+        setCreditAccessLimitError(
+          `제한 한도는 전체 크레딧(${totalCredits.toLocaleString()}) 이하로 설정해 주세요.`
+        )
+        return
+      }
+    }
+    setCreditAccessLimitError(null)
+    setCreditAccessSaving(true)
+    try {
+      const headers = authHeaders()
+      if (!headers.Authorization) return
+      const limitNumber = creditAccessLimitEnabled ? Number(creditAccessLimitValue) : null
+      const body: Record<string, unknown> = {
+        user_id: creditAccessTarget.user_id,
+        is_active: creditAccessIsActive,
+        max_per_period: creditAccessLimitEnabled ? (Number.isFinite(limitNumber) ? limitNumber : 0) : null,
+      }
+      const res = await fetch("/api/ai/credits/my/member-credit-access", {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok || !json?.ok) {
+        toast.error(json?.message || "저장에 실패했습니다.")
+        return
+      }
+      toast.success("멤버 크레딧 설정이 저장되었습니다.")
+      setCreditAccessDialogOpen(false)
+      void loadServiceUsage(selectedServicePeriodEnd || undefined)
+    } catch {
+      toast.error("저장 중 오류가 발생했습니다.")
+    } finally {
+      setCreditAccessSaving(false)
+    }
+  }, [
+    authHeaders,
+    creditAccessIsActive,
+    creditAccessLimitEnabled,
+    creditAccessLimitValue,
+    creditAccessTarget,
+    loadServiceUsage,
+    selectedServicePeriodEnd,
+    serviceSummary?.total_credits,
+  ])
 
   const handleCreateInvitation = useCallback(async () => {
     if (!canManageMembers) return
@@ -835,6 +1206,38 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     onOpenChange(false)
   }, [onOpenChange, onOpenPlanDialog])
 
+  const handleOpenSeatDialog = useCallback(() => {
+    if (maxExpandableSeats !== null && maxExpandableSeats <= 0) {
+      toast.error("추가 가능한 좌석이 없습니다.")
+      return
+    }
+    setSeatDialogError(null)
+    setSeatQuantity(1)
+    setSeatDialogOpen(true)
+  }, [maxExpandableSeats])
+
+  const handleConfirmSeatAdd = useCallback(async () => {
+    if (!seatQuantity || seatQuantity <= 0) {
+      setSeatDialogError("추가할 좌석 수를 입력해주세요.")
+      return
+    }
+    if (maxExpandableSeats !== null && seatQuantity > maxExpandableSeats) {
+      setSeatDialogError(`최대 ${maxExpandableSeats}명까지 추가할 수 있습니다.`)
+      return
+    }
+    const target = await resolveNextBillingRoute()
+    setSeatDialogOpen(false)
+    navigate(target, {
+      state: {
+        action: "seat_add",
+        seatQuantity,
+        seatUnitPrice: extraSeatPrice,
+        seatMax: maxExpandableSeats,
+        flow: appendVisited(undefined, "seat_add"),
+      },
+    })
+  }, [extraSeatPrice, maxExpandableSeats, navigate, resolveNextBillingRoute, seatQuantity])
+
   useEffect(() => {
     if (!open) {
       wasOpenRef.current = false
@@ -859,10 +1262,17 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
   }, [loadCreditSummary, loadTenantInfo, open])
   useEffect(() => {
     if (!open) return
+    if (activeMenu !== "credits") return
+    setSelectedServicePeriodEnd("")
+    void loadServiceUsage()
+  }, [activeMenu, loadServiceUsage, open])
+  useEffect(() => {
+    if (!open) return
     if (activeMenu !== "members") return
     void loadTenantMembers()
     void loadTenantInvitations()
-  }, [activeMenu, loadTenantMembers, loadTenantInvitations, open])
+    void loadBillingPlan()
+  }, [activeMenu, loadBillingPlan, loadTenantMembers, loadTenantInvitations, open])
   useEffect(() => {
     if (!open) return
     if (activeMenu !== "invitations") return
@@ -1041,11 +1451,42 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                             <div className="mt-2 flex items-baseline gap-1">
                               <span className={cn("text-2xl font-bold tracking-tight", item.accent)}>{item.value}</span>
                               <span className="text-xs text-muted-foreground">{item.sub}</span>
+                              {item.label === "총 좌석" && addedSeats > 0 && includedSeats !== null ? (
+                                <span className="text-[11px] text-muted-foreground">
+                                  (포함 {includedSeats}명 + 추가 {addedSeats}명)
+                                </span>
+                              ) : null}
                             </div>
                           </div>
                         )
                       })}
                     </div>
+
+
+
+                    <div className="mt-3 flex items-center gap-2">
+
+                      {resolvedPlanTier ? (
+                        <span className={cn("px-2 py-0.5 rounded text-xs font-medium", PLAN_TIER_STYLES[resolvedPlanTier].badge)}>
+                          {PLAN_TIER_LABELS[resolvedPlanTier]}
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded text-xs font-medium bg-muted text-muted-foreground">-</span>
+                      )}
+                      <span className="text-xs text-muted-foreground">
+                        최대 좌석 수 {maxSeats !== null ? `${maxSeats}` : "-"} 명
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        onClick={handleOpenSeatDialog}
+                        disabled={billingPlanLoading || (maxExpandableSeats !== null && maxExpandableSeats <= 0)}
+                      >
+                        <Armchair className="size-4" />좌석 추가
+                      </Button>
+
+                    </div>
+
                   </div>
 
                   <div className="px-4 pb-4">
@@ -1148,9 +1589,9 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
 
                   <div className="px-4 pb-4">
                     <div className="text-sm font-semibold text-foreground">제외 멤버 목록</div>
-                    <p className="mt-1 text-xs text-muted-foreground">
+                    {/* <p className="mt-1 text-xs text-muted-foreground">
                       제외 멤버는 한번이라도 크레딧 사용 이력이 있는 사용자만 추가가 됩니다. 사용이력이 없을 시 목록에서 완전 제거 됩니다.
-                    </p>
+                    </p> */}
                     <div className="mt-3 overflow-x-auto rounded-md border border-border">
                       <Table className="text-sm">
                         <TableHeader className="bg-muted/50 text-xs font-medium text-muted-foreground">
@@ -1417,18 +1858,32 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                   <div className="flex items-center px-4 gap-2">
                     {/* 월 선택 */}
                     <div>
-                      <Select>
+                      <Select
+                        value={selectedServicePeriodEnd}
+                        onValueChange={(value) => {
+                          setSelectedServicePeriodEnd(value)
+                          void loadServiceUsage(value)
+                        }}
+                      >
                         <SelectTrigger>
-                          <SelectValue placeholder="이번달" />
+                          <SelectValue placeholder="기간 선택" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="current">이번달</SelectItem>
-                          <SelectItem value="2026-01">2026년 1월</SelectItem>
-                          <SelectItem value="2025-12">2025년 12월</SelectItem>
+                          {servicePeriods.length ? (
+                            servicePeriods.map((period) => (
+                              <SelectItem key={period.period_end} value={period.period_end}>
+                                {formatPeriodLabel(period.period_start, !!serviceUsage?.current_period_end && period.period_end === serviceUsage.current_period_end)}
+                              </SelectItem>
+                            ))
+                          ) : (
+                            <SelectItem value="__empty__" disabled>
+                              기간 정보 없음
+                            </SelectItem>
+                          )}
                         </SelectContent>
                       </Select>
                     </div>
-                    <div className="text-sm text-muted-foreground">2026-02-19 ~ 2026-03-19</div>
+                    <div className="text-sm text-muted-foreground">{selectedServicePeriodRange}</div>
                   </div>
 
                   <div className="px-4 pb-4">
@@ -1437,19 +1892,22 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                       {/* 전체 사용량 바 */}
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-muted-foreground">전체 사용량</span>
-                        <span className="font-semibold text-foreground">32,320 / 50,000 크레딧</span>
+                        <span className="font-semibold text-foreground">{serviceUsageLabel}</span>
                       </div>
                       <div className="mt-2 h-3 w-full overflow-hidden rounded-full bg-muted">
-                        <div className="h-full rounded-full bg-primary transition-all" style={{ width: "64.8%" }} />
+                        <div
+                          className={cn("h-full rounded-full transition-all", planAvatarClass)}
+                          style={{ width: `100-${serviceUsageProgress}%` }}
+                        />
                       </div>
-                      <div className="mt-1 text-right text-xs text-muted-foreground">64.8% 사용 중</div>
+                      <div className="mt-1 text-right text-xs text-muted-foreground">{serviceUsagePercentLabel}</div>
                     </div>
 
                     <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
                       {[
-                        { label: "전체 용량", value: 50000, unit: "크레딧", icon: Database, accent: "text-foreground", bg: "bg-muted/60", ring: "" },
-                        { label: "사용 중", value: 32320, unit: "크레딧", icon: HardDrive, accent: "text-sky-600", bg: "bg-sky-50 dark:bg-sky-950/40", ring: "ring-1 ring-sky-200 dark:ring-sky-800" },
-                        { label: "남은 용량", value: 17680, unit: "크레딧", icon: PackageOpen, accent: "text-emerald-600", bg: "bg-emerald-50 dark:bg-emerald-950/40", ring: "ring-1 ring-emerald-200 dark:ring-emerald-800" },
+                        { label: "전체 용량", value: serviceTotals?.total ?? null, unit: "크레딧", icon: Database, accent: "text-foreground", bg: "bg-muted/60", ring: "" },
+                        { label: "사용 중", value: serviceTotals?.used ?? null, unit: "크레딧", icon: HardDrive, accent: "text-sky-600", bg: "bg-sky-50 dark:bg-sky-950/40", ring: "ring-1 ring-sky-200 dark:ring-sky-800" },
+                        { label: "남은 용량", value: serviceTotals?.remaining ?? null, unit: "크레딧", icon: PackageOpen, accent: "text-emerald-600", bg: "bg-emerald-50 dark:bg-emerald-950/40", ring: "ring-1 ring-emerald-200 dark:ring-emerald-800" },
                       ].map((item) => {
                         const Icon = item.icon
                         return (
@@ -1459,7 +1917,9 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                               <Icon className={cn("size-4 shrink-0", item.accent)} />
                             </div>
                             <div className="mt-2 flex items-baseline gap-1">
-                              <span className={cn("text-2xl font-bold tracking-tight", item.accent)}>{item.value.toLocaleString()}</span>
+                              <span className={cn("text-2xl font-bold tracking-tight", item.accent)}>
+                                {typeof item.value === "number" ? item.value.toLocaleString() : "-"}
+                              </span>
                               <span className="text-xs text-muted-foreground">{item.unit}</span>
                             </div>
                           </div>
@@ -1484,50 +1944,92 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                           </TableRow>
                         </TableHeader>
                         <TableBody className="text-muted-foreground">
-                          {[
-                            { name: "홍길동", used: 8000, limit: "(제한없음)", percent: 16, is_active: true },
-                            { name: "박지민", used: 6200, limit: "(제한없음)", percent: 8.2, is_active: true },
-                            { name: "이수진", used: 3800, limit: 10000, percent: 5.2, is_active: true },
-                            { name: "김하늘", used: 0, limit: 0, percent: 0, is_active: false },
-                            { name: "최민호", used: 0, limit: 0, percent: 0, is_active: false },
-                          ].map((row, index) => (
-                            <TableRow key={row.name} className="hover:bg-accent/40">
-                              <TableCell className="text-center text-xs text-muted-foreground">{index + 1}</TableCell>
-                              <TableCell className="text-foreground">
-                                <div className="flex items-center gap-1">
-                                  <div className="flex items-center justify-center gap-2 w-6 h-6 bg-teal-500 rounded-sm">
-                                    <span className="text-white font-semibold text-sm">이</span>
-                                  </div>
-                                  <div className="text-xs block max-w-[120px] truncate">{row.name}</div>
-                                </div>
-                              </TableCell>
-                              <TableCell className="hidden sm:table-cell">
-                                <div className="flex items-center gap-2">
-                                  <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
-                                    <div
-                                      className={cn(
-                                        "h-full rounded-full transition-all",
-                                        row.percent >= 100 ? "bg-destructive" : row.percent >= 80 ? "bg-amber-500" : "bg-primary"
-                                      )}
-                                      style={{ width: `${Math.min(row.percent, 100)}%` }}
-                                    />
-                                  </div>
-                                  <span className="w-[36px] text-right text-xs">{row.percent}%</span>
-                                </div>
-                              </TableCell>
-                              <TableCell className="text-right text-xs">
-                                {row.used.toLocaleString()} / {row.limit.toLocaleString()}
-                              </TableCell>
-                              <TableCell className="text-center text-xs">
-                                {row.is_active ? <span className="text-teal-500 border border-teal-500 rounded-full px-2 py-1">사용</span> : <span className="text-destructive border border-destructive rounded-full px-2 py-1">불가</span>}
-                              </TableCell>
-                              <TableCell className="text-center">
-                                <Button variant="outline" size="sm" className="text-blue-500 hover:text-blue-600">
-                                  <Settings2 className="size-4" />
-                                </Button>
+                          {serviceUsageLoading ? (
+                            <TableRow>
+                              <TableCell colSpan={6} className="py-8 text-center text-xs text-muted-foreground">
+                                크레딧 사용 현황을 불러오는 중입니다.
                               </TableCell>
                             </TableRow>
-                          ))}
+                          ) : serviceMemberRows.length ? (
+                            serviceMemberRows.map((row, index) => {
+                              const name = resolveUsageMemberName(row)
+                              const percentValue = Math.min(row.percent ?? 0, 100)
+                              const percentLabel = formatPercent(row.percent ?? 0)
+                              const roleSlug = String(row.role_slug || "").toLowerCase()
+                              const isOwner = roleSlug === "owner" || roleSlug === "tenant_owner"
+                              const limitLabel =
+                                row.max_per_period === null || row.max_per_period === undefined
+                                  ? "(제한없음)"
+                                  : Number(row.max_per_period).toLocaleString()
+                              const roleLabel = ROLE_LABELS[roleSlug] || roleSlug || "-"
+                              return (
+                                <TableRow key={row.user_id} className="hover:bg-accent/40">
+                                  <TableCell className="text-center text-xs text-muted-foreground">{index + 1}</TableCell>
+                                  <TableCell className="text-foreground">
+                                    <div className="flex items-center gap-1.5">
+                                      <ProfileAvatar
+                                        size={24}
+                                        rounded="sm"
+                                        src={row.profile_image_url}
+                                        name={row.user_name || row.user_email}
+                                        initial={resolveUsageMemberInitial(row)}
+                                        fallbackClassName="bg-teal-500"
+                                        textClassName="text-sm"
+                                      />
+                                      <div className="flex flex-col leading-tight">
+                                        <span className="text-xs block max-w-[120px] truncate">{name}</span>
+                                        <span className="text-[10px] text-muted-foreground">{roleLabel}</span>
+                                      </div>
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="hidden sm:table-cell">
+                                    <div className="flex items-center gap-2">
+                                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
+                                        <div
+                                          className={cn(
+                                            "h-full rounded-full transition-all",
+                                            percentValue >= 100 ? "bg-destructive" : percentValue >= 80 ? "bg-amber-500" : "bg-primary"
+                                          )}
+                                          style={{ width: `${percentValue}%` }}
+                                        />
+                                      </div>
+                                      <span className="w-[36px] text-right text-xs">{percentLabel}%</span>
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="text-right text-xs">
+                                    {(row.used_credits as number).toLocaleString()} / {limitLabel}
+                                  </TableCell>
+                                  <TableCell className="text-center text-xs">
+                                    {row.is_active ? (
+                                      <span className="text-teal-500 border border-teal-500 rounded-full px-2 py-1">사용</span>
+                                    ) : (
+                                      <span className="text-destructive border border-destructive rounded-full px-2 py-1">불가</span>
+                                    )}
+                                  </TableCell>
+                                  <TableCell className="text-center">
+                                    {isOwner ? (
+                                      <span className="text-xs text-muted-foreground">-</span>
+                                    ) : (
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="text-blue-500 hover:text-blue-600"
+                                        onClick={() => openCreditAccessDialog(row)}
+                                      >
+                                        <Settings2 className="size-4" />
+                                      </Button>
+                                    )}
+                                  </TableCell>
+                                </TableRow>
+                              )
+                            })
+                          ) : (
+                            <TableRow>
+                              <TableCell colSpan={6} className="py-8 text-center text-xs text-muted-foreground">
+                                표시할 멤버가 없습니다.
+                              </TableCell>
+                            </TableRow>
+                          )}
                         </TableBody>
                       </Table>
                     </div>
@@ -1575,7 +2077,7 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                         <span className="font-semibold text-foreground">0 / 980,000 크레딧</span>
                       </div>
                       <div className="mt-2 h-3 w-full overflow-hidden rounded-full bg-muted">
-                        <div className="h-full rounded-full bg-primary transition-all" style={{ width: "0.0%" }} />
+                        <div className="h-full rounded-full bg-primary transition-all" style={{ width: "100.0%" }} />
                       </div>
                       <div className="mt-1 text-right text-xs text-muted-foreground">0% 사용 중</div>
                     </div>
@@ -1595,8 +2097,8 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                             </div>
                             <div className="mt-2 flex items-baseline justify-between gap-1">
                               <div className="flex items-center gap-1">
-                              <span className={cn("text-2xl font-bold tracking-tight", item.accent)}>{item.value.toLocaleString()}</span>
-                              <span className="text-xs text-muted-foreground">{item.unit}</span>
+                                <span className={cn("text-2xl font-bold tracking-tight", item.accent)}>{item.value.toLocaleString()}</span>
+                                <span className="text-xs text-muted-foreground">{item.unit}</span>
                               </div>
                               {item.label === "현재 보유량" ? (
                                 <Tooltip>
@@ -1784,6 +2286,69 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
           </div>
         </div>
       </DialogContent>
+      <Dialog open={seatDialogOpen} onOpenChange={setSeatDialogOpen}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>좌석 추가</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 text-sm">
+            <div className="flex">
+              {resolvedPlanTier ? (
+                <span className={cn("px-2 py-0.5 rounded text-xs font-medium", PLAN_TIER_STYLES[resolvedPlanTier].badge)}>
+                  {PLAN_TIER_LABELS[resolvedPlanTier]}
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded text-xs font-medium bg-muted text-muted-foreground">-</span>
+              )}
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">1 좌석 추가 금액</span>
+              <span className="font-semibold text-foreground">월 {extraSeatPriceLabel}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">현재 좌석수</span>
+              <span className="font-semibold text-foreground">{currentSeatLimit.toLocaleString()}명</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">최대 좌석 수</span>
+              <span className="font-semibold text-foreground">
+                {maxSeats !== null ? `${maxSeats}명` : "-"}
+              </span>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs text-muted-foreground">추가할 좌석수</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  min={1}
+                  max={maxExpandableSeats ?? undefined}
+                  value={seatQuantity}
+                  style={{ width: "100px" }}
+                  onChange={(event) => {
+                    const next = Number(event.target.value)
+                    if (!Number.isFinite(next)) {
+                      setSeatQuantity(1)
+                      return
+                    }
+                    setSeatQuantity(Math.max(1, Math.floor(next)))
+                    setSeatDialogError(null)
+                  }}
+                />
+                <span className="text-xs text-muted-foreground">
+                  명 / {maxExpandableSeats !== null ? `${maxExpandableSeats}` : "-"}명 까지 가능
+                </span>
+              </div>
+            </div>
+            {seatDialogError ? <p className="text-xs text-destructive">{seatDialogError}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSeatDialogOpen(false)}>
+              취소
+            </Button>
+            <Button onClick={handleConfirmSeatAdd}>확인</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={memberDialogOpen} onOpenChange={setMemberDialogOpen}>
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
@@ -1923,6 +2488,86 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <Dialog open={creditAccessDialogOpen} onOpenChange={setCreditAccessDialogOpen}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>멤버 크레딧 관리</DialogTitle>
+          </DialogHeader>
+          {creditAccessTarget ? (
+            <div className="space-y-5">
+              <div className="flex items-center gap-3">
+                <ProfileAvatar
+                  size={40}
+                  rounded="md"
+                  src={creditAccessTarget.profile_image_url}
+                  name={creditAccessTarget.user_name || creditAccessTarget.user_email}
+                  initial={resolveUsageMemberInitial(creditAccessTarget)}
+                  fallbackClassName="bg-teal-500"
+                />
+                <div className="flex flex-col leading-tight">
+                  <span className="text-sm font-medium text-foreground">
+                    {resolveUsageMemberName(creditAccessTarget)}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {creditAccessTarget.user_email || "-"}
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium">크레딧 사용 허용</div>
+                    <div className="text-xs text-muted-foreground">비활성화 시 이 멤버의 크레딧 사용이 차단됩니다.</div>
+                  </div>
+                  <Switch checked={creditAccessIsActive} onCheckedChange={setCreditAccessIsActive} />
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-medium">사용량 제한</div>
+                      <div className="text-xs text-muted-foreground">기간당 최대 크레딧 사용량을 설정합니다.</div>
+                    </div>
+                    <Switch checked={creditAccessLimitEnabled} onCheckedChange={(checked) => {
+                      setCreditAccessLimitEnabled(checked)
+                      if (!checked) setCreditAccessLimitValue("")
+                    }} />
+                  </div>
+                  {creditAccessLimitEnabled ? (
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        min={0}
+                        max={Number(serviceSummary?.total_credits ?? 0) || undefined}
+                        value={creditAccessLimitValue}
+                        onChange={(e) => {
+                          setCreditAccessLimitValue(e.target.value)
+                          if (creditAccessLimitError) setCreditAccessLimitError(null)
+                        }}
+                        placeholder="최대 크레딧"
+                        className="flex-1"
+                      />
+                      <span className="text-xs text-muted-foreground whitespace-nowrap">크레딧 / 기간</span>
+                    </div>
+                  ) : null}
+                  {creditAccessLimitEnabled && creditAccessLimitError ? (
+                    <div className="text-xs text-destructive">{creditAccessLimitError}</div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreditAccessDialogOpen(false)} disabled={creditAccessSaving}>
+              취소
+            </Button>
+            <Button onClick={handleSaveCreditAccess} disabled={creditAccessSaving}>
+              {creditAccessSaving ? "저장 중..." : "저장"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog >
   )
 }

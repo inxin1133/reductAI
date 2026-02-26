@@ -2094,6 +2094,24 @@ export async function listCurrentUserSessions(req: Request, res: Response) {
   }
 }
 
+export async function revokeOtherUserSessions(req: Request, res: Response) {
+  try {
+    const userId = (req as AuthedRequest).userId
+    const tokenHash = (req as AuthedRequest).sessionTokenHash || ""
+    if (!tokenHash) return res.status(400).json({ message: "Current session not found" })
+
+    const result = await query(
+      `DELETE FROM user_sessions WHERE user_id = $1 AND token_hash <> $2 RETURNING id`,
+      [userId, tokenHash]
+    )
+
+    return res.json({ ok: true, revoked: result.rows.length })
+  } catch (e) {
+    console.error("post-service revokeOtherUserSessions error:", e)
+    return res.status(500).json({ message: "Failed to revoke sessions" })
+  }
+}
+
 export async function revokeCurrentUserSession(req: Request, res: Response) {
   try {
     const userId = (req as AuthedRequest).userId

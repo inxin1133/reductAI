@@ -48,8 +48,77 @@ type LocationState = {
   planId?: string
   planName?: string
   billingCycle?: "monthly" | "yearly"
-  action?: "new" | "change" | "cancel"
+  action?: "new" | "change" | "cancel" | "topup" | "seat_add"
+  fromDowngrade?: boolean
   flow?: CheckoutFlowState
+  topupProductId?: string
+  topupProductName?: string
+  topupCredits?: number
+  topupPrice?: number
+  seatQuantity?: number
+  seatUnitPrice?: number
+  seatMax?: number | null
+}
+
+type TopupQuoteResponse = {
+  ok?: boolean
+  product_id?: string
+  sku_code?: string
+  product_name?: string
+  credits?: number
+  bonus_credits?: number
+  total_credits?: number
+  currency?: string
+  amount?: number
+  base_currency?: string
+  base_amount?: number
+  fx_rate?: number | null
+  tax_rate_percent?: number
+  tax_amount?: number
+  total_amount?: number
+  message?: string
+}
+
+type TopupCheckoutResponse = {
+  ok?: boolean
+  total_amount?: number
+  tax_amount?: number
+  currency?: string
+  credits_granted?: number
+  balance_before?: number
+  balance_after?: number
+  transaction_id?: string
+  message?: string
+}
+
+type SeatAddonQuoteResponse = {
+  ok?: boolean
+  quantity?: number
+  unit_price_usd?: number
+  unit_price_local?: number
+  currency?: string
+  amount?: number
+  base_currency?: string
+  base_amount?: number
+  fx_rate?: number | null
+  tax_rate_percent?: number
+  tax_amount?: number
+  total_amount?: number
+  message?: string
+}
+
+type SeatAddonCheckoutResponse = {
+  ok?: boolean
+  quantity?: number
+  unit_price_usd?: number
+  unit_price_local?: number
+  fx_rate?: number | null
+  total_amount?: number
+  tax_amount?: number
+  currency?: string
+  new_member_limit?: number
+  transaction_id?: string
+  message?: string
 }
 
 const EMPTY_BILLING_INFO: BillingInfoProfile = {
@@ -195,11 +264,21 @@ export default function PaymentConfirm() {
   const location = useLocation()
   const state = useMemo(() => (location.state || {}) as LocationState, [location.state])
   const action = state.action ?? "new"
-  const isChangeFlow = action === "change" || action === "cancel"
+  const isChangeFlow = action === "change"
+  const isTopupFlow = action === "topup"
+  const isSeatFlow = action === "seat_add"
+  const isFromDowngrade = Boolean(state.fromDowngrade)
   const selectedPlanName = typeof state.planName === "string" ? state.planName : null
   const billingCycleLabel = state.billingCycle === "yearly" ? "연간 구독" : "월간 구독"
   const canGoBackToInfo = hasVisited(state.flow, "info")
+  const canGoBackToDowngrade = hasVisited(state.flow, "downgrade")
   const inFlow = Boolean(state.flow?.visited?.length)
+
+  useEffect(() => {
+    if (action === "cancel") {
+      navigate("/billing/cancel", { replace: true, state: { action: "cancel" } })
+    }
+  }, [action, navigate])
 
   const [card, setCard] = useState(() => readBillingCard())
   const [billingInfo, setBillingInfo] = useState<BillingInfoProfile>(() => {
@@ -231,15 +310,15 @@ export default function PaymentConfirm() {
   const targetCycleLabel =
     changeQuote?.target?.billing_cycle === "yearly" ? "연간" : changeQuote?.target?.billing_cycle === "monthly" ? "월간" : "-"
   const planCycleLabel = isChangeFlow
-    ? action === "cancel"
-      ? `${currentCycleLabel} 구독`
-      : `${currentCycleLabel} → ${targetCycleLabel}`
+    ? `${currentCycleLabel} → ${targetCycleLabel}`
     : billingCycleLabel
   const displayPlanName = isChangeFlow
-    ? action === "cancel"
-      ? currentPlanName
-      : targetPlanName
+    ? targetPlanName
     : resolvedPlanName ?? selectedPlanName ?? "Professional"
+  const selectedCountryLabel = useMemo(() => {
+    const option = COUNTRY_OPTIONS.find((item) => item.code === billingInfo.countryCode)
+    return option?.label ?? billingInfo.countryCode ?? "-"
+  }, [billingInfo.countryCode])
   const [couponCode, setCouponCode] = useState("")
   const [agreeTerms, setAgreeTerms] = useState(true)
   const [isCardSelectOpen, setIsCardSelectOpen] = useState(false)
@@ -259,16 +338,8 @@ export default function PaymentConfirm() {
   const requiresPayment = isChangeFlow
     ? Boolean(changeQuote && Number.isFinite(changeQuote.total_amount) && changeQuote.total_amount > 0)
     : Boolean(quote && Number.isFinite(quote.total_amount))
-  const canPay = isChangeFlow
+  const canPay = isTopupFlow || isSeatFlow
     ? Boolean(
-        changeQuote &&
-          agreeTerms &&
-          !paying &&
-          !quoteLoading &&
-          (!requiresPayment ||
-            (card?.last4 && billingInfo.name && billingInfo.email && billingInfo.address1))
-      )
-    : Boolean(
         quote &&
           Number.isFinite(quote.total_amount) &&
           agreeTerms &&
@@ -279,6 +350,26 @@ export default function PaymentConfirm() {
           !paying &&
           !quoteLoading
       )
+    : isChangeFlow
+      ? Boolean(
+          changeQuote &&
+            agreeTerms &&
+            !paying &&
+            !quoteLoading &&
+            (!requiresPayment ||
+              (card?.last4 && billingInfo.name && billingInfo.email && billingInfo.address1))
+        )
+      : Boolean(
+          quote &&
+            Number.isFinite(quote.total_amount) &&
+            agreeTerms &&
+            card?.last4 &&
+            billingInfo.name &&
+            billingInfo.email &&
+            billingInfo.address1 &&
+            !paying &&
+            !quoteLoading
+        )
 
   const authHeaders = useCallback((): Record<string, string> => {
     if (typeof window === "undefined") return {}
@@ -287,7 +378,7 @@ export default function PaymentConfirm() {
   }, [])
 
   const loadPlanInfo = useCallback(async () => {
-    if (!state.planId || isChangeFlow) return
+    if (!state.planId || isChangeFlow || isTopupFlow || isSeatFlow) return
     try {
       const plans = await fetchBillingPlansWithPrices()
       const plan = plans.find((item) => item.id === state.planId)
@@ -296,7 +387,7 @@ export default function PaymentConfirm() {
     } catch (e) {
       console.error(e)
     }
-  }, [isChangeFlow, state.planId])
+  }, [isChangeFlow, isSeatFlow, isTopupFlow, state.planId])
 
   const loadQuote = useCallback(async () => {
     const headers = authHeaders()
@@ -304,13 +395,67 @@ export default function PaymentConfirm() {
 
     try {
       setQuoteLoading(true)
+
+      if (isTopupFlow) {
+        setChangeQuote(null)
+        if (!state.topupProductId) { setQuote(null); return null }
+        const res = await fetch("/api/ai/billing/user/topup-quote", {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ product_id: state.topupProductId }),
+        })
+        const data = (await res.json().catch(() => null)) as TopupQuoteResponse | null
+        if (!res.ok || !data?.ok) throw new Error(data?.message || "FAILED_QUOTE")
+        const currency = data.currency || "USD"
+        const nextQuote: QuoteState = {
+          currency,
+          amount: roundMoney(Number(data.amount ?? 0), currency),
+          tax_rate_percent: Number(data.tax_rate_percent ?? 0),
+          tax_amount: roundMoney(Number(data.tax_amount ?? 0), currency),
+          total_amount: roundMoney(Number(data.total_amount ?? 0), currency),
+          fx_rate: data.fx_rate ?? null,
+          base_currency: data.base_currency ?? null,
+          base_amount: data.base_amount ?? null,
+        }
+        setQuote(nextQuote)
+        return nextQuote
+      }
+
+      if (isSeatFlow) {
+        setChangeQuote(null)
+        if (!state.seatQuantity) {
+          setQuote(null)
+          return null
+        }
+        const res = await fetch("/api/ai/billing/user/seat-addon-quote", {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ quantity: state.seatQuantity }),
+        })
+        const data = (await res.json().catch(() => null)) as SeatAddonQuoteResponse | null
+        if (!res.ok || !data?.ok) throw new Error(data?.message || "FAILED_QUOTE")
+        const currency = data.currency || "USD"
+        const nextQuote: QuoteState = {
+          currency,
+          amount: roundMoney(Number(data.amount ?? 0), currency),
+          tax_rate_percent: Number(data.tax_rate_percent ?? 0),
+          tax_amount: roundMoney(Number(data.tax_amount ?? 0), currency),
+          total_amount: roundMoney(Number(data.total_amount ?? 0), currency),
+          fx_rate: data.fx_rate ?? null,
+          base_currency: data.base_currency ?? null,
+          base_amount: data.base_amount ?? null,
+        }
+        setQuote(nextQuote)
+        return nextQuote
+      }
+
       if (isChangeFlow) {
         setQuote(null)
         const res = await fetch("/api/ai/billing/user/subscription-quote", {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
           body: JSON.stringify({
-            action: action === "cancel" ? "cancel" : "change",
+            action: "change",
             target_plan_id: state.planId || null,
             target_billing_cycle: state.billingCycle || null,
           }),
@@ -361,7 +506,16 @@ export default function PaymentConfirm() {
     } finally {
       setQuoteLoading(false)
     }
-  }, [action, authHeaders, isChangeFlow, state.billingCycle, state.planId])
+  }, [
+    authHeaders,
+    isChangeFlow,
+    isSeatFlow,
+    isTopupFlow,
+    state.billingCycle,
+    state.planId,
+    state.seatQuantity,
+    state.topupProductId,
+  ])
 
   const loadBillingData = useCallback(async () => {
     const headers = authHeaders()
@@ -685,12 +839,59 @@ export default function PaymentConfirm() {
 
     try {
       setPaying(true)
+
+      if (isTopupFlow) {
+        if (!state.topupProductId) { alert("충전 상품 정보가 없습니다."); return }
+        const res = await fetch("/api/ai/billing/user/topup-checkout", {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ product_id: state.topupProductId }),
+        })
+        const data = (await res.json().catch(() => null)) as TopupCheckoutResponse | null
+        if (!res.ok || !data?.ok) throw new Error(data?.message || "FAILED_TOPUP")
+        navigate("/billing/complete", {
+          state: {
+            action: "topup",
+            topupProductName: state.topupProductName,
+            topupCredits: data.credits_granted ?? state.topupCredits,
+            totalAmount: data.total_amount ?? quote?.total_amount ?? totalAmount,
+            currency: data.currency ?? quote?.currency ?? displayCurrency,
+            transactionId: data.transaction_id,
+          },
+        })
+        return
+      }
+
+      if (isSeatFlow) {
+        if (!state.seatQuantity) {
+          alert("추가할 좌석 수가 없습니다.")
+          return
+        }
+        const res = await fetch("/api/ai/billing/user/seat-addon-checkout", {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ quantity: state.seatQuantity }),
+        })
+        const data = (await res.json().catch(() => null)) as SeatAddonCheckoutResponse | null
+        if (!res.ok || !data?.ok) throw new Error(data?.message || "FAILED_SEAT_ADDON")
+        navigate("/billing/complete", {
+          state: {
+            action: "seat_add",
+            seatQuantity: data.quantity ?? state.seatQuantity,
+            totalAmount: data.total_amount ?? quote?.total_amount ?? totalAmount,
+            currency: data.currency ?? quote?.currency ?? displayCurrency,
+            transactionId: data.transaction_id,
+          },
+        })
+        return
+      }
+
       if (isChangeFlow) {
         const res = await fetch("/api/ai/billing/user/subscription-change", {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
           body: JSON.stringify({
-            action: action === "cancel" ? "cancel" : "change",
+            action: "change",
             target_plan_id: state.planId || null,
             target_billing_cycle: state.billingCycle || null,
           }),
@@ -770,16 +971,66 @@ export default function PaymentConfirm() {
       <main className="px-6 py-10">
         <div className="mx-auto flex w-full max-w-[800px] flex-col gap-6">
           <div className="text-center flex flex-col gap-2">
-            <h1 className="text-2xl font-bold text-foreground">결제 확인</h1>
-            <p className="text-sm text-muted-foreground">결제 정보를 최종 확인해주세요</p>
+            <h1 className="text-2xl font-bold text-foreground">
+              {isTopupFlow ? "크레딧 충전" : isSeatFlow ? "좌석 추가" : "결제 확인"}
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              {isTopupFlow
+                ? "크레딧 충전 결제 정보를 확인해주세요"
+                : isSeatFlow
+                  ? "좌석 추가 결제 정보를 확인해주세요"
+                  : isFromDowngrade
+                    ? "다운그레이드에 따른 새 플랜 결제를 확인해주세요"
+                    : "결제 정보를 최종 확인해주세요"}
+            </p>
           </div>
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.4fr_0.6fr]">
             <div className="flex flex-col gap-4">
               <div className="rounded-xl border border-border bg-background p-5 shadow-sm">
                 <div className="text-sm font-semibold text-foreground">
-                  {isChangeFlow ? (action === "cancel" ? "구독 취소" : "변경 요약") : "선택한 플랜"}
+                  {isTopupFlow
+                    ? "충전 상품"
+                    : isChangeFlow
+                      ? isFromDowngrade
+                        ? "다운그레이드 결제"
+                        : "변경 요약"
+                      : "선택한 플랜"}
                 </div>
+                {isTopupFlow ? (
+                  <div className="mt-3 flex items-center justify-between">
+                    <div>
+                      <div className="text-lg font-semibold text-foreground">{state.topupProductName || "크레딧 충전"}</div>
+                      <div className="text-sm text-muted-foreground">+{(state.topupCredits ?? 0).toLocaleString()} 크레딧</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-xs text-muted-foreground">
+                        {selectedCountryLabel} · {displayCurrency}
+                      </div>
+                      <div className="text-lg font-semibold text-foreground">
+                        {formatAmountLabel(basePrice)}
+                      </div>
+                    </div>
+                  </div>
+                ) : isSeatFlow ? (
+                  <div className="mt-3 flex items-center justify-between">
+                    <div>
+                      <div className="text-lg font-semibold text-foreground">좌석 추가</div>
+                      <div className="text-sm text-muted-foreground">
+                        {state.seatQuantity ? `${state.seatQuantity}석 추가` : "좌석 추가"}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-xs text-muted-foreground">
+                        {selectedCountryLabel} · {displayCurrency}
+                      </div>
+                      <div className="text-lg font-semibold text-foreground">
+                        {formatAmountLabel(basePrice)}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                <>
                 <div className="mt-3 flex items-center justify-between">
                   <div>
                     <div className="text-lg font-semibold text-foreground">{displayPlanName}</div>
@@ -794,11 +1045,9 @@ export default function PaymentConfirm() {
                     <div>
                       현재: {currentPlanName} · {currentCycleLabel}
                     </div>
-                    {action !== "cancel" ? (
-                      <div>
-                        변경: {targetPlanName} · {targetCycleLabel}
-                      </div>
-                    ) : null}
+                    <div>
+                      변경: {targetPlanName} · {targetCycleLabel}
+                    </div>
                     {changeQuote?.effective_at ? (
                       <div>
                         적용일:{" "}
@@ -809,6 +1058,8 @@ export default function PaymentConfirm() {
                     ) : null}
                   </div>
                 ) : null}
+                </>
+                )}
               </div>
 
               <div className="rounded-xl border border-border bg-background p-5 shadow-sm">
@@ -908,7 +1159,7 @@ export default function PaymentConfirm() {
               </div>
 
               <div className="flex items-center justify-between">
-                {canGoBackToInfo ? (
+                {canGoBackToInfo || canGoBackToDowngrade || inFlow ? (
                   <Button type="button" variant="outline" className="min-w-[120px]" onClick={() => navigate(-1)}>
                     이전
                   </Button>
@@ -921,7 +1172,7 @@ export default function PaymentConfirm() {
 
             <div className="self-start rounded-xl border border-border bg-background p-5 shadow-sm">
               <div className="text-sm font-semibold text-foreground">결제 요약</div>
-              {!isChangeFlow ? (
+              {!isChangeFlow && !isTopupFlow && !isSeatFlow ? (
                 <div className="mt-4 grid gap-2">
                   <label className="text-xs font-medium text-muted-foreground">쿠폰 코드</label>
                   <div className="flex items-center gap-2">
@@ -937,7 +1188,41 @@ export default function PaymentConfirm() {
                 </div>
               ) : null}
               <div className="mt-4 grid gap-2 text-sm text-muted-foreground">
-                {isChangeFlow ? (
+                {isTopupFlow ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span>상품 가격</span>
+                      <span className="text-foreground">{formatAmountLabel(basePrice)}</span>
+                    </div>
+                    {taxAmount > 0 ? (
+                      <div className="flex items-center justify-between">
+                        <span>세금 ({taxRatePercent || 0}%)</span>
+                        <span className="text-foreground">{formatAmountLabel(taxAmount)}</span>
+                      </div>
+                    ) : null}
+                    <div className="flex items-center justify-between">
+                      <span>충전 크레딧</span>
+                      <span className="text-foreground">+{(state.topupCredits ?? 0).toLocaleString()}</span>
+                    </div>
+                  </>
+                ) : isSeatFlow ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span>좌석 추가 금액</span>
+                      <span className="text-foreground">{formatAmountLabel(basePrice)}</span>
+                    </div>
+                    {taxAmount > 0 ? (
+                      <div className="flex items-center justify-between">
+                        <span>세금 ({taxRatePercent || 0}%)</span>
+                        <span className="text-foreground">{formatAmountLabel(taxAmount)}</span>
+                      </div>
+                    ) : null}
+                    <div className="flex items-center justify-between">
+                      <span>추가 좌석</span>
+                      <span className="text-foreground">+{state.seatQuantity ?? 0}석</span>
+                    </div>
+                  </>
+                ) : isChangeFlow ? (
                   <>
                     <div className="flex items-center justify-between">
                       <span>차액 결제</span>
@@ -1000,22 +1285,30 @@ export default function PaymentConfirm() {
                 </div>
               </div>
               <Button type="button" className="mt-4 w-full" onClick={handleCheckout} disabled={!canPay}>
-                {action === "cancel"
-                  ? "구독 취소 요청"
-                  : isChangeFlow
-                    ? changeQuote?.schedule
-                      ? "변경 예약하기"
-                      : requiresPayment
-                        ? "변경 결제하기"
-                        : "변경 적용하기"
-                    : "결제하기"}
+                {isTopupFlow
+                  ? "결제하기"
+                  : isSeatFlow
+                    ? "좌석 추가 결제하기"
+                    : isChangeFlow
+                      ? changeQuote?.schedule
+                        ? "변경 예약하기"
+                        : requiresPayment
+                          ? isFromDowngrade
+                            ? "다운그레이드 결제하기"
+                            : "변경 결제하기"
+                          : "변경 적용하기"
+                      : "결제하기"}
               </Button>
               <p className="mt-2 text-xs text-muted-foreground">
-                {action === "cancel"
-                  ? "구독은 지정된 종료일까지 유지되며, 환불 정책에 따라 처리됩니다."
-                  : isChangeFlow
-                    ? "변경 유형에 따라 차액 결제 또는 환불이 적용됩니다."
-                    : "결제 시 자동으로 정기 구독이 시작됩니다. 언제든지 구독을 취소할 수 있습니다."}
+                {isTopupFlow
+                  ? "결제 완료 후 즉시 크레딧이 충전됩니다."
+                  : isSeatFlow
+                    ? "결제 완료 후 즉시 좌석이 추가됩니다."
+                    : isChangeFlow
+                      ? isFromDowngrade
+                        ? "기존 연간 구독의 환불과 새로운 플랜 결제가 함께 처리됩니다."
+                        : "변경 유형에 따라 차액 결제 또는 환불이 적용됩니다."
+                      : "결제 시 자동으로 정기 구독이 시작됩니다. 언제든지 구독을 취소할 수 있습니다."}
               </p>
             </div>
           </div>

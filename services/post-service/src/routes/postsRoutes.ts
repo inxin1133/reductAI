@@ -11,6 +11,7 @@ import {
   getCurrentUser,
   listCurrentUserProviders,
   listCurrentUserSessions,
+  revokeOtherUserSessions,
   listMyInvitations,
   listTenantMembers,
   listTenantMemberships,
@@ -50,6 +51,7 @@ router.get("/user/me", requireAuth, getCurrentUser)
 router.patch("/user/me", requireAuth, updateCurrentUser)
 router.get("/user/providers", requireAuth, listCurrentUserProviders)
 router.get("/user/sessions", requireAuth, listCurrentUserSessions)
+router.delete("/user/sessions", requireAuth, revokeOtherUserSessions)
 router.delete("/user/sessions/:id", requireAuth, revokeCurrentUserSession)
 router.get("/tenant/current", requireAuth, getCurrentTenant)
 router.get("/tenant/memberships", requireAuth, listTenantMemberships)

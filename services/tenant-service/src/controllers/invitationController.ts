@@ -336,6 +336,19 @@ export const updateTenantInvitation = async (req: Request, res: Response) => {
         [inviteeUserId, currentRow.tenant_id, roleId, (req as AuthedRequest).userId || null]
       );
 
+      await client.query(
+        `
+        INSERT INTO credit_account_access (user_id, account_id, priority, max_per_period, allow_when_empty, is_active)
+        SELECT $1, ca.id, 0, NULL, FALSE, TRUE
+        FROM credit_accounts ca
+        WHERE ca.owner_type = 'tenant'
+          AND ca.owner_tenant_id = $2
+          AND ca.credit_type IN ('subscription', 'topup')
+        ON CONFLICT (user_id, account_id) DO NOTHING
+        `,
+        [inviteeUserId, currentRow.tenant_id]
+      );
+
       await refreshTenantMemberCount(client, currentRow.tenant_id);
     }
 

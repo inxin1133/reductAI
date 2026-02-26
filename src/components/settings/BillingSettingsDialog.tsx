@@ -23,8 +23,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cardLabel, getCardBrandIcon, normalizeCardBrand } from "@/lib/card"
 import { currencySymbol, formatMoney, normalizeCurrency } from "@/lib/currency"
-import { PLAN_TIER_LABELS, type PlanTier } from "@/lib/planTier"
+import { PLAN_TIER_LABELS, PLAN_TIER_STYLES, type PlanTier } from "@/lib/planTier"
 import { cn } from "@/lib/utils"
+import { fetchSubscriptionOverview, cancelSeatAddon, type SubscriptionOverviewData } from "@/services/billingService"
 
 type BillingMenuId = "subscription" | "invoices" | "billing" | "payments" | "transactions"
 
@@ -56,21 +57,7 @@ type BillingFormState = {
   phone: string
 }
 
-type CheckoutSummary = {
-  plan_name?: string | null
-  plan_tier?: string | null
-  billing_cycle?: "monthly" | "yearly" | string | null
-  total_amount?: number | null
-  currency?: string | null
-  next_billing_date?: string | null
-  transaction_id?: string | null
-}
-
-type CheckoutSummaryResponse = {
-  ok?: boolean
-  summary?: CheckoutSummary | null
-  message?: string
-}
+type SeatCancellingMap = Record<string, boolean>
 
 const INITIAL_BILLING_FORM: BillingFormState = {
   name: "홍길동",
@@ -139,9 +126,10 @@ export function BillingSettingsDialog({ open, onOpenChange, initialMenu, onOpenP
   const [activeMenu, setActiveMenu] = useState<BillingMenuId>(() => readBillingMenuFromStorage() ?? "subscription")
   const [billingEditOpen, setBillingEditOpen] = useState(false)
   const [billingForm, setBillingForm] = useState<BillingFormState>(INITIAL_BILLING_FORM)
-  const [subscriptionSummary, setSubscriptionSummary] = useState<CheckoutSummary | null>(null)
+  const [overview, setOverview] = useState<SubscriptionOverviewData | null>(null)
   const [subscriptionLoading, setSubscriptionLoading] = useState(false)
   const [subscriptionError, setSubscriptionError] = useState<string | null>(null)
+  const [seatCancelling, setSeatCancelling] = useState<SeatCancellingMap>({})
   const [postcodeLoading, setPostcodeLoading] = useState(false)
   const detailAddressRef = useRef<HTMLInputElement | null>(null)
   const wasOpenRef = useRef(false)
@@ -185,66 +173,62 @@ export function BillingSettingsDialog({ open, onOpenChange, initialMenu, onOpenP
 
   const handleCancelSubscription = useCallback(() => {
     onOpenChange(false)
-    navigate("/billing/confirm", { state: { action: "cancel" } })
+    navigate("/billing/cancel", { state: { action: "cancel" } })
   }, [navigate, onOpenChange])
+
+  const loadSubscriptionOverview = useCallback(async () => {
+    setSubscriptionLoading(true)
+    setSubscriptionError(null)
+    try {
+      const data = await fetchSubscriptionOverview()
+      setOverview(data)
+    } catch (e) {
+      console.error(e)
+      setSubscriptionError("구독 정보를 불러오지 못했습니다.")
+    } finally {
+      setSubscriptionLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
     if (!open || activeMenu !== "subscription") return
     const headers = authHeaders()
     if (!headers.Authorization) {
-      setSubscriptionSummary(null)
+      setOverview(null)
       setSubscriptionError(null)
       setSubscriptionLoading(false)
       return
     }
-
-    let active = true
-    setSubscriptionLoading(true)
-    setSubscriptionError(null)
-
-    void (async () => {
-      try {
-        const res = await fetch("/api/ai/billing/user/checkout-summary", { headers })
-        if (res.status === 404) {
-          if (active) setSubscriptionSummary(null)
-          return
-        }
-        const data = (await res.json().catch(() => null)) as CheckoutSummaryResponse | null
-        if (!res.ok || !data?.summary) {
-          throw new Error(data?.message || "FAILED_LOAD")
-        }
-        if (active) setSubscriptionSummary(data.summary)
-      } catch (e) {
-        console.error(e)
-        if (active) setSubscriptionError("구독 정보를 불러오지 못했습니다.")
-      } finally {
-        if (active) setSubscriptionLoading(false)
-      }
-    })()
-
-    return () => {
-      active = false
-    }
-  }, [open, activeMenu, authHeaders])
+    void loadSubscriptionOverview()
+  }, [open, activeMenu, authHeaders, loadSubscriptionOverview])
 
   const activeLabel = useMemo(() => {
     const menu = BILLING_MENUS.find((item) => item.id === activeMenu)
     return menu?.label ?? "결제 관리"
   }, [activeMenu])
 
+  const sub = overview?.subscription ?? null
+
   const planLabel = useMemo(() => {
-    const planName = subscriptionSummary?.plan_name?.trim()
+    if (!sub) return "-"
+    const planName = sub.plan_name?.trim()
     if (planName) return planName
-    const tierRaw = typeof subscriptionSummary?.plan_tier === "string" ? subscriptionSummary.plan_tier.trim().toLowerCase() : ""
+    const tierRaw = typeof sub.plan_tier === "string" ? sub.plan_tier.trim().toLowerCase() : ""
     if (!tierRaw) return "-"
     return PLAN_TIER_LABELS[tierRaw as PlanTier] || "-"
-  }, [subscriptionSummary])
+  }, [sub])
+
+  const resolvedPlanTier = useMemo(() => {
+    if (!sub) return null
+    const raw = typeof sub.plan_tier === "string" ? sub.plan_tier.trim().toLowerCase() : ""
+    return (raw && raw in PLAN_TIER_LABELS) ? raw as PlanTier : null
+  }, [sub])
 
   const billingCycleLabel = useMemo(() => {
-    if (subscriptionSummary?.billing_cycle === "yearly") return "연간"
-    if (subscriptionSummary?.billing_cycle === "monthly") return "월간"
+    if (sub?.billing_cycle === "yearly") return "연간"
+    if (sub?.billing_cycle === "monthly") return "월간"
     return "-"
-  }, [subscriptionSummary])
+  }, [sub])
 
   const planCycleLabel = useMemo(() => {
     if (subscriptionLoading) return "불러오는 중"
@@ -256,23 +240,45 @@ export function BillingSettingsDialog({ open, onOpenChange, initialMenu, onOpenP
 
   const priceLabel = useMemo(() => {
     if (subscriptionLoading) return "불러오는 중"
-    const amount = subscriptionSummary?.total_amount
-    if (typeof amount !== "number" || !Number.isFinite(amount)) return "-"
-    const currency = normalizeCurrency(subscriptionSummary?.currency) || "USD"
+    if (!sub) return "-"
+    const localAmount =
+      sub.price_local !== null && sub.price_local !== undefined ? Number(sub.price_local) : null
+    const usdAmount = Number(sub.price_usd)
+    const amount = localAmount !== null ? localAmount : usdAmount
+    if (!Number.isFinite(amount)) return "-"
+    const currency = normalizeCurrency(localAmount !== null ? sub.currency : "USD") || "USD"
     const amountLabel = `${currencySymbol(currency)}${formatMoney(amount, currency)}`
-    const cycleUnit =
-      subscriptionSummary?.billing_cycle === "yearly" ? "년" : subscriptionSummary?.billing_cycle === "monthly" ? "월" : ""
+    const cycleUnit = sub.billing_cycle === "yearly" ? "년" : sub.billing_cycle === "monthly" ? "월" : ""
     return cycleUnit ? `${amountLabel} / ${cycleUnit}` : amountLabel
-  }, [subscriptionLoading, subscriptionSummary])
+  }, [subscriptionLoading, sub])
 
   const nextBillingLabel = useMemo(() => {
     if (subscriptionLoading) return "불러오는 중"
-    const value = subscriptionSummary?.next_billing_date
+    if (!sub) return "-"
+    const value = sub.current_period_end
     if (!value) return "-"
     const parsed = new Date(value)
-    if (Number.isNaN(parsed.getTime())) return value
+    if (Number.isNaN(parsed.getTime())) return String(value)
     return new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit" }).format(parsed)
-  }, [subscriptionLoading, subscriptionSummary])
+  }, [subscriptionLoading, sub])
+
+  const scheduledChanges = overview?.scheduled_changes ?? []
+  const seatAddons = useMemo(() => overview?.seat_addons ?? [], [overview])
+  const activeSeatAddons = useMemo(() => seatAddons.filter((a) => a.status !== "cancelled"), [seatAddons])
+
+  const handleCancelSeatAddon = useCallback(async (addonId: string) => {
+    if (!window.confirm("이 좌석 추가를 취소하시겠습니까?\n다음 결제일부터 적용됩니다.")) return
+    setSeatCancelling((prev) => ({ ...prev, [addonId]: true }))
+    try {
+      await cancelSeatAddon(addonId)
+      await loadSubscriptionOverview()
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "좌석 취소에 실패했습니다."
+      alert(msg)
+    } finally {
+      setSeatCancelling((prev) => ({ ...prev, [addonId]: false }))
+    }
+  }, [loadSubscriptionOverview])
 
   const loadDaumPostcode = useCallback(() => {
     if (typeof window === "undefined") return Promise.reject(new Error("no-window"))
@@ -387,26 +393,145 @@ export function BillingSettingsDialog({ open, onOpenChange, initialMenu, onOpenP
 
             <div className="mt-3 min-w-0 flex-1 overflow-y-auto pr-2">
               {activeMenu === "subscription" ? (
-                // 구독 관리
                 <div className="grid gap-4">
-                  <div className="p-4">
-                    <div className="text-sm font-semibold text-foreground border-b border-border pb-2">현재 구독</div>
+                  {/* 현재 구독 */}
+                  <div className="rounded-lg border border-border p-4">
+                    <div className="flex items-center gap-2 border-b border-border pb-2">
+                      <span className="text-sm font-semibold text-foreground">현재 구독</span>
+                      {resolvedPlanTier && (
+                        <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold uppercase", PLAN_TIER_STYLES[resolvedPlanTier].badge)}>
+                          {PLAN_TIER_LABELS[resolvedPlanTier]}
+                        </span>
+                      )}
+                      {sub?.status === "scheduled_cancel" || sub?.cancel_at_period_end ? (
+                        <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-600 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/30">
+                          취소 예약
+                        </span>
+                      ) : null}
+                    </div>
                     <div className="mt-3 flex items-center justify-between text-sm text-muted-foreground">
                       <span>{planCycleLabel}</span>
                       <span className="text-foreground">{priceLabel}</span>
                     </div>
                     <div className="flex gap-2 items-center justify-between">
-                      <div className="flex">
+                      <div className="flex flex-col">
                         <div className="mt-2 text-xs text-muted-foreground">다음 결제일: {nextBillingLabel}</div>
                         {subscriptionError ? (
-                          <div className="mt-2 text-xs text-destructive">{subscriptionError}</div>
+                          <div className="mt-1 text-xs text-destructive">{subscriptionError}</div>
                         ) : null}
                       </div>
-                      <Button variant="ghost" size="xs" className="w-fit text-destructive" onClick={handleCancelSubscription}>
-                        구독 취소
-                      </Button>
+                      {sub && !sub.cancel_at_period_end && sub.status !== "cancelled" && sub.status !== "scheduled_cancel" ? (
+                        <Button variant="ghost" size="xs" className="w-fit text-destructive" onClick={handleCancelSubscription}>
+                          구독 취소
+                        </Button>
+                      ) : null}
                     </div>
                   </div>
+
+                  {/* 예약된 변경사항 */}
+                  {scheduledChanges.length > 0 ? (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-4 dark:border-amber-500/30 dark:bg-amber-500/5">
+                      <div className="text-sm font-semibold text-foreground border-b border-amber-200 pb-2 dark:border-amber-500/30">
+                        예약된 변경
+                      </div>
+                      <div className="mt-2 flex flex-col gap-2">
+                        {scheduledChanges.map((change) => {
+                          const effectiveDate = new Date(change.effective_at)
+                          const dateLabel = Number.isNaN(effectiveDate.getTime())
+                            ? change.effective_at
+                            : new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit" }).format(effectiveDate)
+                          const changeTypeLabel = change.change_type === "cancel"
+                            ? "구독 취소"
+                            : change.change_type === "downgrade"
+                            ? "다운그레이드"
+                            : change.change_type === "upgrade"
+                            ? "업그레이드"
+                            : change.change_type === "resume"
+                            ? "재개"
+                            : change.change_type
+                          return (
+                            <div key={change.id} className="flex items-center justify-between text-xs text-muted-foreground">
+                              <div className="flex items-center gap-2">
+                                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-500/20 dark:text-amber-400">
+                                  {changeTypeLabel}
+                                </span>
+                                {change.to_plan_name ? (
+                                  <span>→ {change.to_plan_name}</span>
+                                ) : null}
+                              </div>
+                              <span>{dateLabel} 적용 예정</span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* 좌석 월간 자동결제 */}
+                  {activeSeatAddons.length > 0 ? (
+                    <div className="rounded-lg border border-border p-4">
+                      <div className="text-sm font-semibold text-foreground border-b border-border pb-2">
+                        좌석 월간 자동결제
+                      </div>
+                      <div className="mt-2 flex flex-col gap-2">
+                        {activeSeatAddons.map((addon) => {
+                          const addonDate = new Date(addon.effective_at)
+                          const dateLabel = Number.isNaN(addonDate.getTime())
+                            ? addon.effective_at
+                            : new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit" }).format(addonDate)
+                          const rawCurrency = normalizeCurrency(addon.currency) || "USD"
+                          const localUnit =
+                            addon.unit_price_local !== null && addon.unit_price_local !== undefined
+                              ? Number(addon.unit_price_local)
+                              : null
+                          const fxRate =
+                            addon.fx_rate !== null && addon.fx_rate !== undefined ? Number(addon.fx_rate) : null
+                          const displayCurrency = localUnit !== null || fxRate ? rawCurrency : "USD"
+                          const displayUnitPrice =
+                            localUnit ?? (fxRate ? addon.unit_price_usd * fxRate : addon.unit_price_usd)
+                          const unitPriceLabel = `${currencySymbol(displayCurrency)}${formatMoney(displayUnitPrice, displayCurrency)}`
+                          const totalPrice = addon.quantity * displayUnitPrice
+                          const totalPriceLabel = `${currencySymbol(displayCurrency)}${formatMoney(totalPrice, displayCurrency)}`
+                          const isCancelling = seatCancelling[addon.id] ?? false
+                          const isScheduledCancel = addon.status === "scheduled_cancel"
+                          return (
+                            <div key={addon.id} className="flex items-center justify-between rounded-md border border-border bg-card p-3">
+                              <div className="flex flex-col gap-1">
+                                <div className="flex items-center gap-2 text-sm text-foreground">
+                                  <span>추가 좌석 {addon.quantity}명</span>
+                                  {isScheduledCancel ? (
+                                    <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-600 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/30">
+                                      취소 예약
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {unitPriceLabel}/좌석/월 · 합계 {totalPriceLabel}/월
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  적용일: {dateLabel}
+                                </div>
+                              </div>
+                              {!isScheduledCancel ? (
+                                <Button
+                                  variant="ghost"
+                                  size="xs"
+                                  className="text-destructive"
+                                  disabled={isCancelling}
+                                  onClick={() => handleCancelSeatAddon(addon.id)}
+                                >
+                                  {isCancelling ? "처리 중..." : "취소"}
+                                </Button>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">다음 결제일 취소</span>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+
                   <Button variant="outline" className="w-fit" onClick={handleOpenPlanDialog}>
                     요금제 변경
                   </Button>

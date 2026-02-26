@@ -1,4 +1,5 @@
 import { type ChangeEvent, type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import { type PlanTier, PLAN_TIER_ORDER, PLAN_TIER_LABELS, PLAN_TIER_STYLES } from "@/lib/planTier"
 import { Dialog, DialogClose, DialogContent } from "@/components/ui/dialog"
 import {
@@ -39,6 +40,9 @@ import { ProviderBadge } from "@/lib/providerBadge"
 import { LogoGoogle } from "@/components/icons/LogoGoogle"
 import { LogoKakao } from "@/components/icons/LogoKakao"
 import { LogoNaver } from "@/components/icons/LogoNaver"
+import { toast } from "sonner"
+import { fetchTopupProducts, type TopupProduct } from "@/services/billingService"
+import { appendVisited } from "@/lib/billingFlow"
 
 type SettingsDialogProps = {
   open: boolean
@@ -185,6 +189,11 @@ type CreditSummary = {
     reserved_credits?: number | null
     remaining_credits?: number | null
     expires_at?: string | null
+    used_credits?: number | null
+    total_credits?: number | null
+    usage_percent?: number | null
+    last_topup_at?: string | null
+    allow_when_empty?: boolean | null
   }
 }
 
@@ -336,6 +345,7 @@ const SettingsDialogSidebarMenu = ({
 )
 
 export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDialog }: SettingsDialogProps) {
+  const navigate = useNavigate()
   const [activeMenu, setActiveMenu] = useState<SettingsMenuId>(
     () => readSettingsMenuFromStorage() ?? "profile"
   )
@@ -355,10 +365,15 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
   const [creditSummary, setCreditSummary] = useState<CreditSummary | null>(null)
   const [creditLoading, setCreditLoading] = useState(false)
   const [creditError, setCreditError] = useState<string | null>(null)
+  const [topupAutoUse, setTopupAutoUse] = useState(false)
+  const [topupAutoUseSaving, setTopupAutoUseSaving] = useState(false)
+  const [topupProducts, setTopupProducts] = useState<TopupProduct[]>([])
+  const [topupProductsLoading, setTopupProductsLoading] = useState(false)
   const [deviceSessions, setDeviceSessions] = useState<UserSessionRow[]>([])
   const [deviceLoading, setDeviceLoading] = useState(false)
   const [deviceError, setDeviceError] = useState<string | null>(null)
   const [deviceRevokingId, setDeviceRevokingId] = useState<string | null>(null)
+  const [deviceRevokingAll, setDeviceRevokingAll] = useState(false)
   const [profileImageUrl, setProfileImageUrl] = useState<string | null>(null)
   const [profileImageAssetId, setProfileImageAssetId] = useState<string | null>(null)
   const [profileImageLoading, setProfileImageLoading] = useState(false)
@@ -520,6 +535,35 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
       userUsed: subscription?.user_used_credits ?? null,
     }
   }, [creditSummary?.subscription, currentTenant?.plan_tier])
+
+  const topupCard = useMemo(() => {
+    const topup = creditSummary?.topup ?? null
+    const totalRaw = Number(topup?.total_credits ?? topup?.remaining_credits ?? 0)
+    const usedRaw = Number(topup?.used_credits ?? 0)
+    const remainingRaw =
+      topup?.remaining_credits !== null && topup?.remaining_credits !== undefined
+        ? Number(topup?.remaining_credits ?? 0)
+        : Math.max(0, totalRaw - usedRaw)
+    const total = Number.isFinite(totalRaw) ? totalRaw : 0
+    const used = Number.isFinite(usedRaw) ? Math.max(0, usedRaw) : 0
+    const remaining = Number.isFinite(remainingRaw) ? Math.max(0, remainingRaw) : 0
+    const percent = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0
+    return {
+      topup,
+      total,
+      used,
+      remaining,
+      percent,
+      lastTopupAt: topup?.last_topup_at ?? null,
+      autoUse: topup?.allow_when_empty ?? false,
+      available: Boolean(topup?.account_id),
+    }
+  }, [creditSummary?.topup])
+
+  useEffect(() => {
+    if (creditSummary?.topup?.allow_when_empty === null || creditSummary?.topup?.allow_when_empty === undefined) return
+    setTopupAutoUse(Boolean(creditSummary.topup.allow_when_empty))
+  }, [creditSummary?.topup?.allow_when_empty])
 
   const passwordChecks = useMemo(() => {
     const next = passwordForm.next
@@ -703,6 +747,94 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     }
   }, [authHeaders, currentTenant])
 
+  const loadTopupProducts = useCallback(async () => {
+    setTopupProductsLoading(true)
+    try {
+      const products = await fetchTopupProducts()
+      setTopupProducts(products)
+    } catch (e) {
+      console.error(e)
+      setTopupProducts([])
+    } finally {
+      setTopupProductsLoading(false)
+    }
+  }, [])
+
+  const handleTopupPurchase = useCallback(
+    async (product: TopupProduct) => {
+      const headers = authHeaders()
+      if (!headers.Authorization) {
+        toast.error("로그인이 필요합니다.")
+        return
+      }
+
+      let hasCard = false
+      let hasInfo = false
+      try {
+        const [accountRes, methodsRes] = await Promise.all([
+          fetch("/api/ai/billing/user/billing-account", { headers }),
+          fetch("/api/ai/billing/user/payment-methods?limit=1", { headers }),
+        ])
+        if (accountRes.ok) {
+          const data = (await accountRes.json().catch(() => null)) as { ok?: boolean; row?: { billing_name?: string | null; billing_email?: string | null; billing_address1?: string | null } | null } | null
+          const row = data?.row
+          hasInfo = Boolean(row?.billing_name && row?.billing_email && row?.billing_address1)
+        }
+        if (methodsRes.ok) {
+          const data = (await methodsRes.json().catch(() => null)) as { ok?: boolean; rows?: Array<{ status?: string | null }> } | null
+          hasCard = Array.isArray(data?.rows) && data.rows.length > 0
+        }
+      } catch (e) {
+        console.error(e)
+      }
+
+      const target = !hasCard ? "/billing/card" : !hasInfo ? "/billing/info" : "/billing/confirm"
+      onOpenChange(false)
+      navigate(target, {
+        state: {
+          topupProductId: product.id,
+          topupProductName: product.name,
+          topupCredits: Number(product.credits),
+          topupPrice: product.price_usd,
+          action: "topup",
+          flow: appendVisited(undefined, "settings"),
+        },
+      })
+    },
+    [authHeaders, navigate, onOpenChange]
+  )
+
+  const handleToggleTopupAutoUse = useCallback(
+    async (next: boolean) => {
+      if (!topupCard.available) return
+      setTopupAutoUse(next)
+      setTopupAutoUseSaving(true)
+      try {
+        const headers = authHeaders()
+        if (!headers.Authorization) return
+        const res = await fetch("/api/ai/credits/my/topup-auto-use", {
+          method: "PATCH",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ allow_when_empty: next }),
+        })
+        const json = await res.json().catch(() => null)
+        if (!res.ok || !json?.ok) {
+          setTopupAutoUse(!next)
+          toast.error(json?.message || "자동 사용 설정에 실패했습니다.")
+          return
+        }
+        toast.success("충전 크레딧 자동 사용이 업데이트되었습니다.")
+        void loadCreditSummary()
+      } catch {
+        setTopupAutoUse(!next)
+        toast.error("자동 사용 설정 중 오류가 발생했습니다.")
+      } finally {
+        setTopupAutoUseSaving(false)
+      }
+    },
+    [authHeaders, loadCreditSummary, topupCard.available]
+  )
+
   const loadDeviceSessions = useCallback(async () => {
     const headers = authHeaders()
     if (!headers.Authorization) {
@@ -731,6 +863,11 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     }
   }, [authHeaders])
 
+  const hasOtherDeviceSessions = useMemo(
+    () => deviceSessions.some((session) => !session.is_current),
+    [deviceSessions]
+  )
+
   const handleRefresh = useCallback(() => {
     if (!open) return
     if (activeMenu === "profile" || activeMenu === "password") {
@@ -739,13 +876,14 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     }
     if (activeMenu === "credits") {
       void loadCreditSummary()
+      void loadTopupProducts()
       return
     }
     if (activeMenu === "devices") {
       void loadDeviceSessions()
       return
     }
-  }, [activeMenu, loadCreditSummary, loadDeviceSessions, loadProfile, open])
+  }, [activeMenu, loadCreditSummary, loadDeviceSessions, loadProfile, loadTopupProducts, open])
 
   const handleRevokeDeviceSession = useCallback(
     async (session: UserSessionRow) => {
@@ -778,6 +916,34 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     },
     [authHeaders, loadDeviceSessions]
   )
+
+  const handleRevokeOtherDeviceSessions = useCallback(async () => {
+    if (!hasOtherDeviceSessions || deviceRevokingAll) return
+    if (!confirm("이 기기를 제외한 모든 기기에서 로그아웃할까요?")) return
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      alert("로그인이 필요합니다.")
+      return
+    }
+    setDeviceRevokingAll(true)
+    try {
+      const res = await fetch("/api/posts/user/sessions", {
+        method: "DELETE",
+        headers,
+      })
+      const json = (await res.json().catch(() => null)) as { ok?: boolean; message?: string } | null
+      if (!res.ok || !json?.ok) {
+        alert(json?.message || "로그아웃에 실패했습니다.")
+        return
+      }
+      await loadDeviceSessions()
+    } catch (error) {
+      console.error(error)
+      alert("로그아웃 처리 중 오류가 발생했습니다.")
+    } finally {
+      setDeviceRevokingAll(false)
+    }
+  }, [authHeaders, deviceRevokingAll, hasOtherDeviceSessions, loadDeviceSessions])
 
   const startEditUserName = useCallback(() => {
     if (isSavingUserName) return
@@ -1180,7 +1346,8 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     if (!open) return
     if (activeMenu !== "credits") return
     void loadCreditSummary()
-  }, [activeMenu, loadCreditSummary, open])
+    void loadTopupProducts()
+  }, [activeMenu, loadCreditSummary, loadTopupProducts, open])
 
   useEffect(() => {
     if (!open) return
@@ -1765,7 +1932,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                         <div className="mt-3 h-2 w-full rounded-full bg-muted">
                           <div
                             className={cn("h-full rounded-full", creditCard.planStyle.avatar)}
-                            style={{ width: `${creditCard.percent}%` }}
+                            style={{ width: `100-${creditCard.percent}%` }}
                           />
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
@@ -1794,15 +1961,30 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                           <div className="text-sm font-semibold text-foreground">충전 크레딧</div>
                           <div className="flex items-center gap-2">
                             <span className="text-xs text-muted-foreground">서비스 크레딧 소진시 자동 사용</span>
-                            <Switch id="" />
+                            <Switch
+                              id="topup-auto-use"
+                              checked={topupCard.available ? topupAutoUse : false}
+                              onCheckedChange={handleToggleTopupAutoUse}
+                              disabled={!topupCard.available || topupAutoUseSaving}
+                            />
                           </div>
                         </div>
                         <div className="mt-3 h-2 w-full rounded-full bg-muted">
-                          <div className="h-full w-[100%] rounded-full bg-primary" />
+                          <div
+                            className="h-full rounded-full bg-primary"
+                            style={{ width: `100-${topupCard.percent}%` }}
+                          />
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
-                          <div>이번달 0% 사용 (0 사용 / 42,000 남음 / 전체 42,000 크레딧)</div> 
-                          <div>마지막 충전일: <span className="text-foreground">2026-01-29</span></div>
+                          <div>
+                            {topupCard.available
+                              ? `이번달 ${topupCard.percent}% 사용 (${formatCredits(topupCard.used)} 사용 / ${formatCredits(topupCard.remaining)} 남음 / 전체 ${formatCredits(topupCard.total)} 크레딧)`
+                              : "충전 크레딧 정보가 없습니다."}
+                          </div>
+                          <div>
+                            마지막 충전일:{" "}
+                            <span className="text-foreground">{formatDateTime(topupCard.lastTopupAt)}</span>
+                          </div>
                         </div>                        
                       </div>
                     </div>
@@ -1811,42 +1993,52 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                    {/* 충전 옵션 */}
                    <div className="p-4">
                     <div className="text-sm font-semibold text-foreground">충전 옵션 <span className="text-xs text-muted-foreground">(부가세 별도)</span></div>
+                    {topupProductsLoading ? (
+                      <div className="mt-3 flex items-center justify-center py-8 text-sm text-muted-foreground">
+                        <RotateCw className="mr-2 h-4 w-4 animate-spin" /> 충전 상품을 불러오는 중...
+                      </div>
+                    ) : topupProducts.length === 0 ? (
+                      <div className="mt-3 py-6 text-center text-sm text-muted-foreground">현재 구매 가능한 충전 상품이 없습니다.</div>
+                    ) : (
                     <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-                      {[
-                        { credits: "10,000", price: "$10", unit: "1 Credit = $0.001", accent: false },
-                        { credits: "21,000", price: "$20", unit: "1 Credit = $0.00095", accent: false },
-                        { credits: "55,000", price: "$50", unit: "1 Credit = $0.00091", accent: true },
-                        { credits: "120,000", price: "$100", unit: "1 Credit = $0.00083", accent: false },
-                      ].map((opt) => (
+                      {topupProducts.map((product) => {
+                        const totalCredits = Number(product.credits)
+                        const unitPrice = totalCredits > 0 ? product.price_usd / totalCredits : 0
+                        const isBest = Boolean(product.metadata && (product.metadata as Record<string, unknown>).best_seller)
+                          || (topupProducts.length >= 3 && product === topupProducts[Math.floor(topupProducts.length * 0.66)])
+                        return (
                         <Card
-                          key={opt.credits}
+                          key={product.id}
                           className={cn(
                             "gap-1 py-0 transition-shadow hover:shadow-md",
-                            opt.accent && "ring-1 ring-blue-500"
+                            isBest && "ring-1 ring-blue-500"
                           )}
                         >
                           <CardHeader className="px-4 pt-4 pb-1">
-                            <CardTitle className="text-lg font-bold text-foreground">+{opt.credits}</CardTitle>
-                            <p className="text-[11px] text-muted-foreground">크레딧</p>
+                            <CardTitle className="text-lg font-bold text-foreground">+{totalCredits.toLocaleString()}</CardTitle>
+                            <p className="text-[11px] text-muted-foreground">크레딧{product.bonus_credits > 0 ? ` (보너스 +${Number(product.bonus_credits).toLocaleString()})` : ""}</p>
                           </CardHeader>
                           <CardContent className="px-4 pb-2">
-                            <div className="text-2xl font-extrabold text-foreground gap-1 flex items-center">{opt.price}
-                              {opt.accent ? <span className="rounded-full border border-border text-regular px-1.5 py-0.5 text-[10px] text-blue-500">BEST</span> : ""}
+                            <div className="text-2xl font-extrabold text-foreground gap-1 flex items-center">${product.price_usd}
+                              {isBest ? <span className="rounded-full border border-border text-regular px-1.5 py-0.5 text-[10px] text-blue-500">BEST</span> : ""}
                             </div>
-                            <p className="mt-1 text-[11px] text-muted-foreground">{opt.unit}</p>
+                            <p className="mt-1 text-[11px] text-muted-foreground">1 Credit = ${unitPrice.toFixed(5)}</p>
                           </CardContent>
                           <CardFooter className="px-4 pb-4 pt-1">
                             <Button
-                              variant={opt.accent ? "default" : "outline"}
+                              variant={isBest ? "default" : "outline"}
                               size="sm"
-                              className={cn("w-full text-xs", opt.accent && "bg-blue-500 hover:bg-blue-600 text-white")}
+                              className={cn("w-full text-xs", isBest && "bg-blue-500 hover:bg-blue-600 text-white")}
+                              onClick={() => void handleTopupPurchase(product)}
                             >
                               구매하기
                             </Button>
                           </CardFooter>
                         </Card>
-                      ))}
+                        )
+                      })}
                     </div>
+                    )}
                   </div>
 
 
@@ -1975,10 +2167,10 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                       variant="outline"
                       size="sm"
                       className="h-7 text-xs"
-                      onClick={loadDeviceSessions}
-                      disabled={deviceLoading}
+                      onClick={handleRevokeOtherDeviceSessions}
+                      disabled={deviceLoading || deviceRevokingAll || !hasOtherDeviceSessions}
                     >
-                      새로고침
+                      {deviceRevokingAll ? "처리 중..." : "이 기기를 제외한 모든 기기에서 로그아웃"}
                     </Button>
                   </div>
                   {deviceError ? (

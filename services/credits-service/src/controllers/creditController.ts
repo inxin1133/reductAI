@@ -43,6 +43,8 @@ const LEDGER_ENTRY_TYPES = new Set([
   "reversal",
 ])
 const SYSTEM_TENANT_SLUG = "system"
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 function systemTenantFilter(column: string) {
   return `NOT EXISTS (
@@ -55,6 +57,70 @@ function systemTenantFilter(column: string) {
 
 function uniqIds(values: Array<string | null | undefined>) {
   return Array.from(new Set(values.filter((v): v is string => typeof v === "string" && v.length > 0)))
+}
+
+function isUuid(value: string) {
+  return UUID_REGEX.test(value)
+}
+
+function resolveRequestedTenantId(req: AuthedRequest): string {
+  const headerRaw = req.headers?.["x-tenant-id"]
+  const header = Array.isArray(headerRaw) ? headerRaw[0] : headerRaw
+  if (typeof header === "string" && header.trim()) return header.trim()
+  return ""
+}
+
+async function resolveTenantId(req: AuthedRequest): Promise<string> {
+  const requested = resolveRequestedTenantId(req)
+  const userId = req.userId ? String(req.userId) : ""
+  if (requested && isUuid(requested) && userId) {
+    const r = await query(
+      `
+      SELECT utr.tenant_id
+      FROM user_tenant_roles utr
+      JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+      WHERE utr.user_id = $1
+        AND utr.tenant_id = $2
+        AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+        AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+      LIMIT 1
+      `,
+      [userId, requested]
+    )
+    if (r.rows.length > 0) return String(r.rows[0].tenant_id)
+  }
+  const tokenTenantId = req.tenantId ? String(req.tenantId) : ""
+  if (tokenTenantId) {
+    const r = await query(
+      `
+      SELECT id
+      FROM tenants
+      WHERE id = $1
+        AND deleted_at IS NULL
+        AND COALESCE((metadata->>'system')::boolean, FALSE) = FALSE
+      LIMIT 1
+      `,
+      [tokenTenantId]
+    )
+    if (r.rows.length > 0) return tokenTenantId
+  }
+  if (userId) {
+    const r = await query(
+      `
+      SELECT utr.tenant_id
+      FROM user_tenant_roles utr
+      JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+      WHERE utr.user_id = $1
+        AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+        AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+      ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC, utr.granted_at ASC
+      LIMIT 1
+      `,
+      [userId]
+    )
+    if (r.rows.length > 0) return String(r.rows[0].tenant_id)
+  }
+  return ""
 }
 
 export async function listTopupProducts(req: Request, res: Response) {
@@ -792,10 +858,20 @@ function normalizeUsageAmount(amount: number) {
   return amount < 0 ? -amount : amount
 }
 
+function toIsoString(value: unknown): string {
+  if (!value) return ""
+  if (value instanceof Date) return value.toISOString()
+  const s = String(value).trim()
+  if (!s) return ""
+  const d = new Date(s)
+  if (Number.isNaN(d.getTime())) return s
+  return d.toISOString()
+}
+
 export async function getMyCreditSummary(req: Request, res: Response) {
   try {
     const authed = req as AuthedRequest
-    const tenantId = toStr(authed.tenantId || req.query?.tenant_id)
+    const tenantId = await resolveTenantId(authed)
     if (!tenantId) return res.status(400).json({ message: "tenant_id is required" })
 
     const subscriptionRes = await query(
@@ -870,9 +946,14 @@ export async function getMyCreditSummary(req: Request, res: Response) {
       | { id: string; balance_credits: number; reserved_credits: number; expires_at?: string | null }
       | undefined
 
+    const summaryPeriodStart = toIsoString(subscription?.current_period_start)
+    const summaryPeriodEnd = toIsoString(subscription?.current_period_end)
+
+    const userId = toStr((authed as AuthedRequest).userId)
+
     let usedInPeriod = 0
     let userUsedInPeriod = 0
-    if (subscription && subscriptionAccount?.id) {
+    if (subscription && subscriptionAccount?.id && summaryPeriodStart && summaryPeriodEnd) {
       const usageRes = await query(
         `
         SELECT COALESCE(SUM(amount_credits), 0) AS total
@@ -882,11 +963,10 @@ export async function getMyCreditSummary(req: Request, res: Response) {
           AND occurred_at >= $2
           AND occurred_at < $3
         `,
-        [subscriptionAccount.id, subscription.current_period_start, subscription.current_period_end]
+        [subscriptionAccount.id, summaryPeriodStart, summaryPeriodEnd]
       )
       usedInPeriod = normalizeUsageAmount(Number(usageRes.rows[0]?.total ?? 0))
 
-      const userId = toStr((authed as AuthedRequest).userId)
       if (userId) {
         const userUsageRes = await query(
           `
@@ -897,9 +977,58 @@ export async function getMyCreditSummary(req: Request, res: Response) {
             AND created_at >= $3
             AND created_at < $4
           `,
-          [subscriptionAccount.id, userId, subscription.current_period_start, subscription.current_period_end]
+          [subscriptionAccount.id, userId, summaryPeriodStart, summaryPeriodEnd]
         )
         userUsedInPeriod = normalizeUsageAmount(Number(userUsageRes.rows[0]?.total ?? 0))
+      }
+    }
+
+    let topupUsedInPeriod = 0
+    let topupLastTopupAt: string | null = null
+    let topupAllowWhenEmpty: boolean | null = null
+    if (topupAccount?.id) {
+      if (summaryPeriodStart && summaryPeriodEnd) {
+        const topupUsageRes = await query(
+          `
+          SELECT COALESCE(SUM(amount_credits), 0) AS total
+          FROM credit_ledger_entries
+          WHERE account_id = $1
+            AND entry_type = 'usage'
+            AND occurred_at >= $2
+            AND occurred_at < $3
+          `,
+          [topupAccount.id, summaryPeriodStart, summaryPeriodEnd]
+        )
+        topupUsedInPeriod = normalizeUsageAmount(Number(topupUsageRes.rows[0]?.total ?? 0))
+      }
+
+      const lastTopupRes = await query(
+        `
+        SELECT occurred_at
+        FROM credit_ledger_entries
+        WHERE account_id = $1
+          AND entry_type = 'topup_purchase'
+        ORDER BY occurred_at DESC
+        LIMIT 1
+        `,
+        [topupAccount.id]
+      )
+      topupLastTopupAt = lastTopupRes.rows[0]?.occurred_at ? toIsoString(lastTopupRes.rows[0].occurred_at) : null
+
+      if (userId) {
+        const allowRes = await query(
+          `
+          SELECT allow_when_empty
+          FROM credit_account_access
+          WHERE user_id = $1 AND account_id = $2
+          LIMIT 1
+          `,
+          [userId, topupAccount.id]
+        )
+        topupAllowWhenEmpty =
+          allowRes.rows[0]?.allow_when_empty === true || allowRes.rows[0]?.allow_when_empty === false
+            ? Boolean(allowRes.rows[0].allow_when_empty)
+            : null
       }
     }
 
@@ -910,6 +1039,8 @@ export async function getMyCreditSummary(req: Request, res: Response) {
     const topupBalance = Number(topupAccount?.balance_credits ?? 0)
     const topupReserved = Number(topupAccount?.reserved_credits ?? 0)
     const topupRemaining = Math.max(0, topupBalance - topupReserved)
+    const topupTotal = topupRemaining + topupUsedInPeriod
+    const topupPercent = topupTotal > 0 ? Math.min(100, Math.round((topupUsedInPeriod / topupTotal) * 100)) : 0
 
     return res.json({
       ok: true,
@@ -940,11 +1071,499 @@ export async function getMyCreditSummary(req: Request, res: Response) {
         reserved_credits: topupReserved,
         remaining_credits: topupRemaining,
         expires_at: topupAccount?.expires_at ?? null,
+        used_credits: topupUsedInPeriod,
+        total_credits: topupTotal,
+        usage_percent: topupPercent,
+        last_topup_at: topupLastTopupAt,
+        allow_when_empty: topupAllowWhenEmpty,
       },
     })
   } catch (e: any) {
     console.error("getMyCreditSummary error:", e)
     return res.status(500).json({ message: "Failed to load credit summary", details: String(e?.message || e) })
+  }
+}
+
+export async function getMyServiceUsage(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = await resolveTenantId(authed)
+    if (!tenantId) return res.status(400).json({ message: "tenant_id is required" })
+
+    const periodEndRaw = toStr(req.query.period_end)
+    const invoiceId = toStr(req.query.invoice_id)
+
+    const subscriptionRes = await query(
+      `
+      SELECT
+        s.id,
+        s.billing_cycle,
+        s.current_period_start,
+        s.current_period_end,
+        b.slug AS plan_slug,
+        b.tier AS plan_tier
+      FROM billing_subscriptions s
+      JOIN billing_plans b ON b.id = s.plan_id
+      WHERE s.tenant_id = $1
+        AND s.status <> 'cancelled'
+      ORDER BY s.created_at DESC
+      LIMIT 1
+      `,
+      [tenantId]
+    )
+    const subscription = subscriptionRes.rows[0] as
+      | {
+          id: string
+          billing_cycle: string
+          current_period_start: string
+          current_period_end: string
+          plan_slug: string
+          plan_tier: string
+        }
+      | undefined
+
+    const invoicePeriodsRes = await query(
+      `
+      SELECT DISTINCT ON (period_end)
+        id,
+        period_start,
+        period_end,
+        created_at
+      FROM billing_invoices
+      WHERE tenant_id = $1
+      ORDER BY period_end DESC, created_at DESC
+      LIMIT 6
+      `,
+      [tenantId]
+    )
+
+    const periods = invoicePeriodsRes.rows.map((row) => ({
+      invoice_id: row.id as string,
+      period_start: toIsoString(row.period_start),
+      period_end: toIsoString(row.period_end),
+    }))
+
+    const subPeriodStart = toIsoString(subscription?.current_period_start)
+    const subPeriodEnd = toIsoString(subscription?.current_period_end)
+
+    if (subscription && subPeriodEnd) {
+      const hasCurrent = periods.some((period) => period.period_end === subPeriodEnd)
+      if (!hasCurrent) {
+        periods.unshift({
+          invoice_id: null,
+          period_start: subPeriodStart,
+          period_end: subPeriodEnd,
+        })
+      }
+    }
+
+    let selectedPeriod:
+      | {
+          invoice_id: string | null
+          period_start: string
+          period_end: string
+        }
+      | null = null
+
+    if (invoiceId) {
+      const invoiceRes = await query(
+        `
+        SELECT id, period_start, period_end
+        FROM billing_invoices
+        WHERE id = $1 AND tenant_id = $2
+        LIMIT 1
+        `,
+        [invoiceId, tenantId]
+      )
+      const invoiceRow = invoiceRes.rows[0]
+      if (!invoiceRow) {
+        return res.status(404).json({ message: "invoice not found" })
+      }
+      selectedPeriod = {
+        invoice_id: String(invoiceRow.id),
+        period_start: toIsoString(invoiceRow.period_start),
+        period_end: toIsoString(invoiceRow.period_end),
+      }
+      if (!periods.some((period) => period.period_end === selectedPeriod?.period_end)) {
+        periods.unshift(selectedPeriod)
+      }
+    } else if (periodEndRaw) {
+      const periodEndIso = toIsoString(periodEndRaw)
+      const match = periods.find((period) => period.period_end === periodEndIso || period.period_end === periodEndRaw)
+      if (!match) {
+        return res.status(400).json({ message: "period_end not found" })
+      }
+      selectedPeriod = match
+    } else if (periods.length > 0) {
+      selectedPeriod = periods[0]
+    } else if (subscription && subPeriodEnd) {
+      selectedPeriod = {
+        invoice_id: null,
+        period_start: subPeriodStart,
+        period_end: subPeriodEnd,
+      }
+    }
+
+    const planGrant = subscription
+      ? (
+          await query(
+            `
+            SELECT monthly_credits, initial_credits
+            FROM credit_plan_grants
+            WHERE plan_slug = $1
+              AND billing_cycle = $2
+              AND credit_type = 'subscription'
+              AND is_active = TRUE
+            LIMIT 1
+            `,
+            [subscription.plan_slug, subscription.billing_cycle]
+          )
+        ).rows[0]
+      : null
+
+    const subscriptionAccountRes = await query(
+      `
+      SELECT id, balance_credits, reserved_credits
+      FROM credit_accounts
+      WHERE owner_type = 'tenant' AND owner_tenant_id = $1 AND credit_type = 'subscription'
+      LIMIT 1
+      `,
+      [tenantId]
+    )
+    const subscriptionAccount = subscriptionAccountRes.rows[0] as
+      | { id: string; balance_credits: number; reserved_credits: number }
+      | undefined
+
+    let usedInPeriod = 0
+    if (subscriptionAccount?.id && selectedPeriod) {
+      const usageRes = await query(
+        `
+        SELECT COALESCE(SUM(amount_credits), 0) AS total
+        FROM credit_ledger_entries
+        WHERE account_id = $1
+          AND entry_type = 'usage'
+          AND occurred_at >= $2
+          AND occurred_at < $3
+        `,
+        [subscriptionAccount.id, selectedPeriod.period_start, selectedPeriod.period_end]
+      )
+      usedInPeriod = normalizeUsageAmount(Number(usageRes.rows[0]?.total ?? 0))
+    }
+
+    const planTotal = Number(planGrant?.monthly_credits ?? 0)
+    const accountRemaining = subscriptionAccount
+      ? Math.max(0, Number(subscriptionAccount.balance_credits ?? 0) - Number(subscriptionAccount.reserved_credits ?? 0))
+      : 0
+    const totalCredits = planTotal > 0 ? planTotal : usedInPeriod + accountRemaining
+    const remainingCredits = planTotal > 0 ? Math.max(0, totalCredits - usedInPeriod) : accountRemaining
+    const usagePercent = totalCredits > 0 ? Math.min(100, (usedInPeriod / totalCredits) * 100) : 0
+
+    let members: Array<{
+      user_id: string
+      used_credits: number
+      max_per_period: number | null
+      is_active: boolean
+      user_name: string | null
+      user_email: string | null
+      role_slug: string | null
+      joined_at: string | null
+      profile_image_url: string | null
+    }> = []
+
+    if (subscriptionAccount?.id && selectedPeriod) {
+      await query(
+        `
+        INSERT INTO credit_account_access (user_id, account_id, priority, max_per_period, allow_when_empty, is_active)
+        SELECT utr.user_id, $1, 0, NULL, FALSE, TRUE
+        FROM user_tenant_roles utr
+        WHERE utr.tenant_id = $2
+          AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+        ON CONFLICT (user_id, account_id) DO NOTHING
+        `,
+        [subscriptionAccount.id, tenantId]
+      )
+
+      const memberUsageRes = await query(
+        `
+        SELECT
+          utr.user_id,
+          r.slug AS role_slug,
+          utr.joined_at,
+          u.full_name AS user_name,
+          u.email AS user_email,
+          u.metadata->>'profile_image_asset_id' AS profile_image_asset_id,
+          caa.max_per_period,
+          caa.is_active,
+          COALESCE(SUM(cua.amount_credits), 0) AS used_credits
+        FROM user_tenant_roles utr
+        JOIN roles r ON r.id = utr.role_id
+        JOIN users u ON u.id = utr.user_id AND u.deleted_at IS NULL
+        LEFT JOIN credit_account_access caa
+          ON caa.user_id = utr.user_id
+          AND caa.account_id = $1
+        LEFT JOIN credit_usage_allocations cua
+          ON cua.account_id = $1
+          AND cua.user_id = utr.user_id
+          AND cua.created_at >= $2
+          AND cua.created_at < $3
+        WHERE utr.tenant_id = $4
+          AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+          AND r.slug NOT IN ('viewer', 'tenant_viewer')
+        GROUP BY utr.user_id, r.slug, utr.joined_at, u.full_name, u.email, u.metadata, caa.max_per_period, caa.is_active
+        ORDER BY
+          CASE r.slug
+            WHEN 'owner' THEN 0 WHEN 'tenant_owner' THEN 0
+            WHEN 'admin' THEN 1 WHEN 'tenant_admin' THEN 1
+            WHEN 'member' THEN 2 WHEN 'tenant_member' THEN 2
+            ELSE 3
+          END,
+          utr.joined_at ASC
+        `,
+        [subscriptionAccount.id, selectedPeriod.period_start, selectedPeriod.period_end, tenantId]
+      )
+
+      members = memberUsageRes.rows.map((row) => {
+        const profileAssetId = row.profile_image_asset_id ? String(row.profile_image_asset_id) : null
+        return {
+          user_id: String(row.user_id || ""),
+          used_credits: normalizeUsageAmount(Number(row.used_credits ?? 0)),
+          max_per_period:
+            row.max_per_period === null || row.max_per_period === undefined ? null : Number(row.max_per_period),
+          is_active: row.is_active !== false,
+          user_name: row.user_name ?? null,
+          user_email: row.user_email ?? null,
+          role_slug: row.role_slug ?? null,
+          joined_at: row.joined_at ? toIsoString(row.joined_at) : null,
+          profile_image_url: profileAssetId ? `/api/ai/media/assets/${profileAssetId}` : null,
+        }
+      })
+    }
+
+    return res.json({
+      ok: true,
+      tenant_id: tenantId,
+      current_period_end: subPeriodEnd || null,
+      periods,
+      summary:
+        subscription && selectedPeriod
+          ? {
+              period_start: selectedPeriod.period_start,
+              period_end: selectedPeriod.period_end,
+              plan_slug: subscription.plan_slug,
+              plan_tier: subscription.plan_tier,
+              billing_cycle: subscription.billing_cycle,
+              total_credits: totalCredits,
+              used_credits: usedInPeriod,
+              remaining_credits: remainingCredits,
+              usage_percent: usagePercent,
+              account_id: subscriptionAccount?.id ?? null,
+            }
+          : null,
+      members,
+    })
+  } catch (e: any) {
+    console.error("getMyServiceUsage error:", e)
+    return res.status(500).json({ message: "Failed to load service usage", details: String(e?.message || e) })
+  }
+}
+
+export async function updateMemberCreditAccess(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = await resolveTenantId(authed)
+    if (!tenantId) return res.status(400).json({ message: "tenant_id is required" })
+
+    const targetUserId = toStr(req.body?.user_id)
+    if (!targetUserId || !isUuid(targetUserId))
+      return res.status(400).json({ message: "user_id is required (UUID)" })
+
+    const memberCheck = await query(
+      `
+      SELECT utr.user_id, r.slug AS role_slug
+      FROM user_tenant_roles utr
+      JOIN roles r ON r.id = utr.role_id
+      WHERE utr.user_id = $1 AND utr.tenant_id = $2
+        AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+      LIMIT 1
+      `,
+      [targetUserId, tenantId]
+    )
+    if (memberCheck.rows.length === 0) return res.status(404).json({ message: "member not found" })
+
+    const roleSlug = String(memberCheck.rows[0].role_slug || "")
+    if (roleSlug === "owner" || roleSlug === "tenant_owner")
+      return res.status(400).json({ message: "owner credit access cannot be changed" })
+
+    const accountRes = await query(
+      `SELECT id, balance_credits, reserved_credits FROM credit_accounts WHERE owner_type = 'tenant' AND owner_tenant_id = $1 AND credit_type = 'subscription' LIMIT 1`,
+      [tenantId]
+    )
+    const accountRow = accountRes.rows[0]
+    const accountId = accountRow?.id
+    if (!accountId) return res.status(404).json({ message: "subscription account not found" })
+
+    const subscriptionRes = await query(
+      `
+      SELECT s.billing_cycle, b.slug AS plan_slug
+      FROM billing_subscriptions s
+      JOIN billing_plans b ON b.id = s.plan_id
+      WHERE s.tenant_id = $1
+        AND s.status <> 'cancelled'
+      ORDER BY s.created_at DESC
+      LIMIT 1
+      `,
+      [tenantId]
+    )
+    const subscription = subscriptionRes.rows[0] as
+      | { billing_cycle: string; plan_slug: string }
+      | undefined
+
+    const planGrant = subscription
+      ? (
+          await query(
+            `
+            SELECT monthly_credits
+            FROM credit_plan_grants
+            WHERE plan_slug = $1
+              AND billing_cycle = $2
+              AND credit_type = 'subscription'
+              AND is_active = TRUE
+            LIMIT 1
+            `,
+            [subscription.plan_slug, subscription.billing_cycle]
+          )
+        ).rows[0]
+      : null
+
+    const planTotal = Number(planGrant?.monthly_credits ?? 0)
+    const accountRemaining = accountRow
+      ? Math.max(0, Number(accountRow.balance_credits ?? 0) - Number(accountRow.reserved_credits ?? 0))
+      : 0
+    const totalCredits = planTotal > 0 ? planTotal : accountRemaining
+
+    const fields: string[] = []
+    const params: unknown[] = []
+
+    const isActiveInput = toBool(req.body?.is_active)
+    if (isActiveInput !== null) {
+      params.push(isActiveInput)
+      fields.push(`is_active = $${params.length}`)
+    }
+
+    const maxPerPeriodInput = req.body?.max_per_period
+    if (maxPerPeriodInput !== undefined) {
+      if (maxPerPeriodInput === null || maxPerPeriodInput === "") {
+        fields.push(`max_per_period = NULL`)
+      } else {
+        const maxVal = toInt(maxPerPeriodInput, null)
+        if (maxVal === null || maxVal < 0) return res.status(400).json({ message: "invalid max_per_period" })
+        if (totalCredits > 0 && maxVal > totalCredits) {
+          return res.status(400).json({ message: "max_per_period exceeds total credits", total_credits: totalCredits })
+        }
+        params.push(maxVal)
+        fields.push(`max_per_period = $${params.length}`)
+      }
+    }
+
+    if (fields.length === 0) return res.status(400).json({ message: "no fields to update" })
+
+    params.push(targetUserId, accountId)
+    const result = await query(
+      `
+      UPDATE credit_account_access
+      SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP
+      WHERE user_id = $${params.length - 1} AND account_id = $${params.length}
+      RETURNING user_id, account_id, is_active, max_per_period
+      `,
+      params
+    )
+
+    if (result.rows.length === 0) {
+      await query(
+        `
+        INSERT INTO credit_account_access (user_id, account_id, priority, max_per_period, allow_when_empty, is_active)
+        VALUES ($1, $2, 0, NULL, FALSE, TRUE)
+        ON CONFLICT (user_id, account_id) DO NOTHING
+        `,
+        [targetUserId, accountId]
+      )
+      params.length = 0
+      if (isActiveInput !== null) {
+        params.push(isActiveInput)
+        fields.length = 0
+        fields.push(`is_active = $${params.length}`)
+      }
+      if (maxPerPeriodInput !== undefined) {
+        if (maxPerPeriodInput === null || maxPerPeriodInput === "") {
+          fields.push(`max_per_period = NULL`)
+        } else {
+          const maxVal = toInt(maxPerPeriodInput, null)
+          if (maxVal !== null) {
+            if (totalCredits > 0 && maxVal > totalCredits) {
+              return res.status(400).json({ message: "max_per_period exceeds total credits", total_credits: totalCredits })
+            }
+            params.push(maxVal)
+            fields.push(`max_per_period = $${params.length}`)
+          }
+        }
+      }
+      if (fields.length > 0) {
+        params.push(targetUserId, accountId)
+        await query(
+          `UPDATE credit_account_access SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP WHERE user_id = $${params.length - 1} AND account_id = $${params.length}`,
+          params
+        )
+      }
+      const refetch = await query(
+        `SELECT user_id, account_id, is_active, max_per_period FROM credit_account_access WHERE user_id = $1 AND account_id = $2`,
+        [targetUserId, accountId]
+      )
+      return res.json({ ok: true, row: refetch.rows[0] ?? null })
+    }
+
+    return res.json({ ok: true, row: result.rows[0] })
+  } catch (e: any) {
+    console.error("updateMemberCreditAccess error:", e)
+    return res.status(500).json({ message: "Failed to update member credit access", details: String(e?.message || e) })
+  }
+}
+
+export async function updateMyTopupAutoUse(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = await resolveTenantId(authed)
+    if (!tenantId) return res.status(400).json({ message: "tenant_id is required" })
+
+    const userId = toStr((authed as AuthedRequest).userId)
+    if (!userId) return res.status(401).json({ message: "user_id is required" })
+
+    const allowWhenEmpty = toBool(req.body?.allow_when_empty)
+    if (allowWhenEmpty === null) return res.status(400).json({ message: "allow_when_empty is required" })
+
+    const accountRes = await query(
+      `SELECT id FROM credit_accounts WHERE owner_type = 'tenant' AND owner_tenant_id = $1 AND credit_type = 'topup' LIMIT 1`,
+      [tenantId]
+    )
+    const accountId = accountRes.rows[0]?.id
+    if (!accountId) return res.status(404).json({ message: "topup account not found" })
+
+    const result = await query(
+      `
+      INSERT INTO credit_account_access (user_id, account_id, priority, max_per_period, allow_when_empty, is_active)
+      VALUES ($1, $2, 0, NULL, $3, TRUE)
+      ON CONFLICT (user_id, account_id)
+      DO UPDATE SET
+        allow_when_empty = EXCLUDED.allow_when_empty,
+        updated_at = CURRENT_TIMESTAMP
+      RETURNING user_id, account_id, allow_when_empty
+      `,
+      [userId, accountId, allowWhenEmpty]
+    )
+
+    return res.json({ ok: true, row: result.rows[0] ?? null })
+  } catch (e: any) {
+    console.error("updateMyTopupAutoUse error:", e)
+    return res.status(500).json({ message: "Failed to update topup auto use", details: String(e?.message || e) })
   }
 }
 
@@ -1394,5 +2013,22 @@ export async function listCreditUsageAllocations(req: Request, res: Response) {
   } catch (e: any) {
     console.error("listCreditUsageAllocations error:", e)
     return res.status(500).json({ message: "Failed to list credit usage allocations", details: String(e?.message || e) })
+  }
+}
+
+export async function listPublicTopupProducts(_req: Request, res: Response) {
+  try {
+    const result = await query(
+      `
+      SELECT id, sku_code, name, price_usd, credits, bonus_credits, currency, metadata
+      FROM credit_topup_products
+      WHERE is_active = TRUE
+      ORDER BY price_usd ASC
+      `
+    )
+    return res.json({ ok: true, rows: result.rows })
+  } catch (e: any) {
+    console.error("listPublicTopupProducts error:", e)
+    return res.status(500).json({ message: "Failed to list topup products" })
   }
 }

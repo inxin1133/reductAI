@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { fetchBillingPlansWithPrices } from "@/services/billingService"
 import type { BillingPlanWithPrices } from "@/services/billingService"
 import { PLAN_TIER_ORDER, type PlanTier } from "@/lib/planTier"
+import { extractPlanHighlights, formatPlanCredits } from "@/lib/billingPlanContent"
 
 type BillingCycle = "monthly" | "yearly"
 
@@ -20,18 +21,6 @@ function formatStorage(mb: number | null): string {
   if (mb == null) return "무제한"
   if (mb >= 1024) return `${Math.round(mb / 1024)} GB`
   return `${mb} MB`
-}
-
-function formatCredits(metadata: Record<string, unknown>): string {
-  const monthly = metadata?.monthly_credits
-  if (typeof monthly === "number" && monthly > 0) {
-    return monthly >= 1000 ? `${(monthly / 1000).toLocaleString()}K` : String(monthly)
-  }
-  const initial = metadata?.initial_credits
-  if (typeof initial === "number" && initial > 0) {
-    return `${initial.toLocaleString()} (최초)`
-  }
-  return "문의"
 }
 
 function formatPrice(price: number | null): string {
@@ -70,38 +59,6 @@ function ctaButtonClass(tier: PlanTier): string {
     case "enterprise": return "bg-rose-500 text-white hover:bg-rose-600"
     default: return ""
   }
-}
-
-const PLAN_HIGHLIGHTS: Record<string, string[]> = {
-  free: [
-    "개인 사용에 적합",
-    "기본 AI 모델 접근",
-    "개인 페이지 생성",
-    "커뮤니티 지원",
-  ],
-  pro: [
-    "개인 고급 사용자에 적합",
-    "모든 AI 모델 접근",
-    "우선 응답 처리",
-    "확장된 스토리지",
-    "이메일 지원",
-  ],
-  premium: [
-    "소규모 팀에 적합",
-    "팀 워크스페이스",
-    "공유 크레딧 풀",
-    "팀 페이지 협업",
-    "관리자 대시보드",
-    "우선 지원",
-  ],
-  business: [
-    "대규모 팀 및 조직에 적합",
-    "맞춤형 크레딧 할당",
-    "고급 권한 관리",
-    "감사 로그",
-    "전담 지원",
-    "SLA 보장",
-  ],
 }
 
 export default function PricingPage() {
@@ -229,7 +186,12 @@ export default function PricingPage() {
                   billingCycle === "yearly" && price != null && price > 0
                     ? Math.round((price / 12) * 100) / 100
                     : null
-                const credits = formatCredits(plan.metadata || {})
+                const creditDisplay = formatPlanCredits({
+                  billingCycle,
+                  creditGrants: plan.credit_grants,
+                })
+                const credits = creditDisplay.label
+                const creditsIsMonthly = creditDisplay.isMonthly
                 const storage = formatStorage(plan.storage_limit_mb)
                 const seats =
                   plan.max_seats == null
@@ -238,7 +200,7 @@ export default function PricingPage() {
                       ? `${plan.included_seats}명`
                       : `${plan.included_seats}~${plan.max_seats}명`
                 const planTier = normalizePlanTier(plan.tier) ?? "free"
-                const highlights = PLAN_HIGHLIGHTS[planTier] || []
+                const highlights = extractPlanHighlights(plan.metadata)
 
                 return (
                   <div
@@ -308,9 +270,7 @@ export default function PricingPage() {
                         <Zap className="mt-0.5 size-4 shrink-0 text-teal-500" />
                         <span>
                           크레딧 <span className="font-semibold">{credits}</span>
-                          {typeof (plan.metadata as Record<string, unknown>)?.monthly_credits === "number"
-                            ? "/월"
-                            : ""}
+                          {creditsIsMonthly ? "/월" : ""}
                         </span>
                       </li>
                       <li className="flex items-start gap-2">

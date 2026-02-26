@@ -153,6 +153,7 @@ export function Sidebar({ className }: SidebarProps) {
   const SIDEBAR_OPEN_KEY = "reductai:sidebar:isOpen"
   const PERSONAL_OPEN_KEY = "reductai:sidebar:isPersonalOpen"
   const TEAM_OPEN_KEY = "reductai:sidebar:isTeamOpen"
+  const MANAGEMENT_OPEN_KEY = "reductai:sidebar:isManagementOpen"
   const TENANT_INFO_CACHE_KEY = "reductai:sidebar:tenantInfo:v1"
   const getInitialIsOpen = () => {
     try {
@@ -184,6 +185,7 @@ export function Sidebar({ className }: SidebarProps) {
   const [isProfileOpen, setIsProfileOpen] = useState(false)
   const [isPersonalOpen, setIsPersonalOpen] = useState(() => getInitialSectionOpen(PERSONAL_OPEN_KEY, true))
   const [isTeamOpen, setIsTeamOpen] = useState(() => getInitialSectionOpen(TEAM_OPEN_KEY, true))
+  const [isManagementOpen, setIsManagementOpen] = useState(() => getInitialSectionOpen(MANAGEMENT_OPEN_KEY, true))
   const [isHeaderHover, setIsHeaderHover] = useState(false)
 
   type IconChoice =
@@ -843,10 +845,11 @@ const profileBadges = useMemo(() => {
     try {
       window.localStorage.setItem(PERSONAL_OPEN_KEY, isPersonalOpen ? "1" : "0")
       window.localStorage.setItem(TEAM_OPEN_KEY, isTeamOpen ? "1" : "0")
+      window.localStorage.setItem(MANAGEMENT_OPEN_KEY, isManagementOpen ? "1" : "0")
     } catch {
       // ignore
     }
-  }, [isPersonalOpen, isTeamOpen])
+  }, [isPersonalOpen, isTeamOpen, isManagementOpen])
 
   const handleLogout = () => {
     // 세션/토큰 정리
@@ -2277,33 +2280,51 @@ const profileBadges = useMemo(() => {
 
           {/* 관리 섹션 */}
           <div className="flex flex-col gap-1 mt-4">
-            <div className="px-2 h-8 opacity-70 flex items-center"><span className="text-sm text-foreground">관리</span></div>
-            <div
-              className={cn(
-                "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                isTrashActive
-                  ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10 dark:bg-neutral-800"
-                  : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
-              )}
-              onClick={() => {
-                setIsMobileMenuOpen(false)
-                navigate("/trash")
-              }}
-            >
-              <Trash2 className="size-5" />
-              <span className="text-base text-foreground">휴지통</span>
+            <div className="flex items-center justify-between px-2 h-8 opacity-70">
+              <span
+                className="text-sm text-foreground cursor-pointer select-none"
+                onClick={() => setIsManagementOpen((prev) => !prev)}
+              >
+                관리
+              </span>
+              <button
+                type="button"
+                className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                onClick={() => setIsManagementOpen((prev) => !prev)}
+              >
+                <ChevronRight className={cn("size-4 transition-transform", isManagementOpen ? "rotate-90" : "")} />
+              </button>
             </div>
-            <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800">
-              <PieChart className="size-5" />
-              <span className="text-base text-foreground">대시보드</span>
-            </div>
-            <div
-              className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800"
-              onClick={() => setIsContactDialogOpen(true)}
-            >
-              <MessageSquareMore className="size-5" />
-              <span className="text-base text-foreground">문의</span>
-            </div>
+            {isManagementOpen ? (
+              <>
+                <div
+                  className={cn(
+                    "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                    isTrashActive
+                      ? "bg-neutral-200 text-accent-foreground font-medium border border-border/10 dark:bg-neutral-800"
+                      : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                  )}
+                  onClick={() => {
+                    setIsMobileMenuOpen(false)
+                    navigate("/trash")
+                  }}
+                >
+                  <Trash2 className="size-5" />
+                  <span className="text-base text-foreground">휴지통</span>
+                </div>
+                <div className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800">
+                  <PieChart className="size-5" />
+                  <span className="text-base text-foreground">대시보드</span>
+                </div>
+                <div
+                  className="flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                  onClick={() => setIsContactDialogOpen(true)}
+                >
+                  <MessageSquareMore className="size-5" />
+                  <span className="text-base text-foreground">문의</span>
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
         {CategoryDeleteDialog}
@@ -2403,6 +2424,9 @@ const profileBadges = useMemo(() => {
           <ProfilePopoverContent />
         </Popover>
       </div>
+
+      {/* Scrollable area - Menu + Pages */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
 
       {/* Menu Items - 메뉴 아이템 */}
       <div className="flex flex-col p-2 gap-1">
@@ -3475,49 +3499,67 @@ const profileBadges = useMemo(() => {
         </div>
       )}
 
+      </div>{/* end scrollable area */}
+
       {/* Management - 관리 */}
-      <div className="flex flex-col p-2 gap-1 mt-auto">
+      <div className="flex flex-col p-2 gap-1 shrink-0">
         {isOpen && (
-          <div className="flex items-center gap-2 px-2 h-8 opacity-70">
-            <span className="text-xs text-sidebar-foreground">관리</span>
+          <div className="flex items-center gap-2 px-2 h-8 opacity-70 justify-between">
+            <div
+              className="text-xs text-sidebar-foreground w-full cursor-pointer select-none"
+              onClick={() => setIsManagementOpen((prev) => !prev)}
+            >
+              관리
+            </div>
+            {/* <button
+              type="button"
+              className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
+              onClick={() => setIsManagementOpen((prev) => !prev)}
+            >
+              <ChevronRight className={cn("size-4 transition-transform", isManagementOpen ? "rotate-90" : "")} />
+            </button> */}
           </div>
         )}
-        <div
-          className={cn(
-            "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-            !isOpen && "justify-center",
-            isTrashActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
-          )}
-          onClick={() => navigate("/trash")}
-        >
-          <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-            <Trash2 className="size-full" />
-          </div>
-          {isOpen && <span className="text-sm text-sidebar-foreground">휴지통</span>}
-        </div>
-        <div
-          className={cn(
-            "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800",
-            !isOpen && "justify-center"
-          )}
-        >
-          <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-            <PieChart className="size-full" />
-          </div>
-          {isOpen && <span className="text-sm text-sidebar-foreground">대시보드</span>}
-        </div>
-        <div
-          className={cn(
-            "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800",
-            !isOpen && "justify-center"
-          )}
-          onClick={() => setIsContactDialogOpen(true)}
-        >
-          <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-            <MessageSquareMore className="size-full" />
-          </div>
-          {isOpen && <span className="text-sm text-sidebar-foreground">문의</span>}
-        </div>
+        {(!isOpen || isManagementOpen) ? (
+          <>
+            <div
+              className={cn(
+                "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                !isOpen && "justify-center",
+                isTrashActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
+              )}
+              onClick={() => navigate("/trash")}
+            >
+              <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
+                <Trash2 className="size-full" />
+              </div>
+              {isOpen && <span className="text-sm text-sidebar-foreground">휴지통</span>}
+            </div>
+            <div
+              className={cn(
+                "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800",
+                !isOpen && "justify-center"
+              )}
+            >
+              <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
+                <PieChart className="size-full" />
+              </div>
+              {isOpen && <span className="text-sm text-sidebar-foreground">대시보드</span>}
+            </div>
+            <div
+              className={cn(
+                "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800",
+                !isOpen && "justify-center"
+              )}
+              onClick={() => setIsContactDialogOpen(true)}
+            >
+              <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
+                <MessageSquareMore className="size-full" />
+              </div>
+              {isOpen && <span className="text-sm text-sidebar-foreground">문의</span>}
+            </div>
+          </>
+        ) : null}
       </div>
       {CategoryDeleteDialog}
       {CreateCategoryDialog}

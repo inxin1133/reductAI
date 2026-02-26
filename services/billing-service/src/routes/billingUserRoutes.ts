@@ -1,14 +1,20 @@
 import express from "express"
 import {
   applyMySubscriptionChange,
+  cancelMySeatAddon,
+  checkoutTopupPurchase,
+  checkoutSeatAddonPurchase,
   checkoutUserSubscription,
   createMyPaymentMethod,
   getMyCheckoutSummary,
   getMyBillingAccount,
   getMySubscription,
+  getMySubscriptionOverview,
   getMyTaxRate,
   listMyPaymentMethods,
   quoteMySubscriptionChange,
+  quoteSeatAddonPurchase,
+  quoteTopupPurchase,
   quoteUserSubscription,
   upsertMyBillingAccount,
 } from "../controllers/billingController"
@@ -21,10 +27,16 @@ router.get("/payment-methods", listMyPaymentMethods)
 router.post("/payment-methods", createMyPaymentMethod)
 router.get("/tax-rate", getMyTaxRate)
 router.get("/subscription", getMySubscription)
+router.get("/subscription-overview", getMySubscriptionOverview)
 router.post("/subscription-quote", quoteMySubscriptionChange)
 router.post("/subscription-change", applyMySubscriptionChange)
 router.post("/quote", quoteUserSubscription)
 router.post("/checkout", checkoutUserSubscription)
+router.post("/topup-quote", quoteTopupPurchase)
+router.post("/topup-checkout", checkoutTopupPurchase)
+router.post("/seat-addon-quote", quoteSeatAddonPurchase)
+router.post("/seat-addon-checkout", checkoutSeatAddonPurchase)
+router.post("/seat-addon-cancel", cancelMySeatAddon)
 router.get("/checkout-summary", getMyCheckoutSummary)
 
 export default router
