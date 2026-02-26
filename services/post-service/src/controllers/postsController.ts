@@ -1229,31 +1229,7 @@ export async function listTenantMemberships(req: Request, res: Response) {
     const userId = (req as AuthedRequest).userId
     const r = await query(
       `
-      SELECT
-        utr.id AS membership_id,
-        utr.user_id,
-        t.id,
-        t.name,
-        t.tenant_type,
-        t.current_member_count,
-        t.member_limit,
-        COALESCE(utr.membership_status, 'active') AS membership_status,
-        utr.joined_at,
-        utr.expires_at,
-        COALESCE(utr.is_primary_tenant, FALSE) AS is_primary,
-        r.slug AS role_slug,
-        r.name AS role_name,
-        r.scope AS role_scope,
-        COALESCE(mc.member_count, 0) AS member_count,
-        COALESCE(
-          NULLIF(t.metadata->>'plan_tier',''),
-          NULLIF(t.metadata->>'service_tier',''),
-          NULLIF(t.metadata->>'tier','')
-        ) AS plan_tier
-      FROM user_tenant_roles utr
-      JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
-      LEFT JOIN roles r ON r.id = utr.role_id
-      LEFT JOIN (
+      WITH member_count AS (
         SELECT
           utr2.tenant_id,
           COUNT(DISTINCT utr2.user_id) AS member_count
@@ -1262,11 +1238,78 @@ export async function listTenantMemberships(req: Request, res: Response) {
         WHERE (utr2.membership_status IS NULL OR utr2.membership_status = 'active')
           AND r2.slug IN ('owner', 'admin', 'member')
         GROUP BY utr2.tenant_id
-      ) mc ON mc.tenant_id = t.id
-      WHERE utr.user_id = $1
-        AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
-        AND COALESCE(utr.membership_status, 'active') <> 'inactive'
-      ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC, utr.granted_at ASC
+      ),
+      membership_rows AS (
+        SELECT
+          utr.id AS membership_id,
+          utr.user_id,
+          t.id,
+          t.name,
+          t.tenant_type,
+          t.current_member_count,
+          t.member_limit,
+          COALESCE(utr.membership_status, 'active') AS membership_status,
+          utr.joined_at,
+          utr.expires_at,
+          COALESCE(utr.is_primary_tenant, FALSE) AS is_primary,
+          r.slug AS role_slug,
+          r.name AS role_name,
+          r.scope AS role_scope,
+          COALESCE(mc.member_count, 0) AS member_count,
+          COALESCE(
+            NULLIF(t.metadata->>'plan_tier',''),
+            NULLIF(t.metadata->>'service_tier',''),
+            NULLIF(t.metadata->>'tier','')
+          ) AS plan_tier,
+          utr.granted_at
+        FROM user_tenant_roles utr
+        JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+        LEFT JOIN roles r ON r.id = utr.role_id
+        LEFT JOIN member_count mc ON mc.tenant_id = t.id
+        WHERE utr.user_id = $1
+          AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+          AND COALESCE(utr.membership_status, 'active') <> 'inactive'
+      ),
+      owner_rows AS (
+        SELECT
+          NULL::uuid AS membership_id,
+          $1::uuid AS user_id,
+          t.id,
+          t.name,
+          t.tenant_type,
+          t.current_member_count,
+          t.member_limit,
+          'active' AS membership_status,
+          NULL::timestamptz AS joined_at,
+          NULL::timestamptz AS expires_at,
+          FALSE AS is_primary,
+          'owner' AS role_slug,
+          '소유자' AS role_name,
+          'tenant_base'::role_scope AS role_scope,
+          COALESCE(mc.member_count, 0) AS member_count,
+          COALESCE(
+            NULLIF(t.metadata->>'plan_tier',''),
+            NULLIF(t.metadata->>'service_tier',''),
+            NULLIF(t.metadata->>'tier','')
+          ) AS plan_tier,
+          NULL::timestamptz AS granted_at
+        FROM tenants t
+        LEFT JOIN member_count mc ON mc.tenant_id = t.id
+        WHERE t.owner_id = $1
+          AND t.deleted_at IS NULL
+          AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+          AND NOT EXISTS (
+            SELECT 1
+            FROM user_tenant_roles utr
+            WHERE utr.user_id = $1
+              AND utr.tenant_id = t.id
+              AND COALESCE(utr.membership_status, 'active') <> 'inactive'
+          )
+      )
+      SELECT * FROM membership_rows
+      UNION ALL
+      SELECT * FROM owner_rows
+      ORDER BY is_primary DESC, joined_at ASC NULLS LAST, granted_at ASC NULLS LAST
       `,
       [userId]
     )

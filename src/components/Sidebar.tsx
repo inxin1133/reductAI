@@ -245,22 +245,27 @@ export function Sidebar({ className }: SidebarProps) {
   const [personalCatsLoading, setPersonalCatsLoading] = useState(false)
 
   type TeamCategory = { id: string; name: string; icon?: string | null; display_order?: number }
+  type TeamCategoryMap = Record<string, TeamCategory[]>
   const TEAM_CATS_CACHE_PREFIX = "reductai:sidebar:teamCategories:v2"
   const buildTeamCatsCacheKey = (tenantId?: string) => {
     const id = String(tenantId || "").trim()
     return id ? `${TEAM_CATS_CACHE_PREFIX}:${id}` : TEAM_CATS_CACHE_PREFIX
   }
-  const [teamCategories, setTeamCategories] = useState<TeamCategory[]>(() => {
+  const [teamCategoriesByTenant, setTeamCategoriesByTenant] = useState<TeamCategoryMap>(() => {
     try {
-      if (typeof window === "undefined") return []
-      const raw = window.localStorage.getItem(buildTeamCatsCacheKey(getActiveTenantId()))
+      if (typeof window === "undefined") return {}
+      const activeId = getActiveTenantId()
+      if (!activeId) return {}
+      const raw = window.localStorage.getItem(buildTeamCatsCacheKey(activeId))
       const j = raw ? JSON.parse(raw) : null
-      return Array.isArray(j) ? (j as TeamCategory[]) : []
+      const arr = Array.isArray(j) ? (j as TeamCategory[]) : []
+      return arr.length ? { [activeId]: arr } : {}
     } catch {
-      return []
+      return {}
     }
   })
-  const [teamCatsLoading, setTeamCatsLoading] = useState(false)
+  const [teamCatsLoadingByTenant, setTeamCatsLoadingByTenant] = useState<Record<string, boolean>>({})
+  const [openTeamTenantSections, setOpenTeamTenantSections] = useState<Record<string, boolean>>({})
   const [tenantType, setTenantType] = useState<string>(() => {
     try {
       const raw = window.localStorage.getItem(TENANT_INFO_CACHE_KEY)
@@ -330,7 +335,6 @@ export function Sidebar({ className }: SidebarProps) {
   >(initialTenantMemberships)
   const [tenantMembershipsLoaded, setTenantMembershipsLoaded] = useState(initialTenantMemberships.length > 0)
   const [activeTeamTenantId, setActiveTeamTenantId] = useState<string>(() => getActiveTenantId())
-  const teamCatsCacheKey = useMemo(() => buildTeamCatsCacheKey(activeTeamTenantId), [activeTeamTenantId])
   const [pendingInvitations, setPendingInvitations] = useState<TenantInvitationRow[]>([])
   const [inviteLoading, setInviteLoading] = useState(false)
   const [inviteError, setInviteError] = useState<string | null>(null)
@@ -359,11 +363,52 @@ export function Sidebar({ className }: SidebarProps) {
     })
   }, [tenantMemberships])
 
+  useEffect(() => {
+    if (!teamTenants.length) {
+      setOpenTeamTenantSections({})
+      return
+    }
+    setOpenTeamTenantSections((prev) => {
+      let changed = false
+      const next: Record<string, boolean> = { ...prev }
+      const ids = new Set<string>()
+      teamTenants.forEach((tenant) => {
+        const id = String(tenant.id || "").trim()
+        if (!id) return
+        ids.add(id)
+        if (!(id in next)) {
+          next[id] = true
+          changed = true
+        }
+      })
+      Object.keys(next).forEach((key) => {
+        if (!ids.has(key)) {
+          delete next[key]
+          changed = true
+        }
+      })
+      return changed ? next : prev
+    })
+  }, [teamTenants])
+
+  const allTeamCategories = useMemo(() => {
+    return Object.values(teamCategoriesByTenant).flat()
+  }, [teamCategoriesByTenant])
+
   const activeTeamTenant = useMemo(() => {
     if (!teamTenants.length) return null
     const matched = teamTenants.find((t) => String(t.id) === String(activeTeamTenantId))
     return matched || teamTenants[0] || null
   }, [activeTeamTenantId, teamTenants])
+
+  const teamCategories = useMemo(() => {
+    if (!activeTeamTenantId) return []
+    return teamCategoriesByTenant[activeTeamTenantId] || []
+  }, [activeTeamTenantId, teamCategoriesByTenant])
+
+  const teamCatsLoading = Boolean(
+    activeTeamTenantId ? teamCatsLoadingByTenant[activeTeamTenantId] : false
+  )
 
   const hasTeamTenant = Boolean(activeTeamTenant) || (!tenantMembershipsLoaded && Boolean(activeTeamTenantId))
 
@@ -400,14 +445,41 @@ export function Sidebar({ className }: SidebarProps) {
     return name || "팀/그룹"
   }
 
-const resolveServiceTier = (t: { tenant_type?: string | null; plan_tier?: string | null }) => {
-  const tier = normalizePlanTier(t.plan_tier)
-  if (tier) return tier
-  const type = String(t.tenant_type || "")
-  if (type === "personal") return "free"
-  if (type === "team" || type === "group") return "premium"
-  return "free"
-}
+  const resolveServiceTier = (t: { tenant_type?: string | null; plan_tier?: string | null }) => {
+    const tier = normalizePlanTier(t.plan_tier)
+    if (tier) return tier
+    const type = String(t.tenant_type || "")
+    if (type === "personal") return "free"
+    if (type === "team" || type === "group") return "premium"
+    return "free"
+  }
+
+  const getTenantMembershipStatus = (t: { membership_status?: string | null }) => {
+    const raw = String(t.membership_status || "active").toLowerCase()
+    return raw || "active"
+  }
+
+  const isTenantActiveMember = (t: { membership_status?: string | null }) => {
+    return getTenantMembershipStatus(t) === "active"
+  }
+
+  const isTenantSuspendedMember = (t: { membership_status?: string | null }) => {
+    return getTenantMembershipStatus(t) === "suspended"
+  }
+
+  const getTeamTenantLabel = (t: { name?: string | null; tenant_type?: string | null; membership_status?: string | null }) => {
+    const name = String(t.name || "").trim()
+    const base = name ? `${name} 페이지` : String(t.tenant_type || "") === "group" ? "그룹 페이지" : "팀 페이지"
+    return isTenantSuspendedMember(t) ? `(정지) ${base}` : base
+  }
+
+  const canManageTenant = (t: { role_slug?: string | null; membership_status?: string | null }) => {
+    if (!isTenantActiveMember(t)) return false
+    const roleSlug = String(t.role_slug || "").toLowerCase()
+    const elevated = new Set(["owner", "admin", "tenant_admin", "tenant_owner"])
+    return elevated.has(roleSlug)
+  }
+
 
 const profileBadges = useMemo(() => {
   if (tenantMemberships.length) {
@@ -451,18 +523,31 @@ const profileBadges = useMemo(() => {
   }, [activeTeamTenantId, teamTenants, tenantMembershipsLoaded])
 
   useEffect(() => {
-    if (!activeTeamTenantId) {
-      setTeamCategories([])
+    if (typeof window === "undefined") return
+    if (!teamTenants.length) {
+      setTeamCategoriesByTenant({})
       return
     }
-    try {
-      const raw = window.localStorage.getItem(teamCatsCacheKey)
-      const j = raw ? JSON.parse(raw) : null
-      setTeamCategories(Array.isArray(j) ? (j as TeamCategory[]) : [])
-    } catch {
-      setTeamCategories([])
-    }
-  }, [activeTeamTenantId, teamCatsCacheKey])
+    setTeamCategoriesByTenant((prev) => {
+      const next: TeamCategoryMap = {}
+      for (const tenant of teamTenants) {
+        const tenantId = String(tenant.id || "").trim()
+        if (!tenantId) continue
+        if (prev[tenantId]) {
+          next[tenantId] = prev[tenantId]
+          continue
+        }
+        try {
+          const raw = window.localStorage.getItem(buildTeamCatsCacheKey(tenantId))
+          const j = raw ? JSON.parse(raw) : null
+          next[tenantId] = Array.isArray(j) ? (j as TeamCategory[]) : []
+        } catch {
+          next[tenantId] = []
+        }
+      }
+      return next
+    })
+  }, [teamTenants])
 
   useEffect(() => {
     const fetchLanguages = async () => {
@@ -510,14 +595,24 @@ const profileBadges = useMemo(() => {
     }
   }, [])
 
-  const [editingCat, setEditingCat] = useState<{ type: "personal" | "team"; id: string; name: string } | null>(null)
-  const [draggingCat, setDraggingCat] = useState<{ type: "personal" | "team"; id: string } | null>(null)
+  const [editingCat, setEditingCat] = useState<{
+    type: "personal" | "team"
+    id: string
+    name: string
+    tenantId?: string
+  } | null>(null)
+  const [draggingCat, setDraggingCat] = useState<{
+    type: "personal" | "team"
+    id: string
+    tenantId?: string
+  } | null>(null)
   const [categoryDropIndicator, setCategoryDropIndicator] = useState<{
     type: "personal" | "team"
     id: string
+    tenantId?: string
     position: "before" | "after"
   } | null>(null)
-  const [catIconOpen, setCatIconOpen] = useState<{ type: "personal" | "team"; id: string } | null>(null)
+  const [catIconOpen, setCatIconOpen] = useState<{ type: "personal" | "team"; id: string; tenantId?: string } | null>(null)
   const [catIconTab, setCatIconTab] = useState<"emoji" | "icon">("emoji")
   const [catLucideQuery, setCatLucideQuery] = useState("")
   const [catLucideAll, setCatLucideAll] = useState<Record<string, React.ElementType> | null>(null)
@@ -531,11 +626,12 @@ const profileBadges = useMemo(() => {
   const startCategoryDrag = (
     type: "personal" | "team",
     id: string,
-    e: React.DragEvent<HTMLElement>
+    e: React.DragEvent<HTMLElement>,
+    tenantId?: string
   ) => {
     e.stopPropagation()
     dragBlockClickUntilRef.current = Date.now() + 250
-    setDraggingCat({ type, id })
+    setDraggingCat({ type, id, tenantId: type === "team" ? tenantId : undefined })
     setCategoryDropIndicator(null)
     try {
       e.dataTransfer.setData("text/plain", id)
@@ -590,39 +686,43 @@ const profileBadges = useMemo(() => {
         return prev
       })
 
-      setTeamCategories((prev) => {
+      setTeamCategoriesByTenant((prev) => {
         let changed = false
-        const next = deleted
-          ? prev.filter((c) => {
-            const keep = String(c.id) !== id
-            if (!keep) changed = true
-            return keep
-          })
-          : prev.map((c) => {
-            if (String(c.id) !== id) return c
-            const patched = {
-              ...c,
-              ...(nextName !== undefined ? { name: nextName } : null),
-              ...(nextIcon !== undefined ? { icon: nextIcon } : null),
-            }
+        const next: TeamCategoryMap = {}
+        for (const [tenantId, list] of Object.entries(prev)) {
+          let listChanged = false
+          const updated = deleted
+            ? list.filter((c) => {
+              const keep = String(c.id) !== id
+              if (!keep) listChanged = true
+              return keep
+            })
+            : list.map((c) => {
+              if (String(c.id) !== id) return c
+              listChanged = true
+              return {
+                ...c,
+                ...(nextName !== undefined ? { name: nextName } : null),
+                ...(nextIcon !== undefined ? { icon: nextIcon } : null),
+              }
+            })
+          next[tenantId] = updated
+          if (listChanged) {
             changed = true
-            return patched
-          })
-        if (changed) {
-          try {
-            window.localStorage.setItem(teamCatsCacheKey, JSON.stringify(next))
-          } catch {
-            // ignore
+            try {
+              window.localStorage.setItem(buildTeamCatsCacheKey(tenantId), JSON.stringify(updated))
+            } catch {
+              // ignore
+            }
           }
-          return next
         }
-        return prev
+        return changed ? next : prev
       })
     }
 
     window.addEventListener("reductai:categoryUpdated", onUpdated as EventListener)
     return () => window.removeEventListener("reductai:categoryUpdated", onUpdated as EventListener)
-  }, [PERSONAL_CATS_CACHE_KEY, teamCatsCacheKey])
+  }, [PERSONAL_CATS_CACHE_KEY])
 
   // Reset picker UI when closing / switching
   useEffect(() => {
@@ -673,7 +773,7 @@ const profileBadges = useMemo(() => {
   // If a category uses a non-preset lucide icon, load lucide map so we can render it in the list.
   useEffect(() => {
     if (catLucideAll || catLucideLoading) return
-    const hasNonPresetLucide = [...personalCategories, ...teamCategories].some((c) => {
+    const hasNonPresetLucide = [...personalCategories, ...allTeamCategories].some((c) => {
       const raw = typeof c.icon === "string" ? c.icon : ""
       if (!raw.startsWith("lucide:")) return false
       const name = raw.slice("lucide:".length)
@@ -691,10 +791,15 @@ const profileBadges = useMemo(() => {
       .finally(() => {
         if (catLucideLoadSeqRef.current === seq) setCatLucideLoading(false)
       })
-  }, [LUCIDE_PRESET_MAP, catLucideAll, catLucideLoading, personalCategories, teamCategories])
+  }, [LUCIDE_PRESET_MAP, catLucideAll, catLucideLoading, personalCategories, allTeamCategories])
 
-  const saveCategoryIcon = async (args: { type: "personal" | "team"; id: string; choice: IconChoice | null }) => {
-    const h = args.type === "team" ? teamHeaders() : authHeaders()
+  const saveCategoryIcon = async (args: {
+    type: "personal" | "team"
+    id: string
+    choice: IconChoice | null
+    tenantId?: string
+  }) => {
+    const h = args.type === "team" ? teamHeaders(args.tenantId) : authHeaders()
     if (!h || !h.Authorization) return
     const nextIcon = encodeIcon(args.choice)
     emitCategoryUpdated({ id: String(args.id), icon: nextIcon })
@@ -710,15 +815,18 @@ const profileBadges = useMemo(() => {
         return next
       })
     } else {
-      setTeamCategories((prev) => {
-        const next = prev.map((c) => (c.id === args.id ? { ...c, icon: nextIcon } : c))
-        try {
-          window.localStorage.setItem(teamCatsCacheKey, JSON.stringify(next))
-        } catch {
-          // ignore
-        }
-        return next
-      })
+      const tenantId = String(args.tenantId || "").trim()
+      if (tenantId) {
+        setTeamCategoriesByTenant((prev) => {
+          const nextList = (prev[tenantId] || []).map((c) => (c.id === args.id ? { ...c, icon: nextIcon } : c))
+          try {
+            window.localStorage.setItem(buildTeamCatsCacheKey(tenantId), JSON.stringify(nextList))
+          } catch {
+            // ignore
+          }
+          return { ...prev, [tenantId]: nextList }
+        })
+      }
     }
 
     const r = await fetch(`/api/posts/categories/${encodeURIComponent(args.id)}`, {
@@ -869,11 +977,12 @@ const profileBadges = useMemo(() => {
     return headers
   }
 
-  const teamHeaders = () => {
+  const teamHeaders = (tenantId?: string | null) => {
     const h = authHeaders()
     if (!h.Authorization) return null
-    if (!activeTeamTenantId) return null
-    return withActiveTenantHeader(h, activeTeamTenantId)
+    const resolvedId = String(tenantId || "").trim()
+    if (!resolvedId) return null
+    return withActiveTenantHeader(h, resolvedId)
   }
 
   const loadPendingInvitations = async () => {
@@ -1002,6 +1111,7 @@ const profileBadges = useMemo(() => {
 
   const [createCategoryOpen, setCreateCategoryOpen] = useState(false)
   const [createCategoryType, setCreateCategoryType] = useState<"personal" | "team">("personal")
+  const [createCategoryTenantId, setCreateCategoryTenantId] = useState("")
   const [createCategoryName, setCreateCategoryName] = useState("")
   const [createCategoryIconChoice, setCreateCategoryIconChoice] = useState<IconChoice | null>(null)
   const [createCategoryTab, setCreateCategoryTab] = useState<"emoji" | "icon">("emoji")
@@ -1011,14 +1121,23 @@ const profileBadges = useMemo(() => {
   const createLucideLoadSeqRef = useRef(0)
   const [createCategoryBusy, setCreateCategoryBusy] = useState(false)
 
-  const openCreateCategoryDialog = (type: "personal" | "team") => {
-    if (type === "team" && !activeTeamTenantId) {
-      alert("팀/그룹 테넌트를 선택해 주세요.")
-      return
-    }
-    if (type === "team" && !isActiveTeamMember) {
-      setIsSuspendedDialogOpen(true)
-      return
+  const openCreateCategoryDialog = (type: "personal" | "team", tenantId?: string) => {
+    if (type === "team") {
+      const id = String(tenantId || "").trim()
+      if (!id) {
+        alert("팀/그룹 테넌트를 선택해 주세요.")
+        return
+      }
+      const tenant = teamTenants.find((t) => String(t.id) === id)
+      const status = String(tenant?.membership_status || "active").toLowerCase()
+      if (status !== "active") {
+        setActiveTeamTenantId(id)
+        setIsSuspendedDialogOpen(true)
+        return
+      }
+      setCreateCategoryTenantId(id)
+    } else {
+      setCreateCategoryTenantId("")
     }
     setCreateCategoryType(type)
     setCreateCategoryName("")
@@ -1065,11 +1184,20 @@ const profileBadges = useMemo(() => {
     setCreateLucideLoading(false)
   }, [createCategoryOpen])
 
-  const performCreateCategory = async (args: { type: "personal" | "team"; name: string; icon: IconChoice }) => {
-    const h = args.type === "team" ? teamHeaders() : authHeaders()
+  const performCreateCategory = async (args: {
+    type: "personal" | "team"
+    name: string
+    icon: IconChoice
+    tenantId?: string
+  }) => {
+    const h = args.type === "team" ? teamHeaders(args.tenantId) : authHeaders()
     if (!h || !h.Authorization) {
       alert("로그인이 필요합니다.")
       return
+    }
+    if (args.type === "team") {
+      const id = String(args.tenantId || "").trim()
+      if (!id) return
     }
     try {
       const nextName = String(args.name || "").trim()
@@ -1096,7 +1224,18 @@ const profileBadges = useMemo(() => {
         setPersonalCategories((prev) => [cat, ...prev])
         if (!isPersonalOpen) setIsPersonalOpen(true)
       } else {
-        setTeamCategories((prev) => [cat as unknown as TeamCategory, ...prev])
+        const tenantId = String(args.tenantId || "").trim()
+        if (tenantId) {
+          setTeamCategoriesByTenant((prev) => {
+            const nextList = [cat as unknown as TeamCategory, ...(prev[tenantId] || [])]
+            try {
+              window.localStorage.setItem(buildTeamCatsCacheKey(tenantId), JSON.stringify(nextList))
+            } catch {
+              // ignore
+            }
+            return { ...prev, [tenantId]: nextList }
+          })
+        }
         if (!isTeamOpen) setIsTeamOpen(true)
       }
     } catch {
@@ -1116,12 +1255,17 @@ const profileBadges = useMemo(() => {
     if (!isMobile) return
     if (!isMobileMenuOpen) return
     if (isPersonalOpen) void loadPersonalCategories()
-    if (isTeamOpen && hasTeamTenant && isActiveTeamMember) {
+    if (hasTeamTenant) {
       void loadTenantName()
-      void loadTeamCategories()
+      teamTenants.forEach((tenant) => {
+        if (!isTenantActiveMember(tenant)) return
+        const id = String(tenant.id || "").trim()
+        if (!id) return
+        void loadTeamCategories(id)
+      })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMobile, isMobileMenuOpen, isPersonalOpen, isTeamOpen, hasTeamTenant, activeTeamTenantId, isActiveTeamMember])
+  }, [isMobile, isMobileMenuOpen, isPersonalOpen, hasTeamTenant, teamTenants])
 
   const loadTenantName = async () => {
     const h = authHeaders()
@@ -1256,21 +1400,49 @@ const profileBadges = useMemo(() => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isInviteDialogOpen])
 
-  const goToTopCategory = async (kind: "personal" | "team") => {
-    if (kind === "team" && !isActiveTeamMember) {
-      setIsSuspendedDialogOpen(true)
+  const goToTopCategory = async (kind: "personal" | "team", tenantId?: string) => {
+    if (kind === "team") {
+      const id = String(tenantId || "").trim()
+      if (!id) return
+      const tenant = teamTenants.find((t) => String(t.id) === id)
+      const status = String(tenant?.membership_status || "active").toLowerCase()
+      if (status !== "active") {
+        setActiveTeamTenantId(id)
+        setIsSuspendedDialogOpen(true)
+        return
+      }
+      const list = teamCategoriesByTenant[id] || []
+      const fromState = list.length ? String(list[0]?.id || "") : ""
+      if (fromState) {
+        setActiveTenantId(id)
+        setActiveTeamTenantId(id)
+        navigate(`/posts?category=${encodeURIComponent(fromState)}`)
+        return
+      }
+      const h = teamHeaders(id)
+      if (!h || !h.Authorization) return
+      const r = await fetch("/api/posts/categories/mine?type=team_page", { headers: h }).catch(() => null)
+      if (!r || !r.ok) return
+      const j = await r.json().catch(() => [])
+      const arr = Array.isArray(j) ? (j as Array<{ id?: unknown }>) : []
+      const firstId = arr.length ? String(arr[0]?.id || "") : ""
+      if (!firstId) return
+      setActiveTenantId(id)
+      setActiveTeamTenantId(id)
+      navigate(`/posts?category=${encodeURIComponent(firstId)}`)
       return
     }
-    const list = kind === "personal" ? personalCategories : teamCategories
+
+    const list = personalCategories
     const fromState = list.length ? String(list[0]?.id || "") : ""
     if (fromState) {
       navigate(`/posts?category=${encodeURIComponent(fromState)}`)
       return
     }
 
-    const h = kind === "team" ? teamHeaders() : authHeaders()
+    const h = authHeaders()
     if (!h || !h.Authorization) return
-    const url = kind === "personal" ? "/api/posts/categories/mine" : "/api/posts/categories/mine?type=team_page"
+    const url = "/api/posts/categories/mine"
     const r = await fetch(url, { headers: h }).catch(() => null)
     if (!r || !r.ok) return
     const j = await r.json().catch(() => [])
@@ -1280,24 +1452,25 @@ const profileBadges = useMemo(() => {
     navigate(`/posts?category=${encodeURIComponent(firstId)}`)
   }
 
-  const loadTeamCategories = async () => {
-    if (!isActiveTeamMember) return
-    const h = teamHeaders()
+  const loadTeamCategories = async (tenantId: string) => {
+    const id = String(tenantId || "").trim()
+    if (!id) return
+    const h = teamHeaders(id)
     if (!h || !h.Authorization) return
-    setTeamCatsLoading(true)
+    setTeamCatsLoadingByTenant((prev) => ({ ...prev, [id]: true }))
     try {
       const r = await fetch("/api/posts/categories/mine?type=team_page", { headers: h })
       if (!r.ok) return
       const j = await r.json().catch(() => [])
       const arr = Array.isArray(j) ? (j as TeamCategory[]) : []
-      setTeamCategories(arr)
+      setTeamCategoriesByTenant((prev) => ({ ...prev, [id]: arr }))
       try {
-        window.localStorage.setItem(teamCatsCacheKey, JSON.stringify(arr))
+        window.localStorage.setItem(buildTeamCatsCacheKey(id), JSON.stringify(arr))
       } catch {
         // ignore
       }
     } finally {
-      setTeamCatsLoading(false)
+      setTeamCatsLoadingByTenant((prev) => ({ ...prev, [id]: false }))
     }
   }
 
@@ -1343,7 +1516,12 @@ const profileBadges = useMemo(() => {
                 const icon = createCategoryIconChoice
                 if (!name || !icon || createCategoryBusy) return
                 setCreateCategoryBusy(true)
-                void performCreateCategory({ type: createCategoryType, name, icon }).finally(() => {
+                void performCreateCategory({
+                  type: createCategoryType,
+                  name,
+                  icon,
+                  tenantId: createCategoryType === "team" ? createCategoryTenantId : undefined,
+                }).finally(() => {
                   setCreateCategoryBusy(false)
                   setCreateCategoryOpen(false)
                 })
@@ -1491,7 +1669,12 @@ const profileBadges = useMemo(() => {
               const icon = createCategoryIconChoice
               if (!name || !icon) return
               setCreateCategoryBusy(true)
-              void performCreateCategory({ type: createCategoryType, name, icon }).finally(() => {
+              void performCreateCategory({
+                type: createCategoryType,
+                name,
+                icon,
+                tenantId: createCategoryType === "team" ? createCategoryTenantId : undefined,
+              }).finally(() => {
                 setCreateCategoryBusy(false)
                 setCreateCategoryOpen(false)
               })
@@ -1506,16 +1689,19 @@ const profileBadges = useMemo(() => {
 
   useEffect(() => {
     if (!isOpen) return
-    if (!isTeamOpen) return
     if (!hasTeamTenant) return
-    if (!isActiveTeamMember) return
     void loadTenantName()
-    void loadTeamCategories()
+    teamTenants.forEach((tenant) => {
+      if (!isTenantActiveMember(tenant)) return
+      const id = String(tenant.id || "").trim()
+      if (!id) return
+      void loadTeamCategories(id)
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, isTeamOpen, hasTeamTenant, activeTeamTenantId, isActiveTeamMember])
+  }, [isOpen, hasTeamTenant, teamTenants])
 
-  const renameCategory = async (args: { type: "personal" | "team"; id: string; name: string }) => {
-    const h = args.type === "team" ? teamHeaders() : authHeaders()
+  const renameCategory = async (args: { type: "personal" | "team"; id: string; name: string; tenantId?: string }) => {
+    const h = args.type === "team" ? teamHeaders(args.tenantId) : authHeaders()
     if (!h || !h.Authorization) return
     const next = String(args.name || "").trim()
     if (!next) return
@@ -1528,16 +1714,29 @@ const profileBadges = useMemo(() => {
       alert("카테고리 이름 변경에 실패했습니다.")
       return
     }
-    if (args.type === "personal") setPersonalCategories((prev) => prev.map((c) => (c.id === args.id ? { ...c, name: next } : c)))
-    else setTeamCategories((prev) => prev.map((c) => (c.id === args.id ? { ...c, name: next } : c)))
+    if (args.type === "personal") {
+      setPersonalCategories((prev) => prev.map((c) => (c.id === args.id ? { ...c, name: next } : c)))
+    } else {
+      const tenantId = String(args.tenantId || "").trim()
+      if (!tenantId) return
+      setTeamCategoriesByTenant((prev) => {
+        const nextList = (prev[tenantId] || []).map((c) => (c.id === args.id ? { ...c, name: next } : c))
+        return { ...prev, [tenantId]: nextList }
+      })
+    }
     emitCategoryUpdated({ id: String(args.id), name: next })
   }
 
-  const [deleteCategoryTarget, setDeleteCategoryTarget] = useState<{ type: "personal" | "team"; id: string; name: string } | null>(null)
+  const [deleteCategoryTarget, setDeleteCategoryTarget] = useState<{
+    type: "personal" | "team"
+    id: string
+    name: string
+    tenantId?: string
+  } | null>(null)
   const [deleteCategoryBusy, setDeleteCategoryBusy] = useState(false)
 
-  const performDeleteCategory = async (args: { type: "personal" | "team"; id: string }) => {
-    const h = args.type === "team" ? teamHeaders() : authHeaders()
+  const performDeleteCategory = async (args: { type: "personal" | "team"; id: string; tenantId?: string }) => {
+    const h = args.type === "team" ? teamHeaders(args.tenantId) : authHeaders()
     if (!h || !h.Authorization) return
     const r = await fetch(`/api/posts/categories/${encodeURIComponent(args.id)}`, { method: "DELETE", headers: h }).catch(() => null)
     if (!r) {
@@ -1564,9 +1763,13 @@ const profileBadges = useMemo(() => {
       setPersonalCategories(nextList)
       nextId = nextList.length ? String(nextList[0]?.id || "") : ""
     } else {
-      const nextList = teamCategories.filter((c) => String(c.id) !== deletedId)
-      setTeamCategories(nextList)
-      nextId = nextList.length ? String(nextList[0]?.id || "") : ""
+      const tenantId = String(args.tenantId || "").trim()
+      if (tenantId) {
+        const prevList = teamCategoriesByTenant[tenantId] || []
+        const nextList = prevList.filter((c) => String(c.id) !== deletedId)
+        setTeamCategoriesByTenant((prev) => ({ ...prev, [tenantId]: nextList }))
+        nextId = nextList.length ? String(nextList[0]?.id || "") : ""
+      }
     }
 
     // Notify PostEditorPage (and others) so they don't keep rendering a deleted category.
@@ -1596,7 +1799,7 @@ const profileBadges = useMemo(() => {
               const t = deleteCategoryTarget
               if (!t) return
               setDeleteCategoryBusy(true)
-              void performDeleteCategory({ type: t.type, id: t.id }).finally(() => {
+              void performDeleteCategory({ type: t.type, id: t.id, tenantId: t.tenantId }).finally(() => {
                 setDeleteCategoryBusy(false)
                 setDeleteCategoryTarget(null)
               })
@@ -1720,8 +1923,8 @@ const profileBadges = useMemo(() => {
     </Dialog>
   )
 
-  const reorder = async (args: { type: "personal" | "team"; orderedIds: string[] }) => {
-    const h = args.type === "team" ? teamHeaders() : authHeaders()
+  const reorder = async (args: { type: "personal" | "team"; orderedIds: string[]; tenantId?: string }) => {
+    const h = args.type === "team" ? teamHeaders(args.tenantId) : authHeaders()
     if (!h || !h.Authorization) return
     const type = args.type === "team" ? "team_page" : "personal_page"
     await fetch("/api/posts/categories/reorder", {
@@ -2184,116 +2387,152 @@ const profileBadges = useMemo(() => {
           {/* 팀/그룹 페이지 */}
           {hasTeamTenant ? (
             <div className="flex flex-col gap-1 mb-2">
-              <div className="flex items-center justify-between px-2 h-8 opacity-70">
-                <span
-                  className="text-sm text-foreground cursor-pointer select-none"
-                  onClick={() => setIsTeamOpen(prev => !prev)}
-                >
-                  {teamPageLabel}
-                </span>
-                <div className="flex items-center gap-1">
-                  {showTeamManageButton ? (
-                    <button
-                      type="button"
-                      className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
-                      title="테넌트 관리"
-                      onClick={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        if (isSuspendedTeamMember) {
-                          setIsSuspendedDialogOpen(true)
-                          return
-                        }
-                        openTenantSettingsDialog()
-                      }}
-                    >
-                      <Settings className="size-4" />
-                    </button>
-                  ) : null}
-                  {isActiveTeamMember ? (
-                    <button
-                      type="button"
-                      className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
-                      title="카테고리 추가"
-                      onClick={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        openCreateCategoryDialog("team")
-                      }}
-                    >
-                      <Plus className="size-4" />
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-              {isTeamOpen && isActiveTeamMember ? (
-                <>
-                  {teamCatsLoading ? (
-                    <div className="px-2 py-1 text-xs text-muted-foreground">Loading…</div>
-                  ) : null}
-                  {teamCategories.map((c) => {
-                    const isActive = isPostsActive && activeCategoryId === String(c.id)
-                    const choice = decodeIcon(c.icon)
-                    const DefaultIcon = Share2
-                    const IconEl = (() => {
-                      if (!choice) return <DefaultIcon className="size-5" />
-                      if (choice.kind === "emoji") return <span className="text-[18px] leading-none">{choice.value}</span>
-                      const Preset = LUCIDE_PRESET_MAP[choice.value]
-                      const Dyn = Preset || catLucideAll?.[choice.value]
-                      if (!Dyn) return <DefaultIcon className="size-5" />
-                      return <Dyn className="size-5" />
-                    })()
+              <>
+                  {teamTenants.map((tenant) => {
+                    const tenantId = String(tenant.id || "").trim()
+                    if (!tenantId) return null
+                    const tenantLabel = getTeamTenantLabel(tenant)
+                    const tenantCategories = teamCategoriesByTenant[tenantId] || []
+                    const isActiveMember = isTenantActiveMember(tenant)
+                    const isSuspendedMember = isTenantSuspendedMember(tenant)
+                    const showManage = canManageTenant(tenant) || isSuspendedMember
+                    const loading = Boolean(teamCatsLoadingByTenant[tenantId])
+                    const isSectionOpen = openTeamTenantSections[tenantId] !== false
                     return (
-                      <div
-                        key={c.id}
-                        className={cn(
-                          "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                          isActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
-                        )}
-                        onClick={() => {
-                          setIsMobileMenuOpen(false)
-                          navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
-                        }}
-                      >
-                        <div className="size-5 flex items-center justify-center">{IconEl}</div>
-                        <span className="text-base text-foreground truncate">{c.name || "New category"}</span>
+                      <div key={tenantId} className="mt-1">
+                        <div
+                          className="flex items-center justify-between px-2 h-8 opacity-70 cursor-pointer"
+                          onClick={() =>
+                            setOpenTeamTenantSections((prev) => ({
+                              ...prev,
+                              [tenantId]: !(prev[tenantId] !== false),
+                            }))
+                          }
+                        >
+                          <div className="flex items-center gap-1">
+                            {/* <ChevronRight
+                              className={cn("size-4 transition-transform", isSectionOpen ? "rotate-90" : "")}
+                            /> */}
+                            <span className="text-sm text-foreground">{tenantLabel}</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            {showManage ? (
+                              <button
+                                type="button"
+                                className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                                title="테넌트 관리"
+                                onClick={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                  setActiveTenantId(tenantId)
+                                  setActiveTeamTenantId(tenantId)
+                                  if (isSuspendedMember) {
+                                    setIsSuspendedDialogOpen(true)
+                                    return
+                                  }
+                                  openTenantSettingsDialog()
+                                }}
+                              >
+                                <Settings className="size-4" />
+                              </button>
+                            ) : null}
+                            {isActiveMember ? (
+                              <button
+                                type="button"
+                                className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                                title="카테고리 추가"
+                                onClick={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                  setActiveTenantId(tenantId)
+                                  setActiveTeamTenantId(tenantId)
+                                  openCreateCategoryDialog("team", tenantId)
+                                }}
+                              >
+                                <Plus className="size-4" />
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                        {isActiveMember && isSectionOpen ? (
+                          <>
+                            {/* <div className="px-2 py-1 text-xs text-muted-foreground">공유 페이지</div> */}
+                            {loading ? (
+                              <div className="px-2 py-1 text-xs text-muted-foreground">Loading…</div>
+                            ) : null}
+                            {tenantCategories.map((c) => {
+                              const isActive = isPostsActive && activeCategoryId === String(c.id)
+                              const choice = decodeIcon(c.icon)
+                              const DefaultIcon = Share2
+                              const IconEl = (() => {
+                                if (!choice) return <DefaultIcon className="size-5" />
+                                if (choice.kind === "emoji") return <span className="text-[18px] leading-none">{choice.value}</span>
+                                const Preset = LUCIDE_PRESET_MAP[choice.value]
+                                const Dyn = Preset || catLucideAll?.[choice.value]
+                                if (!Dyn) return <DefaultIcon className="size-5" />
+                                return <Dyn className="size-5" />
+                              })()
+                              return (
+                                <div
+                                  key={c.id}
+                                  className={cn(
+                                    "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                                    isActive
+                                      ? "bg-neutral-200 dark:bg-neutral-800"
+                                      : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                                  )}
+                                  onClick={() => {
+                                    setActiveTenantId(tenantId)
+                                    setActiveTeamTenantId(tenantId)
+                                    setIsMobileMenuOpen(false)
+                                    navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
+                                  }}
+                                >
+                                  <div className="size-5 flex items-center justify-center">{IconEl}</div>
+                                  <span className="text-base text-foreground truncate">{c.name || "New category"}</span>
+                                </div>
+                              )
+                            })}
+                            <div
+                              className={cn(
+                                "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                                isSharedFilesActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                              )}
+                              onClick={() => {
+                                setActiveTenantId(tenantId)
+                                setActiveTeamTenantId(tenantId)
+                                setIsMobileMenuOpen(false)
+                                navigate("/files/shared")
+                              }}
+                            >
+                              <Save className="size-5" />
+                              <span className="text-base text-foreground">공유 파일</span>
+                            </div>
+                          </>
+                        ) : null}
                       </div>
                     )
                   })}
-                  <div
-                    className={cn(
-                      "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                      isSharedFilesActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
-                    )}
-                    onClick={() => {
-                      setIsMobileMenuOpen(false)
-                      navigate("/files/shared")
-                    }}
-                  >
-                    <Save className="size-5" />
-                    <span className="text-base text-foreground">공유 파일</span>
-                  </div>
-                </>
-              ) : null}
+              </>
             </div>
           ) : null}
 
           {/* 관리 섹션 */}
           <div className="flex flex-col gap-1 mt-4">
-            <div className="flex items-center justify-between px-2 h-8 opacity-70">
+            <div className="flex items-center px-2 h-8 opacity-70">
               <span
-                className="text-sm text-foreground cursor-pointer select-none"
+                className="text-sm text-foreground w-full cursor-pointer select-none"
                 onClick={() => setIsManagementOpen((prev) => !prev)}
               >
                 관리
               </span>
-              <button
+              {/* <button
                 type="button"
                 className="size-6 flex items-center justify-center rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-800"
                 onClick={() => setIsManagementOpen((prev) => !prev)}
               >
                 <ChevronRight className={cn("size-4 transition-transform", isManagementOpen ? "rotate-90" : "")} />
-              </button>
+              </button> */}
             </div>
             {isManagementOpen ? (
               <>
@@ -2429,7 +2668,7 @@ const profileBadges = useMemo(() => {
       <div className="flex-1 min-h-0 overflow-y-auto">
 
       {/* Menu Items - 메뉴 아이템 */}
-      <div className="flex flex-col p-2 gap-1">
+      <div className="flex flex-col p-2 gap-0">
         <div
           className={cn(
             "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
@@ -2494,7 +2733,7 @@ const profileBadges = useMemo(() => {
       {isOpen ? (
         <>
           {/* Personal Pages - 개인 페이지 */}
-          <div className="flex flex-col p-2 gap-1">
+          <div className="flex flex-col p-2 gap-0">
             <div className="flex items-center gap-2 px-2 h-8 opacity-70 cursor-pointer select-none group">
               <span className="flex-1 text-left text-xs text-sidebar-foreground" onClick={() => setIsPersonalOpen((prev) => !prev)}>개인 페이지</span>
               <div
@@ -2881,412 +3120,486 @@ const profileBadges = useMemo(() => {
           {/* Team Pages - 팀 페이지 (Team + Enterprise; exclude Personal) */}
           {hasTeamTenant ? (
             <div className="flex flex-col p-2 gap-1">
-              <div className="flex items-center gap-2 px-2 h-8 opacity-70 cursor-pointer select-none group">
-                <span className="flex-1 text-left text-xs text-sidebar-foreground" onClick={() => setIsTeamOpen((prev) => !prev)}>
-                  {teamPageLabel}
-                </span>
-                {showTeamManageButton ? (
-                  <div
-                    className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
-                    role="button"
-                    title="테넌트 관리"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      if (isSuspendedTeamMember) {
-                        setIsSuspendedDialogOpen(true)
-                        return
-                      }
-                      openTenantSettingsDialog()
-                    }}
-                  >
-                    <Settings className="size-full" />
-                  </div>
-                ) : null}
-                {isActiveTeamMember ? (
-                  <div
-                    className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
-                    role="button"
-                    title="카테고리 추가"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      openCreateCategoryDialog("team")
-                    }}
-                  >
-                    <Plus className="size-full" />
-                  </div>
-                ) : null}
-              </div>
-              {isTeamOpen && isActiveTeamMember ? (
-                <>
-                  <div
-                    className="px-2 py-1 text-xs text-sidebar-foreground/60 h-6 hidden"
-                    style={{ visibility: teamCatsLoading ? "visible" : "hidden" }}
-                  >
-                    Loading…
-                  </div>
-
-                  {teamCategories.map((c) => {
-                    const isActive = isPostsActive && activeCategoryId === String(c.id)
-                    const isDropTarget =
-                      !!categoryDropIndicator &&
-                      categoryDropIndicator.type === "team" &&
-                      categoryDropIndicator.id === String(c.id)
-                    const dropPosition = isDropTarget ? categoryDropIndicator!.position : null
+              <>
+                  {teamTenants.map((tenant) => {
+                    const tenantId = String(tenant.id || "").trim()
+                    if (!tenantId) return null
+                    const tenantLabel = getTeamTenantLabel(tenant)
+                    const tenantCategories = teamCategoriesByTenant[tenantId] || []
+                    const isActiveMember = isTenantActiveMember(tenant)
+                    const isSuspendedMember = isTenantSuspendedMember(tenant)
+                    const showManage = canManageTenant(tenant) || isSuspendedMember
+                    const loading = Boolean(teamCatsLoadingByTenant[tenantId])
+                    const isSectionOpen = openTeamTenantSections[tenantId] !== false
                     return (
-                      <div
-                        key={c.id}
-                        className={cn(
-                          "group relative flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer cursor-grab active:cursor-grabbing",
-                          isActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
-                        )}
-                        draggable
-                        onDragStart={(e) => startCategoryDrag("team", c.id, e)}
-                        onDragEnd={endCategoryDrag}
-                        onClick={() => {
-                          if (Date.now() < dragBlockClickUntilRef.current) return
-                          if (editingCat && editingCat.type === "team" && editingCat.id === c.id) return
-                          navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
-                        }}
-                        onDragOver={(e) => {
-                          if (!draggingCat || draggingCat.type !== "team") return
-                          e.preventDefault()
-                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                          const before = e.clientY < rect.top + rect.height / 2
-                          setCategoryDropIndicator({
-                            type: "team",
-                            id: String(c.id),
-                            position: before ? "before" : "after",
-                          })
-                        }}
-                        onDragLeave={(e) => {
-                          const related = (e.relatedTarget as Node | null) || null
-                          if (related && (e.currentTarget as HTMLElement).contains(related)) return
-                          setCategoryDropIndicator((prev) => {
-                            if (!prev) return null
-                            if (prev.type !== "team") return prev
-                            if (prev.id !== String(c.id)) return prev
-                            return null
-                          })
-                        }}
-                        onDrop={(e) => {
-                          if (!draggingCat || draggingCat.type !== "team") return
-                          e.preventDefault()
-                          const fromId = draggingCat.id
-                          const toId = c.id
-                          if (!fromId || fromId === toId) return
-                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                          const before = e.clientY < rect.top + rect.height / 2
-                          setTeamCategories((prev) => {
-                            const next = prev.slice()
-                            const fromIdx = next.findIndex((x) => x.id === fromId)
-                            if (fromIdx < 0) return prev
-                            const [moved] = next.splice(fromIdx, 1)
-                            const toIdx = next.findIndex((x) => x.id === toId)
-                            if (toIdx < 0) return prev
-                            const insertIdx = toIdx + (before ? 0 : 1)
-                            next.splice(insertIdx, 0, moved)
-                            void reorder({ type: "team", orderedIds: next.map((x) => x.id) })
-                            return next
-                          })
-                          setDraggingCat(null)
-                          setCategoryDropIndicator(null)
-                        }}
-                      >
-                        {isDropTarget ? (
-                          <div
-                            className={cn(
-                              "pointer-events-none absolute left-6 right-2 h-0.5 rounded bg-primary/80",
-                              dropPosition === "before" ? "top-0" : "bottom-0"
-                            )}
-                          />
-                        ) : null}
-                        {(() => {
-                          const isDark = typeof document !== "undefined" && document.documentElement.classList.contains("dark")
-                          const open = !!catIconOpen && catIconOpen.type === "team" && catIconOpen.id === String(c.id)
-                          const choice = decodeIcon(c.icon)
-                          const DefaultIcon = Share2
-                          const IconEl = (() => {
-                            if (!choice) return <DefaultIcon className="size-4" />
-                            if (choice.kind === "emoji") return <span className="text-[16px] leading-none">{choice.value}</span>
-                            const Preset = LUCIDE_PRESET_MAP[choice.value]
-                            const Dyn = Preset || catLucideAll?.[choice.value]
-                            if (!Dyn) return <DefaultIcon className="size-4" />
-                            return <Dyn className="size-4" />
-                          })()
-
-                          return (
-                            <Popover open={open} onOpenChange={(o) => setCatIconOpen(o ? { type: "team", id: String(c.id) } : null)}>
-                              <PopoverTrigger asChild>
-                                <button
-                                  type="button"
-                                  className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-300 dark:hover:bg-neutral-700 rounded-sm"
-                                  title="아이콘 변경"
-                                  draggable={false}
-                                  onDragStart={(e) => {
-                                    e.preventDefault()
-                                    e.stopPropagation()
-                                  }}
-                                  onPointerDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => e.stopPropagation()}
-                                >
-                                  {IconEl}
-                                </button>
-                              </PopoverTrigger>
-                              <PopoverContent
-                                align="start"
-                                sideOffset={6}
-                                className="w-[370px] p-3"
-                                onPointerDown={(e) => e.stopPropagation()}
-                              >
-                                <Tabs value={catIconTab} onValueChange={(v) => setCatIconTab(v === "icon" ? "icon" : "emoji")}>
-                                  <TabsList>
-                                    <TabsTrigger value="emoji">이모지</TabsTrigger>
-                                    <TabsTrigger value="icon">아이콘</TabsTrigger>
-                                  </TabsList>
-                                  <TabsContent value="emoji">
-                                    <div className="max-h-[360px] overflow-auto pr-1">
-                                      <EmojiPicker
-                                        theme={isDark ? Theme.DARK : Theme.LIGHT}
-                                        previewConfig={{ showPreview: false }}
-                                        onEmojiClick={(emoji: EmojiClickData) => {
-                                          const native = emoji?.emoji ? String(emoji.emoji) : ""
-                                          if (!native) return
-                                          void saveCategoryIcon({ type: "team", id: String(c.id), choice: { kind: "emoji", value: native } })
-                                          setCatIconOpen(null)
-                                        }}
-                                      />
-                                    </div>
-                                    <div className="mt-2 flex justify-end">
-                                      <button
-                                        type="button"
-                                        className="text-xs px-2 py-1 rounded hover:bg-accent"
-                                        onClick={() => {
-                                          void saveCategoryIcon({ type: "team", id: String(c.id), choice: null })
-                                          setCatIconOpen(null)
-                                        }}
-                                      >
-                                        Reset
-                                      </button>
-                                    </div>
-                                  </TabsContent>
-                                  <TabsContent value="icon">
-                                    <div className="mb-2">
-                                      <Input
-                                        value={catLucideQuery}
-                                        onChange={(e) => setCatLucideQuery(e.target.value)}
-                                        placeholder="Search icons (e.g. calendar, bot, file...)"
-                                        className="h-8 text-sm"
-                                      />
-                                    </div>
-                                    {catLucideQuery.trim() ? (
-                                      <>
-                                        {catLucideLoading && !catLucideAll ? (
-                                          <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
-                                        ) : null}
-                                        <div className="max-h-[300px] overflow-auto pr-1">
-                                          <div className="grid grid-cols-7 gap-1">
-                                            {(() => {
-                                              const q = catLucideQuery.trim().toLowerCase()
-                                              const map = catLucideAll || {}
-                                              const keys = Object.keys(map)
-                                                .filter((k) => k.toLowerCase().includes(q))
-                                                .slice(0, 98)
-                                              if (!catLucideLoading && catLucideAll && keys.length === 0) {
-                                                return (
-                                                  <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
-                                                    No matches. Try a different keyword.
-                                                  </div>
-                                                )
-                                              }
-                                              return keys.map((k) => {
-                                                const Cmp = map[k]
-                                                return (
-                                                  <button
-                                                    key={k}
-                                                    type="button"
-                                                    className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
-                                                    onClick={() => {
-                                                      void saveCategoryIcon({
-                                                        type: "team",
-                                                        id: String(c.id),
-                                                        choice: { kind: "lucide", value: k },
-                                                      })
-                                                      setCatIconOpen(null)
-                                                    }}
-                                                    title={k}
-                                                    aria-label={k}
-                                                  >
-                                                    <Cmp className="size-4" />
-                                                  </button>
-                                                )
-                                              })
-                                            })()}
-                                          </div>
-                                        </div>
-                                        <div className="mt-2 text-[11px] text-muted-foreground">
-                                          Showing up to 98 matches. Refine your search to narrow results.
-                                        </div>
-                                      </>
-                                    ) : (
-                                      <div className="grid grid-cols-7 gap-1">
-                                        {LUCIDE_PRESETS.map((it) => (
-                                          <button
-                                            key={it.key}
-                                            type="button"
-                                            className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
-                                            onClick={() => {
-                                              void saveCategoryIcon({
-                                                type: "team",
-                                                id: String(c.id),
-                                                choice: { kind: "lucide", value: it.key },
-                                              })
-                                              setCatIconOpen(null)
-                                            }}
-                                            title={it.label}
-                                            aria-label={it.label}
-                                          >
-                                            <it.Icon className="size-4" />
-                                          </button>
-                                        ))}
-                                      </div>
-                                    )}
-                                    <div className="mt-2 flex justify-end">
-                                      <button
-                                        type="button"
-                                        className="text-xs px-2 py-1 rounded hover:bg-accent"
-                                        onClick={() => {
-                                          void saveCategoryIcon({ type: "team", id: String(c.id), choice: null })
-                                          setCatIconOpen(null)
-                                        }}
-                                      >
-                                        Reset
-                                      </button>
-                                    </div>
-                                  </TabsContent>
-                                </Tabs>
-                              </PopoverContent>
-                            </Popover>
-                          )
-                        })()}
-
-                        {editingCat && editingCat.type === "team" && editingCat.id === c.id ? (
-                          <input
-                            autoFocus
-                            ref={editingInputRef}
-                            className="flex-1 min-w-0 text-sm bg-background outline-none rounded-sm px-2 py-1 border border-border"
-                            value={editingCat.name}
-                            onChange={(e) => setEditingCat({ ...editingCat, name: e.target.value })}
-                            onClick={(e) => e.stopPropagation()}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
+                      <div key={tenantId} className="mt-1">
+                        <div
+                          className="flex items-center gap-2 px-2 h-8 opacity-70 cursor-pointer select-none group"
+                          onClick={() =>
+                            setOpenTeamTenantSections((prev) => ({
+                              ...prev,
+                              [tenantId]: !(prev[tenantId] !== false),
+                            }))
+                          }
+                        >
+                          {/* <ChevronRight
+                            className={cn("size-4 transition-transform", isSectionOpen ? "rotate-90" : "")}
+                          /> */}
+                          <span className="flex-1 text-left text-xs text-sidebar-foreground">{tenantLabel}</span>
+                          {showManage ? (
+                            <div
+                              className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
+                              role="button"
+                              title="테넌트 관리"
+                              onClick={(e) => {
                                 e.preventDefault()
-                                void renameCategory({ type: "team", id: c.id, name: editingCat.name })
-                                setEditingCat(null)
-                              } else if (e.key === "Escape") {
-                                e.preventDefault()
-                                setEditingCat(null)
-                              }
-                            }}
-                            onBlur={() => {
-                              if (Date.now() < renameFocusUntilRef.current) return
-                              void renameCategory({ type: "team", id: c.id, name: editingCat.name })
-                              setEditingCat(null)
-                            }}
-                          />
-                        ) : (
-                          <span
-                            className="text-sm text-sidebar-foreground truncate flex-1 min-w-0"
-                            draggable
-                            onDragStart={(e) => startCategoryDrag("team", c.id, e)}
-                            onDragEnd={endCategoryDrag}
-                          >
-                            {c.name || "New category"}
-                          </span>
-                        )}
-
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <button
-                              type="button"
-                              className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300 dark:hover:bg-neutral-700 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
-                              onClick={(e) => e.stopPropagation()}
-                              onPointerDown={(e) => e.stopPropagation()}
-                              title="메뉴"
+                                e.stopPropagation()
+                                setActiveTenantId(tenantId)
+                                setActiveTeamTenantId(tenantId)
+                                if (isSuspendedMember) {
+                                  setIsSuspendedDialogOpen(true)
+                                  return
+                                }
+                                openTenantSettingsDialog()
+                              }}
                             >
-                              <Ellipsis className="size-3" />
-                            </button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent
-                            align="end"
-                            className="w-40"
-                            onPointerDown={(e) => e.stopPropagation()}
-                            onCloseAutoFocus={(e) => {
-                              // Prevent Radix from restoring focus to the trigger button (it steals focus from our rename input).
-                              e.preventDefault()
-                            }}
-                          >
-                            <DropdownMenuItem asChild>
-                              <button
-                                type="button"
-                                className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent focus:bg-accent"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setEditingCat({ type: "team", id: c.id, name: c.name || "" })
-                                  renameFocusUntilRef.current = Date.now() + 250
-                                  window.setTimeout(() => {
-                                    editingInputRef.current?.focus()
-                                  }, 0)
-                                }}
-                              >
-                                <Pencil className="size-4 mr-2" />
-                                이름 바꾸기
-                              </button>
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem asChild>
-                              <button
-                                type="button"
-                                className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm text-destructive outline-none hover:bg-accent focus:bg-accent"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setDeleteCategoryTarget({ type: "team", id: String(c.id), name: String(c.name || "") })
-                                }}
-                              >
-                                <Trash2 className="size-4 mr-2" />
-                                삭제
-                              </button>
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                              <Settings className="size-full" />
+                            </div>
+                          ) : null}
+                          {isActiveMember ? (
+                            <div
+                              className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
+                              role="button"
+                              title="카테고리 추가"
+                              onClick={(e) => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                setActiveTenantId(tenantId)
+                                setActiveTeamTenantId(tenantId)
+                                openCreateCategoryDialog("team", tenantId)
+                              }}
+                            >
+                              <Plus className="size-full" />
+                            </div>
+                          ) : null}
+                        </div>
+                        {isActiveMember && isSectionOpen ? (
+                          <>
+                            {/* <div className="px-2 py-1 text-xs text-sidebar-foreground/60">공유 페이지</div> */}
+                            <div
+                              className="px-2 py-1 text-xs text-sidebar-foreground/60 h-6 hidden"
+                              style={{ visibility: loading ? "visible" : "hidden" }}
+                            >
+                              Loading…
+                            </div>
+
+                            {tenantCategories.map((c) => {
+                              const isActive = isPostsActive && activeCategoryId === String(c.id)
+                              const isDropTarget =
+                                !!categoryDropIndicator &&
+                                categoryDropIndicator.type === "team" &&
+                                categoryDropIndicator.id === String(c.id) &&
+                                categoryDropIndicator.tenantId === tenantId
+                              const dropPosition = isDropTarget ? categoryDropIndicator!.position : null
+                              return (
+                                <div
+                                  key={c.id}
+                                  className={cn(
+                                    "group relative flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer cursor-grab active:cursor-grabbing",
+                                    isActive
+                                      ? "bg-neutral-200 dark:bg-neutral-800"
+                                      : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                                  )}
+                                  draggable
+                                  onDragStart={(e) => startCategoryDrag("team", c.id, e, tenantId)}
+                                  onDragEnd={endCategoryDrag}
+                                  onClick={() => {
+                                    if (Date.now() < dragBlockClickUntilRef.current) return
+                                    if (
+                                      editingCat &&
+                                      editingCat.type === "team" &&
+                                      editingCat.id === c.id &&
+                                      editingCat.tenantId === tenantId
+                                    )
+                                      return
+                                    setActiveTenantId(tenantId)
+                                    setActiveTeamTenantId(tenantId)
+                                    navigate(`/posts?category=${encodeURIComponent(String(c.id))}`)
+                                  }}
+                                  onDragOver={(e) => {
+                                    if (!draggingCat || draggingCat.type !== "team" || draggingCat.tenantId !== tenantId) return
+                                    e.preventDefault()
+                                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                                    const before = e.clientY < rect.top + rect.height / 2
+                                    setCategoryDropIndicator({
+                                      type: "team",
+                                      id: String(c.id),
+                                      tenantId,
+                                      position: before ? "before" : "after",
+                                    })
+                                  }}
+                                  onDragLeave={(e) => {
+                                    const related = (e.relatedTarget as Node | null) || null
+                                    if (related && (e.currentTarget as HTMLElement).contains(related)) return
+                                    setCategoryDropIndicator((prev) => {
+                                      if (!prev) return null
+                                      if (prev.type !== "team") return prev
+                                      if (prev.id !== String(c.id)) return prev
+                                      if (prev.tenantId !== tenantId) return prev
+                                      return null
+                                    })
+                                  }}
+                                  onDrop={(e) => {
+                                    if (!draggingCat || draggingCat.type !== "team" || draggingCat.tenantId !== tenantId) return
+                                    e.preventDefault()
+                                    const fromId = draggingCat.id
+                                    const toId = c.id
+                                    if (!fromId || fromId === toId) return
+                                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                                    const before = e.clientY < rect.top + rect.height / 2
+                                    setTeamCategoriesByTenant((prev) => {
+                                      const current = prev[tenantId] || []
+                                      const next = current.slice()
+                                      const fromIdx = next.findIndex((x) => x.id === fromId)
+                                      if (fromIdx < 0) return prev
+                                      const [moved] = next.splice(fromIdx, 1)
+                                      const toIdx = next.findIndex((x) => x.id === toId)
+                                      if (toIdx < 0) return prev
+                                      const insertIdx = toIdx + (before ? 0 : 1)
+                                      next.splice(insertIdx, 0, moved)
+                                      void reorder({ type: "team", orderedIds: next.map((x) => x.id), tenantId })
+                                      return { ...prev, [tenantId]: next }
+                                    })
+                                    setDraggingCat(null)
+                                    setCategoryDropIndicator(null)
+                                  }}
+                                >
+                                  {isDropTarget ? (
+                                    <div
+                                      className={cn(
+                                        "pointer-events-none absolute left-6 right-2 h-0.5 rounded bg-primary/80",
+                                        dropPosition === "before" ? "top-0" : "bottom-0"
+                                      )}
+                                    />
+                                  ) : null}
+                                  {(() => {
+                                    const isDark =
+                                      typeof document !== "undefined" && document.documentElement.classList.contains("dark")
+                                    const open =
+                                      !!catIconOpen &&
+                                      catIconOpen.type === "team" &&
+                                      catIconOpen.id === String(c.id) &&
+                                      catIconOpen.tenantId === tenantId
+                                    const choice = decodeIcon(c.icon)
+                                    const DefaultIcon = Share2
+                                    const IconEl = (() => {
+                                      if (!choice) return <DefaultIcon className="size-4" />
+                                      if (choice.kind === "emoji") return <span className="text-[16px] leading-none">{choice.value}</span>
+                                      const Preset = LUCIDE_PRESET_MAP[choice.value]
+                                      const Dyn = Preset || catLucideAll?.[choice.value]
+                                      if (!Dyn) return <DefaultIcon className="size-4" />
+                                      return <Dyn className="size-4" />
+                                    })()
+
+                                    return (
+                                      <Popover
+                                        open={open}
+                                        onOpenChange={(o) =>
+                                          setCatIconOpen(o ? { type: "team", id: String(c.id), tenantId } : null)
+                                        }
+                                      >
+                                        <PopoverTrigger asChild>
+                                          <button
+                                            type="button"
+                                            className="size-6 relative shrink-0 flex items-center justify-center text-sidebar-foreground hover:bg-neutral-300 dark:hover:bg-neutral-700 rounded-sm"
+                                            title="아이콘 변경"
+                                            draggable={false}
+                                            onDragStart={(e) => {
+                                              e.preventDefault()
+                                              e.stopPropagation()
+                                            }}
+                                            onPointerDown={(e) => e.stopPropagation()}
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
+                                            {IconEl}
+                                          </button>
+                                        </PopoverTrigger>
+                                        <PopoverContent
+                                          align="start"
+                                          sideOffset={6}
+                                          className="w-[370px] p-3"
+                                          onPointerDown={(e) => e.stopPropagation()}
+                                        >
+                                          <Tabs
+                                            value={catIconTab}
+                                            onValueChange={(v) => setCatIconTab(v === "icon" ? "icon" : "emoji")}
+                                          >
+                                            <TabsList>
+                                              <TabsTrigger value="emoji">이모지</TabsTrigger>
+                                              <TabsTrigger value="icon">아이콘</TabsTrigger>
+                                            </TabsList>
+                                            <TabsContent value="emoji">
+                                              <div className="max-h-[360px] overflow-auto pr-1">
+                                                <EmojiPicker
+                                                  theme={isDark ? Theme.DARK : Theme.LIGHT}
+                                                  previewConfig={{ showPreview: false }}
+                                                  onEmojiClick={(emoji: EmojiClickData) => {
+                                                    const native = emoji?.emoji ? String(emoji.emoji) : ""
+                                                    if (!native) return
+                                                    void saveCategoryIcon({
+                                                      type: "team",
+                                                      id: String(c.id),
+                                                      choice: { kind: "emoji", value: native },
+                                                      tenantId,
+                                                    })
+                                                    setCatIconOpen(null)
+                                                  }}
+                                                />
+                                              </div>
+                                              <div className="mt-2 flex justify-end">
+                                                <button
+                                                  type="button"
+                                                  className="text-xs px-2 py-1 rounded hover:bg-accent"
+                                                  onClick={() => {
+                                                    void saveCategoryIcon({ type: "team", id: String(c.id), choice: null, tenantId })
+                                                    setCatIconOpen(null)
+                                                  }}
+                                                >
+                                                  Reset
+                                                </button>
+                                              </div>
+                                            </TabsContent>
+                                            <TabsContent value="icon">
+                                              <div className="mb-2">
+                                                <Input
+                                                  value={catLucideQuery}
+                                                  onChange={(e) => setCatLucideQuery(e.target.value)}
+                                                  placeholder="Search icons (e.g. calendar, bot, file...)"
+                                                  className="h-8 text-sm"
+                                                />
+                                              </div>
+                                              {catLucideQuery.trim() ? (
+                                                <>
+                                                  {catLucideLoading && !catLucideAll ? (
+                                                    <div className="text-xs text-muted-foreground px-1 py-2">Loading icons…</div>
+                                                  ) : null}
+                                                  <div className="max-h-[300px] overflow-auto pr-1">
+                                                    <div className="grid grid-cols-7 gap-1">
+                                                      {(() => {
+                                                        const q = catLucideQuery.trim().toLowerCase()
+                                                        const map = catLucideAll || {}
+                                                        const keys = Object.keys(map)
+                                                          .filter((k) => k.toLowerCase().includes(q))
+                                                          .slice(0, 98)
+                                                        if (!catLucideLoading && catLucideAll && keys.length === 0) {
+                                                          return (
+                                                            <div className="col-span-7 text-xs text-muted-foreground px-1 py-2">
+                                                              No matches. Try a different keyword.
+                                                            </div>
+                                                          )
+                                                        }
+                                                        return keys.map((k) => {
+                                                          const Cmp = map[k]
+                                                          return (
+                                                            <button
+                                                              key={k}
+                                                              type="button"
+                                                              className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                                              onClick={() => {
+                                                                void saveCategoryIcon({
+                                                                  type: "team",
+                                                                  id: String(c.id),
+                                                                  choice: { kind: "lucide", value: k },
+                                                                  tenantId,
+                                                                })
+                                                                setCatIconOpen(null)
+                                                              }}
+                                                              title={k}
+                                                              aria-label={k}
+                                                            >
+                                                              <Cmp className="size-4" />
+                                                            </button>
+                                                          )
+                                                        })
+                                                      })()}
+                                                    </div>
+                                                  </div>
+                                                  <div className="mt-2 text-[11px] text-muted-foreground">
+                                                    Showing up to 98 matches. Refine your search to narrow results.
+                                                  </div>
+                                                </>
+                                              ) : (
+                                                <div className="grid grid-cols-7 gap-1">
+                                                  {LUCIDE_PRESETS.map((it) => (
+                                                    <button
+                                                      key={it.key}
+                                                      type="button"
+                                                      className="h-9 w-9 rounded-md border border-border hover:bg-accent flex items-center justify-center"
+                                                      onClick={() => {
+                                                        void saveCategoryIcon({
+                                                          type: "team",
+                                                          id: String(c.id),
+                                                          choice: { kind: "lucide", value: it.key },
+                                                          tenantId,
+                                                        })
+                                                        setCatIconOpen(null)
+                                                      }}
+                                                      title={it.label}
+                                                      aria-label={it.label}
+                                                    >
+                                                      <it.Icon className="size-4" />
+                                                    </button>
+                                                  ))}
+                                                </div>
+                                              )}
+                                              <div className="mt-2 flex justify-end">
+                                                <button
+                                                  type="button"
+                                                  className="text-xs px-2 py-1 rounded hover:bg-accent"
+                                                  onClick={() => {
+                                                    void saveCategoryIcon({ type: "team", id: String(c.id), choice: null, tenantId })
+                                                    setCatIconOpen(null)
+                                                  }}
+                                                >
+                                                  Reset
+                                                </button>
+                                              </div>
+                                            </TabsContent>
+                                          </Tabs>
+                                        </PopoverContent>
+                                      </Popover>
+                                    )
+                                  })()}
+
+                                  {editingCat &&
+                                  editingCat.type === "team" &&
+                                  editingCat.id === c.id &&
+                                  editingCat.tenantId === tenantId ? (
+                                    <input
+                                      autoFocus
+                                      ref={editingInputRef}
+                                      className="flex-1 min-w-0 text-sm bg-background outline-none rounded-sm px-2 py-1 border border-border"
+                                      value={editingCat.name}
+                                      onChange={(e) => setEditingCat({ ...editingCat, name: e.target.value })}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                          e.preventDefault()
+                                          void renameCategory({ type: "team", id: c.id, name: editingCat.name, tenantId })
+                                          setEditingCat(null)
+                                        } else if (e.key === "Escape") {
+                                          e.preventDefault()
+                                          setEditingCat(null)
+                                        }
+                                      }}
+                                      onBlur={() => {
+                                        if (Date.now() < renameFocusUntilRef.current) return
+                                        void renameCategory({ type: "team", id: c.id, name: editingCat.name, tenantId })
+                                        setEditingCat(null)
+                                      }}
+                                    />
+                                  ) : (
+                                    <span
+                                      className="text-sm text-sidebar-foreground truncate flex-1 min-w-0"
+                                      draggable
+                                      onDragStart={(e) => startCategoryDrag("team", c.id, e, tenantId)}
+                                      onDragEnd={endCategoryDrag}
+                                    >
+                                      {c.name || "New category"}
+                                    </span>
+                                  )}
+
+                                  <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                      <button
+                                        type="button"
+                                        className="size-4 rounded-full flex items-center justify-center hover:bg-neutral-300 dark:hover:bg-neutral-700 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
+                                        onClick={(e) => e.stopPropagation()}
+                                        onPointerDown={(e) => e.stopPropagation()}
+                                        title="메뉴"
+                                      >
+                                        <Ellipsis className="size-3" />
+                                      </button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent
+                                      align="end"
+                                      className="w-40"
+                                      onPointerDown={(e) => e.stopPropagation()}
+                                      onCloseAutoFocus={(e) => {
+                                        // Prevent Radix from restoring focus to the trigger button (it steals focus from our rename input).
+                                        e.preventDefault()
+                                      }}
+                                    >
+                                      <DropdownMenuItem asChild>
+                                        <button
+                                          type="button"
+                                          className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent focus:bg-accent"
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            setEditingCat({ type: "team", id: c.id, name: c.name || "", tenantId })
+                                            renameFocusUntilRef.current = Date.now() + 250
+                                            window.setTimeout(() => {
+                                              editingInputRef.current?.focus()
+                                            }, 0)
+                                          }}
+                                        >
+                                          <Pencil className="size-4 mr-2" />
+                                          이름 바꾸기
+                                        </button>
+                                      </DropdownMenuItem>
+                                      <DropdownMenuSeparator />
+                                      <DropdownMenuItem asChild>
+                                        <button
+                                          type="button"
+                                          className="flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm text-destructive outline-none hover:bg-accent focus:bg-accent"
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            setDeleteCategoryTarget({
+                                              type: "team",
+                                              id: String(c.id),
+                                              name: String(c.name || ""),
+                                              tenantId,
+                                            })
+                                          }}
+                                        >
+                                          <Trash2 className="size-4 mr-2" />
+                                          삭제
+                                        </button>
+                                      </DropdownMenuItem>
+                                    </DropdownMenuContent>
+                                  </DropdownMenu>
+                                </div>
+                              )
+                            })}
+
+                            <div
+                              className={cn(
+                                "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
+                                isSharedFilesActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
+                              )}
+                              onClick={() => {
+                                setActiveTenantId(tenantId)
+                                setActiveTeamTenantId(tenantId)
+                                navigate("/files/shared")
+                              }}
+                            >
+                              <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
+                                <Save className="size-full" />
+                              </div>
+                              <span className="text-sm text-sidebar-foreground">공유 파일</span>
+                            </div>
+                          </>
+                        ) : null}
                       </div>
                     )
                   })}
-
-                  <div
-                    className={cn(
-                      "flex items-center gap-2 p-2 h-8 rounded-md cursor-pointer",
-                      isSharedFilesActive ? "bg-neutral-200 dark:bg-neutral-800" : "hover:bg-neutral-200 dark:hover:bg-neutral-800"
-                    )}
-                    onClick={() => {
-                      setIsMobileMenuOpen(false)
-                      navigate("/files/shared")
-                    }}
-                  >
-                    <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-                      <Save className="size-full" />
-                    </div>
-                    <span className="text-sm text-sidebar-foreground">공유 파일</span>
-                  </div>
-                </>
-              ) : null}
+              </>
             </div>
           ) : null}
         </>
       ) : (
         // Collapsed Menu Icons for Pages
-        <div className="flex flex-col p-2 gap-1">
+        <div className="flex flex-col p-2 gap-0">
           <HoverCard
             openDelay={0}
             closeDelay={120}
@@ -3384,7 +3697,9 @@ const profileBadges = useMemo(() => {
               open={collapsedTeamHoverOpen}
               onOpenChange={(open) => {
                 setCollapsedTeamHoverOpen(open)
-                if (open && teamCategories.length === 0 && isActiveTeamMember) void loadTeamCategories()
+                if (open && teamCategories.length === 0 && isActiveTeamMember && activeTeamTenantId) {
+                  void loadTeamCategories(String(activeTeamTenantId))
+                }
               }}
             >
               <HoverCardTrigger asChild>
@@ -3398,7 +3713,8 @@ const profileBadges = useMemo(() => {
                   )}
                   title={teamPageLabel}
                   onClick={() => {
-                    void goToTopCategory("team")
+                    if (!activeTeamTenantId) return
+                    void goToTopCategory("team", activeTeamTenantId)
                   }}
                 >
                   <Share2 className="size-4 text-sidebar-foreground" />
@@ -3436,7 +3752,8 @@ const profileBadges = useMemo(() => {
                           e.stopPropagation()
                           // Shared categories are allowed for team + group (exclude personal).
                           if (!hasTeamTenant) return
-                          openCreateCategoryDialog("team")
+                          if (!activeTeamTenantId) return
+                          openCreateCategoryDialog("team", activeTeamTenantId)
                         }}
                       >
                         <Plus className="size-4" />
@@ -3502,7 +3819,7 @@ const profileBadges = useMemo(() => {
       </div>{/* end scrollable area */}
 
       {/* Management - 관리 */}
-      <div className="flex flex-col p-2 gap-1 shrink-0">
+      <div className="flex flex-col p-2 gap-0 shrink-0">
         {isOpen && (
           <div className="flex items-center gap-2 px-2 h-8 opacity-70 justify-between">
             <div
