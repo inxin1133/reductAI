@@ -113,7 +113,10 @@ CREATE TABLE billing_subscriptions (
     ended_at TIMESTAMP WITH TIME ZONE,
     auto_renew BOOLEAN NOT NULL DEFAULT TRUE,
     price_usd DECIMAL(10, 2),
+    price_local DECIMAL(12, 2),
+    fx_rate DECIMAL(12, 6),
     currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+    local_currency VARCHAR(3) NOT NULL DEFAULT 'USD',
     metadata JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -136,11 +139,11 @@ COMMENT ON COLUMN billing_subscriptions.cancel_at_period_end IS '취소 시 과�
 COMMENT ON COLUMN billing_subscriptions.cancelled_at IS '취소 시간(TIMESTAMP)';
 COMMENT ON COLUMN billing_subscriptions.ended_at IS '종료 시간(TIMESTAMP)';
 COMMENT ON COLUMN billing_subscriptions.auto_renew IS '자동 갱신 여부(TRUE, FALSE)';
-COMMENT ON COLUMN billing_subscriptions.price_usd IS '가격(USD 기준)';
+COMMENT ON COLUMN billing_subscriptions.price_usd IS '가격(USD 요금표 기준)';
 COMMENT ON COLUMN billing_subscriptions.price_local IS '가격(결제 통화 기준)';
 COMMENT ON COLUMN billing_subscriptions.fx_rate IS 'USD→결제 통화 환율';
-COMMENT ON COLUMN billing_subscriptions.currency IS '결제 통화(USD, KRW, JPY, EUR, GBP, etc)';
-
+COMMENT ON COLUMN billing_subscriptions.currency IS '요금제 기준 통화(항상 USD)';
+COMMENT ON COLUMN billing_subscriptions.local_currency IS '결제 통화(USD, KRW, JPY, EUR, GBP 등)';
 COMMENT ON COLUMN billing_subscriptions.metadata IS '추가 메타데이터(JSON)';
 COMMENT ON COLUMN billing_subscriptions.created_at IS '생성 시간(TIMESTAMP)';
 COMMENT ON COLUMN billing_subscriptions.updated_at IS '수정 시간(TIMESTAMP)';
@@ -204,6 +207,7 @@ CREATE TABLE billing_subscription_seat_addons (
     unit_price_local DECIMAL(12,2),
     fx_rate DECIMAL(12, 6),
     currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+    local_currency VARCHAR(3) NOT NULL DEFAULT 'USD',
     metadata JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -221,10 +225,11 @@ COMMENT ON COLUMN billing_subscription_seat_addons.status IS '상태(active, sch
 COMMENT ON COLUMN billing_subscription_seat_addons.effective_at IS '적용 시작 시점';
 COMMENT ON COLUMN billing_subscription_seat_addons.cancel_at_period_end IS '기간 종료 시 해지 여부';
 COMMENT ON COLUMN billing_subscription_seat_addons.cancelled_at IS '해지 처리 시점';
-COMMENT ON COLUMN billing_subscription_seat_addons.unit_price_usd IS '좌석 단가(USD 기준)';
+COMMENT ON COLUMN billing_subscription_seat_addons.unit_price_usd IS '좌석 단가(USD 요금표 기준)';
 COMMENT ON COLUMN billing_subscription_seat_addons.unit_price_local IS '좌석 단가(결제 통화 기준)';
 COMMENT ON COLUMN billing_subscription_seat_addons.fx_rate IS 'USD→결제 통화 환율';
-COMMENT ON COLUMN billing_subscription_seat_addons.currency IS '결제 통화';
+COMMENT ON COLUMN billing_subscription_seat_addons.currency IS '요금제 기준 통화(항상 USD)';
+COMMENT ON COLUMN billing_subscription_seat_addons.local_currency IS '결제 통화(USD, KRW, JPY, EUR, GBP 등)';
 COMMENT ON COLUMN billing_subscription_seat_addons.metadata IS '추가 메타데이터(JSON)';
 COMMENT ON COLUMN billing_subscription_seat_addons.created_at IS '생성 시간';
 COMMENT ON COLUMN billing_subscription_seat_addons.updated_at IS '수정 시간';
@@ -462,6 +467,7 @@ CREATE TABLE billing_invoices (
     local_currency VARCHAR(3) NOT NULL DEFAULT 'KRW',
     local_subtotal DECIMAL(12, 2),
     local_tax DECIMAL(12, 2),
+    local_discount DECIMAL(12, 2) DEFAULT 0,
     local_total DECIMAL(12, 2),
     period_start TIMESTAMP WITH TIME ZONE NOT NULL,
     period_end TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -484,18 +490,19 @@ COMMENT ON COLUMN billing_invoices.subscription_id IS '구독 ID(billing_subscri
 COMMENT ON COLUMN billing_invoices.billing_account_id IS '과금 계정 ID(billing_accounts.id)';
 COMMENT ON COLUMN billing_invoices.invoice_number IS '청구서 번호';
 COMMENT ON COLUMN billing_invoices.status IS '청구서 상태(draft, open, paid, void, uncollectible)';
-COMMENT ON COLUMN billing_invoices.currency IS '통화(USD)';
-COMMENT ON COLUMN billing_invoices.subtotal_usd IS '소계(USD)';
-COMMENT ON COLUMN billing_invoices.tax_usd IS '세금(USD)';
-COMMENT ON COLUMN billing_invoices.discount_usd IS '할인(USD)';
-COMMENT ON COLUMN billing_invoices.total_usd IS '총액(USD)';
+COMMENT ON COLUMN billing_invoices.currency IS '요금제 기준 통화(항상 USD)';
+COMMENT ON COLUMN billing_invoices.subtotal_usd IS '소계(USD 요금표 기준)';
+COMMENT ON COLUMN billing_invoices.tax_usd IS '세금(USD 요금표 기준)';
+COMMENT ON COLUMN billing_invoices.discount_usd IS '할인(USD 요금표 기준)';
+COMMENT ON COLUMN billing_invoices.total_usd IS '총액(USD 요금표 기준)';
 COMMENT ON COLUMN billing_invoices.tax_rate_id IS '세금 비율 ID(tax_rates.id)';
 COMMENT ON COLUMN billing_invoices.fx_rate_id IS '통화 변환 ID(fx_rates.id)';
-COMMENT ON COLUMN billing_invoices.exchange_rate IS '통화 변환 비율';
-COMMENT ON COLUMN billing_invoices.local_currency IS '현지 통화(KRW)';
-COMMENT ON COLUMN billing_invoices.local_subtotal IS '소계(현지 통화)';
-COMMENT ON COLUMN billing_invoices.local_tax IS '세금(현지 통화)';
-COMMENT ON COLUMN billing_invoices.local_total IS '총액(현지 통화)';
+COMMENT ON COLUMN billing_invoices.exchange_rate IS 'USD→결제 통화 환율';
+COMMENT ON COLUMN billing_invoices.local_currency IS '결제 통화(USD, KRW, JPY, EUR, GBP 등)';
+COMMENT ON COLUMN billing_invoices.local_subtotal IS '소계(결제 통화 기준)';
+COMMENT ON COLUMN billing_invoices.local_tax IS '세금(결제 통화 기준)';
+COMMENT ON COLUMN billing_invoices.local_discount IS '할인(결제 통화 기준)';
+COMMENT ON COLUMN billing_invoices.local_total IS '총액(결제 통화 기준)';
 COMMENT ON COLUMN billing_invoices.period_start IS '청구 기간 시작 시간(TIMESTAMP)';
 COMMENT ON COLUMN billing_invoices.period_end IS '청구 기간 종료 시간(TIMESTAMP)';
 COMMENT ON COLUMN billing_invoices.issue_date IS '청구서 발행 시간(TIMESTAMP)';
@@ -530,8 +537,9 @@ COMMENT ON COLUMN invoice_line_items.invoice_id IS '청구서 ID(billing_invoice
 COMMENT ON COLUMN invoice_line_items.line_type IS '청구서 항목 타입(subscription, seat_overage, topup, adjustment, refund)';
 COMMENT ON COLUMN invoice_line_items.description IS '청구서 항목 설명';
 COMMENT ON COLUMN invoice_line_items.quantity IS '청구서 항목 수량';
-COMMENT ON COLUMN invoice_line_items.unit_price_usd IS '단가(USD)';
-COMMENT ON COLUMN invoice_line_items.amount_usd IS '금액(USD)';
+COMMENT ON COLUMN invoice_line_items.unit_price_usd IS '단가(USD 요금표 기준)';
+COMMENT ON COLUMN invoice_line_items.amount_usd IS '금액(USD 요금표 기준)';
+COMMENT ON COLUMN invoice_line_items.currency IS '통화(항상 USD)';
 
 -- ============================================
 -- 12. PAYMENT TRANSACTIONS (결제 거래)
@@ -571,10 +579,10 @@ COMMENT ON COLUMN payment_transactions.payment_method_id IS '결제 수단 ID(pa
 COMMENT ON COLUMN payment_transactions.provider IS '결제 수단 제공자(toss, stripe)';
 COMMENT ON COLUMN payment_transactions.transaction_type IS '결제 거래 타입(charge, refund, adjustment)';
 COMMENT ON COLUMN payment_transactions.status IS '결제 거래 상태(pending, succeeded, failed, refunded, cancelled)';
-COMMENT ON COLUMN payment_transactions.amount_usd IS '금액(USD)';
-COMMENT ON COLUMN payment_transactions.currency IS '통화(USD)';
-COMMENT ON COLUMN payment_transactions.amount_local IS '금액(현지 통화)';
-COMMENT ON COLUMN payment_transactions.local_currency IS '현지 통화(KRW)';
+COMMENT ON COLUMN payment_transactions.amount_usd IS '금액(USD 요금표 기준)';
+COMMENT ON COLUMN payment_transactions.currency IS '요금제 기준 통화(항상 USD)';
+COMMENT ON COLUMN payment_transactions.amount_local IS '금액(결제 통화 기준)';
+COMMENT ON COLUMN payment_transactions.local_currency IS '결제 통화(USD, KRW, JPY, EUR, GBP 등)';
 COMMENT ON COLUMN payment_transactions.provider_transaction_id IS '결제 수단 제공자 결제 수단 ID';
 COMMENT ON COLUMN payment_transactions.related_transaction_id IS '관련 결제 거래 ID(payment_transactions.id)';
 COMMENT ON COLUMN payment_transactions.failure_reason IS '실패 사유';
@@ -645,6 +653,37 @@ $$ language 'plpgsql';
 CREATE TRIGGER trigger_ensure_single_default_payment_method
     BEFORE INSERT OR UPDATE ON payment_methods
     FOR EACH ROW EXECUTE FUNCTION ensure_single_default_payment_method();
+
+-- ============================================
+-- 13-1. SCHEMA MIGRATION: 통화/금액 체계 통일
+-- billing_subscriptions, seat_addons에 local_currency 추가
+-- billing_invoices에 local_discount 추가
+-- ============================================
+
+ALTER TABLE billing_subscriptions
+  ADD COLUMN IF NOT EXISTS local_currency VARCHAR(3) NOT NULL DEFAULT 'USD';
+
+ALTER TABLE billing_subscription_seat_addons
+  ADD COLUMN IF NOT EXISTS local_currency VARCHAR(3) NOT NULL DEFAULT 'USD';
+
+ALTER TABLE billing_invoices
+  ADD COLUMN IF NOT EXISTS local_discount DECIMAL(12, 2) DEFAULT 0;
+
+-- COMMENT 업데이트 (ALTER 후)
+COMMENT ON COLUMN billing_subscriptions.currency IS '요금제 기준 통화(항상 USD)';
+COMMENT ON COLUMN billing_subscriptions.local_currency IS '결제 통화(USD, KRW, JPY, EUR, GBP 등)';
+COMMENT ON COLUMN billing_subscription_seat_addons.currency IS '요금제 기준 통화(항상 USD)';
+COMMENT ON COLUMN billing_subscription_seat_addons.local_currency IS '결제 통화(USD, KRW, JPY, EUR, GBP 등)';
+COMMENT ON COLUMN billing_invoices.currency IS '요금제 기준 통화(항상 USD)';
+COMMENT ON COLUMN billing_invoices.local_currency IS '결제 통화(USD, KRW, JPY, EUR, GBP 등)';
+COMMENT ON COLUMN billing_invoices.local_discount IS '할인(결제 통화 기준)';
+COMMENT ON COLUMN invoice_line_items.unit_price_usd IS '단가(USD 요금표 기준)';
+COMMENT ON COLUMN invoice_line_items.amount_usd IS '금액(USD 요금표 기준)';
+COMMENT ON COLUMN invoice_line_items.currency IS '통화(항상 USD)';
+COMMENT ON COLUMN payment_transactions.amount_usd IS '금액(USD 요금표 기준)';
+COMMENT ON COLUMN payment_transactions.currency IS '요금제 기준 통화(항상 USD)';
+COMMENT ON COLUMN payment_transactions.amount_local IS '금액(결제 통화 기준)';
+COMMENT ON COLUMN payment_transactions.local_currency IS '결제 통화(USD, KRW, JPY, EUR, GBP 등)';
 
 -- ============================================
 -- 14. SEED DATA

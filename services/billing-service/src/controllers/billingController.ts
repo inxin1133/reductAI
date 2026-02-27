@@ -252,6 +252,10 @@ async function resolveUserQuote(client: any, tenantId: string, planId: string, b
     Number.isFinite(taxRatePercent) && taxRatePercent > 0 ? roundMoney(amount * (taxRatePercent / 100), targetCurrency) : 0
   const totalAmount = roundMoney(amount + taxAmount, targetCurrency)
 
+  const taxAmountUsd =
+    Number.isFinite(taxRatePercent) && taxRatePercent > 0 ? roundMoney(baseAmount * (taxRatePercent / 100), "USD") : 0
+  const totalAmountUsd = roundMoney(baseAmount + taxAmountUsd, "USD")
+
   return {
     currency: targetCurrency,
     amount,
@@ -264,6 +268,8 @@ async function resolveUserQuote(client: any, tenantId: string, planId: string, b
     tax_rate_id: taxRateRow?.id ?? null,
     tax_amount: taxAmount,
     total_amount: totalAmount,
+    tax_amount_usd: taxAmountUsd,
+    total_amount_usd: totalAmountUsd,
     price_id: priceRow?.id ?? null,
     price_currency: priceRow?.currency ?? baseCurrency,
   }
@@ -489,13 +495,17 @@ async function insertPaymentTransaction(
   client: any,
   params: {
     billing_account_id: string
-    amount: number
-    currency: string
+    amount_usd: number
+    amount_local?: number | null
+    currency?: string
+    local_currency?: string
     transaction_type: "charge" | "refund" | "adjustment"
     status?: "pending" | "succeeded" | "failed" | "refunded" | "cancelled"
     provider?: string
     metadata?: Record<string, unknown> | null
     processed_at?: string | null
+    invoice_id?: string | null
+    payment_method_id?: string | null
   }
 ) {
   const status = params.status || (params.transaction_type === "refund" ? "refunded" : "succeeded")
@@ -504,9 +514,12 @@ async function insertPaymentTransaction(
   const result = await client.query(
     `
     INSERT INTO payment_transactions
-      (billing_account_id, provider, transaction_type, status, amount_usd, currency, processed_at, provider_transaction_id, metadata)
+      (billing_account_id, provider, transaction_type, status,
+       amount_usd, currency, amount_local, local_currency,
+       invoice_id, payment_method_id,
+       processed_at, provider_transaction_id, metadata)
     VALUES
-      ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
     RETURNING *
     `,
     [
@@ -514,8 +527,12 @@ async function insertPaymentTransaction(
       provider,
       params.transaction_type,
       status,
-      params.amount,
-      params.currency,
+      params.amount_usd,
+      params.currency || "USD",
+      params.amount_local ?? null,
+      params.local_currency ?? null,
+      params.invoice_id ?? null,
+      params.payment_method_id ?? null,
       processedAt,
       makeInvoiceNumber(params.transaction_type === "refund" ? "USR-RF" : "USR-TX"),
       JSON.stringify(params.metadata || {}),
@@ -706,6 +723,7 @@ async function buildSubscriptionChangeQuote(
           plan_slug: targetPlan.slug ?? null,
           plan_name: targetPlan.name,
           plan_tier: targetPlan.tier,
+          plan_sort_order: targetPlan.sort_order ?? 0,
           billing_cycle: targetCycle,
           price_monthly: roundMoney(targetMonthlyPrice, currency),
           price_yearly: roundMoney(targetYearlyPrice, currency),
@@ -2535,9 +2553,10 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
             price_local = $9,
             fx_rate = $10,
             currency = $11,
-            metadata = $12::jsonb,
+            local_currency = $12,
+            metadata = $13::jsonb,
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $13
+        WHERE id = $14
         RETURNING *
         `,
         [
@@ -2551,6 +2570,7 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
           priceUsd,
           resolvedPriceLocal,
           resolvedFxRate,
+          "USD",
           currency,
           JSON.stringify(nextSubscriptionMeta),
           subscriptionRow.id,
@@ -2562,9 +2582,9 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
         `
         INSERT INTO billing_subscriptions
           (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end,
-           cancel_at_period_end, auto_renew, price_usd, price_local, fx_rate, currency, metadata)
+           cancel_at_period_end, auto_renew, price_usd, price_local, fx_rate, currency, local_currency, metadata)
         VALUES
-          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
         RETURNING *
         `,
         [
@@ -2579,6 +2599,7 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
           priceUsd,
           resolvedPriceLocal,
           resolvedFxRate,
+          "USD",
           currency,
           JSON.stringify({ service_provision: serviceMeta }),
         ]
@@ -2626,11 +2647,18 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
 
     const taxRateRow = taxCountryCode ? await pickLatestTaxRate(client, taxCountryCode) : null
     const taxRatePercent = taxRateRow ? Number(taxRateRow.rate_percent) : 0
-    const taxAmount =
+    const taxAmountUsd =
       Number.isFinite(taxRatePercent) && taxRatePercent > 0
-        ? roundMoney(priceUsd * (taxRatePercent / 100), currency)
+        ? roundMoney(priceUsd * (taxRatePercent / 100), "USD")
         : 0
-    const totalAmount = roundMoney(priceUsd + taxAmount, currency)
+    const totalAmountUsd = roundMoney(priceUsd + taxAmountUsd, "USD")
+
+    const localSubtotal = resolvedPriceLocal ?? priceUsd
+    const localTaxAmount =
+      Number.isFinite(taxRatePercent) && taxRatePercent > 0
+        ? roundMoney(localSubtotal * (taxRatePercent / 100), currency)
+        : 0
+    const localTotalAmount = roundMoney(localSubtotal + localTaxAmount, currency)
 
     const invoiceColumns = await loadInvoiceColumns(client)
     const invoiceCols: string[] = []
@@ -2643,27 +2671,34 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
       invoicePlaceholders.push(cast ? `$${invoiceVals.length}::${cast}` : `$${invoiceVals.length}`)
     }
 
-    addInvoiceCol("tenant_id", resolvedTenantId)
-    addInvoiceCol("subscription_id", subscriptionRow.id)
-    addInvoiceCol("billing_account_id", billingAccountId)
-    addInvoiceCol("invoice_number", makeInvoiceNumber("SVP"))
-    addInvoiceCol("status", "paid")
-    addInvoiceCol("currency", currency)
-    addInvoiceCol("subtotal_usd", priceUsd)
-    addInvoiceCol("total_usd", totalAmount)
-    addInvoiceCol("issue_date", nowIso)
-    addInvoiceCol("paid_at", nowIso)
-    addInvoiceCol("metadata", JSON.stringify(serviceMeta), "jsonb")
-    if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmount)
-    if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", taxAmount)
-    if (invoiceColumns.has("tax_rate_id")) addInvoiceCol("tax_rate_id", taxRateRow?.id ?? null)
-    if (invoiceColumns.has("discount_usd")) addInvoiceCol("discount_usd", 0)
-    if (invoiceColumns.has("period_start")) addInvoiceCol("period_start", periodStartIso)
-    if (invoiceColumns.has("period_end")) addInvoiceCol("period_end", periodEndIso)
-    if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", currency)
-    if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", priceUsd)
-    if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", taxAmount)
-    if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", totalAmount)
+    const buildProvisionInvoiceCols = () => {
+      invoiceCols.splice(0, invoiceCols.length)
+      invoiceVals.splice(0, invoiceVals.length)
+      invoicePlaceholders.splice(0, invoicePlaceholders.length)
+      addInvoiceCol("tenant_id", resolvedTenantId)
+      addInvoiceCol("subscription_id", subscriptionRow.id)
+      addInvoiceCol("billing_account_id", billingAccountId)
+      addInvoiceCol("invoice_number", makeInvoiceNumber("SVP"))
+      addInvoiceCol("status", "paid")
+      addInvoiceCol("currency", "USD")
+      addInvoiceCol("subtotal_usd", priceUsd)
+      addInvoiceCol("total_usd", totalAmountUsd)
+      addInvoiceCol("issue_date", nowIso)
+      addInvoiceCol("paid_at", nowIso)
+      addInvoiceCol("metadata", JSON.stringify(serviceMeta), "jsonb")
+      if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmountUsd)
+      if (invoiceColumns.has("tax_rate_id")) addInvoiceCol("tax_rate_id", taxRateRow?.id ?? null)
+      if (invoiceColumns.has("exchange_rate")) addInvoiceCol("exchange_rate", resolvedFxRate ?? null)
+      if (invoiceColumns.has("discount_usd")) addInvoiceCol("discount_usd", 0)
+      if (invoiceColumns.has("period_start")) addInvoiceCol("period_start", periodStartIso)
+      if (invoiceColumns.has("period_end")) addInvoiceCol("period_end", periodEndIso)
+      if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", currency)
+      if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", localSubtotal)
+      if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", localTaxAmount)
+      if (invoiceColumns.has("local_discount")) addInvoiceCol("local_discount", 0)
+      if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", localTotalAmount)
+    }
+    buildProvisionInvoiceCols()
 
     let invoiceRow: any | null = null
     for (let i = 0; i < 3; i += 1) {
@@ -2680,30 +2715,7 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
         break
       } catch (e: any) {
         if (e?.code === "23505" && String(e?.detail || "").includes("invoice_number")) {
-          invoiceCols.splice(0, invoiceCols.length)
-          invoiceVals.splice(0, invoiceVals.length)
-          invoicePlaceholders.splice(0, invoicePlaceholders.length)
-          addInvoiceCol("tenant_id", resolvedTenantId)
-          addInvoiceCol("subscription_id", subscriptionRow.id)
-          addInvoiceCol("billing_account_id", billingAccountId)
-          addInvoiceCol("invoice_number", makeInvoiceNumber("SVP"))
-          addInvoiceCol("status", "paid")
-          addInvoiceCol("currency", currency)
-          addInvoiceCol("subtotal_usd", priceUsd)
-          addInvoiceCol("total_usd", totalAmount)
-          addInvoiceCol("issue_date", nowIso)
-          addInvoiceCol("paid_at", nowIso)
-          addInvoiceCol("metadata", JSON.stringify(serviceMeta), "jsonb")
-          if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmount)
-          if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", taxAmount)
-          if (invoiceColumns.has("tax_rate_id")) addInvoiceCol("tax_rate_id", taxRateRow?.id ?? null)
-          if (invoiceColumns.has("discount_usd")) addInvoiceCol("discount_usd", 0)
-          if (invoiceColumns.has("period_start")) addInvoiceCol("period_start", periodStartIso)
-          if (invoiceColumns.has("period_end")) addInvoiceCol("period_end", periodEndIso)
-          if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", currency)
-          if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", priceUsd)
-          if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", taxAmount)
-          if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", totalAmount)
+          buildProvisionInvoiceCols()
           continue
         }
         throw e
@@ -2730,7 +2742,7 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
         1,
         priceUsd,
         priceUsd,
-        currency,
+        "USD",
         JSON.stringify(serviceMeta),
       ]
     )
@@ -2738,9 +2750,11 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
     await client.query(
       `
       INSERT INTO payment_transactions
-        (invoice_id, billing_account_id, provider, transaction_type, status, amount_usd, currency, processed_at, provider_transaction_id, metadata)
+        (invoice_id, billing_account_id, provider, transaction_type, status,
+         amount_usd, currency, amount_local, local_currency,
+         processed_at, provider_transaction_id, metadata)
       VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
       `,
       [
         invoiceRow.id,
@@ -2748,7 +2762,9 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
         provider,
         "adjustment",
         "succeeded",
-        priceUsd,
+        totalAmountUsd,
+        "USD",
+        localTotalAmount,
         currency,
         nowIso,
         makeInvoiceNumber("SVP-TX"),
@@ -4110,6 +4126,135 @@ export async function listMyPaymentMethods(req: Request, res: Response) {
   }
 }
 
+export async function setMyDefaultPaymentMethod(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+
+    const paymentMethodId = toStr(req.params.id)
+    if (!paymentMethodId) return res.status(400).json({ message: "id is required" })
+
+    await client.query("BEGIN")
+
+    const check = await client.query(
+      `SELECT pm.id FROM payment_methods pm
+       JOIN billing_accounts ba ON ba.id = pm.billing_account_id
+       WHERE ba.tenant_id = $1 AND pm.id = $2 AND pm.status <> 'deleted'`,
+      [tenantId, paymentMethodId]
+    )
+    if (check.rows.length === 0) {
+      await client.query("ROLLBACK")
+      return res.status(404).json({ message: "Payment method not found" })
+    }
+
+    await client.query(
+      `UPDATE payment_methods SET is_default = false, updated_at = CURRENT_TIMESTAMP
+       WHERE billing_account_id = (SELECT id FROM billing_accounts WHERE tenant_id = $1)
+         AND is_default = true`,
+      [tenantId]
+    )
+    await client.query(
+      `UPDATE payment_methods SET is_default = true, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+      [paymentMethodId]
+    )
+
+    await client.query("COMMIT")
+    return res.json({ ok: true })
+  } catch (e: any) {
+    await client.query("ROLLBACK").catch(() => {})
+    console.error("setMyDefaultPaymentMethod error:", e)
+    return res.status(500).json({ message: "Failed to set default", details: String(e?.message || e) })
+  } finally {
+    client.release()
+  }
+}
+
+export async function deleteMyPaymentMethod(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+
+    const paymentMethodId = toStr(req.params.id)
+    if (!paymentMethodId) return res.status(400).json({ message: "id is required" })
+
+    const result = await query(
+      `UPDATE payment_methods SET status = 'deleted', is_default = false, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND billing_account_id = (SELECT id FROM billing_accounts WHERE tenant_id = $2)
+         AND status <> 'deleted'
+       RETURNING id`,
+      [paymentMethodId, tenantId]
+    )
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "Payment method not found" })
+    }
+    return res.json({ ok: true })
+  } catch (e: any) {
+    console.error("deleteMyPaymentMethod error:", e)
+    return res.status(500).json({ message: "Failed to delete payment method", details: String(e?.message || e) })
+  }
+}
+
+export async function listMyTransactions(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+
+    const limit = Math.min(toInt(req.query.limit, 10) ?? 10, 100)
+    const offset = toInt(req.query.offset, 0) ?? 0
+
+    const countRes = await query(
+      `SELECT COUNT(*)::int AS total
+       FROM payment_transactions pt
+       JOIN billing_accounts ba ON ba.id = pt.billing_account_id
+       WHERE ba.tenant_id = $1`,
+      [tenantId]
+    )
+
+    const listRes = await query(
+      `SELECT
+         pt.id,
+         pt.invoice_id,
+         pt.transaction_type,
+         pt.status,
+         pt.amount_usd,
+         pt.currency,
+         pt.amount_local,
+         pt.local_currency,
+         pt.processed_at,
+         pt.created_at,
+         pt.metadata,
+         i.invoice_number,
+         (SELECT li.description FROM invoice_line_items li WHERE li.invoice_id = pt.invoice_id ORDER BY li.created_at LIMIT 1) AS invoice_description,
+         pm.card_brand,
+         pm.card_last4,
+         pm.type AS pm_type
+       FROM payment_transactions pt
+       JOIN billing_accounts ba ON ba.id = pt.billing_account_id
+       LEFT JOIN billing_invoices i ON i.id = pt.invoice_id
+       LEFT JOIN payment_methods pm ON pm.id = pt.payment_method_id
+       WHERE ba.tenant_id = $1
+       ORDER BY pt.processed_at DESC NULLS LAST, pt.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [tenantId, limit, offset]
+    )
+
+    return res.json({
+      ok: true,
+      total: countRes.rows[0]?.total ?? 0,
+      limit,
+      offset,
+      rows: listRes.rows,
+    })
+  } catch (e: any) {
+    console.error("listMyTransactions error:", e)
+    return res.status(500).json({ message: "Failed to list transactions", details: String(e?.message || e) })
+  }
+}
+
 export async function getMyTaxRate(req: Request, res: Response) {
   try {
     const authed = req as AuthedRequest
@@ -4311,6 +4456,7 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
         nextPriceUsd ?? null,
         nextPriceLocal ?? null,
         nextFxRate,
+        "USD",
         quote.currency,
         JSON.stringify(metadata),
         current.id,
@@ -4330,9 +4476,10 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
             price_local = $9,
             fx_rate = $10,
             currency = $11,
-            metadata = $12::jsonb,
+            local_currency = $12,
+            metadata = $13::jsonb,
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $13
+        WHERE id = $14
         RETURNING *
         `,
         updateFields
@@ -4398,11 +4545,17 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
       }
     }
 
+    const changeFxRate = quote.target?.fx_rate ?? quote.current?.fx_rate ?? null
+    const toUsd = (localAmount: number) =>
+      changeFxRate && changeFxRate > 0 ? roundMoney(localAmount / changeFxRate, "USD") : localAmount
+
     if (quote.charge_amount > 0) {
       chargeTransaction = await insertPaymentTransaction(client, {
         billing_account_id: billingAccountId,
-        amount: quote.total_amount,
-        currency: quote.currency,
+        amount_usd: toUsd(quote.total_amount),
+        amount_local: quote.total_amount,
+        currency: "USD",
+        local_currency: quote.currency,
         transaction_type: "charge",
         metadata: metadataBase,
       })
@@ -4410,8 +4563,10 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
     if (quote.refund_amount > 0) {
       refundTransaction = await insertPaymentTransaction(client, {
         billing_account_id: billingAccountId,
-        amount: quote.refund_amount,
-        currency: quote.currency,
+        amount_usd: toUsd(quote.refund_amount),
+        amount_local: quote.refund_amount,
+        currency: "USD",
+        local_currency: quote.currency,
         transaction_type: "refund",
         metadata: metadataBase,
       })
@@ -4633,6 +4788,8 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
     const taxRatePercent = quote.tax_rate_percent
     const taxAmount = quote.tax_amount
     const totalAmount = quote.total_amount
+    const taxAmountUsd = quote.tax_amount_usd
+    const totalAmountUsd = quote.total_amount_usd
     const taxRateId = quote.tax_rate_id
     const fxRateId = quote.fx_rate_id
     const exchangeRate = quote.fx_rate
@@ -4679,9 +4836,10 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
             price_local = $9,
             fx_rate = $10,
             currency = $11,
-            metadata = $12::jsonb,
+            local_currency = $12,
+            metadata = $13::jsonb,
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $13
+        WHERE id = $14
         RETURNING *
         `,
         [
@@ -4695,6 +4853,7 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
           priceUsd,
           priceLocal,
           fxRate,
+          "USD",
           currency,
           JSON.stringify(subscriptionMeta),
           subscriptionRow.id,
@@ -4706,9 +4865,9 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
         `
         INSERT INTO billing_subscriptions
           (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end,
-           cancel_at_period_end, auto_renew, price_usd, price_local, fx_rate, currency, metadata)
+           cancel_at_period_end, auto_renew, price_usd, price_local, fx_rate, currency, local_currency, metadata)
         VALUES
-          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
         RETURNING *
         `,
         [
@@ -4723,6 +4882,7 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
           priceUsd,
           priceLocal,
           fxRate,
+          "USD",
           currency,
           JSON.stringify(subscriptionMeta),
         ]
@@ -4774,29 +4934,35 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
       invoicePlaceholders.push(cast ? `$${invoiceVals.length}::${cast}` : `$${invoiceVals.length}`)
     }
 
-    addInvoiceCol("tenant_id", tenantId)
-    addInvoiceCol("subscription_id", subscriptionRow.id)
-    addInvoiceCol("billing_account_id", billingAccountId)
-    addInvoiceCol("invoice_number", makeInvoiceNumber("USR"))
-    addInvoiceCol("status", "paid")
-    addInvoiceCol("currency", currency)
-    addInvoiceCol("subtotal_usd", priceUsd)
-    addInvoiceCol("total_usd", totalAmount)
-    addInvoiceCol("issue_date", periodStartIso)
-    addInvoiceCol("paid_at", periodStartIso)
-    addInvoiceCol("metadata", JSON.stringify(subscriptionMeta), "jsonb")
-    if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmount)
-    if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", taxAmount)
-    if (invoiceColumns.has("tax_rate_id")) addInvoiceCol("tax_rate_id", taxRateId ?? null)
-    if (invoiceColumns.has("fx_rate_id")) addInvoiceCol("fx_rate_id", fxRateId ?? null)
-    if (invoiceColumns.has("exchange_rate")) addInvoiceCol("exchange_rate", exchangeRate ?? null)
-    if (invoiceColumns.has("discount_usd")) addInvoiceCol("discount_usd", 0)
-    if (invoiceColumns.has("period_start")) addInvoiceCol("period_start", periodStartIso)
-    if (invoiceColumns.has("period_end")) addInvoiceCol("period_end", periodEndIso)
-    if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", currency)
-    if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", priceUsd)
-    if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", taxAmount)
-    if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", totalAmount)
+    const buildInvoiceCols = () => {
+      invoiceCols.splice(0, invoiceCols.length)
+      invoiceVals.splice(0, invoiceVals.length)
+      invoicePlaceholders.splice(0, invoicePlaceholders.length)
+      addInvoiceCol("tenant_id", tenantId)
+      addInvoiceCol("subscription_id", subscriptionRow.id)
+      addInvoiceCol("billing_account_id", billingAccountId)
+      addInvoiceCol("invoice_number", makeInvoiceNumber("USR"))
+      addInvoiceCol("status", "paid")
+      addInvoiceCol("currency", "USD")
+      addInvoiceCol("subtotal_usd", priceUsd)
+      addInvoiceCol("total_usd", totalAmountUsd)
+      addInvoiceCol("issue_date", periodStartIso)
+      addInvoiceCol("paid_at", periodStartIso)
+      addInvoiceCol("metadata", JSON.stringify(subscriptionMeta), "jsonb")
+      if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmountUsd)
+      if (invoiceColumns.has("tax_rate_id")) addInvoiceCol("tax_rate_id", taxRateId ?? null)
+      if (invoiceColumns.has("fx_rate_id")) addInvoiceCol("fx_rate_id", fxRateId ?? null)
+      if (invoiceColumns.has("exchange_rate")) addInvoiceCol("exchange_rate", exchangeRate ?? null)
+      if (invoiceColumns.has("discount_usd")) addInvoiceCol("discount_usd", 0)
+      if (invoiceColumns.has("period_start")) addInvoiceCol("period_start", periodStartIso)
+      if (invoiceColumns.has("period_end")) addInvoiceCol("period_end", periodEndIso)
+      if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", currency)
+      if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", priceLocal)
+      if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", taxAmount)
+      if (invoiceColumns.has("local_discount")) addInvoiceCol("local_discount", 0)
+      if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", totalAmount)
+    }
+    buildInvoiceCols()
 
     let invoiceRow: any | null = null
     for (let i = 0; i < 3; i += 1) {
@@ -4813,32 +4979,7 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
         break
       } catch (e: any) {
         if (e?.code === "23505" && String(e?.detail || "").includes("invoice_number")) {
-          invoiceCols.splice(0, invoiceCols.length)
-          invoiceVals.splice(0, invoiceVals.length)
-          invoicePlaceholders.splice(0, invoicePlaceholders.length)
-          addInvoiceCol("tenant_id", tenantId)
-          addInvoiceCol("subscription_id", subscriptionRow.id)
-          addInvoiceCol("billing_account_id", billingAccountId)
-          addInvoiceCol("invoice_number", makeInvoiceNumber("USR"))
-          addInvoiceCol("status", "paid")
-          addInvoiceCol("currency", currency)
-          addInvoiceCol("subtotal_usd", priceUsd)
-          addInvoiceCol("total_usd", totalAmount)
-          addInvoiceCol("issue_date", periodStartIso)
-          addInvoiceCol("paid_at", periodStartIso)
-          addInvoiceCol("metadata", JSON.stringify(subscriptionMeta), "jsonb")
-          if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmount)
-          if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", taxAmount)
-          if (invoiceColumns.has("tax_rate_id")) addInvoiceCol("tax_rate_id", taxRateId ?? null)
-          if (invoiceColumns.has("fx_rate_id")) addInvoiceCol("fx_rate_id", fxRateId ?? null)
-          if (invoiceColumns.has("exchange_rate")) addInvoiceCol("exchange_rate", exchangeRate ?? null)
-          if (invoiceColumns.has("discount_usd")) addInvoiceCol("discount_usd", 0)
-          if (invoiceColumns.has("period_start")) addInvoiceCol("period_start", periodStartIso)
-          if (invoiceColumns.has("period_end")) addInvoiceCol("period_end", periodEndIso)
-          if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", currency)
-          if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", priceUsd)
-          if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", taxAmount)
-          if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", totalAmount)
+          buildInvoiceCols()
           continue
         }
         throw e
@@ -4865,7 +5006,7 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
         1,
         priceUsd,
         priceUsd,
-        currency,
+        "USD",
         JSON.stringify(subscriptionMeta),
       ]
     )
@@ -4873,9 +5014,11 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
     const txRes = await client.query(
       `
       INSERT INTO payment_transactions
-        (invoice_id, billing_account_id, provider, transaction_type, status, amount_usd, currency, processed_at, provider_transaction_id, metadata)
+        (invoice_id, billing_account_id, provider, transaction_type, status,
+         amount_usd, currency, amount_local, local_currency,
+         processed_at, provider_transaction_id, metadata)
       VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
       RETURNING *
       `,
       [
@@ -4884,6 +5027,8 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
         provider,
         "charge",
         "succeeded",
+        totalAmountUsd,
+        "USD",
         totalAmount,
         currency,
         periodStartIso,
@@ -5445,6 +5590,10 @@ export async function checkoutTopupPurchase(req: Request, res: Response) {
       Number.isFinite(taxRatePercent) && taxRatePercent > 0 ? roundMoney(amount * (taxRatePercent / 100), targetCurrency) : 0
     const totalAmount = roundMoney(amount + taxAmount, targetCurrency)
 
+    const taxAmountUsd =
+      Number.isFinite(taxRatePercent) && taxRatePercent > 0 ? roundMoney(baseAmount * (taxRatePercent / 100), "USD") : 0
+    const totalAmountUsd = roundMoney(baseAmount + taxAmountUsd, "USD")
+
     const now = new Date()
     const nowIso = now.toISOString()
 
@@ -5495,14 +5644,13 @@ export async function checkoutTopupPurchase(req: Request, res: Response) {
     addInvoiceCol("billing_account_id", billingAccountId)
     addInvoiceCol("invoice_number", makeInvoiceNumber("TOP"))
     addInvoiceCol("status", "paid")
-    addInvoiceCol("currency", targetCurrency)
-    addInvoiceCol("subtotal_usd", amount)
-    addInvoiceCol("total_usd", totalAmount)
+    addInvoiceCol("currency", "USD")
+    addInvoiceCol("subtotal_usd", baseAmount)
+    addInvoiceCol("total_usd", totalAmountUsd)
     addInvoiceCol("issue_date", nowIso)
     addInvoiceCol("paid_at", nowIso)
     addInvoiceCol("metadata", JSON.stringify(topupMeta), "jsonb")
-    if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmount)
-    if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", taxAmount)
+    if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmountUsd)
     if (invoiceColumns.has("tax_rate_id")) addInvoiceCol("tax_rate_id", taxRateRow?.id ?? null)
     if (invoiceColumns.has("fx_rate_id")) addInvoiceCol("fx_rate_id", fxRateId ?? null)
     if (invoiceColumns.has("exchange_rate")) addInvoiceCol("exchange_rate", fxRate ?? null)
@@ -5512,6 +5660,7 @@ export async function checkoutTopupPurchase(req: Request, res: Response) {
     if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", targetCurrency)
     if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", amount)
     if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", taxAmount)
+    if (invoiceColumns.has("local_discount")) addInvoiceCol("local_discount", 0)
     if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", totalAmount)
 
     const invoiceInsertRes = await client.query(
@@ -5530,14 +5679,16 @@ export async function checkoutTopupPurchase(req: Request, res: Response) {
       `INSERT INTO invoice_line_items
         (invoice_id, line_type, description, quantity, unit_price_usd, amount_usd, currency, metadata)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
-      [invoiceRow.id, "topup", product.name, 1, amount, amount, targetCurrency, JSON.stringify(topupMeta)]
+      [invoiceRow.id, "topup", product.name, 1, baseAmount, baseAmount, "USD", JSON.stringify(topupMeta)]
     )
 
     const txRes = await client.query(
       `INSERT INTO payment_transactions
-        (invoice_id, billing_account_id, provider, transaction_type, status, amount_usd, currency, processed_at, provider_transaction_id, metadata)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb) RETURNING *`,
-      [invoiceRow.id, billingAccountId, provider, "charge", "succeeded", totalAmount, targetCurrency, nowIso, makeInvoiceNumber("TOP-TX"), JSON.stringify(topupMeta)]
+        (invoice_id, billing_account_id, provider, transaction_type, status,
+         amount_usd, currency, amount_local, local_currency,
+         processed_at, provider_transaction_id, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb) RETURNING *`,
+      [invoiceRow.id, billingAccountId, provider, "charge", "succeeded", totalAmountUsd, "USD", totalAmount, targetCurrency, nowIso, makeInvoiceNumber("TOP-TX"), JSON.stringify(topupMeta)]
     )
     const txRow = txRes.rows[0]
 
@@ -5741,11 +5892,17 @@ export async function checkoutSeatAddonPurchase(req: Request, res: Response) {
       }
     }
 
+    const unitPriceLocal = fxRate != null ? roundMoney(unitPriceUsd * fxRate, targetCurrency) : unitPriceUsd
+
     const taxRateRow = taxCountryCode ? await pickLatestTaxRate(client, taxCountryCode) : null
     const taxRatePercent = taxRateRow ? Number(taxRateRow.rate_percent) : 0
     const taxAmount =
       Number.isFinite(taxRatePercent) && taxRatePercent > 0 ? roundMoney(amount * (taxRatePercent / 100), targetCurrency) : 0
     const totalAmount = roundMoney(amount + taxAmount, targetCurrency)
+
+    const taxAmountUsd =
+      Number.isFinite(taxRatePercent) && taxRatePercent > 0 ? roundMoney(baseAmount * (taxRatePercent / 100), "USD") : 0
+    const totalAmountUsd = roundMoney(baseAmount + taxAmountUsd, "USD")
 
     const tenantRes = await client.query(`SELECT member_limit FROM tenants WHERE id = $1`, [tenantId])
     const memberLimitRaw = tenantRes.rows[0]?.member_limit
@@ -5811,14 +5968,13 @@ export async function checkoutSeatAddonPurchase(req: Request, res: Response) {
     addInvoiceCol("billing_account_id", billingAccountId)
     addInvoiceCol("invoice_number", makeInvoiceNumber("SEAT"))
     addInvoiceCol("status", "paid")
-    addInvoiceCol("currency", targetCurrency)
-    addInvoiceCol("subtotal_usd", amount)
-    addInvoiceCol("total_usd", totalAmount)
+    addInvoiceCol("currency", "USD")
+    addInvoiceCol("subtotal_usd", baseAmount)
+    addInvoiceCol("total_usd", totalAmountUsd)
     addInvoiceCol("issue_date", nowIso)
     addInvoiceCol("paid_at", nowIso)
     addInvoiceCol("metadata", JSON.stringify(addonMeta), "jsonb")
-    if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmount)
-    if (invoiceColumns.has("tax_amount_usd")) addInvoiceCol("tax_amount_usd", taxAmount)
+    if (invoiceColumns.has("tax_usd")) addInvoiceCol("tax_usd", taxAmountUsd)
     if (invoiceColumns.has("tax_rate_id")) addInvoiceCol("tax_rate_id", taxRateRow?.id ?? null)
     if (invoiceColumns.has("fx_rate_id")) addInvoiceCol("fx_rate_id", fxRateId ?? null)
     if (invoiceColumns.has("exchange_rate")) addInvoiceCol("exchange_rate", fxRate ?? null)
@@ -5828,6 +5984,7 @@ export async function checkoutSeatAddonPurchase(req: Request, res: Response) {
     if (invoiceColumns.has("local_currency")) addInvoiceCol("local_currency", targetCurrency)
     if (invoiceColumns.has("local_subtotal")) addInvoiceCol("local_subtotal", amount)
     if (invoiceColumns.has("local_tax")) addInvoiceCol("local_tax", taxAmount)
+    if (invoiceColumns.has("local_discount")) addInvoiceCol("local_discount", 0)
     if (invoiceColumns.has("local_total")) addInvoiceCol("local_total", totalAmount)
 
     const invoiceInsertRes = await client.query(
@@ -5851,23 +6008,27 @@ export async function checkoutSeatAddonPurchase(req: Request, res: Response) {
         "seat_overage",
         "좌석 추가",
         quantity,
-        unitPriceLocal,
-        amount,
-        targetCurrency,
+        unitPriceUsd,
+        baseAmount,
+        "USD",
         JSON.stringify(addonMeta),
       ]
     )
 
     const txRes = await client.query(
       `INSERT INTO payment_transactions
-        (invoice_id, billing_account_id, provider, transaction_type, status, amount_usd, currency, processed_at, provider_transaction_id, metadata)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb) RETURNING *`,
+        (invoice_id, billing_account_id, provider, transaction_type, status,
+         amount_usd, currency, amount_local, local_currency,
+         processed_at, provider_transaction_id, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb) RETURNING *`,
       [
         invoiceRow.id,
         billingAccountId,
         provider,
         "charge",
         "succeeded",
+        totalAmountUsd,
+        "USD",
         totalAmount,
         targetCurrency,
         nowIso,
@@ -5879,8 +6040,8 @@ export async function checkoutSeatAddonPurchase(req: Request, res: Response) {
 
     await client.query(
       `INSERT INTO billing_subscription_seat_addons
-        (subscription_id, tenant_id, quantity, status, effective_at, unit_price_usd, unit_price_local, fx_rate, currency, metadata)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+        (subscription_id, tenant_id, quantity, status, effective_at, unit_price_usd, unit_price_local, fx_rate, currency, local_currency, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
       [
         subscription.id,
         tenantId,
@@ -5890,6 +6051,7 @@ export async function checkoutSeatAddonPurchase(req: Request, res: Response) {
         unitPriceUsd,
         unitPriceLocal,
         fxRate,
+        "USD",
         targetCurrency,
         JSON.stringify(addonMeta),
       ]
@@ -6043,6 +6205,110 @@ export async function cancelMySeatAddon(req: Request, res: Response) {
     if (transactionStarted) await client.query("ROLLBACK")
     console.error("cancelMySeatAddon error:", e)
     return res.status(500).json({ message: "Failed to cancel seat addon" })
+  } finally {
+    client.release()
+  }
+}
+
+export async function listMyInvoices(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+
+    const limit = Math.min(toInt(req.query.limit, 10) ?? 10, 50)
+    const offset = toInt(req.query.offset, 0) ?? 0
+
+    const countRes = await client.query(
+      `SELECT COUNT(*)::int AS total FROM billing_invoices WHERE tenant_id = $1`,
+      [tenantId]
+    )
+
+    const listRes = await client.query(
+      `
+      SELECT
+        i.id, i.invoice_number, i.status, i.currency,
+        i.subtotal_usd, i.tax_usd, i.discount_usd, i.total_usd,
+        i.exchange_rate, i.local_currency, i.local_subtotal, i.local_tax, i.local_total,
+        i.period_start, i.period_end, i.issue_date, i.due_date, i.paid_at,
+        b.name AS plan_name, b.tier AS plan_tier,
+        s.billing_cycle
+      FROM billing_invoices i
+      LEFT JOIN billing_subscriptions s ON s.id = i.subscription_id
+      LEFT JOIN billing_plans b ON b.id = s.plan_id
+      WHERE i.tenant_id = $1
+      ORDER BY i.issue_date DESC NULLS LAST, i.created_at DESC
+      LIMIT $2 OFFSET $3
+      `,
+      [tenantId, limit, offset]
+    )
+
+    return res.json({
+      ok: true,
+      total: countRes.rows[0]?.total ?? 0,
+      limit,
+      offset,
+      rows: listRes.rows,
+    })
+  } catch (e: any) {
+    console.error("listMyInvoices error:", e)
+    return res.status(500).json({ message: "Failed to list invoices" })
+  } finally {
+    client.release()
+  }
+}
+
+export async function getMyInvoiceDetail(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const authed = req as AuthedRequest
+    const tenantId = toStr(authed.tenantId)
+    const invoiceId = toStr(req.params.id)
+    if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+    if (!invoiceId) return res.status(400).json({ message: "invoice id is required" })
+
+    const invoiceRes = await client.query(
+      `
+      SELECT
+        i.id, i.invoice_number, i.status, i.currency,
+        i.subtotal_usd, i.tax_usd, i.discount_usd, i.total_usd,
+        i.exchange_rate, i.local_currency, i.local_subtotal, i.local_tax, i.local_total,
+        i.period_start, i.period_end, i.issue_date, i.due_date, i.paid_at,
+        b.name AS plan_name, b.tier AS plan_tier,
+        s.billing_cycle
+      FROM billing_invoices i
+      LEFT JOIN billing_subscriptions s ON s.id = i.subscription_id
+      LEFT JOIN billing_plans b ON b.id = s.plan_id
+      WHERE i.id = $1 AND i.tenant_id = $2
+      `,
+      [invoiceId, tenantId]
+    )
+
+    if (invoiceRes.rows.length === 0) {
+      return res.status(404).json({ message: "Invoice not found" })
+    }
+
+    const invoice = invoiceRes.rows[0]
+
+    const lineItemsRes = await client.query(
+      `
+      SELECT id, line_type, description, quantity, unit_price_usd, amount_usd, currency, metadata
+      FROM invoice_line_items
+      WHERE invoice_id = $1
+      ORDER BY created_at ASC
+      `,
+      [invoiceId]
+    )
+
+    return res.json({
+      ok: true,
+      invoice,
+      line_items: lineItemsRes.rows,
+    })
+  } catch (e: any) {
+    console.error("getMyInvoiceDetail error:", e)
+    return res.status(500).json({ message: "Failed to load invoice detail" })
   } finally {
     client.release()
   }

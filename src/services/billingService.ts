@@ -245,3 +245,170 @@ export async function fetchTopupProducts(): Promise<TopupProduct[]> {
     metadata: row.metadata ?? null,
   }))
 }
+
+// ── Invoice types ──
+
+export type BillingInvoice = {
+  id: string
+  invoice_number: string
+  status: "draft" | "open" | "paid" | "void" | "uncollectible"
+  currency: string
+  subtotal_usd: number
+  tax_usd: number
+  discount_usd: number
+  total_usd: number
+  exchange_rate: number | null
+  local_currency: string
+  local_subtotal: number | null
+  local_tax: number | null
+  local_discount: number | null
+  local_total: number | null
+  period_start: string
+  period_end: string
+  issue_date: string
+  due_date: string | null
+  paid_at: string | null
+}
+
+export type InvoiceLineItem = {
+  id: string
+  line_type: "subscription" | "seat_overage" | "topup" | "adjustment" | "refund"
+  description: string
+  quantity: number
+  unit_price_usd: number
+  amount_usd: number
+  currency: string
+}
+
+export type BillingInvoiceDetail = BillingInvoice & {
+  line_items: InvoiceLineItem[]
+  plan_name: string | null
+  billing_cycle: string | null
+}
+
+function normalizeInvoice(raw: Record<string, unknown>): BillingInvoice {
+  return {
+    id: String(raw.id ?? ""),
+    invoice_number: String(raw.invoice_number ?? ""),
+    status: (raw.status as BillingInvoice["status"]) ?? "draft",
+    currency: String(raw.currency ?? "USD"),
+    subtotal_usd: Number(raw.subtotal_usd ?? 0),
+    tax_usd: Number(raw.tax_usd ?? 0),
+    discount_usd: Number(raw.discount_usd ?? 0),
+    total_usd: Number(raw.total_usd ?? 0),
+    exchange_rate: raw.exchange_rate != null ? Number(raw.exchange_rate) : null,
+    local_currency: String(raw.local_currency ?? "KRW"),
+    local_subtotal: raw.local_subtotal != null ? Number(raw.local_subtotal) : null,
+    local_tax: raw.local_tax != null ? Number(raw.local_tax) : null,
+    local_discount: raw.local_discount != null ? Number(raw.local_discount) : null,
+    local_total: raw.local_total != null ? Number(raw.local_total) : null,
+    period_start: String(raw.period_start ?? ""),
+    period_end: String(raw.period_end ?? ""),
+    issue_date: String(raw.issue_date ?? ""),
+    due_date: raw.due_date != null ? String(raw.due_date) : null,
+    paid_at: raw.paid_at != null ? String(raw.paid_at) : null,
+  }
+}
+
+function normalizeLineItem(raw: Record<string, unknown>): InvoiceLineItem {
+  return {
+    id: String(raw.id ?? ""),
+    line_type: (raw.line_type as InvoiceLineItem["line_type"]) ?? "subscription",
+    description: String(raw.description ?? ""),
+    quantity: Number(raw.quantity ?? 1),
+    unit_price_usd: Number(raw.unit_price_usd ?? 0),
+    amount_usd: Number(raw.amount_usd ?? 0),
+    currency: String(raw.currency ?? "USD"),
+  }
+}
+
+export async function fetchInvoices(params: {
+  limit?: number
+  offset?: number
+}): Promise<{ rows: BillingInvoice[]; total: number }> {
+  const headers = getAuthHeaders()
+  const limit = params.limit ?? 10
+  const offset = params.offset ?? 0
+  const res = await fetch(`${BILLING_USER_API_BASE}/invoices?limit=${limit}&offset=${offset}`, { headers })
+  if (!res.ok) throw new Error(`청구서 목록을 불러오지 못했습니다. (${res.status})`)
+  const data = await res.json()
+  if (!data?.ok) throw new Error(data?.message || "청구서 목록을 불러오지 못했습니다.")
+  return {
+    rows: (data.rows ?? []).map((r: Record<string, unknown>) => normalizeInvoice(r)),
+    total: Number(data.total ?? 0),
+  }
+}
+
+export type PaymentTransaction = {
+  id: string
+  invoice_id: string | null
+  transaction_type: "charge" | "refund" | "adjustment"
+  status: "pending" | "succeeded" | "failed" | "refunded" | "cancelled"
+  amount_usd: number
+  currency: string
+  amount_local: number | null
+  local_currency: string
+  processed_at: string | null
+  created_at: string
+  invoice_number: string | null
+  invoice_description: string | null
+  card_brand: string | null
+  card_last4: string | null
+  pm_type: string | null
+  metadata: Record<string, unknown> | null
+}
+
+function normalizeTransaction(raw: Record<string, unknown>): PaymentTransaction {
+  return {
+    id: String(raw.id ?? ""),
+    invoice_id: raw.invoice_id != null ? String(raw.invoice_id) : null,
+    transaction_type: (raw.transaction_type as PaymentTransaction["transaction_type"]) ?? "charge",
+    status: (raw.status as PaymentTransaction["status"]) ?? "pending",
+    amount_usd: Number(raw.amount_usd ?? 0),
+    currency: String(raw.currency ?? "USD"),
+    amount_local: raw.amount_local != null ? Number(raw.amount_local) : null,
+    local_currency: String(raw.local_currency ?? "KRW"),
+    processed_at: raw.processed_at != null ? String(raw.processed_at) : null,
+    created_at: String(raw.created_at ?? ""),
+    invoice_number: raw.invoice_number != null ? String(raw.invoice_number) : null,
+    invoice_description: raw.invoice_description != null ? String(raw.invoice_description) : null,
+    card_brand: raw.card_brand != null ? String(raw.card_brand) : null,
+    card_last4: raw.card_last4 != null ? String(raw.card_last4) : null,
+    pm_type: raw.pm_type != null ? String(raw.pm_type) : null,
+    metadata: (raw.metadata as Record<string, unknown>) ?? null,
+  }
+}
+
+export async function fetchTransactions(params: {
+  limit?: number
+  offset?: number
+}): Promise<{ rows: PaymentTransaction[]; total: number }> {
+  const headers = getAuthHeaders()
+  const limit = params.limit ?? 10
+  const offset = params.offset ?? 0
+  const res = await fetch(`${BILLING_USER_API_BASE}/transactions?limit=${limit}&offset=${offset}`, { headers })
+  if (!res.ok) throw new Error(`결제 내역을 불러오지 못했습니다. (${res.status})`)
+  const data = await res.json()
+  if (!data?.ok) throw new Error(data?.message || "결제 내역을 불러오지 못했습니다.")
+  return {
+    rows: (data.rows ?? []).map((r: Record<string, unknown>) => normalizeTransaction(r)),
+    total: Number(data.total ?? 0),
+  }
+}
+
+export async function fetchInvoiceDetail(invoiceId: string): Promise<BillingInvoiceDetail> {
+  const headers = getAuthHeaders()
+  const res = await fetch(`${BILLING_USER_API_BASE}/invoices/${invoiceId}`, { headers })
+  if (!res.ok) throw new Error(`청구서를 불러오지 못했습니다. (${res.status})`)
+  const data = await res.json()
+  if (!data?.ok) throw new Error(data?.message || "청구서를 불러오지 못했습니다.")
+  const invoice = (data.invoice ?? data) as Record<string, unknown>
+  return {
+    ...normalizeInvoice(invoice),
+    line_items: ((data.line_items ?? (invoice.line_items as unknown[])) ?? []).map(
+      (r: unknown) => normalizeLineItem(r as Record<string, unknown>)
+    ),
+    plan_name: (data.plan_name ?? invoice.plan_name ?? null) as string | null,
+    billing_cycle: (data.billing_cycle ?? invoice.billing_cycle ?? null) as string | null,
+  }
+}

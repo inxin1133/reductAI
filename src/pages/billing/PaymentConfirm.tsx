@@ -18,23 +18,12 @@ import {
   writeBillingInfo,
 } from "@/lib/billingFlow"
 import { CURRENCY_OPTIONS, COUNTRY_OPTIONS } from "@/lib/billingOptions"
-import {
-  cardBg,
-  cardLabel,
-  detectCardBrand,
-  formatCardNumber,
-  formatExpiry,
-  formatExpiryLabel,
-  getCardBrandIcon,
-  normalizeCardBrand,
-  normalizeCardNumber,
-  normalizeCvv,
-  parseExpiry,
-} from "@/lib/card"
+import { cardBg, cardLabel, formatExpiryLabel, getCardBrandIcon, normalizeCardBrand } from "@/lib/card"
 import { currencySymbol, formatMoney, roundMoney } from "@/lib/currency"
 import { formatPhone, normalizePhoneDigits } from "@/lib/phone"
-import { CreditCard, Lock, Plus, WalletCards, FilePenLine } from "lucide-react"
+import { CreditCard, Plus, WalletCards, FilePenLine } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { AddCardDialog } from "@/components/dialog/AddCardDialog"
 import { fetchBillingPlansWithPrices } from "@/services/billingService"
 import {
   Select,
@@ -324,16 +313,11 @@ export default function PaymentConfirm() {
   const [isCardSelectOpen, setIsCardSelectOpen] = useState(false)
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null)
   const [isCardAddOpen, setIsCardAddOpen] = useState(false)
-  const [addCardNumber, setAddCardNumber] = useState("")
-  const [addCardHolder, setAddCardHolder] = useState("")
-  const [addCardExpiry, setAddCardExpiry] = useState("")
-  const [addCardCvv, setAddCardCvv] = useState("")
   const [isBillingEditOpen, setIsBillingEditOpen] = useState(false)
   const [billingForm, setBillingForm] = useState<BillingInfoProfile>(billingInfo)
   const [postcodeLoading, setPostcodeLoading] = useState(false)
   const detailAddressRef = useRef<HTMLInputElement | null>(null)
   const [cardOptions, setCardOptions] = useState<CardOption[]>([])
-  const [cardSaving, setCardSaving] = useState(false)
   const [paying, setPaying] = useState(false)
   const requiresPayment = isChangeFlow
     ? Boolean(changeQuote && Number.isFinite(changeQuote.total_amount) && changeQuote.total_amount > 0)
@@ -631,14 +615,6 @@ export default function PaymentConfirm() {
   }, [billingInfo, isBillingEditOpen])
 
   useEffect(() => {
-    if (!isCardAddOpen) return
-    setAddCardNumber("")
-    setAddCardHolder("")
-    setAddCardExpiry("")
-    setAddCardCvv("")
-  }, [isCardAddOpen])
-
-  useEffect(() => {
     if (!isCardSelectOpen) return
     const match = cardOptions.find((option) => option.brand === card?.brand && option.last4 === card?.last4)
     setSelectedCardId(match?.id ?? cardOptions[0]?.id ?? null)
@@ -673,61 +649,6 @@ export default function PaymentConfirm() {
       return quoteLoading ? "계산 중" : "-"
     }
     return `${currencySymbol(displayCurrency)}${formatMoney(value, displayCurrency)}`
-  }
-
-  const addFormattedCardNumber = useMemo(() => formatCardNumber(addCardNumber), [addCardNumber])
-  const addCardNumberDisplay = addFormattedCardNumber || "0000 0000 0000 0000"
-  const addCardHolderDisplay = addCardHolder.trim() || "카드 소유자"
-  const addCardExpiryDisplay = addCardExpiry || "MM/YY"
-  const addCardBrand = useMemo(() => detectCardBrand(addCardNumber), [addCardNumber])
-  const AddCardIcon = getCardBrandIcon(addCardBrand)
-  const canSaveCard = Boolean(addCardBrand && normalizeCardNumber(addCardNumber).length >= 4 && !cardSaving)
-
-  const handleSaveCard = async () => {
-    if (!canSaveCard || !addCardBrand) return
-    const digits = normalizeCardNumber(addCardNumber)
-    const last4 = digits.slice(-4)
-    const { month, year } = parseExpiry(addCardExpiry)
-    if (month && (month < 1 || month > 12)) {
-      alert("유효기간 월을 확인해주세요.")
-      return
-    }
-    if (year && year < 2000) {
-      alert("유효기간 년도를 확인해주세요.")
-      return
-    }
-    const headers = authHeaders()
-    if (!headers.Authorization) {
-      alert("로그인이 필요합니다.")
-      return
-    }
-
-    try {
-      setCardSaving(true)
-      const res = await fetch("/api/ai/billing/user/payment-methods", {
-        method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          provider: "toss",
-          type: "card",
-          card_brand: addCardBrand,
-          card_last4: last4,
-          card_exp_month: month,
-          card_exp_year: year,
-          metadata: { holder: addCardHolder.trim() || null },
-        }),
-      })
-      const data = (await res.json().catch(() => null)) as { ok?: boolean; message?: string } | null
-      if (!res.ok || !data?.ok) throw new Error(data?.message || "FAILED_SAVE")
-
-      await loadBillingData()
-      setIsCardAddOpen(false)
-    } catch (e) {
-      console.error(e)
-      alert("카드 저장에 실패했습니다.")
-    } finally {
-      setCardSaving(false)
-    }
   }
 
   const loadDaumPostcode = useCallback(() => {
@@ -1365,94 +1286,12 @@ export default function PaymentConfirm() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={isCardAddOpen} onOpenChange={setIsCardAddOpen}>
-        <DialogContent className="sm:max-w-[720px]">
-          <DialogHeader>
-            <DialogTitle>카드 추가</DialogTitle>
-          </DialogHeader>
-          <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-            <div>
-              <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground py-2">
-                <Lock className="size-3" />
-                <span>256-bit SSL 암호화로 안전하게 보호됩니다.</span>
-              </div>
-              <div className="rounded-xl bg-gradient-to-r from-blue-600 to-blue-500 p-5 text-white shadow-md">
-                <div className="flex items-start justify-between">
-                  {AddCardIcon ? (
-                    <AddCardIcon className="h-6 w-9" />
-                  ) : (
-                    <CreditCard className="size-6 text-white/90" />
-                  )}
-                  <span className="text-xs text-white/80">Card</span>
-                </div>
-                <div className="mt-6 text-lg tracking-[0.18em]">{addCardNumberDisplay}</div>
-                <div className="mt-6 flex items-end justify-between">
-                  <div>
-                    <p className="text-[10px] uppercase text-white/70">카드 소유자</p>
-                    <p className="text-sm font-semibold">{addCardHolderDisplay}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-[10px] uppercase text-white/70">유효기간</p>
-                    <p className="text-sm font-semibold">{addCardExpiryDisplay}</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid gap-3">
-              <div className="grid gap-1.5">
-                <label className="text-xs font-medium text-foreground">카드 번호</label>
-                <Input
-                  value={addFormattedCardNumber}
-                  onChange={(event) => setAddCardNumber(normalizeCardNumber(event.target.value))}
-                  placeholder="1234 1234 1234 1234"
-                  inputMode="numeric"
-                  autoComplete="cc-number"
-                />
-              </div>
-              <div className="grid gap-1.5">
-                <label className="text-xs font-medium text-foreground">카드 소유자 이름</label>
-                <Input
-                  value={addCardHolder}
-                  onChange={(event) => setAddCardHolder(event.target.value)}
-                  placeholder="카드 소유자 이름"
-                  autoComplete="cc-name"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1.5">
-                  <label className="text-xs font-medium text-foreground">유효기간</label>
-                  <Input
-                    value={addCardExpiry}
-                    onChange={(event) => setAddCardExpiry(formatExpiry(event.target.value))}
-                    placeholder="MM/YY"
-                    inputMode="numeric"
-                    autoComplete="cc-exp"
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <label className="text-xs font-medium text-foreground">CVV</label>
-                  <Input
-                    value={addCardCvv}
-                    onChange={(event) => setAddCardCvv(normalizeCvv(event.target.value))}
-                    placeholder="123"
-                    inputMode="numeric"
-                    autoComplete="cc-csc"
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsCardAddOpen(false)}>
-              취소
-            </Button>
-            <Button onClick={handleSaveCard} disabled={!canSaveCard}>
-              저장
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <AddCardDialog
+        open={isCardAddOpen}
+        onOpenChange={setIsCardAddOpen}
+        onSaved={async () => { await loadBillingData() }}
+        getAuthHeaders={authHeaders}
+      />
 
       <Dialog open={isBillingEditOpen} onOpenChange={setIsBillingEditOpen}>
         <DialogContent className="sm:max-w-[640px]">

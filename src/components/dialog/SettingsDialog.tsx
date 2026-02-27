@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { TenantSettingsDialog } from "@/components/settings/TenantSettingsDialog"
+import { TenantSettingsDialog } from "@/components/dialog/TenantSettingsDialog"
 import {
   ChevronsUp,
   Coins,
