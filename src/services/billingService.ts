@@ -268,6 +268,8 @@ export type BillingInvoice = {
   issue_date: string
   due_date: string | null
   paid_at: string | null
+  primary_line_type: string | null
+  primary_description: string | null
 }
 
 export type InvoiceLineItem = {
@@ -307,6 +309,8 @@ function normalizeInvoice(raw: Record<string, unknown>): BillingInvoice {
     issue_date: String(raw.issue_date ?? ""),
     due_date: raw.due_date != null ? String(raw.due_date) : null,
     paid_at: raw.paid_at != null ? String(raw.paid_at) : null,
+    primary_line_type: raw.primary_line_type != null ? String(raw.primary_line_type) : null,
+    primary_description: raw.primary_description != null ? String(raw.primary_description) : null,
   }
 }
 
@@ -351,6 +355,7 @@ export type PaymentTransaction = {
   processed_at: string | null
   created_at: string
   invoice_number: string | null
+  primary_line_type: string | null
   invoice_description: string | null
   card_brand: string | null
   card_last4: string | null
@@ -371,6 +376,7 @@ function normalizeTransaction(raw: Record<string, unknown>): PaymentTransaction 
     processed_at: raw.processed_at != null ? String(raw.processed_at) : null,
     created_at: String(raw.created_at ?? ""),
     invoice_number: raw.invoice_number != null ? String(raw.invoice_number) : null,
+    primary_line_type: raw.primary_line_type != null ? String(raw.primary_line_type) : null,
     invoice_description: raw.invoice_description != null ? String(raw.invoice_description) : null,
     card_brand: raw.card_brand != null ? String(raw.card_brand) : null,
     card_last4: raw.card_last4 != null ? String(raw.card_last4) : null,

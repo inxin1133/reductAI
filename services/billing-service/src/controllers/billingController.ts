@@ -491,6 +491,25 @@ async function ensureBillingAccount(client: any, tenantId: string, currency: str
   return billingAccountId || null
 }
 
+async function resolvePaymentMethodId(client: any, billingAccountId: string, inputId?: string | null) {
+  const candidate = toStr(inputId)
+  if (candidate) {
+    const check = await client.query(
+      `SELECT id FROM payment_methods WHERE id = $1 AND billing_account_id = $2 AND status <> 'deleted'`,
+      [candidate, billingAccountId]
+    )
+    if (check.rows[0]?.id) return check.rows[0].id as string
+  }
+  const fallback = await client.query(
+    `SELECT pm.id AS id
+     FROM billing_accounts ba
+     LEFT JOIN payment_methods pm ON pm.id = ba.default_payment_method_id AND pm.status <> 'deleted'
+     WHERE ba.id = $1`,
+    [billingAccountId]
+  )
+  return (fallback.rows[0]?.id as string | undefined) ?? null
+}
+
 async function insertPaymentTransaction(
   client: any,
   params: {
@@ -2644,7 +2663,6 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
       transactionStarted = false
       return res.status(500).json({ message: "Failed to resolve billing account" })
     }
-
     const taxRateRow = taxCountryCode ? await pickLatestTaxRate(client, taxCountryCode) : null
     const taxRatePercent = taxRateRow ? Number(taxRateRow.rate_percent) : 0
     const taxAmountUsd =
@@ -2752,9 +2770,9 @@ export async function provisionBillingSubscription(req: Request, res: Response) 
       INSERT INTO payment_transactions
         (invoice_id, billing_account_id, provider, transaction_type, status,
          amount_usd, currency, amount_local, local_currency,
-         processed_at, provider_transaction_id, metadata)
+         payment_method_id, processed_at, provider_transaction_id, metadata)
       VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
       `,
       [
         invoiceRow.id,
@@ -4228,7 +4246,8 @@ export async function listMyTransactions(req: Request, res: Response) {
          pt.created_at,
          pt.metadata,
          i.invoice_number,
-         (SELECT li.description FROM invoice_line_items li WHERE li.invoice_id = pt.invoice_id ORDER BY li.created_at LIMIT 1) AS invoice_description,
+         (SELECT li.line_type FROM invoice_line_items li WHERE li.invoice_id = pt.invoice_id ORDER BY li.amount_usd DESC, li.created_at LIMIT 1) AS primary_line_type,
+         (SELECT li.description FROM invoice_line_items li WHERE li.invoice_id = pt.invoice_id ORDER BY li.amount_usd DESC, li.created_at LIMIT 1) AS invoice_description,
          pm.card_brand,
          pm.card_last4,
          pm.type AS pm_type
@@ -4333,6 +4352,7 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
     const action = toStr(req.body?.action) || "change"
     const targetPlanId = toStr(req.body?.target_plan_id)
     const targetBillingCycle = toStr(req.body?.target_billing_cycle)
+    const paymentMethodIdInput = toStr(req.body?.payment_method_id) || null
     if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
     if (action !== "change" && action !== "cancel") return res.status(400).json({ message: "invalid action" })
 
@@ -4350,6 +4370,7 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
     const nowIso = new Date().toISOString()
     const billingAccountId = await ensureBillingAccount(client, tenantId, quote.currency, userId)
     if (!billingAccountId) return res.status(500).json({ message: "Failed to resolve billing account" })
+    const paymentMethodId = await resolvePaymentMethodId(client, billingAccountId, paymentMethodIdInput)
 
     await client.query("BEGIN")
     transactionStarted = true
@@ -4558,6 +4579,7 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
         local_currency: quote.currency,
         transaction_type: "charge",
         metadata: metadataBase,
+        payment_method_id: paymentMethodId,
       })
     }
     if (quote.refund_amount > 0) {
@@ -4569,6 +4591,7 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
         local_currency: quote.currency,
         transaction_type: "refund",
         metadata: metadataBase,
+        payment_method_id: paymentMethodId,
       })
     }
 
@@ -4756,6 +4779,7 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
     const planId = toStr(req.body?.plan_id)
     const billingCycle = toStr(req.body?.billing_cycle)
     const provider = toStr(req.body?.provider) || "toss"
+    const paymentMethodIdInput = toStr(req.body?.payment_method_id) || null
 
     if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
     if (!planId) return res.status(400).json({ message: "plan_id is required" })
@@ -4922,6 +4946,7 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
       transactionStarted = false
       return res.status(500).json({ message: "Failed to resolve billing account" })
     }
+    const paymentMethodId = await resolvePaymentMethodId(client, billingAccountId, paymentMethodIdInput)
 
     const invoiceColumns = await loadInvoiceColumns(client)
     const invoiceCols: string[] = []
@@ -5016,9 +5041,9 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
       INSERT INTO payment_transactions
         (invoice_id, billing_account_id, provider, transaction_type, status,
          amount_usd, currency, amount_local, local_currency,
-         processed_at, provider_transaction_id, metadata)
+         payment_method_id, processed_at, provider_transaction_id, metadata)
       VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
       RETURNING *
       `,
       [
@@ -5031,6 +5056,7 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
         "USD",
         totalAmount,
         currency,
+        paymentMethodId,
         periodStartIso,
         makeInvoiceNumber("USR-TX"),
         JSON.stringify(subscriptionMeta),
@@ -5549,6 +5575,7 @@ export async function checkoutTopupPurchase(req: Request, res: Response) {
     const tenantId = toStr(authed.tenantId)
     const productId = toStr(req.body?.product_id)
     const provider = toStr(req.body?.provider) || "toss"
+    const paymentMethodIdInput = toStr(req.body?.payment_method_id) || null
 
     if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
     if (!productId) return res.status(400).json({ message: "product_id is required" })
@@ -5616,6 +5643,7 @@ export async function checkoutTopupPurchase(req: Request, res: Response) {
       transactionStarted = false
       return res.status(500).json({ message: "Failed to resolve billing account" })
     }
+    const paymentMethodId = await resolvePaymentMethodId(client, billingAccountId, paymentMethodIdInput)
 
     const topupMeta = {
       source: "topup_checkout",
@@ -5686,9 +5714,9 @@ export async function checkoutTopupPurchase(req: Request, res: Response) {
       `INSERT INTO payment_transactions
         (invoice_id, billing_account_id, provider, transaction_type, status,
          amount_usd, currency, amount_local, local_currency,
-         processed_at, provider_transaction_id, metadata)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb) RETURNING *`,
-      [invoiceRow.id, billingAccountId, provider, "charge", "succeeded", totalAmountUsd, "USD", totalAmount, targetCurrency, nowIso, makeInvoiceNumber("TOP-TX"), JSON.stringify(topupMeta)]
+         payment_method_id, processed_at, provider_transaction_id, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb) RETURNING *`,
+      [invoiceRow.id, billingAccountId, provider, "charge", "succeeded", totalAmountUsd, "USD", totalAmount, targetCurrency, paymentMethodId, nowIso, makeInvoiceNumber("TOP-TX"), JSON.stringify(topupMeta)]
     )
     const txRow = txRes.rows[0]
 
@@ -5859,6 +5887,7 @@ export async function checkoutSeatAddonPurchase(req: Request, res: Response) {
     const tenantId = toStr(authed.tenantId)
     const quantity = toInt(req.body?.quantity, null)
     const provider = toStr(req.body?.provider) || "toss"
+    const paymentMethodIdInput = toStr(req.body?.payment_method_id) || null
 
     if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
     if (!quantity || quantity <= 0) return res.status(400).json({ message: "quantity must be positive" })
@@ -5937,6 +5966,7 @@ export async function checkoutSeatAddonPurchase(req: Request, res: Response) {
       transactionStarted = false
       return res.status(500).json({ message: "Failed to resolve billing account" })
     }
+    const paymentMethodId = await resolvePaymentMethodId(client, billingAccountId, paymentMethodIdInput)
 
     const addonMeta = {
       source: "seat_addon_checkout",
@@ -6019,8 +6049,8 @@ export async function checkoutSeatAddonPurchase(req: Request, res: Response) {
       `INSERT INTO payment_transactions
         (invoice_id, billing_account_id, provider, transaction_type, status,
          amount_usd, currency, amount_local, local_currency,
-         processed_at, provider_transaction_id, metadata)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb) RETURNING *`,
+         payment_method_id, processed_at, provider_transaction_id, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb) RETURNING *`,
       [
         invoiceRow.id,
         billingAccountId,
@@ -6031,6 +6061,7 @@ export async function checkoutSeatAddonPurchase(req: Request, res: Response) {
         "USD",
         totalAmount,
         targetCurrency,
+        paymentMethodId,
         nowIso,
         makeInvoiceNumber("SEAT-TX"),
         JSON.stringify(addonMeta),
@@ -6233,7 +6264,9 @@ export async function listMyInvoices(req: Request, res: Response) {
         i.exchange_rate, i.local_currency, i.local_subtotal, i.local_tax, i.local_total,
         i.period_start, i.period_end, i.issue_date, i.due_date, i.paid_at,
         b.name AS plan_name, b.tier AS plan_tier,
-        s.billing_cycle
+        s.billing_cycle,
+        (SELECT li.line_type FROM invoice_line_items li WHERE li.invoice_id = i.id ORDER BY li.amount_usd DESC, li.created_at LIMIT 1) AS primary_line_type,
+        (SELECT li.description FROM invoice_line_items li WHERE li.invoice_id = i.id ORDER BY li.amount_usd DESC, li.created_at LIMIT 1) AS primary_description
       FROM billing_invoices i
       LEFT JOIN billing_subscriptions s ON s.id = i.subscription_id
       LEFT JOIN billing_plans b ON b.id = s.plan_id

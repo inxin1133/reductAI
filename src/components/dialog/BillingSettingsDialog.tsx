@@ -27,6 +27,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { formatPhone, normalizePhoneDigits } from "@/lib/phone"
 import { CURRENCY_OPTIONS, COUNTRY_OPTIONS } from "@/lib/billingOptions"
 import { cardBg, cardLabel, formatExpiryLabel, getCardBrandIcon, normalizeCardBrand } from "@/lib/card"
+import { LINE_TYPE_CONFIG, type BillingLineType } from "@/lib/billingLineType"
 import type { CardBrand } from "@/lib/billingFlow"
 import { currencySymbol, formatMoney, normalizeCurrency } from "@/lib/currency"
 import { PLAN_TIER_LABELS, PLAN_TIER_STYLES, type PlanTier } from "@/lib/planTier"
@@ -77,6 +78,7 @@ const TX_TYPE_LABELS: Record<string, string> = {
   refund: "환불",
   adjustment: "조정",
 }
+
 
 function formatInvoiceDate(value: string | null | undefined): string {
   if (!value) return "-"
@@ -1047,40 +1049,65 @@ export function BillingSettingsDialog({ open, onOpenChange, initialMenu, onOpenP
                         <Table>
                           <TableHeader>
                             <TableRow>
-                              <TableHead className="text-sm">청구서 번호</TableHead>
-                              <TableHead className="text-sm">발행일</TableHead>
-                              <TableHead className="text-sm">상태</TableHead>
-                              <TableHead className="text-sm text-right">금액</TableHead>
+                              <TableHead className="text-sm w-[90px]">유형</TableHead>
+                              <TableHead className="text-sm">내용</TableHead>
+                              <TableHead className="text-sm w-[130px]">청구서 번호</TableHead>
+                              <TableHead className="text-sm w-[100px]">발행일</TableHead>
+                              <TableHead className="text-sm w-[70px]">상태</TableHead>
+                              <TableHead className="text-sm text-right w-[120px]">금액</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {invoices.map((inv) => (
-                              <TableRow
-                                key={inv.id}
-                                className="cursor-pointer transition-colors hover:bg-accent/50"
-                                onClick={() => handleViewInvoice(inv.id)}
-                              >
-                                <TableCell className="text-sm font-medium text-foreground">{inv.invoice_number}</TableCell>
-                                <TableCell className="text-sm text-muted-foreground">{formatInvoiceDate(inv.issue_date)}</TableCell>
-                                <TableCell>
-                                  <span className={cn("inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ring-1", INVOICE_STATUS_CONFIG[inv.status]?.className ?? "")}>
-                                    {INVOICE_STATUS_CONFIG[inv.status]?.label ?? inv.status}
-                                  </span>
-                                </TableCell>
-                                <TableCell className="text-right text-sm text-foreground">
-                                  {inv.local_total != null && inv.local_currency !== "USD" ? (
-                                    <>
-                                      {currencySymbol(inv.local_currency)}{formatMoney(inv.local_total, inv.local_currency)}
-                                      <div className="text-xs text-muted-foreground">
-                                        ${formatMoney(inv.total_usd, "USD")}
-                                      </div>
-                                    </>
-                                  ) : (
-                                    <>${formatMoney(inv.total_usd, "USD")}</>
-                                  )}
-                                </TableCell>
-                              </TableRow>
-                            ))}
+                            {invoices.map((inv) => {
+                              const ltCfg =
+                                inv.primary_line_type && inv.primary_line_type in LINE_TYPE_CONFIG
+                                  ? LINE_TYPE_CONFIG[inv.primary_line_type as BillingLineType]
+                                  : null
+                              return (
+                                <TableRow
+                                  key={inv.id}
+                                  className="cursor-pointer transition-colors hover:bg-accent/50"
+                                  onClick={() => handleViewInvoice(inv.id)}
+                                >
+                                  <TableCell>
+                                    {ltCfg ? (
+                                      <span className={cn("inline-flex rounded-md px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap", ltCfg.className)}>
+                                        {ltCfg.label}
+                                      </span>
+                                    ) : (
+                                      <span className="text-xs text-muted-foreground">-</span>
+                                    )}
+                                  </TableCell>
+                                  <TableCell className="text-xs max-w-[180px] truncate" title={inv.primary_description ?? ""}>
+                                    {inv.primary_description || "-"}
+                                  </TableCell>
+                                  <TableCell
+                                    className="text-xs font-medium text-foreground"
+                                    title={inv.invoice_number}
+                                  >
+                                    {inv.invoice_number.length > 12 ? `${inv.invoice_number.slice(0, 12)}…` : inv.invoice_number}
+                                  </TableCell>
+                                  <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{formatInvoiceDate(inv.issue_date)}</TableCell>
+                                  <TableCell>
+                                    <span className={cn("inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ring-1", INVOICE_STATUS_CONFIG[inv.status]?.className ?? "")}>
+                                      {INVOICE_STATUS_CONFIG[inv.status]?.label ?? inv.status}
+                                    </span>
+                                  </TableCell>
+                                  <TableCell className="text-right text-sm text-foreground">
+                                    {inv.local_total != null && inv.local_currency !== "USD" ? (
+                                      <>
+                                        {currencySymbol(inv.local_currency)}{formatMoney(inv.local_total, inv.local_currency)}
+                                        <div className="text-xs text-muted-foreground">
+                                          ${formatMoney(inv.total_usd, "USD")}
+                                        </div>
+                                      </>
+                                    ) : (
+                                      <>${formatMoney(inv.total_usd, "USD")}</>
+                                    )}
+                                  </TableCell>
+                                </TableRow>
+                              )
+                            })}
                           </TableBody>
                         </Table>
                         {invoicesTotal > INVOICES_PER_PAGE ? (
@@ -1387,6 +1414,7 @@ export function BillingSettingsDialog({ open, onOpenChange, initialMenu, onOpenP
               ) : null}
 
               {activeMenu === "transactions" ? (
+                // 결제 내역 관리
                 <div className="space-y-4">
                   {txLoading ? (
                     <div className="flex items-center justify-center py-12">
@@ -1450,7 +1478,13 @@ export function BillingSettingsDialog({ open, onOpenChange, initialMenu, onOpenP
                                   </span>
                                 </TableCell>
                                 <TableCell className="text-xs max-w-[200px] truncate" title={tx.invoice_description ?? tx.invoice_number ?? ""}>
-                                  {tx.invoice_description || tx.invoice_number || "-"}
+                                  {(() => {
+                                    const ltCfg =
+                                      tx.primary_line_type && tx.primary_line_type in LINE_TYPE_CONFIG
+                                        ? LINE_TYPE_CONFIG[tx.primary_line_type as BillingLineType]
+                                        : null
+                                    return ltCfg ? ltCfg.label : (tx.invoice_description || tx.invoice_number || "-")
+                                  })()}
                                 </TableCell>
                                 <TableCell className="whitespace-nowrap">
                                   {tx.card_last4 ? (

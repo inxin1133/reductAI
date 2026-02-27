@@ -322,12 +322,22 @@ export default function PaymentConfirm() {
   const requiresPayment = isChangeFlow
     ? Boolean(changeQuote && Number.isFinite(changeQuote.total_amount) && changeQuote.total_amount > 0)
     : Boolean(quote && Number.isFinite(quote.total_amount))
+  const resolvedPaymentMethodId = useMemo(() => {
+    if (selectedCardId) return selectedCardId
+    if (card?.brand && card?.last4) {
+      const match = cardOptions.find((option) => option.brand === card.brand && option.last4 === card.last4)
+      if (match?.id) return match.id
+    }
+    const fallback = cardOptions.find((option) => option.isDefault) ?? cardOptions[0]
+    return fallback?.id ?? null
+  }, [card?.brand, card?.last4, cardOptions, selectedCardId])
+  const hasPaymentMethod = Boolean(resolvedPaymentMethodId)
   const canPay = isTopupFlow || isSeatFlow
     ? Boolean(
         quote &&
           Number.isFinite(quote.total_amount) &&
           agreeTerms &&
-          card?.last4 &&
+          hasPaymentMethod &&
           billingInfo.name &&
           billingInfo.email &&
           billingInfo.address1 &&
@@ -341,13 +351,13 @@ export default function PaymentConfirm() {
             !paying &&
             !quoteLoading &&
             (!requiresPayment ||
-              (card?.last4 && billingInfo.name && billingInfo.email && billingInfo.address1))
+              (hasPaymentMethod && billingInfo.name && billingInfo.email && billingInfo.address1))
         )
       : Boolean(
           quote &&
             Number.isFinite(quote.total_amount) &&
             agreeTerms &&
-            card?.last4 &&
+            hasPaymentMethod &&
             billingInfo.name &&
             billingInfo.email &&
             billingInfo.address1 &&
@@ -563,6 +573,7 @@ export default function PaymentConfirm() {
             holder: selected.holder,
             expiry: selected.expiry,
           })
+          setSelectedCardId(selected.id)
           writeBillingCard({
             brand: selected.brand,
             last4: selected.last4,
@@ -636,6 +647,7 @@ export default function PaymentConfirm() {
       holder: selected.holder,
       expiry: selected.expiry,
     })
+    setSelectedCardId(selected.id)
     setIsCardSelectOpen(false)
   }
 
@@ -757,6 +769,12 @@ export default function PaymentConfirm() {
       alert("로그인이 필요합니다.")
       return
     }
+    const paymentMethodId = resolvedPaymentMethodId
+    const needsPaymentMethod = !isChangeFlow || requiresPayment
+    if (needsPaymentMethod && !paymentMethodId) {
+      alert("결제 수단을 선택해주세요.")
+      return
+    }
 
     try {
       setPaying(true)
@@ -766,7 +784,7 @@ export default function PaymentConfirm() {
         const res = await fetch("/api/ai/billing/user/topup-checkout", {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
-          body: JSON.stringify({ product_id: state.topupProductId }),
+          body: JSON.stringify({ product_id: state.topupProductId, payment_method_id: paymentMethodId }),
         })
         const data = (await res.json().catch(() => null)) as TopupCheckoutResponse | null
         if (!res.ok || !data?.ok) throw new Error(data?.message || "FAILED_TOPUP")
@@ -791,7 +809,7 @@ export default function PaymentConfirm() {
         const res = await fetch("/api/ai/billing/user/seat-addon-checkout", {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
-          body: JSON.stringify({ quantity: state.seatQuantity }),
+          body: JSON.stringify({ quantity: state.seatQuantity, payment_method_id: paymentMethodId }),
         })
         const data = (await res.json().catch(() => null)) as SeatAddonCheckoutResponse | null
         if (!res.ok || !data?.ok) throw new Error(data?.message || "FAILED_SEAT_ADDON")
@@ -815,6 +833,7 @@ export default function PaymentConfirm() {
             action: "change",
             target_plan_id: state.planId || null,
             target_billing_cycle: state.billingCycle || null,
+            payment_method_id: paymentMethodId,
           }),
         })
         const data = (await res.json().catch(() => null)) as ApplySubscriptionChangeResponse | null
@@ -859,6 +878,7 @@ export default function PaymentConfirm() {
         body: JSON.stringify({
           plan_id: state.planId,
           billing_cycle: state.billingCycle,
+          payment_method_id: paymentMethodId,
         }),
       })
       const data = (await res.json().catch(() => null)) as CheckoutResponse | null
