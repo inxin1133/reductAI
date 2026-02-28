@@ -9,6 +9,7 @@ import { fetchBillingPlansWithPrices } from "@/services/billingService"
 import type { BillingPlanWithPrices } from "@/services/billingService"
 import { PLAN_TIER_ORDER, type PlanTier } from "@/lib/planTier"
 import { extractPlanHighlights, formatPlanCredits } from "@/lib/billingPlanContent"
+import { TermsAgreementDialog, type TermsDialogType } from "@/components/dialog/TermsAgreementDialog"
 
 type PlanDialogProps = {
   open: boolean
@@ -139,6 +140,7 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
   const [billingCycle, setBillingCycle] = useState<BillingCycle>("monthly")
   const [currentSubscription, setCurrentSubscription] = useState<SubscriptionSummary | null>(null)
   const [subscriptionLoading, setSubscriptionLoading] = useState(false)
+  const [refundPolicyDialogType, setRefundPolicyDialogType] = useState<TermsDialogType>(null)
   const normalizedCurrentTier = useMemo(
     () => normalizePlanTier(currentSubscription?.plan_tier ?? currentTier) ?? "free",
     [currentSubscription?.plan_tier, currentTier]
@@ -291,6 +293,15 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
           </div>
         </div>
 
+        <div className="px-6 py-3 w-full">          
+          <h1 className="text-xl font-black text-center text-foreground lg:text-2xl">
+            합리적인 가격으로 시작하세요
+          </h1>
+          <p className="mt-2 text-center text-muted-foreground">
+            개인부터 대규모 팀까지, 필요에 맞는 플랜을 선택하세요.            
+          </p>
+        </div>
+
         {/* Content */}
         <div className="max-h-[calc(100vh-14rem)] overflow-y-auto px-6 py-6">
           {loading ? (
@@ -326,7 +337,7 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
                 })
                 const credits = creditDisplay.label
                 const creditsIsMonthly = creditDisplay.isMonthly
-                const storage = formatStorage(plan.storage_limit_mb)
+                // const storage = formatStorage(plan.storage_limit_mb)
                 const seats =
                   plan.max_seats == null
                     ? `${plan.included_seats}명+`
@@ -495,8 +506,21 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
               })}
             </div>
           )}
+
+          {/* 유료서비스, 자동결제 및 환불정책 */}
+          <div className="flex flex-1 mt-8 justify-center">
+            <Button variant="ghost" size="xs" className="text-muted-foreground" onClick={() => setRefundPolicyDialogType("refund")}>
+              유료서비스, 자동결제 및 환불정책
+            </Button>
+          </div>
+
         </div>
       </div>
+
+      <TermsAgreementDialog
+        type={refundPolicyDialogType}
+        onOpenChange={(open) => !open && setRefundPolicyDialogType(null)}
+      />
     </div>,
     document.body
   )

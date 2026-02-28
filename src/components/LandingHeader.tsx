@@ -75,10 +75,10 @@ export function LandingHeader() {
                 <Link
                   key={item.to}
                   to={item.to}
-                  className={`rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-accent hover:text-foreground ${
+                  className={`rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-accent hover:!text-foreground ${
                     location.pathname === item.to
-                      ? "text-foreground"
-                      : "text-muted-foreground"
+                      ? "!text-foreground"
+                      : "!text-muted-foreground"
                   }`}
                 >
                   {item.label}
@@ -136,8 +136,8 @@ export function LandingHeader() {
                   to={item.to}
                   className={`rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-accent ${
                     location.pathname === item.to
-                      ? "text-foreground bg-accent"
-                      : "text-muted-foreground"
+                      ? "!text-foreground bg-accent"
+                      : "!text-muted-foreground"
                   }`}
                 >
                   {item.label}

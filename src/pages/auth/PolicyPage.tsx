@@ -413,7 +413,7 @@ export default function PolicyPage() {
 
   return (
     <section className="py-16">
-      <div className="mx-auto max-w-[900px] px-6">
+      <div className="mx-auto max-w-[1000px] px-6">
         <div className="flex flex-col gap-8 md:flex-row md:gap-12">
           <aside className="shrink-0 md:w-[180px]">
             <nav className="sticky top-24 flex flex-row gap-1 overflow-x-auto md:flex-col md:gap-0.5">

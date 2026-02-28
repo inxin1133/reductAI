@@ -108,7 +108,7 @@ export default function Intro() {
     <>
       {/* Hero Section */}
       <section className="relative overflow-hidden py-16 lg:py-24">
-        <div className="mx-auto max-w-[1280px] px-6">
+        <div className="mx-auto max-w-[1000px] px-6">
           <div className="flex flex-col items-center text-center">
             <h1 className="text-4xl font-black leading-tight text-primary lg:text-6xl">
               reductAI
@@ -157,7 +157,7 @@ export default function Intro() {
 
       {/* Chat Demo */}
       <section className="border-t border-border/40 bg-muted/20 py-12">
-        <div className="mx-auto max-w-[1280px] px-6">
+        <div className="mx-auto max-w-[1000px] px-6">
           <div className="mx-auto max-w-[800px]">
             <ChatInterface />
           </div>
@@ -166,7 +166,7 @@ export default function Intro() {
 
       {/* Quick Feature Overview */}
       <section className="py-20">
-        <div className="mx-auto max-w-[1280px] px-6">
+        <div className="mx-auto max-w-[1000px] px-6">
           <h2 className="mb-10 text-center text-3xl font-bold text-foreground">
             왜 ReductAI인가요?
           </h2>
@@ -208,7 +208,7 @@ export default function Intro() {
 
       {/* CTA */}
       <section className="border-t border-border/40 bg-muted/20 py-16">
-        <div className="mx-auto max-w-[1280px] px-6 text-center">
+        <div className="mx-auto max-w-[1000px] px-6 text-center">
           <h2 className="text-2xl font-bold text-foreground">
             지금 바로 AI의 힘을 경험하세요
           </h2>

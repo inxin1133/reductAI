@@ -109,7 +109,7 @@ export default function PricingPage() {
     <>
       {/* Hero */}
       <section className="py-20 lg:py-28">
-        <div className="mx-auto max-w-[1280px] px-6 text-center">
+        <div className="mx-auto max-w-[1000px] px-6 text-center">
           <span className="mb-4 inline-block rounded-full bg-primary/10 px-4 py-1.5 text-sm font-medium text-primary">
             Pricing
           </span>
@@ -117,9 +117,7 @@ export default function PricingPage() {
             합리적인 가격으로<br />시작하세요
           </h1>
           <p className="mx-auto mt-4 max-w-xl text-lg text-muted-foreground">
-            개인부터 대규모 팀까지, 필요에 맞는 플랜을 선택하세요.
-            <br />
-            모든 가격은 부가세 별도입니다.
+            개인부터 대규모 팀까지, 필요에 맞는 플랜을 선택하세요.            
           </p>
 
           {/* Billing cycle toggle */}
@@ -337,7 +335,7 @@ export default function PricingPage() {
 
       {/* CTA */}
       <section className="py-20">
-        <div className="mx-auto max-w-[1280px] px-6 text-center">
+        <div className="mx-auto max-w-[1000px] px-6 text-center">
           <h2 className="text-3xl font-bold text-foreground">
             더 궁금한 점이 있으신가요?
           </h2>
@@ -346,7 +344,7 @@ export default function PricingPage() {
           </p>
           <div className="mt-8">
             <Link to="/contact">
-              <Button size="lg" variant="outline">
+              <Button size="lg" variant="outline" >
                 문의하기
               </Button>
             </Link>

@@ -22,7 +22,7 @@ export function LandingFooter() {
         <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-4">
           {/* Brand */}
           <div className="space-y-3">
-            <Link to="/" className="inline-block text-lg font-black text-primary">
+            <Link to="/" className="inline-block text-lg !font-black !text-primary">
               reduct
             </Link>
             <p className="text-sm text-muted-foreground leading-relaxed">
@@ -42,7 +42,7 @@ export function LandingFooter() {
                 <Link
                   key={link.to}
                   to={link.to}
-                  className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+                  className="text-sm !text-muted-foreground transition-colors hover:!text-foreground"
                 >
                   {link.label}
                 </Link>
@@ -58,7 +58,7 @@ export function LandingFooter() {
                 <Link
                   key={link.to}
                   to={link.to}
-                  className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+                  className="text-sm !text-muted-foreground transition-colors hover:!text-foreground"
                 >
                   {link.label}
                 </Link>
@@ -73,7 +73,7 @@ export function LandingFooter() {
               <p>
                 <a
                   href="mailto:admin@reduct.page"
-                  className="transition-colors hover:text-foreground"
+                  className="transition-colors hover:!text-foreground"
                 >
                   admin@reduct.page
                 </a>
@@ -83,7 +83,7 @@ export function LandingFooter() {
                   href="https://reduct.page"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="transition-colors hover:text-foreground"
+                  className="transition-colors !text-muted-foreground hover:!text-foreground"
                 >
                   reduct.page
                 </a>

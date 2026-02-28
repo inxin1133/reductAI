@@ -164,7 +164,7 @@ export default function ModelsPage() {
     <>
       {/* Hero */}
       <section className="py-20 lg:py-28">
-        <div className="mx-auto max-w-[1280px] px-6 text-center">
+        <div className="mx-auto max-w-[1000px] px-6 text-center">
           <span className="mb-4 inline-block rounded-full bg-primary/10 px-4 py-1.5 text-sm font-medium text-primary">
             LLM Models
           </span>

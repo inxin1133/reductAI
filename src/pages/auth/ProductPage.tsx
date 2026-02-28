@@ -43,7 +43,7 @@ export default function ProductPage() {
     <>
       {/* Hero */}
       <section className="relative overflow-hidden py-20 lg:py-28">
-        <div className="mx-auto max-w-[1280px] px-6 text-center">
+        <div className="mx-auto max-w-[1000px] px-6 text-center">
           <span className="mb-4 inline-block rounded-full bg-primary/10 px-4 py-1.5 text-sm font-medium text-primary">
             제품 소개
           </span>
@@ -70,7 +70,7 @@ export default function ProductPage() {
 
       {/* AI Agent Section */}
       <section className="border-t border-border/40 bg-muted/20 py-20">
-        <div className="mx-auto max-w-[1280px] px-6">
+        <div className="mx-auto max-w-[1000px] px-6">
           <div className="mb-12 text-center">
             <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-teal-50 px-3 py-1 text-sm font-medium text-teal-600 dark:bg-teal-950 dark:text-teal-400">
               <Bot className="size-4" />
@@ -119,7 +119,7 @@ export default function ProductPage() {
 
       {/* File Management Section */}
       <section className="py-20">
-        <div className="mx-auto max-w-[1280px] px-6">
+        <div className="mx-auto max-w-[1000px] px-6">
           <div className="mb-12 text-center">
             <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-sm font-medium text-indigo-600 dark:bg-indigo-950 dark:text-indigo-400">
               <FolderOpen className="size-4" />
@@ -153,7 +153,7 @@ export default function ProductPage() {
 
       {/* Page Section */}
       <section className="border-t border-border/40 bg-muted/20 py-20">
-        <div className="mx-auto max-w-[1280px] px-6">
+        <div className="mx-auto max-w-[1000px] px-6">
           <div className="mb-12 text-center">
             <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-amber-50 px-3 py-1 text-sm font-medium text-amber-600 dark:bg-amber-950 dark:text-amber-400">
               <FileText className="size-4" />
@@ -202,7 +202,7 @@ export default function ProductPage() {
 
       {/* CTA */}
       <section className="py-20">
-        <div className="mx-auto max-w-[1280px] px-6 text-center">
+        <div className="mx-auto max-w-[1000px] px-6 text-center">
           <h2 className="text-3xl font-bold text-foreground">
             지금 바로 시작하세요
           </h2>

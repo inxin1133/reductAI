@@ -7,7 +7,7 @@ export default function AboutPage() {
     <>
       {/* Hero */}
       <section className="py-20 lg:py-28">
-        <div className="mx-auto max-w-[1280px] px-6 text-center">
+        <div className="mx-auto max-w-[1000px] px-6 text-center">
           <span className="mb-4 inline-block rounded-full bg-primary/10 px-4 py-1.5 text-sm font-medium text-primary">
             About Us
           </span>
@@ -24,7 +24,7 @@ export default function AboutPage() {
 
       {/* Name meaning */}
       <section className="border-t border-border/40 bg-muted/20 py-20">
-        <div className="mx-auto max-w-[1280px] px-6">
+        <div className="mx-auto max-w-[1000px] px-6">
           <div className="grid grid-cols-1 gap-12 lg:grid-cols-2 lg:items-center">
             <div>
               <h2 className="text-3xl font-bold text-foreground mb-6">리덕트AI의 뜻</h2>
@@ -76,7 +76,7 @@ export default function AboutPage() {
 
       {/* Service Direction */}
       <section className="py-20">
-        <div className="mx-auto max-w-[1280px] px-6">
+        <div className="mx-auto max-w-[1000px] px-6">
           <div className="mb-12 text-center">
             <h2 className="text-3xl font-bold text-foreground">서비스 지향점</h2>
             <p className="mx-auto mt-3 max-w-xl text-muted-foreground">
@@ -156,7 +156,7 @@ export default function AboutPage() {
 
       {/* CTA */}
       <section className="border-t border-border/40 bg-muted/20 py-20">
-        <div className="mx-auto max-w-[1280px] px-6 text-center">
+        <div className="mx-auto max-w-[1000px] px-6 text-center">
           <h2 className="text-3xl font-bold text-foreground">
             함께 만들어가요
           </h2>

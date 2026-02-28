@@ -69,7 +69,7 @@ export default function ContactPage() {
     <>
       {/* Hero */}
       <section className="py-20 lg:py-28">
-        <div className="mx-auto max-w-[1280px] px-6 text-center">
+        <div className="mx-auto max-w-[1000px] px-6 text-center">
           <span className="mb-4 inline-block rounded-full bg-primary/10 px-4 py-1.5 text-sm font-medium text-primary">
             Contact
           </span>
@@ -83,7 +83,7 @@ export default function ContactPage() {
       </section>
 
       <section className="border-t border-border/40 bg-muted/20 py-20">
-        <div className="mx-auto max-w-[1280px] px-6">
+        <div className="mx-auto max-w-[1000px] px-6">
           <div className="grid grid-cols-1 gap-12 lg:grid-cols-5">
             {/* Contact Info */}
             <div className="space-y-8 lg:col-span-2">

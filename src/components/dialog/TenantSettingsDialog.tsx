@@ -28,6 +28,7 @@ import { ProfileAvatar } from "@/lib/ProfileAvatar"
 import { toast } from "sonner"
 import { appendVisited } from "@/lib/billingFlow"
 import { fetchBillingPlansWithPrices, fetchTopupProducts, type BillingPlanWithPrices, type TopupProduct } from "@/services/billingService"
+import { TopupOptionsDialog } from "@/components/dialog/TopupOptionsDialog"
 
 type TenantSettingsDialogProps = {
   open: boolean
@@ -470,6 +471,7 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
   const [currentBillingPlan, setCurrentBillingPlan] = useState<BillingPlanWithPrices | null>(null)
   const [billingPlanLoading, setBillingPlanLoading] = useState(false)
   const [seatDialogOpen, setSeatDialogOpen] = useState(false)
+  const [topupOptionsDialogOpen, setTopupOptionsDialogOpen] = useState(false)
   const [seatQuantity, setSeatQuantity] = useState(1)
   const [seatDialogError, setSeatDialogError] = useState<string | null>(null)
   const [topupUsage, setTopupUsage] = useState<TopupUsageResponse | null>(null)
@@ -2433,10 +2435,16 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                                     </span>
                                     <span className="text-xs text-muted-foreground">{item.unit}</span>
                                   </div>
-                                  {item.label === "현재 보유량" ? (
+                                  {item.label === "현재 보유량" && isOwner ? (
                                     <Tooltip>
                                       <TooltipTrigger asChild>
-                                        <Button variant="outline" size="sm" className="w-8 h-8" aria-label="추가 충전하기">
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          className="w-8 h-8"
+                                          aria-label="추가 충전하기"
+                                          onClick={() => setTopupOptionsDialogOpen(true)}
+                                        >
                                           <EvCharger className="text-blue-500" />
                                         </Button>
                                       </TooltipTrigger>
@@ -2935,6 +2943,15 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Dialog >
+
+      <TopupOptionsDialog
+        open={topupOptionsDialogOpen}
+        onOpenChange={setTopupOptionsDialogOpen}
+        onPurchase={(product) => {
+          setTopupOptionsDialogOpen(false)
+          void handleTopupPurchase(product)
+        }}
+      />
+    </Dialog>
   )
 }
