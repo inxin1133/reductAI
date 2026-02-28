@@ -15,6 +15,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
@@ -26,7 +27,7 @@ import { withActiveTenantHeader } from "@/lib/tenantContext"
 import { ProfileAvatar } from "@/lib/ProfileAvatar"
 import { toast } from "sonner"
 import { appendVisited } from "@/lib/billingFlow"
-import { fetchBillingPlansWithPrices, type BillingPlanWithPrices } from "@/services/billingService"
+import { fetchBillingPlansWithPrices, fetchTopupProducts, type BillingPlanWithPrices, type TopupProduct } from "@/services/billingService"
 
 type TenantSettingsDialogProps = {
   open: boolean
@@ -130,6 +131,45 @@ type ServiceUsageResponse = {
   periods?: ServiceUsagePeriod[]
   summary?: ServiceUsageSummary | null
   members?: ServiceUsageMember[]
+}
+
+type TopupUsageMember = {
+  user_id: string
+  user_name?: string | null
+  user_email?: string | null
+  used_credits?: number | string | null
+  is_active?: boolean | null
+  role_slug?: string | null
+  joined_at?: string | null
+  profile_image_url?: string | null
+}
+
+type TopupUsageSummary = {
+  period_start: string
+  period_end: string
+  total_credits?: number | null
+  used_credits?: number | null
+  remaining_credits?: number | null
+  usage_percent?: number | null
+  account_id?: string | null
+}
+
+type TopupUsageTopup = {
+  account_id?: string | null
+  balance_credits?: number | null
+  remaining_credits?: number | null
+  expires_at?: string | null
+  allow_when_empty?: boolean | null
+}
+
+type TopupUsageResponse = {
+  ok?: boolean
+  message?: string
+  current_period_end?: string | null
+  periods?: ServiceUsagePeriod[]
+  summary?: TopupUsageSummary | null
+  topup?: TopupUsageTopup | null
+  members?: TopupUsageMember[]
 }
 
 type TenantMemberRow = {
@@ -432,6 +472,14 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
   const [seatDialogOpen, setSeatDialogOpen] = useState(false)
   const [seatQuantity, setSeatQuantity] = useState(1)
   const [seatDialogError, setSeatDialogError] = useState<string | null>(null)
+  const [topupUsage, setTopupUsage] = useState<TopupUsageResponse | null>(null)
+  const [topupUsageLoading, setTopupUsageLoading] = useState(false)
+  const [topupPeriods, setTopupPeriods] = useState<ServiceUsagePeriod[]>([])
+  const [selectedTopupPeriodEnd, setSelectedTopupPeriodEnd] = useState("")
+  const [topupAutoUseSaving, setTopupAutoUseSaving] = useState(false)
+  const [topupMemberAccessSaving, setTopupMemberAccessSaving] = useState<string | null>(null)
+  const [topupProducts, setTopupProducts] = useState<TopupProduct[]>([])
+  const [topupProductsLoading, setTopupProductsLoading] = useState(false)
 
   const activeLabel = useMemo(
     () => MENU_ITEMS.find((item) => item.id === activeMenu)?.label ?? "테넌트 정보",
@@ -663,6 +711,119 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     }
   }, [authHeaders])
 
+  const loadTopupUsage = useCallback(
+    async (periodEnd?: string) => {
+      const headers = authHeaders()
+      if (!headers.Authorization) {
+        setTopupUsage(null)
+        setTopupPeriods([])
+        setSelectedTopupPeriodEnd("")
+        return
+      }
+      setTopupUsageLoading(true)
+      try {
+        const params = new URLSearchParams()
+        if (periodEnd) params.set("period_end", periodEnd)
+        const qs = params.toString()
+        const res = await fetch(`/api/ai/credits/my/topup-usage${qs ? `?${qs}` : ""}`, { headers })
+        const json = (await res.json().catch(() => null)) as TopupUsageResponse | null
+        if (!res.ok || !json?.ok) {
+          setTopupUsage(null)
+          setTopupPeriods([])
+          return
+        }
+        const periods = Array.isArray(json.periods) ? json.periods : []
+        const summaryPeriodStart = json.summary?.period_start
+        const summaryPeriodEnd = json.summary?.period_end
+        const nextPeriods =
+          periods.length || !summaryPeriodEnd
+            ? periods
+            : [{ period_start: summaryPeriodStart || "", period_end: summaryPeriodEnd }]
+        setTopupUsage(json)
+        setTopupPeriods(nextPeriods)
+        if (!periodEnd) {
+          const nextPeriodEnd = summaryPeriodEnd || nextPeriods[0]?.period_end
+          if (nextPeriodEnd) {
+            setSelectedTopupPeriodEnd((prev) => prev || nextPeriodEnd)
+          }
+        }
+      } catch (error) {
+        console.error(error)
+        setTopupUsage(null)
+        setTopupPeriods([])
+      } finally {
+        setTopupUsageLoading(false)
+      }
+    },
+    [authHeaders]
+  )
+
+  const loadTopupProducts = useCallback(async () => {
+    setTopupProductsLoading(true)
+    try {
+      const products = await fetchTopupProducts()
+      setTopupProducts(products)
+    } catch (e) {
+      console.error(e)
+      setTopupProducts([])
+    } finally {
+      setTopupProductsLoading(false)
+    }
+  }, [])
+
+  const handleToggleTopupAutoUse = useCallback(
+    async (checked: boolean) => {
+      const headers = authHeaders()
+      if (!headers.Authorization) return
+      setTopupAutoUseSaving(true)
+      try {
+        const res = await fetch("/api/ai/credits/my/topup-auto-use", {
+          method: "PATCH",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ allow_when_empty: checked }),
+        })
+        const json = await res.json().catch(() => null)
+        if (!res.ok || !json?.ok) {
+          toast.error(json?.message || "설정 저장에 실패했습니다.")
+          return
+        }
+        toast.success(checked ? "서비스 크레딧 소진시 자동 사용이 활성화되었습니다." : "자동 사용이 비활성화되었습니다.")
+        void loadTopupUsage(selectedTopupPeriodEnd || undefined)
+      } catch {
+        toast.error("설정 저장 중 오류가 발생했습니다.")
+      } finally {
+        setTopupAutoUseSaving(false)
+      }
+    },
+    [authHeaders, loadTopupUsage, selectedTopupPeriodEnd]
+  )
+
+  const handleToggleTopupMemberAccess = useCallback(
+    async (userId: string, checked: boolean) => {
+      const headers = authHeaders()
+      if (!headers.Authorization) return
+      setTopupMemberAccessSaving(userId)
+      try {
+        const res = await fetch("/api/ai/credits/my/member-topup-credit-access", {
+          method: "PATCH",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: userId, is_active: checked }),
+        })
+        const json = await res.json().catch(() => null)
+        if (!res.ok || !json?.ok) {
+          toast.error(json?.message || "멤버 설정 저장에 실패했습니다.")
+          return
+        }
+        void loadTopupUsage(selectedTopupPeriodEnd || undefined)
+      } catch {
+        toast.error("멤버 설정 저장 중 오류가 발생했습니다.")
+      } finally {
+        setTopupMemberAccessSaving(null)
+      }
+    },
+    [authHeaders, loadTopupUsage, selectedTopupPeriodEnd]
+  )
+
   const resolveNextBillingRoute = useCallback(async () => {
     const headers = authHeaders()
     if (!headers.Authorization) return "/billing/card"
@@ -688,6 +849,29 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
       return "/billing/card"
     }
   }, [authHeaders])
+
+  const handleTopupPurchase = useCallback(
+    async (product: TopupProduct) => {
+      const headers = authHeaders()
+      if (!headers.Authorization) {
+        toast.error("로그인이 필요합니다.")
+        return
+      }
+      const target = await resolveNextBillingRoute()
+      onOpenChange(false)
+      navigate(target, {
+        state: {
+          topupProductId: product.id,
+          topupProductName: product.name,
+          topupCredits: Number(product.credits),
+          topupPrice: product.price_usd,
+          action: "topup",
+          flow: appendVisited(undefined, "tenant_settings"),
+        },
+      })
+    },
+    [authHeaders, navigate, onOpenChange, resolveNextBillingRoute]
+  )
 
 
   const currentMembership = useMemo(() => {
@@ -837,6 +1021,53 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
 
   const selectedServicePeriodRange = selectedServicePeriod
     ? `${formatDateYmd(selectedServicePeriod.period_start)} ~ ${formatDateYmd(selectedServicePeriod.period_end)}`
+    : "-"
+
+  const topupSummary = topupUsage?.summary ?? null
+  const topupTotals = useMemo(() => {
+    if (!topupSummary) return null
+    const total = Number(topupSummary.total_credits ?? 0)
+    const used = Number(topupSummary.used_credits ?? 0)
+    const remaining = Number(topupSummary.remaining_credits ?? Math.max(0, total - used))
+    const percent = total > 0 ? (used / total) * 100 : 0
+    return { total, used, remaining, percent }
+  }, [topupSummary])
+
+  const topupAllowWhenEmpty = topupUsage?.topup?.allow_when_empty ?? false
+  const topupAutoUseLabel = topupUsageLoading
+    ? "불러오는 중..."
+    : topupAllowWhenEmpty
+      ? "서비스 크레딧 소진시 자동 사용"
+      : "테넌트 소유자가 충전 크레딧 사용을 제한 했습니다."
+  const hasTopupCredits = (topupTotals?.total ?? 0) > 0
+  const canControlTopupAutoUse = isOwner || isCurrentUserAdmin
+  const topupAutoUseReasons = useMemo(() => {
+    if (topupUsageLoading) return []
+    const reasons: string[] = []
+    if (!canControlTopupAutoUse) reasons.push("권한 없음")
+    if (!topupAllowWhenEmpty) reasons.push("정책 제한")
+    if (!hasTopupCredits) reasons.push("잔액 없음")
+    return reasons
+  }, [canControlTopupAutoUse, hasTopupCredits, topupAllowWhenEmpty, topupUsageLoading])
+  const topupAutoUseReasonText =
+    topupAutoUseReasons.length > 0 ? `제한 사유: ${topupAutoUseReasons.join(" / ")}` : ""
+
+  const topupMemberRows = useMemo(() => {
+    return Array.isArray(topupUsage?.members) ? topupUsage.members : []
+  }, [topupUsage?.members])
+
+  const selectedTopupPeriod = useMemo(() => {
+    if (topupSummary?.period_start && topupSummary?.period_end) {
+      return { period_start: topupSummary.period_start, period_end: topupSummary.period_end }
+    }
+    if (selectedTopupPeriodEnd) {
+      return topupPeriods.find((period) => period.period_end === selectedTopupPeriodEnd) ?? null
+    }
+    return null
+  }, [selectedTopupPeriodEnd, topupPeriods, topupSummary?.period_end, topupSummary?.period_start])
+
+  const selectedTopupPeriodRange = selectedTopupPeriod
+    ? `${formatDateYmd(selectedTopupPeriod.period_start)} ~ ${formatDateYmd(selectedTopupPeriod.period_end)}`
     : "-"
 
   const memberStatusCounts = useMemo(() => {
@@ -1266,6 +1497,13 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     setSelectedServicePeriodEnd("")
     void loadServiceUsage()
   }, [activeMenu, loadServiceUsage, open])
+  useEffect(() => {
+    if (!open) return
+    if (activeMenu !== "topupCredits") return
+    setSelectedTopupPeriodEnd("")
+    void loadTopupUsage()
+    if (isOwner) void loadTopupProducts()
+  }, [activeMenu, isOwner, loadTopupProducts, loadTopupUsage, open])
   useEffect(() => {
     if (!open) return
     if (activeMenu !== "members") return
@@ -2040,132 +2278,261 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
 
 
               {activeMenu === "topupCredits" ? (
-                // 충전 크레딧 운영
                 <div className="grid gap-4">
-
-                  <div className="flex items-center px-4 gap-2">
-                    {/* 월 선택 */}
-                    <div>
-                      <Select>
-                        <SelectTrigger>
-                          <SelectValue placeholder="이번달" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="current">이번달</SelectItem>
-                          <SelectItem value="2026-01">2026년 1월</SelectItem>
-                          <SelectItem value="2025-12">2025년 12월</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="text-sm text-muted-foreground">2026-02-19 ~ 2026-03-19</div>
-                  </div>
-
-                  <div className="px-4 pb-4">
-                    <div className="flex items-center justify-between">
-                      <div className="text-sm font-semibold text-foreground">충전 크레딧 사용 현황</div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground">서비스 크레딧 소진시 자동 사용</span>
-                        <Switch id="" defaultChecked={true} />
-                      </div>
-                    </div>
-
-
-                    <div className="mt-4">
-                      {/* 전체 사용량 바 */}
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">전체 사용량</span>
-                        <span className="font-semibold text-foreground">0 / 980,000 크레딧</span>
-                      </div>
-                      <div className="mt-2 h-3 w-full overflow-hidden rounded-full bg-muted">
-                        <div className="h-full rounded-full bg-primary transition-all" style={{ width: "100.0%" }} />
-                      </div>
-                      <div className="mt-1 text-right text-xs text-muted-foreground">0% 사용 중</div>
-                    </div>
-
-                    <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      {[
-                        { label: "현재 보유량", value: 980000, unit: "크레딧", icon: Database, accent: "text-foreground", bg: "bg-muted/60", ring: "" },
-                        { label: "사용량", value: 0, unit: "크레딧", icon: HardDrive, accent: "text-sky-600", bg: "bg-sky-50 dark:bg-sky-950/40", ring: "ring-1 ring-sky-200 dark:ring-sky-800" },
-                        { label: "남은 용량", value: 980000, unit: "크레딧", icon: PackageOpen, accent: "text-emerald-600", bg: "bg-emerald-50 dark:bg-emerald-950/40", ring: "ring-1 ring-emerald-200 dark:ring-emerald-800" },
-                      ].map((item) => {
-                        const Icon = item.icon
-                        return (
-                          <div key={item.label} className={cn("relative rounded-xl px-4 py-3 transition-shadow hover:shadow-sm", item.bg, item.ring)}>
-                            <div className="flex items-center justify-between">
-                              <span className="text-xs font-medium text-muted-foreground">{item.label}</span>
-                              <Icon className={cn("size-4 shrink-0", item.accent)} />
-                            </div>
-                            <div className="mt-2 flex items-baseline justify-between gap-1">
-                              <div className="flex items-center gap-1">
-                                <span className={cn("text-2xl font-bold tracking-tight", item.accent)}>{item.value.toLocaleString()}</span>
-                                <span className="text-xs text-muted-foreground">{item.unit}</span>
-                              </div>
-                              {item.label === "현재 보유량" ? (
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Button variant="outline" size="sm" className="w-8 h-8" aria-label="추가 충전하기">
-                                      <EvCharger className="text-blue-500" />
-                                    </Button>
-                                  </TooltipTrigger>
-                                  <TooltipContent side="top">
-                                    <p>추가 충전하기</p>
-                                  </TooltipContent>
-                                </Tooltip>
-                              ) : null}
-                            </div>
+                  {!topupUsageLoading && !hasTopupCredits ? (
+                    <div className="px-4 pb-4">
+                      <div className="text-sm font-semibold text-foreground">충전 크레딧이 없습니다.</div>
+                      {isOwner ? (
+                        <div className="mt-4">
+                          <div className="text-sm font-semibold text-foreground">
+                            충전 옵션 <span className="text-xs text-muted-foreground">(부가세 별도)</span>
                           </div>
-                        )
-                      })}
+                          {topupProductsLoading ? (
+                            <div className="mt-3 flex items-center justify-center py-8 text-sm text-muted-foreground">
+                              <RotateCw className="mr-2 h-4 w-4 animate-spin" /> 충전 상품을 불러오는 중...
+                            </div>
+                          ) : topupProducts.length === 0 ? (
+                            <div className="mt-3 py-6 text-center text-sm text-muted-foreground">
+                              현재 구매 가능한 충전 상품이 없습니다.
+                            </div>
+                          ) : (
+                            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+                              {topupProducts.map((product) => {
+                                const totalCredits = Number(product.credits)
+                                const unitPrice = totalCredits > 0 ? product.price_usd / totalCredits : 0
+                                const isBest =
+                                  Boolean(product.metadata && (product.metadata as Record<string, unknown>).best_seller) ||
+                                  (topupProducts.length >= 3 && product === topupProducts[Math.floor(topupProducts.length * 0.66)])
+                                return (
+                                  <Card
+                                    key={product.id}
+                                    className={cn("gap-1 py-0 transition-shadow hover:shadow-md", isBest && "ring-1 ring-blue-500")}
+                                  >
+                                    <CardHeader className="px-4 pt-4 pb-1">
+                                      <CardTitle className="text-lg font-bold text-foreground">+{totalCredits.toLocaleString()}</CardTitle>
+                                      <p className="text-[11px] text-muted-foreground">
+                                        크레딧{product.bonus_credits > 0 ? ` (보너스 +${Number(product.bonus_credits).toLocaleString()})` : ""}
+                                      </p>
+                                    </CardHeader>
+                                    <CardContent className="px-4 pb-2">
+                                      <div className="text-2xl font-extrabold text-foreground gap-1 flex items-center">
+                                        ${product.price_usd}
+                                        {isBest ? (
+                                          <span className="rounded-full border border-border text-regular px-1.5 py-0.5 text-[10px] text-blue-500">
+                                            BEST
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                      <p className="mt-1 text-[11px] text-muted-foreground">1 Credit = ${unitPrice.toFixed(5)}</p>
+                                    </CardContent>
+                                    <CardFooter className="px-4 pb-4 pt-1">
+                                      <Button
+                                        variant={isBest ? "default" : "outline"}
+                                        size="sm"
+                                        className={cn("w-full text-xs", isBest && "bg-blue-500 hover:bg-blue-600 text-white")}
+                                        onClick={() => void handleTopupPurchase(product)}
+                                      >
+                                        구매하기
+                                      </Button>
+                                    </CardFooter>
+                                  </Card>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
                     </div>
-                  </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center px-4 gap-2">
+                        <div>
+                          <Select
+                            value={selectedTopupPeriodEnd}
+                            onValueChange={(value) => {
+                              setSelectedTopupPeriodEnd(value)
+                              void loadTopupUsage(value)
+                            }}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder={topupUsageLoading ? "불러오는 중..." : "이번달"} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {topupPeriods.map((period, idx) => {
+                                const isCurrent = idx === 0 && topupUsage?.current_period_end === period.period_end
+                                return (
+                                  <SelectItem key={period.period_end} value={period.period_end}>
+                                    {formatPeriodLabel(period.period_start, isCurrent)}
+                                  </SelectItem>
+                                )
+                              })}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="text-sm text-muted-foreground">{selectedTopupPeriodRange}</div>
+                        {topupUsageLoading ? (
+                          <RotateCw className="size-4 animate-spin text-muted-foreground" />
+                        ) : null}
+                      </div>
 
-                  {/* 멤버별 충전 크레딧 사용 현황 및 관리*/}
-                  <div className="px-4 pb-4">
-                    <div className="text-sm font-semibold text-foreground">멤버 충전 크레딧 사용 현황 및 관리</div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      충전 크레딧은 서비스 크레딧 사용 가능 멤버에 한해서 적용이 가능합니다.
-                    </p>
-                    <div className="mt-3 overflow-hidden rounded-md border border-border">
-                      <Table className="text-sm">
-                        <TableHeader className="bg-muted/50 text-xs font-medium text-muted-foreground">
-                          <TableRow className="border-b-0">
-                            <TableHead className="w-[44px] text-center">No.</TableHead>
-                            <TableHead className="">멤버</TableHead>
-                            <TableHead className="text-right">사용량(크레딧)</TableHead>
-                            <TableHead className="text-center w-[80px]">허용여부</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody className="text-muted-foreground">
+                      <div className="px-4 pb-4">
+                        <div className="flex items-center justify-between">
+                          <div className="text-sm font-semibold text-foreground">충전 크레딧 사용 현황</div>
+                          <div className="flex items-center gap-2">
+                          <span className="text-xs text-muted-foreground">{topupAutoUseLabel}</span>
+                            <Switch
+                              checked={topupAllowWhenEmpty}
+                            disabled={topupAutoUseSaving || topupUsageLoading || !topupAllowWhenEmpty || !canControlTopupAutoUse}
+                              onCheckedChange={handleToggleTopupAutoUse}
+                            />
+                          </div>
+                        </div>
+                      {topupAutoUseReasonText ? (
+                        <div className="mt-2 text-[11px] text-muted-foreground">{topupAutoUseReasonText}</div>
+                      ) : null}
+
+                        <div className="mt-4">
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="text-muted-foreground">전체 사용량</span>
+                            <span className="font-semibold text-foreground">
+                              {topupUsageLoading
+                                ? "불러오는 중..."
+                                : topupTotals
+                                  ? `${topupTotals.used.toLocaleString()} / ${topupTotals.total.toLocaleString()} 크레딧`
+                                  : "- / - 크레딧"}
+                            </span>
+                          </div>
+                          <div className="mt-2 h-3 w-full overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-full rounded-full bg-primary transition-all"
+                              style={{ width: `100-${topupTotals ? Math.min(topupTotals.percent, 100) : 0}%` }}
+                            />
+                          </div>
+                          <div className="mt-1 text-right text-xs text-muted-foreground">
+                            {topupUsageLoading ? "불러오는 중..." : topupTotals ? `${formatPercent(topupTotals.percent)}% 사용 중` : "-"}
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
                           {[
-                            { name: "홍길동", used: 0, percent: 0.0, is_active: true },
-                            { name: "박지민", used: 0, percent: 0.0, is_active: false },
-                            { name: "이수진", used: 0, percent: 0.0, is_active: true },
-                          ].map((row, index) => (
-                            <TableRow key={row.name} className="hover:bg-accent/40">
-                              <TableCell className="text-center text-xs text-muted-foreground">{index + 1}</TableCell>
-                              <TableCell className="text-foreground">
-                                <div className="flex items-center gap-1">
-                                  <div className="flex items-center justify-center gap-2 w-6 h-6 bg-teal-500 rounded-sm">
-                                    <span className="text-white font-semibold text-sm">이</span>
+                            { label: "현재 보유량", value: topupTotals?.total ?? 0, unit: "크레딧", icon: Database, accent: "text-foreground", bg: "bg-muted/60", ring: "" },
+                            { label: "사용량", value: topupTotals?.used ?? 0, unit: "크레딧", icon: HardDrive, accent: "text-sky-600", bg: "bg-sky-50 dark:bg-sky-950/40", ring: "ring-1 ring-sky-200 dark:ring-sky-800" },
+                            { label: "남은 용량", value: topupTotals?.remaining ?? 0, unit: "크레딧", icon: PackageOpen, accent: "text-emerald-600", bg: "bg-emerald-50 dark:bg-emerald-950/40", ring: "ring-1 ring-emerald-200 dark:ring-emerald-800" },
+                          ].map((item) => {
+                            const Icon = item.icon
+                            return (
+                              <div key={item.label} className={cn("relative rounded-xl px-4 py-3 transition-shadow hover:shadow-sm", item.bg, item.ring)}>
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-medium text-muted-foreground">{item.label}</span>
+                                  <Icon className={cn("size-4 shrink-0", item.accent)} />
+                                </div>
+                                <div className="mt-2 flex items-baseline justify-between gap-1">
+                                  <div className="flex items-center gap-1">
+                                    <span className={cn("text-2xl font-bold tracking-tight", item.accent)}>
+                                      {topupUsageLoading ? "-" : item.value.toLocaleString()}
+                                    </span>
+                                    <span className="text-xs text-muted-foreground">{item.unit}</span>
                                   </div>
-                                  <div className="text-xs block max-w-[120px] truncate">{row.name}</div>
+                                  {item.label === "현재 보유량" ? (
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <Button variant="outline" size="sm" className="w-8 h-8" aria-label="추가 충전하기">
+                                          <EvCharger className="text-blue-500" />
+                                        </Button>
+                                      </TooltipTrigger>
+                                      <TooltipContent side="top">
+                                        <p>추가 충전하기</p>
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  ) : null}
                                 </div>
-                              </TableCell>
-                              <TableCell className="text-right text-xs">
-                                {row.used.toLocaleString()}
-                              </TableCell>
-                              <TableCell className="text-center">
-                                <div className="flex items-center justify-center">
-                                  <Switch defaultChecked={row.is_active} aria-label={`${row.name} 사용 가능 여부`} />
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
 
+                      <div className="px-4 pb-4">
+                        <div className="text-sm font-semibold text-foreground">멤버 충전 크레딧 사용 현황 및 관리</div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          충전 크레딧은 서비스 크레딧 사용 가능 멤버에 한해서 적용이 가능합니다.
+                        </p>
+                        <div className="mt-3 overflow-hidden rounded-md border border-border">
+                          <Table className="text-sm">
+                            <TableHeader className="bg-muted/50 text-xs font-medium text-muted-foreground">
+                              <TableRow className="border-b-0">
+                                <TableHead className="w-[44px] text-center">No.</TableHead>
+                                <TableHead className="">멤버</TableHead>
+                                <TableHead className="text-right">사용량(크레딧)</TableHead>
+                                <TableHead className="text-center w-[80px]">허용여부</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody className="text-muted-foreground">
+                              {topupUsageLoading ? (
+                                <TableRow>
+                                  <TableCell colSpan={4} className="py-8 text-center text-xs text-muted-foreground">
+                                    불러오는 중...
+                                  </TableCell>
+                                </TableRow>
+                              ) : topupMemberRows.length > 0 ? (
+                                topupMemberRows.map((row, index) => {
+                                  const name = resolveUsageMemberName(row as ServiceUsageMember)
+                                  const initial = resolveUsageMemberInitial(row as ServiceUsageMember)
+                                  const roleSlug = String(row.role_slug || "").toLowerCase()
+                                  const isRowOwner = roleSlug === "owner" || roleSlug === "tenant_owner"
+                                  const usedCredits = Number(row.used_credits ?? 0)
+                                  const autoUseEnabled = topupAllowWhenEmpty
+                                  const isActive = autoUseEnabled && row.is_active !== false
+                                  const isDisabled =
+                                    !autoUseEnabled || topupMemberAccessSaving === row.user_id || topupUsageLoading
+                                  return (
+                                    <TableRow key={row.user_id} className="hover:bg-accent/40">
+                                      <TableCell className="text-center text-xs text-muted-foreground">{index + 1}</TableCell>
+                                      <TableCell className="text-foreground">
+                                        <div className="flex items-center gap-1">
+                                          {row.profile_image_url ? (
+                                            <ProfileAvatar src={row.profile_image_url} alt={name} className="w-6 h-6 rounded-sm" />
+                                          ) : (
+                                            <div className="flex items-center justify-center w-6 h-6 bg-teal-500 rounded-sm">
+                                              <span className="text-white font-semibold text-sm">{initial}</span>
+                                            </div>
+                                          )}
+                                          <div className="text-xs block max-w-[120px] truncate">{name}</div>
+                                        </div>
+                                      </TableCell>
+                                      <TableCell className="text-right text-xs">
+                                        {usedCredits.toLocaleString()}
+                                      </TableCell>
+                                      <TableCell className="text-center">
+                                        <div className="flex items-center justify-center">
+                                          {isRowOwner ? (
+                                            <span className="text-xs text-muted-foreground">-</span>
+                                          ) : (
+                                            <Switch
+                                              checked={isActive}
+                                              disabled={isDisabled}
+                                              onCheckedChange={(checked) => handleToggleTopupMemberAccess(row.user_id, checked)}
+                                              aria-label={`${name} 사용 가능 여부`}
+                                            />
+                                          )}
+                                        </div>
+                                      </TableCell>
+                                    </TableRow>
+                                  )
+                                })
+                              ) : (
+                                <TableRow>
+                                  <TableCell colSpan={4} className="py-8 text-center text-xs text-muted-foreground">
+                                    표시할 멤버가 없습니다.
+                                  </TableCell>
+                                </TableRow>
+                              )}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </div>
+                    </>
+                  )}
 
                 </div>
               ) : null}

@@ -151,10 +151,6 @@ function expandFlagScope(args: {
   return 'default';
 }
 
-function isUuid(v: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
-}
-
 function sanitizeFileName(raw: string) {
   const trimmed = String(raw || '').trim();
   const noSlashes = trimmed.replace(/[\\/]/g, '_');

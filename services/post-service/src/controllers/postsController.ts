@@ -2183,6 +2183,7 @@ export async function getCurrentUser(req: Request, res: Response) {
         id,
         email,
         full_name,
+        marketing_agreed,
         metadata->>'profile_image_asset_id' AS profile_image_asset_id,
         (password_hash IS NOT NULL AND password_hash <> '') AS has_password
       FROM users
@@ -2196,6 +2197,7 @@ export async function getCurrentUser(req: Request, res: Response) {
       id: string
       email: string
       full_name?: string | null
+      marketing_agreed?: boolean
       profile_image_asset_id?: string | null
       has_password?: boolean | number | string
     }
@@ -2210,6 +2212,7 @@ export async function getCurrentUser(req: Request, res: Response) {
       id: row.id,
       email: row.email,
       full_name: row.full_name ?? null,
+      marketing_agreed: row.marketing_agreed === true,
       profile_image_asset_id: profileImageAssetId,
       profile_image_url: profileImageAssetId ? `/api/ai/media/assets/${profileImageAssetId}` : null,
       has_password: hasPassword,
@@ -2235,7 +2238,10 @@ export async function updateCurrentUser(req: Request, res: Response) {
       profileImageAssetId = cleaned ? cleaned : null
     }
 
-    if (!fullName && profileImageAssetId === undefined) {
+    const marketingAgreedRaw = body?.marketing_agreed
+    const hasMarketingChange = typeof marketingAgreedRaw === "boolean"
+
+    if (!fullName && profileImageAssetId === undefined && !hasMarketingChange) {
       return res.status(400).json({ message: "No changes provided" })
     }
 
@@ -2262,6 +2268,11 @@ export async function updateCurrentUser(req: Request, res: Response) {
       }
     }
 
+    if (hasMarketingChange) {
+      params.push(marketingAgreedRaw)
+      fields.push(`marketing_agreed = $${params.length}`)
+    }
+
     fields.push(`updated_at = NOW()`)
     params.push(userId)
 
@@ -2270,7 +2281,7 @@ export async function updateCurrentUser(req: Request, res: Response) {
       UPDATE users
       SET ${fields.join(", ")}
       WHERE id = $${params.length} AND deleted_at IS NULL
-      RETURNING id, email, full_name, metadata->>'profile_image_asset_id' AS profile_image_asset_id
+      RETURNING id, email, full_name, marketing_agreed, metadata->>'profile_image_asset_id' AS profile_image_asset_id
       `,
       params
     )
@@ -2279,13 +2290,26 @@ export async function updateCurrentUser(req: Request, res: Response) {
       id: string
       email: string
       full_name?: string | null
+      marketing_agreed?: boolean
       profile_image_asset_id?: string | null
     }
+
+    if (hasMarketingChange) {
+      const ip = resolveClientIp(req)
+      const ua = typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : ""
+      await query(
+        `INSERT INTO user_policy_consents (user_id, policy_type, policy_version, agreed, source, ip_address, user_agent)
+         VALUES ($1, 'marketing', '2026-03-02', $2, 'settings', $3, $4)`,
+        [userId, marketingAgreedRaw, ip || null, ua || null]
+      )
+    }
+
     const profileImageId = row.profile_image_asset_id ? String(row.profile_image_asset_id) : null
     return res.json({
       id: row.id,
       email: row.email,
       full_name: row.full_name ?? null,
+      marketing_agreed: row.marketing_agreed === true,
       profile_image_asset_id: profileImageId,
       profile_image_url: profileImageId ? `/api/ai/media/assets/${profileImageId}` : null,
     })

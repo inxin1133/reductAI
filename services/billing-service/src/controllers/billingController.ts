@@ -24,6 +24,32 @@ function toBool(v: unknown): boolean | null {
   return null
 }
 
+const POLICY_EFFECTIVE_DATE = "2026-03-02"
+
+function resolveClientIp(req: Request): string {
+  const forwarded = req.headers["x-forwarded-for"]
+  const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded
+  const ip = typeof forwardedValue === "string" ? forwardedValue.split(",")[0]?.trim() : ""
+  if (ip) return ip
+  return typeof req.ip === "string" ? req.ip : ""
+}
+
+async function insertRefundPolicyConsent(
+  client: any,
+  userId: string,
+  source: string,
+  referenceId: string | null,
+  req: Request
+) {
+  const ip = resolveClientIp(req)
+  const ua = typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : ""
+  await client.query(
+    `INSERT INTO user_policy_consents (user_id, policy_type, policy_version, agreed, source, reference_id, ip_address, user_agent)
+     VALUES ($1, 'refund_policy', $2, TRUE, $3, $4, $5, $6)`,
+    [userId, POLICY_EFFECTIVE_DATE, source, referenceId, ip || null, ua || null]
+  )
+}
+
 const MS_PER_DAY = 1000 * 60 * 60 * 24
 
 function clampNumber(value: number, min: number, max: number) {
@@ -4353,7 +4379,9 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
     const targetPlanId = toStr(req.body?.target_plan_id)
     const targetBillingCycle = toStr(req.body?.target_billing_cycle)
     const paymentMethodIdInput = toStr(req.body?.payment_method_id) || null
+    const refundPolicyConsent = toBool(req.body?.refund_policy_consent)
     if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
+    if (!refundPolicyConsent) return res.status(400).json({ message: "Refund policy consent is required" })
     if (action !== "change" && action !== "cancel") return res.status(400).json({ message: "invalid action" })
 
     const quote = await buildSubscriptionChangeQuote(
@@ -4595,6 +4623,9 @@ export async function applyMySubscriptionChange(req: Request, res: Response) {
       })
     }
 
+    const consentRefId = chargeTransaction?.id || refundTransaction?.id || subscriptionRow?.id || null
+    await insertRefundPolicyConsent(client, userId, "subscription_change", consentRefId, req)
+
     await client.query("COMMIT")
     transactionStarted = false
 
@@ -4780,11 +4811,13 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
     const billingCycle = toStr(req.body?.billing_cycle)
     const provider = toStr(req.body?.provider) || "toss"
     const paymentMethodIdInput = toStr(req.body?.payment_method_id) || null
+    const refundPolicyConsent = toBool(req.body?.refund_policy_consent)
 
     if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
     if (!planId) return res.status(400).json({ message: "plan_id is required" })
     if (!BILLING_CYCLES.has(billingCycle)) return res.status(400).json({ message: "invalid billing_cycle" })
     if (!PAYMENT_PROVIDERS.has(provider)) return res.status(400).json({ message: "invalid provider" })
+    if (!refundPolicyConsent) return res.status(400).json({ message: "Refund policy consent is required" })
     if (await isSystemTenantId(client, tenantId)) {
       return res.status(400).json({ message: "system tenant cannot be billed" })
     }
@@ -5062,6 +5095,8 @@ export async function checkoutUserSubscription(req: Request, res: Response) {
         JSON.stringify(subscriptionMeta),
       ]
     )
+
+    await insertRefundPolicyConsent(client, toStr(authed.userId), "checkout", txRes.rows[0]?.id || null, req)
 
     await client.query("COMMIT")
     transactionStarted = false
@@ -5576,10 +5611,12 @@ export async function checkoutTopupPurchase(req: Request, res: Response) {
     const productId = toStr(req.body?.product_id)
     const provider = toStr(req.body?.provider) || "toss"
     const paymentMethodIdInput = toStr(req.body?.payment_method_id) || null
+    const refundPolicyConsent = toBool(req.body?.refund_policy_consent)
 
     if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
     if (!productId) return res.status(400).json({ message: "product_id is required" })
     if (!PAYMENT_PROVIDERS.has(provider)) return res.status(400).json({ message: "invalid provider" })
+    if (!refundPolicyConsent) return res.status(400).json({ message: "Refund policy consent is required" })
 
     const productRes = await client.query(
       `SELECT id, sku_code, name, price_usd, credits, bonus_credits, currency
@@ -5776,6 +5813,8 @@ export async function checkoutTopupPurchase(req: Request, res: Response) {
       ]
     )
 
+    await insertRefundPolicyConsent(client, toStr(authed.userId), "topup_checkout", txRow?.id || null, req)
+
     await client.query("COMMIT")
     transactionStarted = false
 
@@ -5888,10 +5927,12 @@ export async function checkoutSeatAddonPurchase(req: Request, res: Response) {
     const quantity = toInt(req.body?.quantity, null)
     const provider = toStr(req.body?.provider) || "toss"
     const paymentMethodIdInput = toStr(req.body?.payment_method_id) || null
+    const refundPolicyConsent = toBool(req.body?.refund_policy_consent)
 
     if (!tenantId) return res.status(400).json({ message: "tenantId is required" })
     if (!quantity || quantity <= 0) return res.status(400).json({ message: "quantity must be positive" })
     if (!PAYMENT_PROVIDERS.has(provider)) return res.status(400).json({ message: "invalid provider" })
+    if (!refundPolicyConsent) return res.status(400).json({ message: "Refund policy consent is required" })
 
     const subscription = await loadCurrentSubscription(client, tenantId)
     if (!subscription?.plan_id) return res.status(404).json({ message: "Subscription not found" })
@@ -6092,6 +6133,8 @@ export async function checkoutSeatAddonPurchase(req: Request, res: Response) {
       `UPDATE tenants SET member_limit = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND deleted_at IS NULL`,
       [newMemberLimit, tenantId]
     )
+
+    await insertRefundPolicyConsent(client, toStr(authed.userId), "seat_addon_checkout", txRow?.id || null, req)
 
     await client.query("COMMIT")
     transactionStarted = false

@@ -68,6 +68,23 @@ export default function Intro() {
     }
     if (!token) return
 
+    const needsConsent = params.get("needs_consent") === "1"
+    const ssoProvider = params.get("provider") || ""
+
+    if (needsConsent) {
+      const consentParams = new URLSearchParams()
+      consentParams.set("mode", "consent")
+      consentParams.set("provider", ssoProvider)
+      consentParams.set("token", token)
+      const forwardKeys = ["user_id", "user_email", "user_name", "tenant_id", "platform_role"]
+      for (const key of forwardKeys) {
+        const val = params.get(key)
+        if (val) consentParams.set(key, val)
+      }
+      navigate(`/sso-email?${consentParams.toString()}`, { replace: true })
+      return
+    }
+
     const expiresAt = Date.now() + 24 * 60 * 60 * 1000
     localStorage.setItem("token", token)
     localStorage.setItem("token_expires_at", String(expiresAt))

@@ -24,6 +24,7 @@ import { formatPhone, normalizePhoneDigits } from "@/lib/phone"
 import { CreditCard, Plus, WalletCards, FilePenLine } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { AddCardDialog } from "@/components/dialog/AddCardDialog"
+import { TermsAgreementDialog, type TermsDialogType } from "@/components/dialog/TermsAgreementDialog"
 import { fetchBillingPlansWithPrices } from "@/services/billingService"
 import {
   Select,
@@ -310,6 +311,7 @@ export default function PaymentConfirm() {
   }, [billingInfo.countryCode])
   const [couponCode, setCouponCode] = useState("")
   const [agreeTerms, setAgreeTerms] = useState(true)
+  const [policyDialogType, setPolicyDialogType] = useState<TermsDialogType>(null)
   const [isCardSelectOpen, setIsCardSelectOpen] = useState(false)
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null)
   const [isCardAddOpen, setIsCardAddOpen] = useState(false)
@@ -784,7 +786,7 @@ export default function PaymentConfirm() {
         const res = await fetch("/api/ai/billing/user/topup-checkout", {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
-          body: JSON.stringify({ product_id: state.topupProductId, payment_method_id: paymentMethodId }),
+          body: JSON.stringify({ product_id: state.topupProductId, payment_method_id: paymentMethodId, refund_policy_consent: true }),
         })
         const data = (await res.json().catch(() => null)) as TopupCheckoutResponse | null
         if (!res.ok || !data?.ok) throw new Error(data?.message || "FAILED_TOPUP")
@@ -809,7 +811,7 @@ export default function PaymentConfirm() {
         const res = await fetch("/api/ai/billing/user/seat-addon-checkout", {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
-          body: JSON.stringify({ quantity: state.seatQuantity, payment_method_id: paymentMethodId }),
+          body: JSON.stringify({ quantity: state.seatQuantity, payment_method_id: paymentMethodId, refund_policy_consent: true }),
         })
         const data = (await res.json().catch(() => null)) as SeatAddonCheckoutResponse | null
         if (!res.ok || !data?.ok) throw new Error(data?.message || "FAILED_SEAT_ADDON")
@@ -834,6 +836,7 @@ export default function PaymentConfirm() {
             target_plan_id: state.planId || null,
             target_billing_cycle: state.billingCycle || null,
             payment_method_id: paymentMethodId,
+            refund_policy_consent: true,
           }),
         })
         const data = (await res.json().catch(() => null)) as ApplySubscriptionChangeResponse | null
@@ -879,6 +882,7 @@ export default function PaymentConfirm() {
           plan_id: state.planId,
           billing_cycle: state.billingCycle,
           payment_method_id: paymentMethodId,
+          refund_policy_consent: true,
         }),
       })
       const data = (await res.json().catch(() => null)) as CheckoutResponse | null
@@ -1093,11 +1097,20 @@ export default function PaymentConfirm() {
                   aria-label="약관 동의"
                 />
                 <p className="text-sm text-muted-foreground">
-                  <span className="text-primary">서비스 이용약관</span>,{" "}
-                  <span className="text-primary">개인정보 처리방침</span>,{" "}
-                  <span className="text-primary">자동결제 및 환불정책</span>에 동의합니다.
+                  <button
+                    type="button"
+                    className="text-primary underline underline-offset-2 hover:text-primary/80 transition-colors"
+                    onClick={() => setPolicyDialogType("refund")}
+                  >
+                    유료서비스, 자동결제 및 환불정책
+                  </button>
+                  에 동의합니다.
                 </p>
               </div>
+              <TermsAgreementDialog
+                type={policyDialogType}
+                onOpenChange={(open) => { if (!open) setPolicyDialogType(null) }}
+              />
 
               <div className="flex items-center justify-between">
                 {canGoBackToInfo || canGoBackToDowngrade || inFlow ? (

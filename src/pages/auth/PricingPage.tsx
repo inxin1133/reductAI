@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Link } from "react-router-dom"
-import { Check, HardDrive, Loader2, Users, Zap } from "lucide-react"
+import { Check, Loader2, Users, Zap } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { LoginModal } from "@/components/LoginModal"
 import { fetchBillingPlansWithPrices } from "@/services/billingService"
 import type { BillingPlanWithPrices } from "@/services/billingService"
 import { PLAN_TIER_ORDER, type PlanTier } from "@/lib/planTier"
@@ -15,12 +16,6 @@ function normalizePlanTier(value: unknown): PlanTier | null {
   if (!raw) return null
   if (PLAN_TIER_ORDER.includes(raw as PlanTier)) return raw as PlanTier
   return null
-}
-
-function formatStorage(mb: number | null): string {
-  if (mb == null) return "무제한"
-  if (mb >= 1024) return `${Math.round(mb / 1024)} GB`
-  return `${mb} MB`
 }
 
 function formatPrice(price: number | null): string {
@@ -66,6 +61,7 @@ export default function PricingPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [billingCycle, setBillingCycle] = useState<BillingCycle>("monthly")
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false)
 
   const loadPlans = useCallback(() => {
     setLoading(true)
@@ -99,11 +95,11 @@ export default function PricingPage() {
       },
       {
         q: "팀 플랜의 좌석을 추가할 수 있나요?",
-        a: "프리미엄, 비즈니스 플랜에서는 기본 좌석 외에 추가 좌석을 구매할 수 있습니다. 추가 좌석 가격은 플랜별로 다릅니다.",
+        a: "프리미엄, 비즈니스 플랜에서는 기본 좌석 외에 추가 좌석을 구매할 수 있습니다. 추가 좌석 가격은 플랜별로 동일합니다.",
       },
       {
         q: "환불 정책은 어떻게 되나요?",
-        a: "구독 취소 시 남은 기간에 대한 환불이 가능합니다. 자세한 내용은 환불 정책 페이지를 참고하세요.",
+        a: "월 구독 취소 시, 이번 달은 기존 등급 사용 유지 → 새로운 등급 및 월간 구독으로 다음달 부터 진행됩니다. 연간 구독 취소 시, 이번 달은 기존 등급 사용 유지 → 남은 기간에 대한 환불이 가능합니다. 자세한 내용은 환불 정책 페이지를 참고하세요.",
       },
     ],
     []
@@ -192,7 +188,6 @@ export default function PricingPage() {
                 })
                 const credits = creditDisplay.label
                 const creditsIsMonthly = creditDisplay.isMonthly
-                const storage = formatStorage(plan.storage_limit_mb)
                 const seats =
                   plan.max_seats == null
                     ? `${plan.included_seats}명+`
@@ -220,12 +215,12 @@ export default function PricingPage() {
                       >
                         {plan.tier}
                       </span>
-                      {plan.tenant_type === "personal" && (
+                      {/* {plan.tenant_type === "personal" && (
                         <span className="text-xs text-muted-foreground">개인</span>
                       )}
                       {plan.tenant_type === "team" && (
                         <span className="text-xs text-muted-foreground">팀</span>
-                      )}
+                      )} */}
                     </div>
 
                     <h3 className="text-xl font-bold text-card-foreground">{plan.name}</h3>
@@ -254,14 +249,13 @@ export default function PricingPage() {
 
                     {/* CTA */}
                     <div className="mt-6">
-                      <Link to="/">
-                        <Button
-                          variant={planTier === "free" ? "outline" : "default"}
-                          className={cn("w-full", planTier !== "free" && ctaButtonClass(planTier))}
-                        >
-                          {planTier === "free" ? "무료로 시작" : "시작하기"}
-                        </Button>
-                      </Link>
+                      <Button
+                        variant={planTier === "free" ? "outline" : "default"}
+                        className={cn("w-full", planTier !== "free" && ctaButtonClass(planTier))}
+                        onClick={() => setIsLoginModalOpen(true)}
+                      >
+                        {planTier === "free" ? "무료로 시작" : "시작하기"}
+                      </Button>
                     </div>
 
                     {/* Specs */}
@@ -285,11 +279,26 @@ export default function PricingPage() {
                         </span>
                       </li>
                       <li className="flex items-start gap-2">
+                        <Check className="mt-0.5 size-4 shrink-0 text-teal-500" />
+                        <span>
+                          유형{" "}
+                          <span className="font-semibold">
+                            {plan.tenant_type === "personal"
+                              ? "개인"
+                              : plan.tenant_type === "team"
+                                ? "팀"
+                                : plan.tenant_type === "group"
+                                  ? "그룹"
+                                  : "없음"}
+                          </span>
+                        </span>
+                      </li>
+                      {/* <li className="flex items-start gap-2">
                         <HardDrive className="mt-0.5 size-4 shrink-0 text-teal-500" />
                         <span>
                           스토리지 <span className="font-semibold">{storage}</span>
                         </span>
-                      </li>
+                      </li> */}
                     </ul>
 
                     {/* Highlights */}
@@ -344,6 +353,7 @@ export default function PricingPage() {
           </div>
         </div>
       </section>
+      <LoginModal open={isLoginModalOpen} onOpenChange={setIsLoginModalOpen} />
     </>
   )
 }

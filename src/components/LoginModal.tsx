@@ -13,6 +13,7 @@ import { LogoGoogle } from "@/components/icons/LogoGoogle"
 import { LogoNaver } from "@/components/icons/LogoNaver"
 import { LogoKakao } from "@/components/icons/LogoKakao"
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip"
+import { TermsAgreementDialog, type TermsDialogType } from "@/components/dialog/TermsAgreementDialog"
 
 // Asset URLs from Figma
 // const imgGoogle = "https://www.figma.com/api/mcp/asset/20f95895-9d79-4ac0-a707-52df26035fad"
@@ -51,8 +52,11 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
   const [passwordConfirm, setPasswordConfirm] = React.useState("")
   const [newPassword, setNewPassword] = React.useState("")
   const [confirmNewPassword, setConfirmNewPassword] = React.useState("")
-  const [termsAccepted, setTermsAccepted] = React.useState(false)
-  const [termsViewed, setTermsViewed] = React.useState(false)
+  const [agreeTerms, setAgreeTerms] = React.useState(false)
+  const [agreePrivacy, setAgreePrivacy] = React.useState(false)
+  const [agreeAge, setAgreeAge] = React.useState(false)
+  const [agreeMarketing, setAgreeMarketing] = React.useState(false)
+  const [termsDialogType, setTermsDialogType] = React.useState<TermsDialogType>(null)
 
   // Ref for password input
   const passwordInputRef = React.useRef<HTMLInputElement>(null)
@@ -83,8 +87,11 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
         setPasswordConfirm("")
         setNewPassword("")
         setConfirmNewPassword("")
-        setTermsAccepted(false)
-        setTermsViewed(false)
+        setAgreeTerms(false)
+        setAgreePrivacy(false)
+        setAgreeAge(false)
+        setAgreeMarketing(false)
+        setTermsDialogType(null)
         setError(null)
       }, 300)
     }
@@ -351,8 +358,8 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       return
     }
 
-    if (!termsAccepted || !termsViewed) {
-      setError("약관에 동의해주세요.")
+    if (!allRequiredAgreed) {
+      setError("필수 약관에 모두 동의해주세요.")
       return
     }
     
@@ -362,7 +369,15 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
       const response = await fetch(`${API_URL}/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, name })
+        body: JSON.stringify({
+          email,
+          password,
+          name,
+          termsConsent: agreeTerms,
+          privacyConsent: agreePrivacy,
+          ageConsent: agreeAge,
+          marketingConsent: agreeMarketing,
+        })
       })
       
       const data = await response.json()
@@ -611,12 +626,21 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
   }
 
   // 계정 생성 버튼 활성화 조건
-  const isSignupFormValid = 
-    name && 
-    validatePassword(password) && 
-    password === passwordConfirm && 
-    termsAccepted && 
-    termsViewed;
+  const allRequiredAgreed = agreeTerms && agreePrivacy && agreeAge
+  const allAgreed = allRequiredAgreed && agreeMarketing
+
+  const handleAgreeAll = (checked: boolean) => {
+    setAgreeTerms(checked)
+    setAgreePrivacy(checked)
+    setAgreeAge(checked)
+    setAgreeMarketing(checked)
+  }
+
+  const isSignupFormValid =
+    name &&
+    validatePassword(password) &&
+    password === passwordConfirm &&
+    allRequiredAgreed;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -1005,39 +1029,111 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
               </div>
 
               {/* Terms Section */}
-              <div className="border rounded-md p-4 space-y-4">
-                <div className="flex items-start gap-2">
-                  <Checkbox 
-                    id="terms" 
-                    checked={termsAccepted}
-                    onCheckedChange={(checked) => setTermsAccepted(checked as boolean)}
-                    disabled={!termsViewed || isLoading}
+              <div className="border rounded-md p-4 space-y-3">
+                {/* 전체 동의 */}
+                <div className="flex items-center gap-2 pb-3 border-b border-border/60">
+                  <Checkbox
+                    id="agree-all"
+                    checked={allAgreed}
+                    onCheckedChange={(checked) => handleAgreeAll(checked as boolean)}
+                    disabled={isLoading}
                   />
-                  <div className="flex-1">
-                     <div className="flex items-center justify-between">
-                        <label htmlFor="terms" className="text-sm font-bold leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
-                          약관동의
-                        </label>
-                        <Button 
-                          variant="outline" 
-                          size="sm" 
-                          className="h-[32px] text-sm font-bold"
-                          onClick={() => setTermsViewed(true)}
-                          disabled={isLoading}
-                        >
-                          열기
-                        </Button>
-                     </div>
-                     <p className="text-[10px] text-muted-foreground mt-1">약관내용</p>
-                  </div>
+                  <label htmlFor="agree-all" className="text-sm font-bold leading-none cursor-pointer select-none">
+                    전체 동의
+                  </label>
+                </div>
+
+                {/* 이용약관 (필수) */}
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="agree-terms"
+                    checked={agreeTerms}
+                    onCheckedChange={(checked) => setAgreeTerms(checked as boolean)}
+                    disabled={isLoading}
+                  />
+                  <label htmlFor="agree-terms" className="flex-1 text-xs leading-none cursor-pointer select-none">
+                    이용약관 동의 <span className="text-destructive font-medium">(필수)</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors shrink-0"
+                    onClick={() => setTermsDialogType("terms")}
+                  >
+                    내용보기
+                  </button>
+                </div>
+
+                {/* 개인정보 수집 및 이용 (필수) */}
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="agree-privacy"
+                    checked={agreePrivacy}
+                    onCheckedChange={(checked) => setAgreePrivacy(checked as boolean)}
+                    disabled={isLoading}
+                  />
+                  <label htmlFor="agree-privacy" className="flex-1 text-xs leading-none cursor-pointer select-none">
+                    개인정보 수집 및 이용 동의 <span className="text-destructive font-medium">(필수)</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors shrink-0"
+                    onClick={() => setTermsDialogType("privacy")}
+                  >
+                    내용보기
+                  </button>
+                </div>
+
+                {/* 만 14세 이상 (필수) */}
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="agree-age"
+                    checked={agreeAge}
+                    onCheckedChange={(checked) => setAgreeAge(checked as boolean)}
+                    disabled={isLoading}
+                  />
+                  <label htmlFor="agree-age" className="flex-1 text-xs leading-none cursor-pointer select-none">
+                    만 14세 이상 확인 <span className="text-destructive font-medium">(필수)</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors shrink-0"
+                    onClick={() => setTermsDialogType("age")}
+                  >
+                    내용보기
+                  </button>
+                </div>
+
+                {/* 마케팅 정보 수신 (선택) */}
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="agree-marketing"
+                    checked={agreeMarketing}
+                    onCheckedChange={(checked) => setAgreeMarketing(checked as boolean)}
+                    disabled={isLoading}
+                  />
+                  <label htmlFor="agree-marketing" className="flex-1 text-xs leading-none cursor-pointer select-none">
+                    마케팅 정보 수신 동의 <span className="text-muted-foreground">(선택)</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors shrink-0"
+                    onClick={() => setTermsDialogType("marketing")}
+                  >
+                    내용보기
+                  </button>
                 </div>
               </div>
-              
-              {!termsViewed && (
-                <p className="text-sm font-bold text-muted-foreground text-center">
-                  약관동의를 반드시 열람 해야 계정생성 버튼이 활성화 됩니다.
+
+              {!allRequiredAgreed && (
+                <p className="text-xs text-muted-foreground text-center">
+                  필수 항목에 모두 동의해야 계정을 생성할 수 있습니다.
                 </p>
               )}
+
+              <TermsAgreementDialog
+                type={termsDialogType}
+                onOpenChange={(open) => { if (!open) setTermsDialogType(null) }}
+              />
             </div>
 
             <div className="flex gap-2 mt-2">

@@ -17,6 +17,7 @@ CREATE TABLE users (
     full_name VARCHAR(255),
     status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'suspended', 'locked')),
     email_verified BOOLEAN DEFAULT FALSE,
+    marketing_agreed BOOLEAN NOT NULL DEFAULT FALSE, -- 마케팅 정보 수신 동의 현재 상태 (변경 이력은 user_policy_consents에 기록)
     last_login_at TIMESTAMP WITH TIME ZONE,
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -567,7 +568,40 @@ CREATE TRIGGER update_roles_updated_at BEFORE UPDATE ON roles
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================
--- 11.5 INITIAL DATA - SYSTEM TENANT
+-- 11.5 USER POLICY CONSENTS (약관/정책 동의 이력)
+-- ============================================
+
+CREATE TABLE user_policy_consents (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    policy_type VARCHAR(50) NOT NULL CHECK (policy_type IN ('terms', 'privacy', 'age', 'marketing', 'refund_policy')),
+    policy_version VARCHAR(20) NOT NULL,
+    agreed BOOLEAN NOT NULL DEFAULT TRUE,
+    source VARCHAR(50) NOT NULL CHECK (source IN ('signup', 'checkout', 'topup_checkout', 'seat_addon_checkout', 'subscription_change', 'settings', 'migration')),
+    reference_id VARCHAR(255),
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_user_policy_consents_user_policy ON user_policy_consents(user_id, policy_type);
+CREATE INDEX idx_user_policy_consents_user_created ON user_policy_consents(user_id, created_at DESC);
+CREATE INDEX idx_user_policy_consents_reference ON user_policy_consents(reference_id) WHERE reference_id IS NOT NULL;
+
+COMMENT ON TABLE user_policy_consents IS '사용자의 약관/정책 동의 이력을 관리하는 append-only 테이블. 회원가입, 결제 등 동의 시점마다 레코드가 추가됨.';
+COMMENT ON COLUMN user_policy_consents.id IS '동의 레코드의 고유 식별자 (UUID)';
+COMMENT ON COLUMN user_policy_consents.user_id IS '동의한 사용자 ID (users 테이블 참조)';
+COMMENT ON COLUMN user_policy_consents.policy_type IS '정책 유형: terms(이용약관), privacy(개인정보), age(만14세이상), marketing(마케팅수신), refund_policy(유료서비스/환불정책)';
+COMMENT ON COLUMN user_policy_consents.policy_version IS '동의한 정책 버전 (시행일 기준, e.g. 2026-03-02)';
+COMMENT ON COLUMN user_policy_consents.agreed IS '동의 여부 (TRUE=동의, FALSE=거부/철회)';
+COMMENT ON COLUMN user_policy_consents.source IS '동의 발생 경로: signup(회원가입), checkout(구독결제), topup_checkout(충전결제), seat_addon_checkout(좌석추가), subscription_change(구독변경), settings(설정변경), migration(마이그레이션)';
+COMMENT ON COLUMN user_policy_consents.reference_id IS '관련 거래/트랜잭션 ID (결제 건 연결 등)';
+COMMENT ON COLUMN user_policy_consents.ip_address IS '동의 시점의 클라이언트 IP 주소';
+COMMENT ON COLUMN user_policy_consents.user_agent IS '동의 시점의 브라우저/클라이언트 정보';
+COMMENT ON COLUMN user_policy_consents.created_at IS '동의 기록 생성 시각';
+
+-- ============================================
+-- 11.6 INITIAL DATA - SYSTEM TENANT
 -- ============================================
 
 INSERT INTO tenants (owner_id, name, slug, tenant_type, status, metadata)

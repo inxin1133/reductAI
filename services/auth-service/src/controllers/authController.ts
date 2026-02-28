@@ -96,10 +96,21 @@ const CONTACT_CATEGORY_LABELS: Record<string, string> = {
   support: '기술 지원',
   partnership: '파트너십',
 };
+const POLICY_EFFECTIVE_DATE = '2026-03-02';
 
 const toStr = (value: unknown) => {
   if (typeof value !== 'string') return '';
   return value.trim();
+};
+
+const toBool = (value: unknown) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+  }
+  return false;
 };
 
 const consumeOauthState = (state: string) => {
@@ -189,9 +200,10 @@ const buildJwtRedirect = async (
   tenantIdOverride?: string | null,
   isNewUser = false
 ) => {
-  const [resolvedTenantId, platformRole] = await Promise.all([
+  const [resolvedTenantId, platformRole, consented] = await Promise.all([
     tenantIdOverride || getPrimaryTenantId(userRow.id),
     getPlatformRoleSlug(userRow.id),
+    hasUserConsented(userRow.id),
   ]);
 
   const token = jwt.sign(
@@ -216,7 +228,16 @@ const buildJwtRedirect = async (
     platform_role: platformRole || '',
     provider,
     new_user: isNewUser ? '1' : '0',
+    needs_consent: consented ? '' : '1',
   });
+};
+
+const hasUserConsented = async (userId: string): Promise<boolean> => {
+  const r = await db.query(
+    `SELECT 1 FROM user_policy_consents WHERE user_id = $1 AND policy_type = 'terms' AND agreed = TRUE LIMIT 1`,
+    [userId]
+  );
+  return r.rows.length > 0;
 };
 
 const createUserWithPersonalTenant = async (client: any, email: string, fullName: string, metadata: Record<string, unknown>) => {
@@ -780,6 +801,10 @@ export const setPassword = async (req: Request, res: Response) => {
 export const register = async (req: Request, res: Response) => {
   const email = normalizeEmail(req.body?.email);
   const { password, name } = req.body;
+  const termsConsent = toBool(req.body?.termsConsent);
+  const privacyConsent = toBool(req.body?.privacyConsent);
+  const ageConsent = toBool(req.body?.ageConsent);
+  const marketingConsent = toBool(req.body?.marketingConsent);
 
   if (!email || !password || !name) {
     return res.status(400).json({ message: 'All fields are required' });
@@ -787,6 +812,23 @@ export const register = async (req: Request, res: Response) => {
   if (!isValidEmail(email)) {
     return res.status(400).json({ message: 'Invalid email format' });
   }
+  if (!termsConsent || !privacyConsent || !ageConsent) {
+    return res.status(400).json({ message: 'Required policy consent missing' });
+  }
+
+  const consentRecordedAt = new Date().toISOString();
+  const consentMetadata = {
+    consents: {
+      terms: { agreed: true, version: POLICY_EFFECTIVE_DATE, agreed_at: consentRecordedAt },
+      privacy: { agreed: true, version: POLICY_EFFECTIVE_DATE, agreed_at: consentRecordedAt },
+      age: { agreed: true, version: POLICY_EFFECTIVE_DATE, agreed_at: consentRecordedAt },
+      marketing: {
+        agreed: marketingConsent,
+        version: POLICY_EFFECTIVE_DATE,
+        agreed_at: marketingConsent ? consentRecordedAt : null,
+      },
+    },
+  };
 
   const client = await db.default.connect();
   try {
@@ -802,8 +844,8 @@ export const register = async (req: Request, res: Response) => {
     const passwordHash = await bcrypt.hash(password, saltRounds);
 
     const result = await client.query(
-      'INSERT INTO users (email, password_hash, full_name, email_verified, status) VALUES ($1, $2, $3, $4, $5) RETURNING id, email, full_name',
-      [email, passwordHash, name, true, 'active']
+      'INSERT INTO users (email, password_hash, full_name, email_verified, status, marketing_agreed, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb) RETURNING id, email, full_name',
+      [email, passwordHash, name, true, 'active', marketingConsent, JSON.stringify(consentMetadata)]
     );
 
     const user = result.rows[0];
@@ -864,6 +906,22 @@ export const register = async (req: Request, res: Response) => {
       `,
       [user.id, tenantId, ownerRoleId, user.id]
     );
+
+    const consentIp = resolveClientIp(req);
+    const consentUa = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : '';
+    const consentTypes: Array<{ type: string; agreed: boolean }> = [
+      { type: 'terms', agreed: true },
+      { type: 'privacy', agreed: true },
+      { type: 'age', agreed: true },
+      { type: 'marketing', agreed: marketingConsent },
+    ];
+    for (const c of consentTypes) {
+      await client.query(
+        `INSERT INTO user_policy_consents (user_id, policy_type, policy_version, agreed, source, ip_address, user_agent)
+         VALUES ($1, $2, $3, $4, 'signup', $5, $6)`,
+        [user.id, c.type, POLICY_EFFECTIVE_DATE, c.agreed, consentIp || null, consentUa || null]
+      );
+    }
 
     await client.query('COMMIT');
 
@@ -1183,36 +1241,8 @@ export const handleGoogleOAuthCallback = async (req: Request, res: Response) => 
       client.release();
     }
 
-    const [resolvedTenantId, platformRole] = await Promise.all([
-      tenantId || getPrimaryTenantId(userRow.id),
-      getPlatformRoleSlug(userRow.id),
-    ]);
-
-    const token = jwt.sign(
-      { userId: userRow.id, email: userRow.email, tenantId: resolvedTenantId || undefined, platformRole },
-      process.env.JWT_SECRET || 'secret',
-      { expiresIn: '24h' }
-    );
-
-    await recordUserSession({
-      userId: userRow.id,
-      tenantId: resolvedTenantId || null,
-      token,
-      req,
-    });
-
-    return res.redirect(
-      buildFrontendRedirect({
-        token,
-        user_id: userRow.id,
-        user_email: userRow.email,
-        user_name: userRow.full_name || '',
-        tenant_id: resolvedTenantId || '',
-        platform_role: platformRole || '',
-        provider: 'google',
-        new_user: isNewUser ? '1' : '0',
-      })
-    );
+    const redirectUrl = await buildJwtRedirect(req, userRow, 'google', tenantId, isNewUser);
+    return res.redirect(redirectUrl);
   } catch (e) {
     console.error('Google OAuth error:', e);
     return res.redirect(buildFrontendRedirect({ error: 'oauth_failed', provider: 'google' }));
@@ -1458,6 +1488,66 @@ export const handleKakaoOAuthCallback = async (req: Request, res: Response) => {
   } catch (e) {
     console.error('Kakao OAuth error:', e);
     return res.redirect(buildFrontendRedirect({ error: 'oauth_failed', provider: 'kakao' }));
+  }
+};
+
+export const submitSsoConsent = async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    if (!token) return res.status(401).json({ message: 'Unauthorized' });
+
+    let decoded: { userId?: string; email?: string } | null = null;
+    try {
+      const verified = jwt.verify(token, process.env.JWT_SECRET || 'secret');
+      if (typeof verified === 'object' && verified !== null) {
+        decoded = verified as { userId?: string; email?: string };
+      }
+    } catch {
+      return res.status(401).json({ message: 'Invalid token' });
+    }
+    const userId = decoded?.userId;
+    if (!userId) return res.status(401).json({ message: 'Invalid token' });
+
+    const termsConsent = toBool(req.body?.termsConsent);
+    const privacyConsent = toBool(req.body?.privacyConsent);
+    const ageConsent = toBool(req.body?.ageConsent);
+    const marketingConsent = toBool(req.body?.marketingConsent);
+
+    if (!termsConsent || !privacyConsent || !ageConsent) {
+      return res.status(400).json({ message: 'Required policy consent missing' });
+    }
+
+    const alreadyConsented = await hasUserConsented(userId);
+    if (alreadyConsented) {
+      return res.json({ success: true, message: 'Already consented' });
+    }
+
+    const ip = resolveClientIp(req);
+    const ua = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : '';
+    const consentTypes: Array<{ type: string; agreed: boolean }> = [
+      { type: 'terms', agreed: true },
+      { type: 'privacy', agreed: true },
+      { type: 'age', agreed: true },
+      { type: 'marketing', agreed: marketingConsent },
+    ];
+    for (const c of consentTypes) {
+      await db.query(
+        `INSERT INTO user_policy_consents (user_id, policy_type, policy_version, agreed, source, ip_address, user_agent)
+         VALUES ($1, $2, $3, $4, 'signup', $5, $6)`,
+        [userId, c.type, POLICY_EFFECTIVE_DATE, c.agreed, ip || null, ua || null]
+      );
+    }
+
+    await db.query(
+      `UPDATE users SET marketing_agreed = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+      [marketingConsent, userId]
+    );
+
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('submitSsoConsent error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
   }
 };
 

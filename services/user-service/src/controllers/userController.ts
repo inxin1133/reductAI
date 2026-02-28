@@ -587,6 +587,7 @@ export const hardDeleteUser = async (req: Request, res: Response) => {
     await client.query('DELETE FROM user_sessions WHERE user_id = $1', [id]);
     await client.query('DELETE FROM user_roles WHERE user_id = $1', [id]);
     await client.query('DELETE FROM user_tenant_roles WHERE user_id = $1', [id]);
+    await client.query('DELETE FROM user_policy_consents WHERE user_id = $1', [id]);
     await client.query('DELETE FROM users WHERE id = $1', [id]);
 
     await client.query('COMMIT');

@@ -19,6 +19,7 @@ router.get('/naver/callback', authController.handleNaverOAuthCallback);
 router.get('/kakao', authController.startKakaoOAuth);
 router.get('/kakao/callback', authController.handleKakaoOAuthCallback);
 router.post('/login', authController.login);
+router.post('/sso/consent', authController.submitSsoConsent);
 router.post('/change-password', requireAuth, authController.changePassword);
 router.post('/set-password', requireAuth, authController.setPassword);
 

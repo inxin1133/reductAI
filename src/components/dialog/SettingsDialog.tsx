@@ -116,6 +116,7 @@ type CurrentUserProfile = {
   id: string
   email: string
   full_name?: string | null
+  marketing_agreed?: boolean
   profile_image_asset_id?: string | null
   profile_image_url?: string | null
   has_password?: boolean
@@ -195,6 +196,26 @@ type CreditSummary = {
     last_topup_at?: string | null
     allow_when_empty?: boolean | null
   }
+}
+
+type GrantedCreditTenant = {
+  tenant_id: string
+  tenant_name?: string | null
+  tenant_type?: string | null
+  plan_tier?: string | null
+  role_slug?: string | null
+  service?: {
+    total_credits: number
+    used_credits: number
+    user_used_credits: number
+    remaining_credits: number
+    usage_percent: number
+    max_per_period: number | null
+    is_active: boolean
+    period_start: string | null
+    period_end: string | null
+  } | null
+  topup_auto_use?: boolean
 }
 
 const TENANT_TYPE_LABELS: Record<string, string> = {
@@ -367,8 +388,12 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
   const [creditError, setCreditError] = useState<string | null>(null)
   const [topupAutoUse, setTopupAutoUse] = useState(false)
   const [topupAutoUseSaving, setTopupAutoUseSaving] = useState(false)
+  const [marketingAgreed, setMarketingAgreed] = useState(false)
+  const [marketingSaving, setMarketingSaving] = useState(false)
   const [topupProducts, setTopupProducts] = useState<TopupProduct[]>([])
   const [topupProductsLoading, setTopupProductsLoading] = useState(false)
+  const [grantedCredits, setGrantedCredits] = useState<GrantedCreditTenant[]>([])
+  const [grantedCreditsLoading, setGrantedCreditsLoading] = useState(false)
   const [deviceSessions, setDeviceSessions] = useState<UserSessionRow[]>([])
   const [deviceLoading, setDeviceLoading] = useState(false)
   const [deviceError, setDeviceError] = useState<string | null>(null)
@@ -512,15 +537,19 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     const subscription = creditSummary?.subscription ?? null
     const planTier =
       normalizePlanTier(subscription?.plan_tier ?? currentTenant?.plan_tier) ?? "free"
-    const totalRaw = Number(subscription?.grant_monthly ?? 0)
+    const grantTotalRaw = Number(subscription?.grant_monthly ?? 0)
     const usedRaw = Number(subscription?.used_credits ?? 0)
     const remainingRaw =
       subscription?.remaining_credits !== null && subscription?.remaining_credits !== undefined
         ? Number(subscription?.remaining_credits ?? 0)
-        : Math.max(0, totalRaw - usedRaw)
-    const total = Number.isFinite(totalRaw) ? totalRaw : 0
+        : Math.max(0, grantTotalRaw - usedRaw)
     const used = Number.isFinite(usedRaw) ? Math.max(0, usedRaw) : 0
-    const remaining = Number.isFinite(remainingRaw) ? Math.max(0, remainingRaw) : 0
+    const totalFromBalance = Number.isFinite(remainingRaw) ? Math.max(0, remainingRaw) + used : used
+    const total =
+      Number.isFinite(grantTotalRaw) && grantTotalRaw > 0
+        ? Math.max(grantTotalRaw, totalFromBalance)
+        : totalFromBalance
+    const remaining = Math.max(0, total - used)
     const percent = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0
     return {
       subscription,
@@ -636,6 +665,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
             id: String(userJson.id),
             email: String(userJson.email || ""),
             full_name: userJson.full_name ?? null,
+            marketing_agreed: (userJson as { marketing_agreed?: boolean }).marketing_agreed === true,
             profile_image_asset_id: nextProfileAssetId,
             profile_image_url: nextProfileUrl,
             has_password: hasPassword,
@@ -643,6 +673,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
           setProfileImageAssetId(nextProfileAssetId)
           setProfileImageUrl(nextProfileUrl)
           setUserNameDraft(String(userJson.full_name || ""))
+          setMarketingAgreed((userJson as { marketing_agreed?: boolean }).marketing_agreed === true)
           if (typeof window !== "undefined") {
             if (userJson.email) window.localStorage.setItem("user_email", String(userJson.email))
             if (userJson.full_name) window.localStorage.setItem("user_name", String(userJson.full_name))
@@ -760,6 +791,26 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     }
   }, [])
 
+  const loadGrantedCredits = useCallback(async () => {
+    const headers = authHeaders()
+    if (!headers.Authorization) return
+    setGrantedCreditsLoading(true)
+    try {
+      const res = await fetch("/api/ai/credits/my/granted-credits", { headers })
+      const json = (await res.json().catch(() => null)) as { ok?: boolean; grants?: GrantedCreditTenant[] } | null
+      if (!res.ok || !json?.ok) {
+        setGrantedCredits([])
+        return
+      }
+      setGrantedCredits(Array.isArray(json.grants) ? json.grants : [])
+    } catch (error) {
+      console.error(error)
+      setGrantedCredits([])
+    } finally {
+      setGrantedCreditsLoading(false)
+    }
+  }, [authHeaders])
+
   const handleTopupPurchase = useCallback(
     async (product: TopupProduct) => {
       const headers = authHeaders()
@@ -802,6 +853,32 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
       })
     },
     [authHeaders, navigate, onOpenChange]
+  )
+
+  const handleToggleMarketing = useCallback(
+    async (next: boolean) => {
+      const headers = authHeaders()
+      if (!headers.Authorization) return
+      setMarketingSaving(true)
+      try {
+        const res = await fetch("/api/posts/user/me", {
+          method: "PATCH",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ marketing_agreed: next }),
+        })
+        if (res.ok) {
+          setMarketingAgreed(next)
+          if (currentUser) {
+            setCurrentUser({ ...currentUser, marketing_agreed: next })
+          }
+        }
+      } catch {
+        // silently fail
+      } finally {
+        setMarketingSaving(false)
+      }
+    },
+    [authHeaders, currentUser]
   )
 
   const handleToggleTopupAutoUse = useCallback(
@@ -1347,7 +1424,8 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     if (activeMenu !== "credits") return
     void loadCreditSummary()
     void loadTopupProducts()
-  }, [activeMenu, loadCreditSummary, loadTopupProducts, open])
+    void loadGrantedCredits()
+  }, [activeMenu, loadCreditSummary, loadGrantedCredits, loadTopupProducts, open])
 
   useEffect(() => {
     if (!open) return
@@ -1624,6 +1702,24 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                           </Button> */}
                         </div>                        
                       </div>                      
+                    </div>
+                  </div>
+
+                  {/* 마케팅 동의 */}
+                  <div className="p-4">
+                    <div className="text-sm font-semibold text-foreground border-b border-border pb-2">마케팅 정보 수신</div>
+                    <div className="mt-3 flex items-center justify-between">
+                      <div className="flex-1">
+                        <div className="text-sm text-foreground">마케팅 정보 수신 동의</div>
+                        <div className="text-xs text-muted-foreground mt-0.5">
+                          이벤트, 프로모션, 신규 기능 등 마케팅 관련 정보를 수신합니다.
+                        </div>
+                      </div>
+                      <Switch
+                        checked={marketingAgreed}
+                        onCheckedChange={handleToggleMarketing}
+                        disabled={marketingSaving || profileLoading}
+                      />
                     </div>
                   </div>
 
@@ -2046,51 +2142,95 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                   <div className="p-4">
                     <div className="text-sm font-semibold text-foreground">제공 받은 크레딧</div>
 
-                    <div className="mt-3 rounded-xl border border-border">
-                      <div className="border-b border-border px-4 py-6">
-                        <div className="flex items-center justify-between">
-                          <div className="text-sm font-semibold text-foreground">BB 팀 서비스 크레딧</div>
-                          <div className="flex items-center gap-2">
-                            <span className="rounded-full px-3 py-1 text-xs font-semibold bg-amber-50 text-amber-600 ring-1 ring-amber-500">Business</span>
-                          </div>
-                        </div>
-                        <div className="mt-3 h-2 w-full rounded-full bg-muted">
-                          <div className="h-full w-[90%] rounded-full bg-amber-500" />
-                        </div>
-                        <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
-                          <div>이번달 10% 사용 (5,000 사용 / 45,000 남음 / 테넌트 전체 50,000 크레딧)</div>
-                          <div>다음 갱신일: <span className="text-foreground">2026-03-06</span></div>
-                        </div>
-                        <div className="mt-2 text-xs text-foreground flex flex-1 items-center gap-2">                          
-                          <div className="text-sm text-teal-500">사용 제한 없음</div> 
-                          <div className="text-xs text-muted-foreground"><span className="text-foreground">1,000 사용</span> / 테넌트 전체 50,000 크레딧 내에서 사용 가능</div>
-                        </div>
-                        <div className="mt-3 text-xs text-foreground flex flex-1 items-center gap-1">                          
-                          <EvCharger className="size-4" /><span className="text-sm font-bold">서비스 크레딧 소진시 충전 크레딧 자동 사용 허용됨 </span>
-                        </div>
-                      </div>                      
-                    </div>
+                    {grantedCreditsLoading ? (
+                      <div className="mt-3 flex items-center justify-center py-8 text-sm text-muted-foreground">
+                        <RotateCw className="mr-2 h-4 w-4 animate-spin" /> 크레딧 정보를 불러오는 중...
+                      </div>
+                    ) : grantedCredits.length === 0 ? (
+                      <div className="mt-3 py-6 text-center text-sm text-muted-foreground">소속 테넌트에서 제공 받은 크레딧이 없습니다.</div>
+                    ) : (
+                      grantedCredits.map((grant) => {
+                        const svc = grant.service
+                        const tier = normalizePlanTier(grant.plan_tier) ?? "free"
+                        const tierLabel = PLAN_TIER_LABELS[tier]
+                        const tierStyle = PLAN_TIER_STYLES[tier]
+                        const tenantName = String(grant.tenant_name || "").trim() || "테넌트"
+                        const tenantTypeLabel = TENANT_TYPE_LABELS[String(grant.tenant_type || "")] || ""
+                        const labelSuffix = tenantTypeLabel ? ` ${tenantTypeLabel}` : ""
 
-                    <div className="mt-3 rounded-xl border border-border">
-                      <div className="border-b border-border px-4 py-6">
-                        <div className="flex items-center justify-between">
-                          <div className="text-sm font-semibold text-foreground">CC 그룹 서비스 크레딧</div>
-                          <div className="flex items-center gap-2">
-                            <span className="rounded-full px-3 py-1 text-xs font-semibold bg-rose-50 text-rose-600 ring-1 ring-rose-500">Enterprise</span>
+                        if (!svc) {
+                          return (
+                            <div key={grant.tenant_id} className="mt-3 rounded-xl border border-border">
+                              <div className="border-b border-border px-4 py-6">
+                                <div className="flex items-center justify-between">
+                                  <div className="text-sm font-semibold text-foreground">{tenantName}{labelSuffix} 서비스 크레딧</div>
+                                  <span className={cn("rounded-full px-3 py-1 text-xs font-semibold", tierStyle.badge)}>{tierLabel}</span>
+                                </div>
+                                <div className="mt-2 text-xs text-muted-foreground">구독 정보가 없습니다.</div>
+                              </div>
+                            </div>
+                          )
+                        }
+
+                        const usagePercent = Math.min(svc.usage_percent, 100)
+                        const barWidthPercent = 100 - usagePercent
+                        const hasLimit = svc.max_per_period !== null && svc.max_per_period !== undefined
+                        const userUsed = svc.user_used_credits
+                        const limitMax = hasLimit ? Number(svc.max_per_period) : null
+                        const limitRemaining = limitMax !== null ? Math.max(0, limitMax - userUsed) : null
+                        const nextRenewal = svc.period_end ? new Date(svc.period_end).toLocaleDateString("sv-SE") : null
+
+                        return (
+                          <div key={grant.tenant_id} className="mt-3 rounded-xl border border-border">
+                            <div className="border-b border-border px-4 py-6">
+                              <div className="flex items-center justify-between">
+                                <div className="text-sm font-semibold text-foreground">{tenantName}{labelSuffix} 서비스 크레딧</div>
+                                <span className={cn("rounded-full px-3 py-1 text-xs font-semibold", tierStyle.badge)}>{tierLabel}</span>
+                              </div>
+                              <div className="mt-3 h-2 w-full rounded-full bg-muted">
+                                <div
+                                  className={cn("h-full rounded-full", tierStyle.avatar)}
+                                  style={{ width: `${barWidthPercent}%` }}
+                                />
+                              </div>
+                              <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
+                                <div>
+                                  이번달 {Math.round(usagePercent)}% 사용 ({formatCredits(svc.used_credits)} 사용 / {formatCredits(svc.remaining_credits)} 남음 / 테넌트 전체 {formatCredits(svc.total_credits)} 크레딧)
+                                </div>
+                                {nextRenewal ? (
+                                  <div>다음 갱신일: <span className="text-foreground">{nextRenewal}</span></div>
+                                ) : null}
+                              </div>
+                              <div className="mt-2 text-xs text-foreground flex flex-1 items-center gap-2">
+                                {!svc.is_active ? (
+                                  <div className="text-sm text-destructive">사용 불가</div>
+                                ) : hasLimit ? (
+                                  <>
+                                    <div className="text-sm text-rose-500">사용 제한 있음</div>
+                                    <div className="text-xs text-muted-foreground">
+                                      <span className="text-foreground">{formatCredits(userUsed)} 사용</span> / {formatCredits(limitRemaining)} 남음 / 최대 {formatCredits(limitMax)} 크레딧 사용 가능
+                                    </div>
+                                  </>
+                                ) : (
+                                  <>
+                                    <div className="text-sm text-teal-500">사용 제한 없음</div>
+                                    <div className="text-xs text-muted-foreground">
+                                      <span className="text-foreground">{formatCredits(userUsed)} 사용</span> / 테넌트 전체 {formatCredits(svc.total_credits)} 크레딧 내에서 사용 가능
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                              {grant.topup_auto_use ? (
+                                <div className="mt-3 text-xs text-foreground flex flex-1 items-center gap-1">
+                                  <EvCharger className="size-4" />
+                                  <span className="text-sm font-bold">서비스 크레딧 소진시 충전 크레딧 자동 사용 허용됨</span>
+                                </div>
+                              ) : null}
+                            </div>
                           </div>
-                        </div>
-                        <div className="mt-3 h-2 w-full rounded-full bg-muted">
-                          <div className="h-full w-[80%] rounded-full bg-rose-500" />
-                        </div>
-                        <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
-                          <div>이번달 20% 사용 (20,000 사용 / 80,000 남음 / 테넌트 전체 100,000 크레딧)</div>                          
-                          <div>다음 갱신일: <span className="text-foreground">2026-03-16</span></div>
-                        </div>
-                        <div className="mt-2 text-xs text-foreground flex flex-1 items-center gap-2">                          
-                          <div className="text-sm text-rose-500">사용 제한 있음</div> <div className="text-xs text-muted-foreground"><span className="text-foreground">2,000 사용</span> / 8,000 남음 / 최대 10,000 크레딧 사용 가능</div> 
-                        </div>
-                      </div>                     
-                    </div>
+                        )
+                      })
+                    )}
 
                   </div>
 

@@ -414,12 +414,12 @@ export function PlanDialog({ open, onOpenChange, currentTier }: PlanDialogProps)
                           ) : null}
                         </span>
                       </li>
-                      <li className="flex items-start gap-2">
+                      {/* <li className="flex items-start gap-2">
                         <HardDrive className="mt-0.5 size-4 shrink-0 text-teal-500" />
                         <span>
                           스토리지 <span className="font-semibold">{storage}</span>
                         </span>
-                      </li>
+                      </li> */}
                       <li className="flex items-start gap-2">
                         <Check className="mt-0.5 size-4 shrink-0 text-teal-500" />
                         <span>
