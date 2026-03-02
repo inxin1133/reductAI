@@ -71,6 +71,7 @@ export const adminMenuGroups: MenuGroup[] = [
         items: [
           { title: "Rate Card/버전 관리", href: "/admin/pricing/rate-cards" },
           { title: "모델/모달리티 요율표", href: "/admin/pricing/rates" },
+          { title: "SKU 관리", href: "/admin/pricing/skus" },
           { title: "마진 정책", href: "/admin/pricing/markups" },
           { title: "사용자 공개 요금표", href: "/admin/pricing/public-prices" },
         ]

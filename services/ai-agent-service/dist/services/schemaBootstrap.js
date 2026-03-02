@@ -2,12 +2,12 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ensureAiAccessSchema = ensureAiAccessSchema;
 exports.ensureTimelineSchema = ensureTimelineSchema;
-exports.ensureMessageMediaAssetsSchema = ensureMessageMediaAssetsSchema;
-exports.ensureModelUsageLogsSchema = ensureModelUsageLogsSchema;
+exports.ensureLlmUsageLogsSchema = ensureLlmUsageLogsSchema;
 exports.ensureModelRoutingRulesSchema = ensureModelRoutingRulesSchema;
 exports.ensurePromptTemplatesSchema = ensurePromptTemplatesSchema;
 exports.ensureResponseSchemasSchema = ensureResponseSchemasSchema;
 exports.ensurePromptSuggestionsSchema = ensurePromptSuggestionsSchema;
+exports.ensureWebSearchSettingsSchema = ensureWebSearchSettingsSchema;
 exports.ensureModelApiProfilesSchema = ensureModelApiProfilesSchema;
 exports.ensureDefaultSoraVideoProfiles = ensureDefaultSoraVideoProfiles;
 exports.ensureProviderAuthProfilesSchema = ensureProviderAuthProfilesSchema;
@@ -244,7 +244,7 @@ async function ensureAiAccessSchema() {
     await (0, db_1.query)(`
     CREATE TABLE IF NOT EXISTS tenant_type_model_access (
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-      tenant_type VARCHAR(50) NOT NULL CHECK (tenant_type IN ('personal', 'team', 'enterprise')),
+      tenant_type VARCHAR(50) NOT NULL CHECK (tenant_type IN ('personal', 'team', 'group')),
       model_id UUID NOT NULL REFERENCES ai_models(id) ON DELETE CASCADE,
       credential_id UUID REFERENCES provider_api_credentials(id) ON DELETE SET NULL,
       status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'suspended')),
@@ -579,81 +579,74 @@ async function ensureTimelineSchema() {
   `);
 }
 /**
- * 메시지 첨부 미디어 자산(message_media_assets)
- * - base64(data URL) 직접 저장을 피하고, 외부 스토리지로 분리하기 위한 메타 테이블
- * - v1 단계에서는 "db_proxy" 전략(서버가 DB에서 원본을 읽어 proxy 서빙)을 지원하고,
- *   이후 media-service + object storage(S3/GCS/R2)로 자연스럽게 확장 가능
- */
-async function ensureMessageMediaAssetsSchema() {
-    await (0, db_1.query)(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
-    await (0, db_1.query)(`
-    CREATE TABLE IF NOT EXISTS message_media_assets (
-      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      user_id UUID REFERENCES users(id) ON DELETE SET NULL,
-      conversation_id UUID NOT NULL REFERENCES model_conversations(id) ON DELETE CASCADE,
-      message_id UUID NOT NULL REFERENCES model_messages(id) ON DELETE CASCADE,
-
-      kind VARCHAR(30) NOT NULL CHECK (kind IN ('image','audio','video','file')),
-      mime VARCHAR(120),
-      bytes BIGINT,
-      sha256 VARCHAR(64),
-
-      status VARCHAR(30) NOT NULL DEFAULT 'stored' CHECK (status IN ('pending','stored','failed')),
-
-      storage_provider VARCHAR(30) NOT NULL DEFAULT 'db_proxy' CHECK (storage_provider IN ('db_proxy','local_fs','s3','gcs','r2','http')),
-      storage_bucket VARCHAR(255),
-      storage_key VARCHAR(1000),
-      public_url TEXT,
-      is_private BOOLEAN NOT NULL DEFAULT TRUE,
-      expires_at TIMESTAMP WITH TIME ZONE,
-
-      width INTEGER,
-      height INTEGER,
-      duration_ms INTEGER,
-
-      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_message_media_assets_tenant ON message_media_assets(tenant_id);`);
-    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_message_media_assets_message ON message_media_assets(message_id);`);
-    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_message_media_assets_conversation ON message_media_assets(conversation_id, created_at DESC);`);
-    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_message_media_assets_kind ON message_media_assets(kind);`);
-    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_message_media_assets_sha256 ON message_media_assets(sha256);`);
-}
-/**
- * Model usage logs schema
+ * LLM usage logs schema
  * - Admin "모델 사용 로그"에서 조회하는 테이블을 서비스 부팅 시 보장합니다.
- * - 본 프로젝트의 공식 스키마(document/schema_models.sql)의 일부를 필요한 최소 형태로 반영합니다.
+ * - 본 프로젝트의 공식 스키마(document/schema_llm_usage.sql)의 일부를 필요한 최소 형태로 반영합니다.
  */
-async function ensureModelUsageLogsSchema() {
+async function ensureLlmUsageLogsSchema() {
     await (0, db_1.query)(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
     await (0, db_1.query)(`
-    CREATE TABLE IF NOT EXISTS model_usage_logs (
+    CREATE TABLE IF NOT EXISTS llm_usage_logs (
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
       tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       user_id UUID REFERENCES users(id) ON DELETE SET NULL,
-      model_id UUID NOT NULL REFERENCES ai_models(id) ON DELETE RESTRICT,
+      idempotency_key VARCHAR(255),
+      provider_id UUID NOT NULL REFERENCES ai_providers(id) ON DELETE RESTRICT,
+      model_id UUID REFERENCES ai_models(id) ON DELETE SET NULL,
       credential_id UUID REFERENCES provider_api_credentials(id) ON DELETE SET NULL,
       service_id UUID REFERENCES services(id) ON DELETE SET NULL,
-      token_usage_log_id UUID REFERENCES token_usage_logs(id) ON DELETE SET NULL,
-      feature_name VARCHAR(100) NOT NULL,
-      request_id VARCHAR(255) UNIQUE,
+      requested_model VARCHAR(255) NOT NULL,
+      resolved_model VARCHAR(255) NOT NULL,
+      modality VARCHAR(20) NOT NULL CHECK (modality IN ('text', 'image_read', 'image_create', 'audio', 'video', 'music')),
+      region VARCHAR(64),
+      feature_name VARCHAR(100) NOT NULL DEFAULT 'unknown',
+      web_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      web_provider VARCHAR(50),
+      web_search_mode VARCHAR(20) CHECK (web_search_mode IN ('auto', 'forced', 'off')),
+      web_budget_count INTEGER,
+      web_search_count INTEGER NOT NULL DEFAULT 0,
+      routing_rule_id UUID REFERENCES model_routing_rules(id) ON DELETE SET NULL,
+      is_fallback BOOLEAN NOT NULL DEFAULT FALSE,
+      fallback_reason VARCHAR(50) CHECK (fallback_reason IN ('rate_limit', 'cost_limit', 'timeout', 'error', 'policy')),
+      attempt_index INTEGER,
+      parent_usage_log_id UUID REFERENCES llm_usage_logs(id) ON DELETE SET NULL,
+      request_id VARCHAR(255),
+      conversation_id UUID REFERENCES model_conversations(id) ON DELETE SET NULL,
+      model_message_id UUID REFERENCES model_messages(id) ON DELETE SET NULL,
+      prompt_hash CHAR(64),
+      prompt_length_chars INTEGER,
+      prompt_tokens_estimated INTEGER,
+      response_length_chars INTEGER,
+      response_bytes BIGINT,
+      finish_reason VARCHAR(50) CHECK (finish_reason IN ('stop', 'length', 'content_filter', 'error')),
+      content_filtered BOOLEAN NOT NULL DEFAULT FALSE,
+      tool_call_count INTEGER NOT NULL DEFAULT 0,
+      provider_created_at TIMESTAMP WITH TIME ZONE,
+      started_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      headers_received_at TIMESTAMP WITH TIME ZONE,
+      first_token_at TIMESTAMP WITH TIME ZONE,
+      finished_at TIMESTAMP WITH TIME ZONE,
+      latency_ms INTEGER,
+      ttfb_ms INTEGER,
+      ttft_ms INTEGER,
+      queue_wait_ms INTEGER,
+      network_ms INTEGER,
+      server_processing_ms INTEGER,
+      response_time_ms INTEGER,
+      status VARCHAR(20) NOT NULL CHECK (status IN ('success', 'partial', 'failed', 'failure', 'error', 'timeout', 'rate_limited')),
+      http_status INTEGER,
+      error_code VARCHAR(100),
+      error_message TEXT,
+      error_retryable BOOLEAN,
       input_tokens INTEGER NOT NULL DEFAULT 0,
       cached_input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
-      total_tokens INTEGER NOT NULL,
+      total_tokens INTEGER NOT NULL DEFAULT 0,
       input_cost DECIMAL(10, 6) DEFAULT 0,
       cached_input_cost DECIMAL(10, 6) DEFAULT 0,
       output_cost DECIMAL(10, 6) DEFAULT 0,
       total_cost DECIMAL(10, 6) DEFAULT 0,
       currency VARCHAR(3) DEFAULT 'USD',
-      response_time_ms INTEGER,
-      status VARCHAR(50) NOT NULL CHECK (status IN ('success', 'failure', 'error', 'timeout', 'rate_limited')),
-      error_code VARCHAR(100),
-      error_message TEXT,
       request_data JSONB,
       response_data JSONB,
       model_parameters JSONB,
@@ -663,48 +656,71 @@ async function ensureModelUsageLogsSchema() {
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
   `);
-    // 기존 DB 마이그레이션: cached_input_* 컬럼 추가
     await (0, db_1.query)(`
-    DO $$
-    BEGIN
-      IF EXISTS (
-        SELECT 1
-        FROM information_schema.tables
-        WHERE table_schema = 'public'
-          AND table_name = 'model_usage_logs'
-      ) THEN
-        IF NOT EXISTS (
-          SELECT 1
-          FROM information_schema.columns
-          WHERE table_schema = 'public'
-            AND table_name = 'model_usage_logs'
-            AND column_name = 'cached_input_tokens'
-        ) THEN
-          ALTER TABLE model_usage_logs ADD COLUMN cached_input_tokens INTEGER NOT NULL DEFAULT 0;
-        END IF;
-
-        IF NOT EXISTS (
-          SELECT 1
-          FROM information_schema.columns
-          WHERE table_schema = 'public'
-            AND table_name = 'model_usage_logs'
-            AND column_name = 'cached_input_cost'
-        ) THEN
-          ALTER TABLE model_usage_logs ADD COLUMN cached_input_cost DECIMAL(10, 6) DEFAULT 0;
-        END IF;
-      END IF;
-    END $$;
+    ALTER TABLE llm_usage_logs
+      ADD COLUMN IF NOT EXISTS model_id UUID REFERENCES ai_models(id) ON DELETE SET NULL,
+      ADD COLUMN IF NOT EXISTS credential_id UUID REFERENCES provider_api_credentials(id) ON DELETE SET NULL,
+      ADD COLUMN IF NOT EXISTS service_id UUID REFERENCES services(id) ON DELETE SET NULL,
+      ADD COLUMN IF NOT EXISTS feature_name VARCHAR(100) NOT NULL DEFAULT 'unknown',
+      ADD COLUMN IF NOT EXISTS response_time_ms INTEGER,
+      ADD COLUMN IF NOT EXISTS input_tokens INTEGER NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS output_tokens INTEGER NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS total_tokens INTEGER NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS input_cost DECIMAL(10, 6) DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS cached_input_cost DECIMAL(10, 6) DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS output_cost DECIMAL(10, 6) DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS total_cost DECIMAL(10, 6) DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS currency VARCHAR(3) DEFAULT 'USD',
+      ADD COLUMN IF NOT EXISTS request_data JSONB,
+      ADD COLUMN IF NOT EXISTS response_data JSONB,
+      ADD COLUMN IF NOT EXISTS model_parameters JSONB;
   `);
-    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_tenant_id ON model_usage_logs(tenant_id);`);
-    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_user_id ON model_usage_logs(user_id);`);
-    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_model_id ON model_usage_logs(model_id);`);
-    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_credential_id ON model_usage_logs(credential_id);`);
-    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_service_id ON model_usage_logs(service_id);`);
-    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_feature_name ON model_usage_logs(feature_name);`);
-    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_status ON model_usage_logs(status);`);
-    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_created_at ON model_usage_logs(created_at);`);
-    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_tenant_date ON model_usage_logs(tenant_id, created_at DESC);`);
-    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_model_usage_logs_request_id ON model_usage_logs(request_id) WHERE request_id IS NOT NULL;`);
+    await (0, db_1.query)(`ALTER TABLE llm_usage_logs DROP CONSTRAINT IF EXISTS llm_usage_logs_status_check;`);
+    await (0, db_1.query)(`
+    ALTER TABLE llm_usage_logs
+      ADD CONSTRAINT llm_usage_logs_status_check
+      CHECK (status IN ('success', 'partial', 'failed', 'failure', 'error', 'timeout', 'rate_limited'));
+  `);
+    await (0, db_1.query)(`CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_usage_logs_tenant_idempotency_key
+     ON llm_usage_logs(tenant_id, idempotency_key)
+     WHERE idempotency_key IS NOT NULL;`);
+    await (0, db_1.query)(`DROP INDEX IF EXISTS idx_llm_usage_logs_tenant_request_id;`);
+    await (0, db_1.query)(`CREATE UNIQUE INDEX idx_llm_usage_logs_tenant_request_id ON llm_usage_logs(tenant_id, request_id);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_provider_request_id
+     ON llm_usage_logs(provider_id, request_id)
+     WHERE request_id IS NOT NULL;`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_tenant_id ON llm_usage_logs(tenant_id);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_user_id ON llm_usage_logs(user_id);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_provider_id ON llm_usage_logs(provider_id);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_model_id ON llm_usage_logs(model_id);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_feature_name ON llm_usage_logs(feature_name);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_modality ON llm_usage_logs(modality);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_resolved_model ON llm_usage_logs(resolved_model);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_conversation_id
+     ON llm_usage_logs(conversation_id) WHERE conversation_id IS NOT NULL;`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_model_message_id
+     ON llm_usage_logs(model_message_id) WHERE model_message_id IS NOT NULL;`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_routing_rule_id
+     ON llm_usage_logs(routing_rule_id) WHERE routing_rule_id IS NOT NULL;`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_parent_usage_log_id
+     ON llm_usage_logs(parent_usage_log_id) WHERE parent_usage_log_id IS NOT NULL;`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_status ON llm_usage_logs(status);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_created_at ON llm_usage_logs(created_at);`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_tenant_date ON llm_usage_logs(tenant_id, created_at DESC);`);
+    await (0, db_1.query)(`
+    CREATE TABLE IF NOT EXISTS llm_token_usages (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      usage_log_id UUID NOT NULL REFERENCES llm_usage_logs(id) ON DELETE CASCADE,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      unit VARCHAR(20) NOT NULL DEFAULT 'tokens' CHECK (unit IN ('tokens')),
+      metadata JSONB DEFAULT '{}',
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_llm_token_usages_usage_log_id ON llm_token_usages(usage_log_id);`);
 }
 /**
  * Model routing rules schema
@@ -1063,6 +1079,32 @@ async function ensurePromptSuggestionsSchema() {
     await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_prompt_suggestions_tenant_active ON prompt_suggestions(tenant_id, is_active, sort_order);`);
     await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_prompt_suggestions_model ON prompt_suggestions(model_id);`);
     await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_prompt_suggestions_model_type ON prompt_suggestions(model_type);`);
+}
+/**
+ * Web search settings schema
+ * - Admin UI에서 웹 검색 정책을 관리합니다.
+ */
+async function ensureWebSearchSettingsSchema() {
+    await (0, db_1.query)(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
+    await (0, db_1.query)(`
+    CREATE TABLE IF NOT EXISTS ai_web_search_settings (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      default_allowed BOOLEAN NOT NULL DEFAULT FALSE,
+      provider VARCHAR(50) NOT NULL DEFAULT 'serper',
+      enabled_providers JSONB NOT NULL DEFAULT '["openai","google","anthropic"]',
+      max_search_calls INTEGER NOT NULL DEFAULT 3,
+      max_total_snippet_tokens INTEGER NOT NULL DEFAULT 1200,
+      timeout_ms INTEGER NOT NULL DEFAULT 10000,
+      retry_max INTEGER NOT NULL DEFAULT 2,
+      retry_base_delay_ms INTEGER NOT NULL DEFAULT 500,
+      retry_max_delay_ms INTEGER NOT NULL DEFAULT 2000,
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (tenant_id)
+    );
+  `);
 }
 /**
  * Model API Profiles schema

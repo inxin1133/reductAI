@@ -112,33 +112,6 @@ function statusBadgeVariant(s: UsageStatus) {
   return "destructive"
 }
 
-function formatTokens(row: UsageLogRow) {
-  const input = toNumber(row.input_tokens)
-  const cached = toNumber(row.cached_input_tokens)
-  const output = toNumber(row.output_tokens)
-  const total = toNumber(row.total_tokens) || input + output
-  if (cached > 0) return `${input}+${cached}/${output}/${total}`
-  return `${input}/${output}/${total}`
-}
-
-function formatUsage(row: UsageLogRow) {
-  let usage = "-"
-  if (row.modality === "image_create" || row.modality === "image_read") {
-    usage = `${toNumber(row.image_count)} images`
-  } else if (row.modality === "video") {
-    usage = `${fmtSeconds(row.video_seconds)}`
-  } else if (row.modality === "music") {
-    usage = `${fmtSeconds(row.music_seconds)}`
-  } else {
-    usage = `${formatTokens(row)} tokens`
-  }
-  const webCount = toNumber(row.web_search_count)
-  if (webCount > 0) {
-    return `${usage} · web ${webCount}`
-  }
-  return usage
-}
-
 export default function ModelUsageLogs() {
   const [loading, setLoading] = useState(false)
   const [rows, setRows] = useState<UsageLogRow[]>([])
@@ -330,7 +303,10 @@ export default function ModelUsageLogs() {
               <TableHead>모달리티</TableHead>
               <TableHead className="min-w-[120px]">Provider</TableHead>
               <TableHead className="min-w-[260px]">Model</TableHead>
-              <TableHead className="text-right">Usage</TableHead>
+              <TableHead className="text-right">input</TableHead>
+              <TableHead className="text-right">cached</TableHead>
+              <TableHead className="text-right">output</TableHead>
+              <TableHead className="text-right">total</TableHead>
               <TableHead className="text-right">Cost</TableHead>
               <TableHead className="text-right">Latency</TableHead>
               <TableHead className="min-w-[220px]">Request ID</TableHead>
@@ -341,14 +317,14 @@ export default function ModelUsageLogs() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={12} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={15} className="py-8 text-center text-muted-foreground">
                   <Loader2 className="h-4 w-4 inline-block animate-spin mr-2" />
                   로딩 중...
                 </TableCell>
               </TableRow>
             ) : rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={12} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={15} className="py-10 text-center text-muted-foreground">
                   로그가 없습니다.
                 </TableCell>
               </TableRow>
@@ -373,7 +349,16 @@ export default function ModelUsageLogs() {
                     </div>
                   </TableCell>
                   <TableCell className="text-right font-mono">
-                    {formatUsage(r)}
+                    {toNumber(r.input_tokens) || "-"}
+                  </TableCell>
+                  <TableCell className="text-right font-mono">
+                    {toNumber(r.cached_input_tokens) > 0 ? toNumber(r.cached_input_tokens) : "-"}
+                  </TableCell>
+                  <TableCell className="text-right font-mono">
+                    {toNumber(r.output_tokens) || "-"}
+                  </TableCell>
+                  <TableCell className="text-right font-mono">
+                    {toNumber(r.total_tokens) || toNumber(r.input_tokens) + toNumber(r.output_tokens) || "-"}
                   </TableCell>
                   <TableCell className="text-right font-mono">
                     {r.total_cost} {r.currency}

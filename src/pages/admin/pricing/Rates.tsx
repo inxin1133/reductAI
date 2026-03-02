@@ -25,7 +25,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Copy, Loader2, Pencil, RefreshCcw, Wand2 } from "lucide-react"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Copy, Loader2, Pencil, Plus, RefreshCcw, Wand2 } from "lucide-react"
 import { AdminPage } from "@/components/layout/AdminPage"
 
 type RateCardStatus = "draft" | "active" | "retired"
@@ -72,6 +73,21 @@ type RateListResponse = {
 type RateCardResponse = {
   ok: boolean
   rows: RateCard[]
+}
+
+type MissingSku = {
+  id: string
+  sku_code: string
+  provider_slug: string
+  model_key: string
+  model_name: string
+  modality: string
+  usage_kind: string
+  token_category?: string | null
+  unit: string
+  unit_size: number
+  currency: string
+  metadata?: Record<string, unknown> | null
 }
 
 const RATE_CARDS_API = "/api/ai/pricing/rate-cards"
@@ -167,6 +183,13 @@ export default function Rates() {
     value: "",
   })
   const [bulkSaving, setBulkSaving] = useState(false)
+
+  const [missingOpen, setMissingOpen] = useState(false)
+  const [missingSkus, setMissingSkus] = useState<MissingSku[]>([])
+  const [missingLoading, setMissingLoading] = useState(false)
+  const [missingRateValues, setMissingRateValues] = useState<Record<string, string>>({})
+  const [missingSelected, setMissingSelected] = useState<Set<string>>(new Set())
+  const [missingSaving, setMissingSaving] = useState(false)
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams()
@@ -308,6 +331,79 @@ export default function Rates() {
     }
   }
 
+  async function openMissing() {
+    if (!rateCardId) {
+      alert("Rate Card를 먼저 선택해주세요.")
+      return
+    }
+    setMissingOpen(true)
+    setMissingLoading(true)
+    setMissingSelected(new Set())
+    setMissingRateValues({})
+    try {
+      const res = await adminFetch(`${RATE_CARDS_API}/${rateCardId}/missing-skus`)
+      const json = await res.json().catch(() => ({ rows: [] }))
+      if (!res.ok || !json.ok) throw new Error("FAILED")
+      setMissingSkus(json.rows || [])
+    } catch (e) {
+      console.error(e)
+      setMissingSkus([])
+    } finally {
+      setMissingLoading(false)
+    }
+  }
+
+  function toggleMissingSelect(skuId: string) {
+    setMissingSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(skuId)) next.delete(skuId)
+      else next.add(skuId)
+      return next
+    })
+  }
+
+  function toggleMissingAll() {
+    if (missingSelected.size === missingSkus.length) {
+      setMissingSelected(new Set())
+    } else {
+      setMissingSelected(new Set(missingSkus.map((s) => s.id)))
+    }
+  }
+
+  async function saveMissingRates() {
+    if (missingSelected.size === 0) {
+      alert("추가할 SKU를 선택해주세요.")
+      return
+    }
+    const rates = Array.from(missingSelected).map((skuId) => ({
+      sku_id: skuId,
+      rate_value: Number(missingRateValues[skuId] || "0"),
+    }))
+    const invalid = rates.find((r) => !Number.isFinite(r.rate_value) || r.rate_value < 0)
+    if (invalid) {
+      alert("요율 값은 0 이상의 숫자여야 합니다.")
+      return
+    }
+
+    try {
+      setMissingSaving(true)
+      const res = await adminFetch(`${RATE_CARDS_API}/${rateCardId}/add-rates`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rates }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json.ok) throw new Error("FAILED")
+      setMissingOpen(false)
+      await fetchRates()
+    } catch (e) {
+      console.error(e)
+      alert("요율 추가에 실패했습니다.")
+    } finally {
+      setMissingSaving(false)
+    }
+  }
+
   function openBulk() {
     if (!rateCardId) {
       alert("Rate Card를 먼저 선택해주세요.")
@@ -435,6 +531,10 @@ export default function Rates() {
           <Button variant="outline" size="sm" onClick={openClone}>
             <Copy className="size-4 mr-2" />
             버전 복제
+          </Button>
+          <Button variant="outline" size="sm" onClick={openMissing}>
+            <Plus className="size-4 mr-2" />
+            누락 SKU 추가
           </Button>
           <Button size="sm" onClick={openBulk}>
             <Wand2 className="size-4 mr-2" />
@@ -775,6 +875,109 @@ export default function Rates() {
               {bulkSaving ? <Loader2 className="size-4 mr-2 animate-spin" /> : null}
               적용
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={missingOpen} onOpenChange={setMissingOpen}>
+        <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              누락 SKU 추가
+              {selectedRateCard ? ` — ${selectedRateCard.name} v${selectedRateCard.version}` : ""}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="text-xs text-muted-foreground mb-2">
+            현재 Rate Card에 요율이 등록되지 않은 활성 SKU 목록입니다. 선택 후 요율을 입력하고 추가하세요.
+          </div>
+          {missingLoading ? (
+            <div className="py-8 text-center text-muted-foreground">
+              <Loader2 className="h-4 w-4 inline-block animate-spin mr-2" />
+              로딩 중...
+            </div>
+          ) : missingSkus.length === 0 ? (
+            <div className="py-8 text-center text-muted-foreground">누락된 SKU가 없습니다.</div>
+          ) : (
+            <div className="border rounded-lg overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[40px]">
+                      <Checkbox
+                        checked={missingSelected.size === missingSkus.length && missingSkus.length > 0}
+                        onCheckedChange={toggleMissingAll}
+                      />
+                    </TableHead>
+                    <TableHead>Provider</TableHead>
+                    <TableHead>Model</TableHead>
+                    <TableHead>Modality</TableHead>
+                    <TableHead>Usage</TableHead>
+                    <TableHead>Token</TableHead>
+                    <TableHead>Unit</TableHead>
+                    <TableHead className="w-[140px]">요율 (rate_value)</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {missingSkus.map((s) => (
+                    <TableRow key={s.id}>
+                      <TableCell>
+                        <Checkbox
+                          checked={missingSelected.has(s.id)}
+                          onCheckedChange={() => toggleMissingSelect(s.id)}
+                        />
+                      </TableCell>
+                      <TableCell className="font-mono">{s.provider_slug}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-col">
+                          <span className="font-medium text-sm">{s.model_name}</span>
+                          <span className="text-xs text-muted-foreground font-mono">{s.model_key}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="font-mono">{s.modality}</TableCell>
+                      <TableCell className="font-mono">{s.usage_kind}</TableCell>
+                      <TableCell className="font-mono">{s.token_category || "-"}</TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {s.unit_size.toLocaleString()} {s.unit}
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          type="number"
+                          step="any"
+                          min={0}
+                          className="h-8 text-sm font-mono"
+                          value={missingRateValues[s.id] ?? ""}
+                          placeholder="0"
+                          onChange={(e) =>
+                            setMissingRateValues((prev) => ({ ...prev, [s.id]: e.target.value }))
+                          }
+                          onFocus={() => {
+                            if (!missingSelected.has(s.id)) {
+                              setMissingSelected((prev) => new Set(prev).add(s.id))
+                            }
+                          }}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+          <DialogFooter>
+            <div className="flex items-center justify-between w-full">
+              <div className="text-sm text-muted-foreground">
+                {missingSkus.length}건 중 {missingSelected.size}건 선택
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={() => setMissingOpen(false)} disabled={missingSaving}>
+                  취소
+                </Button>
+                <Button onClick={saveMissingRates} disabled={missingSaving || missingSelected.size === 0}>
+                  {missingSaving ? <Loader2 className="size-4 mr-2 animate-spin" /> : null}
+                  선택 항목 추가 ({missingSelected.size}건)
+                </Button>
+              </div>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

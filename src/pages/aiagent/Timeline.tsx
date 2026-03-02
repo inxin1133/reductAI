@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/select"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
-import { Copy, Volume2, Repeat, ChevronsLeft, PencilLine, GalleryVerticalEnd, MoreHorizontal, Loader2 } from "lucide-react"
+import { Copy, ChevronsLeft, PencilLine, GalleryVerticalEnd, MoreHorizontal, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { handleSessionExpired, isSessionExpired, resetSessionExpiredGuard } from "@/lib/session"
 import { ChatInterface } from "@/components/ChatInterface"
@@ -932,6 +932,7 @@ export default function Timeline() {
   // Save to Post modal state
   type CategoryOption = { id: string; name: string; icon?: string | null; categoryType?: "personal" | "team" }
   const [savePostModalOpen, setSavePostModalOpen] = React.useState(false)
+  const [savePostSingleMessage, setSavePostSingleMessage] = React.useState<TimelineUiMessage | null>(null)
   const [savePostCategories, setSavePostCategories] = React.useState<CategoryOption[]>([])
   const [savePostCategoryId, setSavePostCategoryId] = React.useState<string>("")
   const [savePostIncludeQuestions, setSavePostIncludeQuestions] = React.useState(true)
@@ -1875,21 +1876,22 @@ export default function Timeline() {
     return { type: "doc", content }
   }, [])
 
-  // Save conversation as post
+  // Save conversation as post (or single assistant message when savePostSingleMessage is set)
   const saveConversationAsPost = React.useCallback(async () => {
-    if (!activeConversationId) {
+    if (!activeConversationId && !savePostSingleMessage) {
       toast.error("저장할 대화를 선택해주세요.")
       return
     }
 
     setSavePostLoading(true)
     try {
-      // Get conversation title
       const conv = conversations.find((c) => c.id === activeConversationId)
+      const msgsToSave = savePostSingleMessage ? [savePostSingleMessage] : messages
+      const includeQuestions = savePostSingleMessage ? false : savePostIncludeQuestions
       const title = conv?.title || "AI 대화"
 
       // Build PM doc from messages
-      const pmDoc = buildPmDocFromMessages(messages, savePostIncludeQuestions)
+      const pmDoc = buildPmDocFromMessages(msgsToSave, includeQuestions)
       console.log("[Timeline] saveConversationAsPost: pmDoc =", JSON.stringify(pmDoc, null, 2))
 
       // Normalize category_id (handle "__none__" as null)
@@ -1939,6 +1941,7 @@ export default function Timeline() {
 
       toast.success("페이지가 생성되었습니다.")
       setSavePostModalOpen(false)
+      setSavePostSingleMessage(null)
 
       // Navigate to the created post
       const categoryParam = effectiveCategoryId ? `?category=${encodeURIComponent(effectiveCategoryId)}` : ""
@@ -1949,7 +1952,7 @@ export default function Timeline() {
     } finally {
       setSavePostLoading(false)
     }
-  }, [activeConversationId, authHeaders, buildPmDocFromMessages, conversations, messages, navigate, savePostCategoryId, savePostIncludeQuestions])
+  }, [activeConversationId, authHeaders, buildPmDocFromMessages, conversations, messages, navigate, savePostCategoryId, savePostIncludeQuestions, savePostSingleMessage])
 
   const STOP_TEXT = "사용자의 요청에 의해 요청 및 답변이 중지 되었습니다."
   const applyStopMessage = React.useCallback(
@@ -2077,6 +2080,7 @@ export default function Timeline() {
               toast("저장할 대화 내용이 없습니다.")
               return
             }
+            setSavePostSingleMessage(null)
             setSavePostModalOpen(true)
           }}
         >
@@ -2149,12 +2153,20 @@ export default function Timeline() {
       }
     >
       {/* Save to Post Dialog */}
-      <Dialog open={savePostModalOpen} onOpenChange={setSavePostModalOpen}>
+      <Dialog
+        open={savePostModalOpen}
+        onOpenChange={(open) => {
+          setSavePostModalOpen(open)
+          if (!open) setSavePostSingleMessage(null)
+        }}
+      >
         <DialogContent className="sm:max-w-[425px]">
           <DialogHeader>
             <DialogTitle>페이지로 저장</DialogTitle>
             <DialogDescription>
-              현재 대화 내용을 페이지로 저장합니다.
+              {savePostSingleMessage
+                ? "선택한 응답 내용만 페이지로 저장합니다."
+                : "현재 대화 내용을 페이지로 저장합니다."}
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-4 py-4">
@@ -2203,17 +2215,19 @@ export default function Timeline() {
               </Select>
             </div>
 
-            {/* Include Questions Checkbox */}
-            <div className="flex items-center gap-2">
-              <Checkbox
-                id="include-questions"
-                checked={savePostIncludeQuestions}
-                onCheckedChange={(checked) => setSavePostIncludeQuestions(checked === true)}
-              />
-              <Label htmlFor="include-questions" className="cursor-pointer">
-                내 질문도 함께 저장
-              </Label>
-            </div>
+            {/* Include Questions Checkbox - 전체 대화 모드에서만 표시 */}
+            {!savePostSingleMessage && (
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="include-questions"
+                  checked={savePostIncludeQuestions}
+                  onCheckedChange={(checked) => setSavePostIncludeQuestions(checked === true)}
+                />
+                <Label htmlFor="include-questions" className="cursor-pointer">
+                  내 질문도 함께 저장
+                </Label>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button
@@ -2444,8 +2458,15 @@ export default function Timeline() {
                                void copyAssistantMessage(m)
                              }}
                            />
-                           <Volume2 className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
-                           <Repeat className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
+                           <PencilLine
+                             className="size-4 cursor-pointer text-muted-foreground hover:text-foreground"
+                             onClick={() => {
+                               setSavePostSingleMessage(m)
+                               setSavePostModalOpen(true)
+                             }}
+                           />
+                           {/* <Volume2 className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" />
+                           <Repeat className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" /> */}
                           <span className="text-sm text-card-foreground">모델: {m.modelDisplayName || (m.model ? modelDisplayNameByIdRef.current[m.model] : "") || m.model || "-"}</span>
                          </div>
                        </div>

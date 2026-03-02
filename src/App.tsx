@@ -50,6 +50,7 @@ import PricingRateCards from "./pages/admin/pricing/RateCards";
 import PublicPrices from "./pages/admin/pricing/PublicPrices";
 import PricingRates from "./pages/admin/pricing/Rates";
 import PricingMarkups from "./pages/admin/pricing/Markups";
+import PricingSkus from "./pages/admin/pricing/Skus";
 import BillingPlans from "./pages/admin/billing/Plans";
 import BillingPlanPrices from "./pages/admin/billing/PlanPrices";
 import BillingTaxFx from "./pages/admin/billing/TaxFx";
@@ -316,6 +317,10 @@ const router = createBrowserRouter([
           {
             path: "pricing/rates",
             element: <PricingRates />,
+          },
+          {
+            path: "pricing/skus",
+            element: <PricingSkus />,
           },
           {
             path: "pricing/markups",

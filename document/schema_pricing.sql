@@ -48,7 +48,6 @@ COMMENT ON COLUMN pricing_rate_cards.updated_at IS '요금 스냅샷 수정 시�
 CREATE TABLE pricing_skus (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     sku_code VARCHAR(200) NOT NULL UNIQUE,
-    provider_id UUID REFERENCES ai_providers(id) ON DELETE SET NULL,
     provider_slug VARCHAR(100) NOT NULL, -- openai/google/serper etc
     model_id UUID REFERENCES ai_models(id) ON DELETE SET NULL,
     model_key VARCHAR(255) NOT NULL, -- API model id or external key
@@ -72,7 +71,6 @@ CREATE INDEX idx_pricing_skus_usage_kind ON pricing_skus(usage_kind);
 
 COMMENT ON TABLE pricing_skus IS '모델/모달리티 사용 단위(SKU)';
 COMMENT ON COLUMN pricing_skus.sku_code IS 'SKU 코드(provider.model.modality.usage_kind.token_category.unit.unit_size)';
-COMMENT ON COLUMN pricing_skus.provider_id IS 'Provider ID(ai_providers.id)';
 COMMENT ON COLUMN pricing_skus.provider_slug IS 'Provider 슬러그.';
 COMMENT ON COLUMN pricing_skus.model_id IS 'Model ID(ai_models.id)';
 COMMENT ON COLUMN pricing_skus.model_key IS 'Model 키(api model id or external key)';
@@ -199,6 +197,7 @@ CREATE TRIGGER update_pricing_markup_rules_updated_at BEFORE UPDATE ON pricing_m
 -- ============================================
 -- Part A: Token-based (text, code, image text/image tokens) - input+output pair
 -- Part B: Single-rate (image_generation, video seconds, audio seconds, web_search requests)
+-- All cost columns are in CREDITS (USD 1 = 1000 credits)
 
 CREATE OR REPLACE VIEW pricing_model_cost_summaries AS
 WITH active_rate_card AS (
@@ -237,12 +236,12 @@ FROM (
         COALESCE(r_in.tier_unit, r_out.tier_unit) AS tier_unit,
         COALESCE(r_in.tier_min, r_out.tier_min) AS tier_min,
         COALESCE(r_in.tier_max, r_out.tier_max) AS tier_max,
-        ROUND(r_in.rate_value * (1000.0 / s_in.unit_size), 6) AS input_cost_per_1k,
-        ROUND(r_out.rate_value * (1000.0 / s_in.unit_size), 6) AS output_cost_per_1k,
-        ROUND(((r_in.rate_value + r_out.rate_value) / 2.0) * (1000.0 / s_in.unit_size), 6) AS avg_cost_per_1k,
+        ROUND(r_in.rate_value * (1000.0 / s_in.unit_size) * 1000.0, 6) AS input_cost_per_1k,
+        ROUND(r_out.rate_value * (1000.0 / s_in.unit_size) * 1000.0, 6) AS output_cost_per_1k,
+        ROUND(((r_in.rate_value + r_out.rate_value) / 2.0) * (1000.0 / s_in.unit_size) * 1000.0, 6) AS avg_cost_per_1k,
         COALESCE(mr.margin_percent, 0) AS margin_percent,
         ROUND(
-            (((r_in.rate_value + r_out.rate_value) / 2.0) * (1000.0 / s_in.unit_size)) * (1 + COALESCE(mr.margin_percent, 0) / 100.0),
+            (((r_in.rate_value + r_out.rate_value) / 2.0) * (1000.0 / s_in.unit_size)) * (1 + COALESCE(mr.margin_percent, 0) / 100.0) * 1000.0,
             6
         ) AS avg_cost_per_1k_with_margin
     FROM pricing_skus s_in
@@ -298,10 +297,10 @@ SELECT
     NULL::numeric AS input_cost_per_1k,
     NULL::numeric AS output_cost_per_1k,
     NULL::numeric AS avg_cost_per_1k,
-    ROUND(r.rate_value, 6) AS cost_per_unit,
+    ROUND(r.rate_value * 1000.0, 6) AS cost_per_unit,
     COALESCE(mr.margin_percent, 0) AS margin_percent,
     NULL::numeric AS avg_cost_per_1k_with_margin,
-    ROUND(r.rate_value * (1 + COALESCE(mr.margin_percent, 0) / 100.0), 6) AS cost_per_unit_with_margin
+    ROUND(r.rate_value * (1 + COALESCE(mr.margin_percent, 0) / 100.0) * 1000.0, 6) AS cost_per_unit_with_margin
 FROM pricing_skus s
 JOIN active_rate_card arc ON TRUE
 JOIN pricing_rates r ON r.rate_card_id = arc.id AND r.sku_id = s.id
@@ -325,7 +324,7 @@ LEFT JOIN LATERAL (
 WHERE s.usage_kind IN ('image_generation', 'seconds', 'requests')
   AND s.is_active = TRUE;
 
-COMMENT ON VIEW pricing_model_cost_summaries IS 'User-facing price summary (all modalities). Token-based: input/output/avg per 1k. Single-rate: cost per unit (image/second/request).';
+COMMENT ON VIEW pricing_model_cost_summaries IS 'User-facing price summary (all modalities) in credits. USD 1 = 1000 credits. Token-based: input/output/avg per 1k. Single-rate: cost per unit (image/second/request).';
 
 -- ============================================
 -- 7. SEED DATA: DEFAULT RATE CARD, SKUS, RATES, MARKUPS
@@ -393,12 +392,11 @@ WITH sku_data AS (
     ) AS t(provider_slug, model_key, model_name, modality, usage_kind, token_category, unit, unit_size, metadata, sku_code)
 )
 INSERT INTO pricing_skus (
-    sku_code, provider_id, provider_slug, model_id, model_key, model_name, modality, usage_kind,
+    sku_code, provider_slug, model_id, model_key, model_name, modality, usage_kind,
     token_category, unit, unit_size, currency, is_active, metadata
 )
 SELECT
     s.sku_code,
-    p.id AS provider_id,
     s.provider_slug,
     m.id AS model_id,
     s.model_key,
@@ -412,8 +410,6 @@ SELECT
     TRUE,
     s.metadata
 FROM sku_data s
-LEFT JOIN ai_providers p
-  ON p.provider_family = s.provider_slug OR p.slug = s.provider_slug
 LEFT JOIN ai_models m
   ON m.model_id = s.model_key OR m.name = s.model_key OR m.display_name = s.model_name
 ON CONFLICT (sku_code) DO NOTHING;

@@ -115,10 +115,11 @@ function normalizeTitle(s) {
     if (!trimmed)
         return "새 대화";
     // 너무 길면 잘라서 UI 안정성 확보
-    // 요구사항: 30자 이내
-    const max = 30;
+    // 요구사항: 15자 이내(한글 기준)
+    const max = 15;
     if (trimmed.length <= max)
         return trimmed;
+    // 15자 이내를 엄격히 지키기 위해 …를 붙이지 않습니다.
     return trimmed.slice(0, max);
 }
 function fallbackTitleFromPrompt(input) {
@@ -139,7 +140,7 @@ async function generateTitleByOpenAi(firstMessage) {
         const prompt = [
             "다음 사용자 질문을 보고 '대화 타임라인'에 표시할 제목을 만들어줘.",
             "- 한국어로 자연스럽게",
-            "- 30자 이내",
+            "- 15자 이내",
             "- 키워드/부연설명 없이 제목만",
             "- 반드시 JSON으로만 출력",
             "",

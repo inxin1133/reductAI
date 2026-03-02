@@ -4,9 +4,11 @@ exports.getChatUiConfig = getChatUiConfig;
 exports.getChatPromptSuggestions = getChatPromptSuggestions;
 const db_1 = require("../config/db");
 const systemTenantService_1 = require("../services/systemTenantService");
+const webSearchSettingsService_1 = require("../services/webSearchSettingsService");
 const MODEL_TYPES = ["text", "image", "audio", "music", "video", "multimodal", "embedding", "code"];
 async function getChatUiConfig(_req, res) {
     try {
+        const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
         // 1) active models only (provider shown if it has at least one active model)
         const rows = await (0, db_1.query)(`
       SELECT
@@ -21,6 +23,7 @@ async function getChatUiConfig(_req, res) {
         m.sort_order,
         m.capabilities,
         p.id AS provider_id,
+        p.name AS provider_name,
         p.product_name AS provider_product_name,
         p.description AS provider_description,
         p.logo_key AS provider_logo_key,
@@ -50,6 +53,7 @@ async function getChatUiConfig(_req, res) {
                     model_type: modelType,
                     provider: {
                         id: providerId,
+                        name: String(r.provider_name || ""),
                         product_name: String(r.provider_product_name || ""),
                         description: typeof r.provider_description === "string" ? r.provider_description : "",
                         logo_key: typeof r.provider_logo_key === "string" ? r.provider_logo_key : null,
@@ -77,10 +81,12 @@ async function getChatUiConfig(_req, res) {
         }
         // include only types that actually have providers (for tabs)
         const activeModelTypes = MODEL_TYPES.filter((t) => (providersByType[t] || []).length > 0);
+        const webSearchPolicy = await (0, webSearchSettingsService_1.getWebSearchPolicy)(tenantId);
         return res.json({
             ok: true,
             model_types: activeModelTypes,
             providers_by_type: providersByType,
+            web_search_policy: webSearchPolicy,
         });
     }
     catch (e) {

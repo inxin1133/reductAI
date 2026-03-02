@@ -44,9 +44,12 @@ const systemTenantService_1 = require("../services/systemTenantService");
 const crypto_1 = __importDefault(require("crypto"));
 const providerClients_1 = require("../services/providerClients");
 const authProfilesService_1 = require("../services/authProfilesService");
-const mediaAssetsService_1 = require("../services/mediaAssetsService");
+const fileServiceClient_1 = require("../services/fileServiceClient");
 const normalizeAiContent_1 = require("../utils/normalizeAiContent");
+const webSearchSettingsService_1 = require("../services/webSearchSettingsService");
+const pricingService_1 = require("../services/pricingService");
 const MODEL_TYPES = ["text", "image", "audio", "music", "video", "multimodal", "embedding", "code"];
+const FILE_SERVICE_URL = process.env.FILE_SERVICE_URL || "http://localhost:3008";
 const ACTIVE_RUNS = new Map();
 const ACTIVE_RUNS_BY_REQUEST = new Map();
 function registerActiveRun(args) {
@@ -88,6 +91,120 @@ function isUuid(v) {
     if (typeof v !== "string")
         return false;
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+}
+function extractUsageFromProviderRaw(raw) {
+    const au = raw?.usage;
+    if (au &&
+        (typeof au.cache_read_input_tokens === "number" || typeof au.cache_creation_input_tokens === "number") &&
+        typeof au.input_tokens === "number") {
+        const input = Number(au.input_tokens || 0);
+        const cacheRead = Number(au.cache_read_input_tokens || 0);
+        const cacheCreate = Number(au.cache_creation_input_tokens || 0);
+        const totalInput = input + cacheRead + cacheCreate;
+        const output = Number(au.output_tokens || 0);
+        const total = totalInput + output;
+        return { input_tokens: totalInput, cached_input_tokens: cacheRead, output_tokens: output, total_tokens: total };
+    }
+    const u = raw?.usage;
+    if (u && (typeof u.input_tokens === "number" || typeof u.output_tokens === "number")) {
+        const input = Number(u.input_tokens || 0);
+        const output = Number(u.output_tokens || 0);
+        const cached = Number(u?.input_tokens_details?.cached_tokens || 0);
+        const total = typeof u.total_tokens === "number" ? Number(u.total_tokens) : input + output;
+        return { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: total };
+    }
+    const cu = raw?.usage;
+    if (cu && (typeof cu.prompt_tokens === "number" || typeof cu.completion_tokens === "number")) {
+        const input = Number(cu.prompt_tokens || 0);
+        const output = Number(cu.completion_tokens || 0);
+        const cached = Number(cu?.prompt_tokens_details?.cached_tokens || 0);
+        const total = typeof cu.total_tokens === "number" ? Number(cu.total_tokens) : input + output;
+        return { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: total };
+    }
+    return { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+}
+function toLlmModality(modelType, hasImageInput) {
+    if (modelType === "image")
+        return hasImageInput ? "image_read" : "image_create";
+    if (modelType === "audio")
+        return "audio";
+    if (modelType === "music")
+        return "music";
+    if (modelType === "video")
+        return "video";
+    return "text";
+}
+function extractStaticContextFromTemplate(templateBody) {
+    if (!templateBody)
+        return "";
+    const parts = [];
+    const instructions = typeof templateBody.instructions === "string" ? templateBody.instructions.trim() : "";
+    if (instructions)
+        parts.push(instructions);
+    const system = templateBody.system;
+    if (typeof system === "string" && system.trim())
+        parts.push(system.trim());
+    if (Array.isArray(system)) {
+        const sysText = system
+            .map((b) => {
+            if (!b || typeof b !== "object")
+                return "";
+            const bo = b;
+            return typeof bo.text === "string" ? bo.text : "";
+        })
+            .filter(Boolean)
+            .join("\n\n")
+            .trim();
+        if (sysText)
+            parts.push(sysText);
+    }
+    const msgs = Array.isArray(templateBody.messages) ? templateBody.messages : [];
+    for (const m of msgs) {
+        const role = typeof m.role === "string" ? m.role : "";
+        if (role !== "system" && role !== "developer")
+            continue;
+        const content = typeof m.content === "string" ? m.content.trim() : "";
+        if (content)
+            parts.push(content);
+    }
+    return parts.filter(Boolean).join("\n\n").trim();
+}
+function buildPromptCacheKey(args) {
+    const ctx = args.staticContext.trim();
+    if (!ctx)
+        return null;
+    const digest = crypto_1.default.createHash("sha256").update(ctx).digest("hex").slice(0, 16);
+    const providerKey = args.providerKey || "unknown";
+    const modelApiId = args.modelApiId || "unknown";
+    return `tpl:${providerKey}:${modelApiId}:${digest}`;
+}
+function parseOpenAiImageError(raw) {
+    if (!raw || !raw.includes("OPENAI_IMAGE"))
+        return null;
+    const jsonIdx = raw.indexOf(":{");
+    if (jsonIdx < 0)
+        return null;
+    const prefix = raw.slice(0, jsonIdx);
+    const jsonStr = raw.slice(jsonIdx + 1);
+    const metaMatch = prefix.match(/OPENAI_IMAGE(?:_EDIT)?_FAILED_(\d+)@(.+)/);
+    const status = metaMatch ? Number(metaMatch[1]) : null;
+    const apiRoot = metaMatch ? String(metaMatch[2]) : null;
+    let errorObj = null;
+    try {
+        const parsed = JSON.parse(jsonStr);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            const err = parsed.error && typeof parsed.error === "object" ? parsed.error : null;
+            if (err)
+                errorObj = err;
+        }
+    }
+    catch {
+        errorObj = null;
+    }
+    const msg = typeof errorObj?.message === "string" ? String(errorObj.message) : "";
+    const reqMatch = msg.match(/req_[a-zA-Z0-9]+/);
+    const requestId = reqMatch ? reqMatch[0] : null;
+    return { status, apiRoot, error: errorObj, requestId };
 }
 function extractTextFromJsonContent(content) {
     if (typeof content === "string")
@@ -149,6 +266,82 @@ function detectLanguageCode(text) {
         return "en";
     return null;
 }
+/** 전략 A: 시간 맥락이 필요한 질문인지 감지. 이 경우에만 동적 context에 시간 정보를 추가해 캐시 효율 유지.
+ *  한글: \b가 한글 문자에서 동작하지 않으므로 패턴만 사용 (예: /오늘/).
+ *  영어: \b로 단어 경계 보장.
+ */
+function needsTimeContext(prompt) {
+    const s = String(prompt || "").trim();
+    if (!s.length)
+        return false;
+    const lower = s.toLowerCase();
+    const patterns = [
+        // 한글 (JS \b는 한글 비지원이므로 경계 없이)
+        /오늘/,
+        /최근/,
+        /이번\s*(달|주|월|주말)/,
+        /어제/,
+        /며칠/,
+        /몇\s*일/,
+        /몇\s*주/,
+        /몇\s*달/,
+        /지난\s*(달|주|월|주말)/,
+        /현재/,
+        /지금/,
+        /요즘/,
+        /당일|금일/,
+        // 영어 (\b 유지)
+        /\btoday\b/i,
+        /\brecent(ly)?\b/i,
+        /\byesterday\b/i,
+        /\bthis\s+(week|month)\b/i,
+        /\blast\s+(week|month)\b/i,
+        /\bnow\b/i,
+    ];
+    return patterns.some((re) => re.test(lower) || re.test(s));
+}
+/** 전략 B: "N일 전", "N주 전" 등 날짜 산술 패턴을 감지하고 계산된 날짜 힌트 반환. */
+function computeRelativeDateHints(prompt, baseDate) {
+    const hints = [];
+    const s = String(prompt || "").trim();
+    if (!s.length)
+        return hints;
+    const patterns = [
+        { re: /(\d+)\s*일\s*전/g, unit: "day", back: true },
+        { re: /(\d+)\s*일\s*후/g, unit: "day", back: false },
+        { re: /(\d+)\s*주\s*전/g, unit: "week", back: true },
+        { re: /(\d+)\s*주\s*후/g, unit: "week", back: false },
+        { re: /(\d+)\s*(달|개월)\s*전/g, unit: "month", back: true },
+        { re: /(\d+)\s*(달|개월)\s*후/g, unit: "month", back: false },
+        { re: /(\d+)\s*days?\s+ago/gi, unit: "day", back: true },
+        { re: /(\d+)\s*weeks?\s+ago/gi, unit: "week", back: true },
+        { re: /(\d+)\s*months?\s+ago/gi, unit: "month", back: true },
+    ];
+    const seen = new Set();
+    for (const { re, unit, back } of patterns) {
+        let m = null;
+        re.lastIndex = 0;
+        while ((m = re.exec(s)) !== null) {
+            const n = Math.min(parseInt(m[1], 10) || 0, 366);
+            if (n <= 0)
+                continue;
+            const mult = back ? -1 : 1;
+            const d = new Date(baseDate);
+            if (unit === "day")
+                d.setDate(d.getDate() + mult * n);
+            else if (unit === "week")
+                d.setDate(d.getDate() + mult * n * 7);
+            else if (unit === "month")
+                d.setMonth(d.getMonth() + mult * n);
+            const key = `${m[0]}=${d.toISOString().slice(0, 10)}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                hints.push(`참고: ${m[0]} = ${d.toISOString().slice(0, 10)}`);
+            }
+        }
+    }
+    return hints;
+}
 function extractRequestedLanguage(text) {
     const s = String(text || "").toLowerCase();
     // minimal patterns; can be extended
@@ -166,6 +359,107 @@ function clampInt(n, min, max) {
     if (!Number.isFinite(n))
         return min;
     return Math.max(min, Math.min(max, Math.floor(n)));
+}
+function clampText(input, maxChars) {
+    const s = String(input || "").replace(/\s+/g, " ").trim();
+    if (!maxChars || maxChars <= 0)
+        return "";
+    if (s.length <= maxChars)
+        return s;
+    return s.slice(0, Math.max(0, maxChars - 1)) + "…";
+}
+function normLang(x) {
+    const s = String(x || "").trim().toLowerCase();
+    return (s.split(/[-_]/)[0] || "en").slice(0, 8);
+}
+function normCountry(x) {
+    const s = String(x || "").trim().toLowerCase();
+    return (s || "").replace(/[^a-z]/g, "").slice(0, 2) || "";
+}
+function normalizeLocaleTag(input) {
+    const raw = String(input || "").trim();
+    if (!raw)
+        return "";
+    const cleaned = raw.replace(/_/g, "-");
+    if (cleaned.includes("-"))
+        return cleaned;
+    const lower = cleaned.toLowerCase();
+    if (lower === "ko")
+        return "ko-KR";
+    if (lower === "ja")
+        return "ja-JP";
+    if (lower === "zh")
+        return "zh-CN";
+    if (lower === "en")
+        return "en-US";
+    return cleaned;
+}
+function resolveLocaleTag(args) {
+    const firstWebLang = Array.isArray(args.webSearchLanguages) ? args.webSearchLanguages[0] : "";
+    const raw = String(firstWebLang || args.sessionLang || args.finalLang || "en-US").trim();
+    return normalizeLocaleTag(raw) || "en-US";
+}
+function formatCurrentDateTime(now) {
+    const pad2 = (n) => String(n).padStart(2, "0");
+    const yyyy = now.getFullYear();
+    const mm = pad2(now.getMonth() + 1);
+    const dd = pad2(now.getDate());
+    const hh = pad2(now.getHours());
+    const mi = pad2(now.getMinutes());
+    const ss = pad2(now.getSeconds());
+    const offsetMin = -now.getTimezoneOffset();
+    const sign = offsetMin >= 0 ? "+" : "-";
+    const abs = Math.abs(offsetMin);
+    const offH = pad2(Math.floor(abs / 60));
+    const offM = pad2(abs % 60);
+    const offset = `${sign}${offH}:${offM}`;
+    return {
+        date: `${yyyy}-${mm}-${dd}`,
+        datetime: `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}${offset}`,
+    };
+}
+function resolveWebLocale(args) {
+    const lang2 = normLang(args.finalLang);
+    const countryFromClient = normCountry(args.web_search_country || "");
+    const countryFromLang = lang2 === "ko" ? "kr" : lang2 === "ja" ? "jp" : lang2 === "zh" ? "cn" : "us";
+    const gl = countryFromClient || countryFromLang;
+    const browserLangs = Array.isArray(args.web_search_languages) ? args.web_search_languages : [];
+    const hl = lang2 || (browserLangs[0] ? normLang(browserLangs[0]) : "en");
+    return { gl, hl };
+}
+function compactSearchResults(organic, maxChars) {
+    const list = Array.isArray(organic) ? organic : [];
+    const out = [];
+    let remaining = Math.max(0, maxChars);
+    for (const raw of list) {
+        if (remaining <= 0)
+            break;
+        if (!raw || typeof raw !== "object")
+            continue;
+        const rec = raw;
+        const title = clampText(String(rec.title || ""), 160);
+        const link = clampText(String(rec.link || rec.url || ""), 300);
+        const snippet = clampText(String(rec.snippet || rec.content || ""), Math.min(700, remaining));
+        const used = title.length + link.length + snippet.length + 10;
+        if (used > remaining && out.length > 0)
+            break;
+        out.push({ title, link, snippet });
+        remaining -= used;
+    }
+    return out;
+}
+function formatSearchContext(organic) {
+    return organic
+        .map((o, idx) => {
+        const parts = [
+            `[${idx + 1}] ${o.title || "Untitled"}`.trim(),
+            o.link ? o.link.trim() : "",
+            o.snippet ? o.snippet.trim() : "",
+        ].filter(Boolean);
+        return parts.join("\n");
+    })
+        .filter(Boolean)
+        .join("\n\n");
 }
 function deepInjectVars(input, vars) {
     if (typeof input === "string") {
@@ -809,142 +1103,33 @@ async function ensureConversationOwned(args) {
     const r = await (0, db_1.query)(`SELECT id FROM model_conversations WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'active' LIMIT 1`, [args.conversationId, args.tenantId, args.userId]);
     return r.rows.length > 0;
 }
-// 모달리티별 제목 생성 규칙
-const TITLE_MAX_LEN = 30;
-// Text/Chat 의도 분류 키워드
-const INTENT_KEYWORDS = {
-    설계: ["설계", "아키텍처", "스키마", "구조", "구성", "패턴"],
-    문제해결: ["에러", "오류", "안됨", "실패", "exception", "버그", "fix", "debug"],
-    비용분석: ["비용", "과금", "단가", "토큰", "pricing", "cost"],
-    비교: ["차이", "비교", "vs", "versus", "대", "대비"],
-    추천: ["추천", "좋은", "best", "recommend"],
-    요약: ["요약", "정리", "summary", "summarize"],
-};
-// 코드 관련 기술 키워드
-const CODE_TECH_KEYWORDS = [
-    "react", "vue", "angular", "next", "nuxt", "svelte",
-    "node", "express", "nestjs", "fastify",
-    "python", "django", "flask", "fastapi",
-    "java", "spring", "kotlin",
-    "go", "rust", "c++", "typescript", "javascript",
-    "postgresql", "mysql", "mongodb", "redis",
-    "docker", "kubernetes", "aws", "gcp", "azure",
-];
-function extractIntent(text) {
-    const lower = text.toLowerCase();
-    for (const [intent, keywords] of Object.entries(INTENT_KEYWORDS)) {
-        if (keywords.some((kw) => lower.includes(kw)))
-            return intent;
-    }
-    return null;
-}
-function extractTechKeyword(text) {
-    const lower = text.toLowerCase();
-    for (const tech of CODE_TECH_KEYWORDS) {
-        if (lower.includes(tech))
-            return tech.charAt(0).toUpperCase() + tech.slice(1);
-    }
-    return null;
-}
-function extractSubject(text) {
-    // 첫 줄에서 명사적 키워드 추출 (간단 휴리스틱)
-    const firstLine = text.split("\n")[0]?.trim() || "";
-    // 불필요한 접두어 제거
-    const cleaned = firstLine
-        .replace(/^(안녕하?세?요?|안녕|하이|hello|hi)\s*/i, "")
-        .replace(/[.,!?]+$/, "")
-        .trim();
-    return cleaned || "새 대화";
-}
-function clampTitle(s) {
-    const trimmed = (s || "").replace(/\s+/g, " ").trim();
-    if (!trimmed)
-        return "새 대화";
-    if (trimmed.length <= TITLE_MAX_LEN)
-        return trimmed;
-    return trimmed.slice(0, TITLE_MAX_LEN);
-}
-function generateModalityTitle(args) {
-    const { modelType, prompt, options, attachments } = args;
-    const hasImageAttachment = Array.isArray(attachments) && attachments.some((a) => a?.kind === "image");
+// 모달리티별 임시 제목
+function getTempTitle(modelType) {
     switch (modelType) {
-        case "text": {
-            // Text/Chat: 의도 + 주제
-            const intent = extractIntent(prompt);
-            const subject = extractSubject(prompt);
-            if (intent) {
-                return clampTitle(`${subject} ${intent}`);
-            }
-            return clampTitle(subject);
-        }
-        case "image": {
-            // Image: 주체 + 스타일 + 작업
-            const style = typeof options?.style === "string" ? options.style : "";
-            const subject = extractSubject(prompt) || "이미지";
-            const action = hasImageAttachment ? "변환" : "생성";
-            const styleSuffix = style ? ` (${style})` : "";
-            return clampTitle(`${subject} 이미지 ${action}${styleSuffix}`);
-        }
-        case "video": {
-            // Video: 주제 + 초 + 작업
-            const seconds = typeof options?.seconds === "number" ? options.seconds : typeof options?.duration === "number" ? options.duration : null;
-            const subject = extractSubject(prompt) || "영상";
-            const action = hasImageAttachment ? "이미지→영상 변환" : "영상 생성";
-            const durSuffix = seconds ? ` ${seconds}s` : "";
-            return clampTitle(`${subject} ${action}${durSuffix}`);
-        }
-        case "music": {
-            // Music: 장르 + 무드 + 길이
-            const genre = typeof options?.genre === "string" ? options.genre : "";
-            const mood = typeof options?.mood === "string" ? options.mood : "";
-            const duration = typeof options?.duration === "number" ? options.duration : null;
-            const parts = [genre, mood].filter(Boolean).join(" ") || extractSubject(prompt) || "음악";
-            const durSuffix = duration ? ` ${duration}s` : "";
-            return clampTitle(`${parts} 음악 생성${durSuffix}`);
-        }
-        case "audio": {
-            // Audio: TTS/STT 구분
-            // STT hint: 첨부파일이 음성이거나 "전사", "자막", "회의" 키워드
-            const lower = prompt.toLowerCase();
-            const isSTT = lower.includes("전사") || lower.includes("자막") || lower.includes("회의") || lower.includes("transcri");
-            if (isSTT) {
-                const subject = extractSubject(prompt) || "음성";
-                return clampTitle(`${subject} 전사 및 요약`);
-            }
-            // TTS
-            const voice = typeof options?.voice === "string" ? options.voice : "";
-            const voicePrefix = voice ? `${voice} ` : "";
-            return clampTitle(`${voicePrefix}음성 내레이션 생성`);
-        }
-        case "code": {
-            // Code: 기술 + 이슈/작업
-            const tech = extractTechKeyword(prompt);
-            const intent = extractIntent(prompt);
-            const subject = extractSubject(prompt);
-            if (tech && intent) {
-                return clampTitle(`${tech} ${intent}`);
-            }
-            if (tech) {
-                return clampTitle(`${tech} ${subject}`);
-            }
-            if (intent) {
-                return clampTitle(`${subject} ${intent}`);
-            }
-            return clampTitle(subject);
-        }
-        default: {
-            // multimodal, embedding, etc.
-            return clampTitle(extractSubject(prompt));
-        }
+        case "text": return "New Chat";
+        case "image": return "New Image";
+        case "video": return "New Video";
+        case "music": return "New Music";
+        case "audio": return "New Audio";
+        case "code": return "New Code";
+        default: return "New Chat";
+    }
+}
+// 응답에 title 없을 때 fallback 제목
+function getFallbackTitle(modelType, prompt) {
+    switch (modelType) {
+        case "text":
+        case "code":
+            return (prompt || "").trim().slice(0, 20) || (modelType === "text" ? "New Chat" : "New Code");
+        case "image": return "이미지 생성";
+        case "video": return "비디오 생성";
+        case "music": return "음악 생성";
+        case "audio": return "오디오 생성";
+        default: return "New Chat";
     }
 }
 async function createConversation(args) {
-    const title = generateModalityTitle({
-        modelType: args.modelType || "text",
-        prompt: args.firstMessage,
-        options: args.options,
-        attachments: args.attachments,
-    });
+    const title = getTempTitle(args.modelType || "text");
     const r = await (0, db_1.query)(`INSERT INTO model_conversations (tenant_id, user_id, model_id, title, status)
      VALUES ($1, $2::uuid, $3, $4, 'active')
      RETURNING id`, [args.tenantId, args.userId, args.modelDbId, title]);
@@ -1004,6 +1189,7 @@ async function updateMessageContent(args) {
 async function cancelChatRun(req, res) {
     try {
         const userId = req.userId;
+        const authHeader = String(req.headers.authorization || "");
         const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
         const body = (req.body || {});
         const conversationId = String(body.conversation_id || "").trim();
@@ -1103,7 +1289,7 @@ function rewriteContentWithAssetUrls(content) {
                 continue;
             const url = typeof rec.url === "string" ? String(rec.url) : "";
             if (url.startsWith("data:image/")) {
-                const assetId = (0, mediaAssetsService_1.newAssetId)();
+                const assetId = (0, fileServiceClient_1.newAssetId)();
                 const assetUrl = `/api/ai/media/assets/${assetId}`;
                 assets.push({ assetId, kind: "image", dataUrl: url, index: i });
                 nextImgs.push({ ...rec, url: assetUrl, asset_id: assetId });
@@ -1132,12 +1318,84 @@ function rewriteContentWithAssetUrls(content) {
         if (!du.startsWith("data:"))
             continue;
         const kind = k === "audio" ? "audio" : "video";
-        const assetId = (0, mediaAssetsService_1.newAssetId)();
+        const assetId = (0, fileServiceClient_1.newAssetId)();
         const assetUrl = `/api/ai/media/assets/${assetId}`;
         assets.push({ assetId, kind, dataUrl: du, index: 0 });
         out[k] = { ...obj, data_url: assetUrl, asset_id: assetId };
     }
     return { content: out, assets };
+}
+const MAX_REMOTE_IMAGE_BYTES = 15 * 1024 * 1024;
+function isHttpUrl(raw) {
+    return /^https?:\/\//i.test(raw);
+}
+function inferImageMimeFromUrl(url) {
+    const m = String(url || "").match(/\.(png|jpe?g|webp|gif|bmp|svg)(?:[?#].*)?$/i);
+    if (!m)
+        return null;
+    const ext = m[1]?.toLowerCase();
+    if (ext === "jpg" || ext === "jpeg")
+        return "image/jpeg";
+    if (ext === "png")
+        return "image/png";
+    if (ext === "webp")
+        return "image/webp";
+    if (ext === "gif")
+        return "image/gif";
+    if (ext === "bmp")
+        return "image/bmp";
+    if (ext === "svg")
+        return "image/svg+xml";
+    return null;
+}
+async function fetchImageAsDataUrl(url, signal, headers) {
+    try {
+        const res = await fetch(url, { signal, headers });
+        if (!res.ok)
+            return null;
+        const ctRaw = String(res.headers.get("content-type") || "");
+        const ct = ctRaw.split(";")[0].trim().toLowerCase();
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (!buf.length)
+            return null;
+        if (buf.length > MAX_REMOTE_IMAGE_BYTES)
+            return null;
+        const mime = ct.startsWith("image/") ? ct : inferImageMimeFromUrl(url);
+        if (!mime || !mime.startsWith("image/"))
+            return null;
+        return `data:${mime};base64,${buf.toString("base64")}`;
+    }
+    catch {
+        return null;
+    }
+}
+async function materializeImageUrlsToDataUrls(urls, signal) {
+    const out = [];
+    for (const u of urls) {
+        const raw = String(u || "").trim();
+        if (!raw)
+            continue;
+        if (raw.startsWith("data:image/")) {
+            out.push(raw);
+            continue;
+        }
+        if (raw.startsWith("/api/ai/media/assets/")) {
+            out.push(raw);
+            continue;
+        }
+        if (isHttpUrl(raw)) {
+            const dataUrl = await fetchImageAsDataUrl(raw, signal);
+            if (dataUrl) {
+                out.push(dataUrl);
+            }
+            else {
+                out.push(raw);
+            }
+            continue;
+        }
+        out.push(raw);
+    }
+    return out;
 }
 async function loadHistory(args) {
     const conv = await (0, db_1.query)(`SELECT conversation_summary, conversation_summary_updated_at, conversation_summary_tokens
@@ -1182,6 +1440,7 @@ async function loadHistory(args) {
 async function getConversationContext(req, res) {
     try {
         const userId = req.userId;
+        const authHeader = String(req.headers.authorization || "");
         const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
         const params = (req.params || {});
         const conversationId = String(params.id || "").trim();
@@ -1264,9 +1523,24 @@ async function chatRun(req, res) {
     let cleanupActiveRun = () => { };
     let isAborted = () => false;
     let clientRequestId = "";
+    const runStartedAtMs = Date.now();
+    let requestIdForLog = "";
+    let usedCredentialId = null;
+    let usedProviderId = null;
+    let usedModelDbId = null;
+    let usedModelApiId = null;
+    let usedProviderSlug = null;
+    let webSearchCount = 0;
+    let webQueryCharsTotal = 0;
+    let webResponseBytesTotal = 0;
+    let webBudgetCount = null;
+    let imageUsage = null;
+    let musicUsage = null;
     try {
         const userId = req.userId;
+        const authHeader = String(req.headers.authorization || "");
         const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
+        const webSearchPolicy = await (0, webSearchSettingsService_1.getWebSearchPolicy)(tenantId);
         const { model_type, conversation_id, userPrompt, max_tokens, session_language, 
         // optional: client-selected model override
         model_api_id, provider_id, provider_slug, options, attachments, 
@@ -1276,6 +1550,7 @@ async function chatRun(req, res) {
         web_search_country, web_search_languages, client_request_id, } = req.body || {};
         const prompt = String(userPrompt || "").trim();
         clientRequestId = String(client_request_id || "").trim();
+        requestIdForLog = clientRequestId || crypto_1.default.randomUUID();
         if (!prompt)
             return res.status(400).json({ message: "userPrompt is required" });
         const mt = String(model_type || "").trim() || "text";
@@ -1354,9 +1629,11 @@ async function chatRun(req, res) {
         const cap = isRecord(row.capabilities) ? row.capabilities : {};
         const capDefaults = cap && isRecord(cap.defaults) ? cap.defaults : {};
         const mergedOptions = { ...capDefaults, ...(options || {}) };
+        let optionsForAssistant = null;
         // Incoming attachments (used for image-to-image in image mode)
         const incomingAttachments = Array.isArray(attachments) ? attachments : [];
         const incomingImageDataUrls = [];
+        const incomingImageUrls = [];
         for (const a of incomingAttachments) {
             if (!a || typeof a !== "object")
                 continue;
@@ -1365,8 +1642,22 @@ async function chatRun(req, res) {
             if (kind !== "image")
                 continue;
             const du = typeof ao.data_url === "string" ? ao.data_url : "";
-            if (du && du.startsWith("data:image/"))
+            if (du && du.startsWith("data:image/")) {
                 incomingImageDataUrls.push(du);
+                continue;
+            }
+            const url = typeof ao.url === "string" ? ao.url : "";
+            if (url)
+                incomingImageUrls.push(url);
+        }
+        if (incomingImageUrls.length > 0) {
+            const headers = authHeader ? { Authorization: authHeader } : undefined;
+            for (const raw of incomingImageUrls) {
+                const absUrl = raw.startsWith("/api/ai/media/assets/") ? `${FILE_SERVICE_URL}${raw}` : raw;
+                const dataUrl = await fetchImageAsDataUrl(absUrl, undefined, headers);
+                if (dataUrl && dataUrl.startsWith("data:image/"))
+                    incomingImageDataUrls.push(dataUrl);
+            }
         }
         // conversation ownership / creation
         let convId = conversation_id ? String(conversation_id) : "";
@@ -1376,15 +1667,7 @@ async function chatRun(req, res) {
                 return res.status(404).json({ message: "Conversation not found" });
         }
         else {
-            convId = await createConversation({
-                tenantId,
-                userId,
-                modelDbId: chosenModelDbId,
-                firstMessage: prompt,
-                modelType: mt,
-                options: options || undefined,
-                attachments: attachments || undefined,
-            });
+            convId = await createConversation({ tenantId, userId, modelDbId: chosenModelDbId, firstMessage: prompt, modelType: mt });
         }
         // history language (3rd priority): last assistant message
         try {
@@ -1402,6 +1685,11 @@ async function chatRun(req, res) {
             historyLang = null;
         }
         const finalLang = requestedLang || detectedLang || historyLang || sessionLang || "ko";
+        const now = new Date();
+        const tz = Intl?.DateTimeFormat?.().resolvedOptions?.().timeZone;
+        const currentTimezone = typeof tz === "string" && tz ? tz : "UTC";
+        const currentLocale = resolveLocaleTag({ finalLang, sessionLang, webSearchLanguages: web_search_languages });
+        const { date: currentDate, datetime: currentDatetime } = formatCurrentDateTime(now);
         // 6) short-term + long-term context
         const history = await loadHistory({ conversationId: convId });
         // 3) template load
@@ -1436,18 +1724,15 @@ async function chatRun(req, res) {
             prompt,
             user_input: prompt,
             language: finalLang,
+            current_date: currentDate,
+            current_datetime: currentDatetime,
+            current_timezone: currentTimezone,
+            current_locale: currentLocale,
             shortHistory: history.shortText,
             longSummary: history.conversationSummary || history.longText,
             response_schema_name: responseSchema?.name || "",
             response_schema_json: responseSchema?.schema || {},
             response_schema_strict: responseSchema?.strict !== false,
-            // Web search policy defaults (used by prompt_templates if present)
-            max_search_calls: 3,
-            max_total_snippet_tokens: 1200,
-            search_timeout_ms: 10000,
-            search_retry_max: 2,
-            search_retry_base_delay_ms: 500,
-            search_retry_max_delay_ms: 2000,
         };
         for (const [k, v] of Object.entries(mergedOptions || {})) {
             if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean")
@@ -1477,6 +1762,10 @@ async function chatRun(req, res) {
         const base = await (0, providerClients_1.getProviderBase)(providerId);
         const providerKey = String(row.provider_family || row.provider_slug || "").trim().toLowerCase();
         const modelApiId = String(row.model_api_id || "");
+        usedProviderId = providerId;
+        usedModelDbId = chosenModelDbId;
+        usedModelApiId = modelApiId;
+        usedProviderSlug = String(row.provider_slug || "");
         // Prefer DB-provided logo_key; if missing, derive a safe default that matches `providerLogoRegistry.tsx` keys.
         const providerLogoKeyRaw = typeof row.provider_logo_key === "string" && row.provider_logo_key.trim() ? row.provider_logo_key.trim() : null;
         const providerSlugLower = String(row.provider_slug || "").trim().toLowerCase();
@@ -1484,22 +1773,48 @@ async function chatRun(req, res) {
             (providerKey === "openai" || providerSlugLower.startsWith("openai") ? "chatgpt" : null) ||
             (providerKey === "google" || providerSlugLower.startsWith("google") ? "gemini" : null) ||
             (providerKey === "anthropic" || providerSlugLower.startsWith("anthropic") ? "claude" : null);
+        const webPolicyProviders = new Set((webSearchPolicy.enabled_providers || []).map((p) => String(p || "").toLowerCase()).filter(Boolean));
+        const providerAllowsWeb = webPolicyProviders.size ? webPolicyProviders.has(providerKey) : true;
+        const webAllowed = Boolean(web_allowed) && mt === "text" && webSearchPolicy.enabled && providerAllowsWeb;
         // language instruction (server-level)
         const langInstruction = finalLang ? `\n\n(출력 언어: ${finalLang})` : "";
+        // 전략 A+B: 시간 맥락이 필요한 질문에만 동적 context에 시간 정보 추가 (캐시 효율 유지)
+        // 웹 검색 활성화 시에는 항상 시간 맥락 추가 (recency 질문 가능성 높음)
+        const timeContextParts = [];
+        const shouldAddTimeContext = needsTimeContext(prompt) || webAllowed;
+        if (shouldAddTimeContext) {
+            timeContextParts.push(`현재 시각: ${currentDatetime} (타임존: ${currentTimezone})`);
+            const dateHints = computeRelativeDateHints(prompt, now);
+            if (dateHints.length)
+                timeContextParts.push(dateHints.join("\n"));
+        }
+        const timeContextBlock = timeContextParts.length > 0 ? `[시간 참고]\n${timeContextParts.join("\n")}` : "";
+        const webSearchContextBlock = webAllowed
+            ? `[웹 검색 정책]\n- 최대 검색 횟수: ${webSearchPolicy.max_search_calls}\n- 스니펫 최대 토큰: ${webSearchPolicy.max_total_snippet_tokens}\n- 검색 실패 시 재시도: ${webSearchPolicy.retry_max}회 (exponential backoff)`
+            : "";
         const input = [
             history.conversationSummary ? `대화 요약:\n${history.conversationSummary}\n` : "",
             history.longText ? `대화 요약(메시지 summary):\n${history.longText}\n` : "",
             history.shortText ? `최근 대화:\n${history.shortText}\n` : "",
+            timeContextBlock,
+            webSearchContextBlock,
             `사용자 요청:\n${prompt}${langInstruction}`,
         ]
             .filter(Boolean)
             .join("\n\n");
+        const dynamicContext = input;
+        const staticContext = extractStaticContextFromTemplate(templateBody);
+        const promptCacheKey = buildPromptCacheKey({ providerKey, modelApiId, staticContext });
+        const promptCacheRetentionRaw = typeof mergedOptions?.prompt_cache_retention === "string"
+            ? String(mergedOptions.prompt_cache_retention)
+            : "";
+        const promptCacheRetention = promptCacheRetentionRaw === "24h" ? "24h" : promptCacheRetentionRaw === "in_memory" ? "in_memory" : null;
         // ✅ 선생성: user 메시지 + assistant(in_progress) 메시지
         const userMessageId = crypto_1.default.randomUUID();
         assistantMessageId = crypto_1.default.randomUUID();
         // Attachments (from client): assetize any data_url so DB isn't bloated.
         // Client sends: [{kind:"image"|"file"|"link", ... , data_url? }]
-        const safeAttachments = [];
+        const attachmentSlots = [];
         const incoming = Array.isArray(attachments) ? attachments : [];
         for (const a of incoming) {
             if (!a || typeof a !== "object")
@@ -1510,7 +1825,7 @@ async function chatRun(req, res) {
                 const url = typeof ao.url === "string" ? ao.url : "";
                 const title = typeof ao.title === "string" ? ao.title : "";
                 if (url)
-                    safeAttachments.push({ kind: "link", url, title });
+                    attachmentSlots.push({ kind: "link", url, title });
                 continue;
             }
             if (kind === "image" || kind === "file") {
@@ -1518,36 +1833,26 @@ async function chatRun(req, res) {
                 const mime = typeof ao.mime === "string" ? ao.mime : "";
                 const size = typeof ao.size === "number" ? ao.size : Number(ao.size || 0);
                 const dataUrl = typeof ao.data_url === "string" ? ao.data_url : "";
-                const base = { kind, name, mime, size };
+                const assetIdRaw = typeof ao.asset_id === "string"
+                    ? String(ao.asset_id)
+                    : typeof ao.assetId === "string"
+                        ? String(ao.assetId)
+                        : "";
+                const base = { kind, name, mime, size, assetId: assetIdRaw || undefined };
                 if (dataUrl && dataUrl.startsWith("data:")) {
-                    try {
-                        const assetId = (0, mediaAssetsService_1.newAssetId)();
-                        const stored = await (0, mediaAssetsService_1.storeImageDataUrlAsAsset)({
-                            tenantId,
-                            userId: userId || null,
-                            conversationId: convId,
-                            messageId: userMessageId,
-                            assetId,
-                            dataUrl,
-                            index: safeAttachments.length,
-                        });
-                        safeAttachments.push({ ...base, url: stored.url, asset_id: stored.assetId, bytes: stored.bytes });
-                    }
-                    catch (e) {
-                        console.warn("[attachments] failed to store data_url; keeping metadata only", e);
-                        safeAttachments.push(base);
-                    }
+                    attachmentSlots.push({ ...base, dataUrl, assetId: base.assetId || (0, fileServiceClient_1.newAssetId)() });
                 }
                 else {
                     const url = typeof ao.url === "string" ? ao.url : "";
                     if (url)
-                        safeAttachments.push({ ...base, url });
+                        attachmentSlots.push({ ...base, url });
                     else
-                        safeAttachments.push(base);
+                        attachmentSlots.push(base);
                 }
             }
         }
-        const normalizedUserContent = (0, normalizeAiContent_1.normalizeAiContent)({ text: prompt, options: mergedOptions, attachments: safeAttachments });
+        const initialAttachments = attachmentSlots.map(({ dataUrl, ...rest }) => rest);
+        const normalizedUserContent = (0, normalizeAiContent_1.normalizeAiContent)({ text: prompt, options: mergedOptions, attachments: initialAttachments });
         await appendMessage({
             id: userMessageId,
             conversationId: convId,
@@ -1561,6 +1866,55 @@ async function chatRun(req, res) {
             providerKey: providerKey,
             providerLogoKey,
         });
+        if (attachmentSlots.some((a) => a.dataUrl)) {
+            const safeAttachments = [];
+            for (let i = 0; i < attachmentSlots.length; i += 1) {
+                const slot = attachmentSlots[i];
+                if (slot.kind === "link") {
+                    if (slot.url)
+                        safeAttachments.push({ kind: "link", url: slot.url, title: slot.title || "" });
+                    continue;
+                }
+                const base = {
+                    kind: slot.kind,
+                    name: slot.name || "",
+                    mime: slot.mime || "",
+                    size: typeof slot.size === "number" ? slot.size : 0,
+                };
+                if (slot.dataUrl) {
+                    try {
+                        const stored = await (0, fileServiceClient_1.storeImageDataUrlAsAsset)({
+                            conversationId: convId,
+                            messageId: userMessageId,
+                            assetId: slot.assetId || (0, fileServiceClient_1.newAssetId)(),
+                            dataUrl: slot.dataUrl,
+                            index: i,
+                            kind: slot.kind === "image" || slot.kind === "file" ? slot.kind : undefined,
+                            sourceType: "attachment",
+                            authHeader,
+                        });
+                        safeAttachments.push({ ...base, url: stored.url, asset_id: stored.assetId, bytes: stored.bytes });
+                    }
+                    catch (e) {
+                        console.warn("[attachments] failed to store data_url; keeping metadata only", e);
+                        safeAttachments.push(base);
+                    }
+                }
+                else if (slot.url) {
+                    safeAttachments.push({ ...base, url: slot.url, asset_id: slot.assetId });
+                }
+                else {
+                    safeAttachments.push(base);
+                }
+            }
+            const normalizedUserContentWithUrls = (0, normalizeAiContent_1.normalizeAiContent)({ text: prompt, options: mergedOptions, attachments: safeAttachments });
+            await (0, db_1.query)(`
+        UPDATE model_messages
+        SET content = $2::jsonb,
+            content_text = $3
+        WHERE id = $1
+        `, [userMessageId, JSON.stringify(normalizedUserContentWithUrls), extractTextFromJsonContent(normalizedUserContentWithUrls) || prompt]);
+        }
         const normalizedAssistantPlaceholder = (0, normalizeAiContent_1.normalizeAiContent)({ output_text: "" });
         await appendMessage({
             id: assistantMessageId,
@@ -1633,7 +1987,8 @@ async function chatRun(req, res) {
             return res.status(statusCode).json(body);
         };
         let out = null;
-        const webAllowed = Boolean(web_allowed) && mt === "text";
+        const webProvider = webAllowed ? webSearchPolicy.provider : null;
+        const webSearchMode = webAllowed ? "auto" : "off";
         const forceBuiltinImageEdit = mt === "image" && incomingImageDataUrls.length > 0;
         // ✅ DB-driven execution: if a model_api_profile exists for this provider/purpose, try it first.
         // Safe rollout: if profile is missing or fails, we fall back to the existing provider_family-specific code.
@@ -1648,32 +2003,42 @@ async function chatRun(req, res) {
                 const profile = await loadModelApiProfile({ tenantId, providerId, modelDbId: chosenModelDbId, purpose });
                 if (profile) {
                     usedProfileKey = profile.profile_key;
-                    profileAttempted = true;
-                    const auth = await (0, authProfilesService_1.resolveAuthForModelApiProfile)({ providerId, authProfileId: profile.auth_profile_id });
-                    out = await executeHttpJsonProfile({
-                        apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-                        apiKey: auth.apiKey,
-                        accessToken: auth.accessToken,
-                        modelApiId,
-                        purpose,
-                        prompt,
-                        input,
-                        language: finalLang,
-                        maxTokens: safeMaxTokens,
-                        history,
-                        options: mergedOptions,
-                        injectedTemplate,
-                        profile,
-                        configVars: auth.configVars,
-                        signal: abortSignal,
-                    });
-                    // Defensive fallback:
-                    // Some model_api_profiles mappings (especially for OpenAI structured outputs) can yield empty text
-                    // even though the provider returned a valid JSON payload. In that case, fall back to the built-in
-                    // provider client (which has richer extraction + schema handling).
-                    if (!out.output_text || !String(out.output_text).trim()) {
-                        console.warn("[model_api_profiles] empty output_text -> fallback to provider client:", usedProfileKey);
+                    const isOpenAiResponsesProfile = providerKey === "openai" && /^openai\.responses/i.test(usedProfileKey || "");
+                    if (isOpenAiResponsesProfile) {
+                        // Prefer built-in OpenAI Responses path (prompt_cache_key/retention, template->instructions handling).
+                        profileAttempted = false;
+                        profileError = "BYPASS_OPENAI_RESPONSES_PROFILE";
                         out = null;
+                    }
+                    else {
+                        profileAttempted = true;
+                        const auth = await (0, authProfilesService_1.resolveAuthForModelApiProfile)({ providerId, authProfileId: profile.auth_profile_id });
+                        usedCredentialId = auth.credentialId;
+                        out = await executeHttpJsonProfile({
+                            apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                            apiKey: auth.apiKey,
+                            accessToken: auth.accessToken,
+                            modelApiId,
+                            purpose,
+                            prompt,
+                            input,
+                            language: finalLang,
+                            maxTokens: safeMaxTokens,
+                            history,
+                            options: mergedOptions,
+                            injectedTemplate,
+                            profile,
+                            configVars: auth.configVars,
+                            signal: abortSignal,
+                        });
+                        // Defensive fallback:
+                        // Some model_api_profiles mappings (especially for OpenAI structured outputs) can yield empty text
+                        // even though the provider returned a valid JSON payload. In that case, fall back to the built-in
+                        // provider client (which has richer extraction + schema handling).
+                        if (!out.output_text || !String(out.output_text).trim()) {
+                            console.warn("[model_api_profiles] empty output_text -> fallback to provider client:", usedProfileKey);
+                            out = null;
+                        }
                     }
                 }
             }
@@ -1705,6 +2070,7 @@ async function chatRun(req, res) {
         }
         if (out == null) {
             const auth = await (0, authProfilesService_1.resolveAuthForModelApiProfile)({ providerId, authProfileId: null });
+            usedCredentialId = auth.credentialId;
             // Fallback: 기존 provider별 하드코딩 실행기
             if (mt === "text") {
                 if (providerKey === "openai") {
@@ -1717,24 +2083,10 @@ async function chatRun(req, res) {
                             });
                         }
                         const { serperSearch } = await Promise.resolve().then(() => __importStar(require("../services/serperSearch")));
-                        function normLang(x) {
-                            const s = String(x || "").trim().toLowerCase();
-                            return (s.split(/[-_]/)[0] || "en").slice(0, 8);
-                        }
-                        function normCountry(x) {
-                            const s = String(x || "").trim().toLowerCase();
-                            return (s || "").replace(/[^a-z]/g, "").slice(0, 2) || "";
-                        }
-                        // 1) Country: browser hint first (best-effort)
-                        // 2) Fallback: language -> country heuristic
-                        const lang2 = normLang(finalLang);
-                        const countryFromClient = normCountry(web_search_country || "");
-                        const countryFromLang = lang2 === "ko" ? "kr" : lang2 === "ja" ? "jp" : lang2 === "zh" ? "cn" : lang2 === "en" ? "us" : "us";
-                        const gl = countryFromClient || countryFromLang;
-                        // Language priority: system language (finalLang) first, then browser hint list as fallback.
-                        const browserLangs = Array.isArray(web_search_languages) ? web_search_languages : [];
-                        const hl = lang2 || (browserLangs[0] ? normLang(browserLangs[0]) : "en");
-                        const maxSearchCalls = 3;
+                        const { gl, hl } = resolveWebLocale({ finalLang, web_search_country, web_search_languages });
+                        const maxSearchCalls = webSearchPolicy.max_search_calls;
+                        const snippetBudgetChars = webSearchPolicy.max_total_snippet_tokens * 4;
+                        webBudgetCount = maxSearchCalls;
                         const templateMsgs = injectedTemplate && typeof injectedTemplate === "object" && !Array.isArray(injectedTemplate)
                             ? injectedTemplate.messages
                             : null;
@@ -1856,20 +2208,35 @@ async function chatRun(req, res) {
                                     });
                                     continue;
                                 }
+                                webSearchCount += 1;
+                                webQueryCharsTotal += q.length;
                                 const result = await serperSearch({
                                     apiKey: serperKey,
                                     query: q,
                                     country: gl,
                                     language: hl,
                                     limit: 5,
-                                    timeoutMs: 10000,
+                                    timeoutMs: webSearchPolicy.timeout_ms,
                                     signal: abortSignal,
                                 });
+                                try {
+                                    const rawBytes = JSON.stringify(result.raw ?? result).length;
+                                    webResponseBytesTotal += rawBytes;
+                                }
+                                catch {
+                                    // ignore
+                                }
                                 // Keep tool payload compact (raw is kept server-side only if needed)
+                                const compactOrganic = compactSearchResults(result.organic, snippetBudgetChars);
                                 messages.push({
                                     role: "tool",
                                     tool_call_id: tc.id,
-                                    content: JSON.stringify({ query: result.query, country: result.country, language: result.language, organic: result.organic }),
+                                    content: JSON.stringify({
+                                        query: result.query,
+                                        country: result.country,
+                                        language: result.language,
+                                        organic: compactOrganic,
+                                    }),
                                 });
                             }
                         }
@@ -1884,6 +2251,7 @@ async function chatRun(req, res) {
                         out = { output_text: finalText, raw: lastRaw, content: { output_text: finalText, raw: lastRaw } };
                     }
                     else {
+                        // outputFormat은 이 코드 경로에서 block_json으로 고정. responseSchema는 ai_models.response_schema_id에서 로드됨.
                         const r = await (0, providerClients_1.openaiSimulateChat)({
                             apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
                             apiKey: auth.apiKey,
@@ -1893,6 +2261,8 @@ async function chatRun(req, res) {
                             outputFormat: "block_json",
                             templateBody: injectedTemplate || undefined,
                             responseSchema,
+                            promptCacheKey,
+                            promptCacheRetention,
                             signal: abortSignal,
                         });
                         out = { ...r, content: { output_text: r.output_text, raw: r.raw } };
@@ -1906,16 +2276,73 @@ async function chatRun(req, res) {
                         input,
                         maxTokens: safeMaxTokens,
                         templateBody: injectedTemplate || undefined,
+                        cacheControl: { ttl: undefined },
+                        staticSystemText: staticContext || null,
                         signal: abortSignal,
                     });
                     out = { ...r, content: { output_text: r.output_text, raw: r.raw } };
                 }
                 else if (providerKey === "google") {
+                    let googleInput = input;
+                    if (webAllowed) {
+                        const serperKey = String(process.env.SERPER_API_KEY || "").trim();
+                        if (!serperKey) {
+                            return await failAndRespond(500, {
+                                message: "Web search is enabled, but SERPER_API_KEY is not configured on ai-agent-service.",
+                                details: "Set SERPER_API_KEY in ai-agent-service environment (.env) and restart the service.",
+                            });
+                        }
+                        const { serperSearch } = await Promise.resolve().then(() => __importStar(require("../services/serperSearch")));
+                        const { gl, hl } = resolveWebLocale({ finalLang, web_search_country, web_search_languages });
+                        const queryText = clampText(prompt, 500);
+                        if (queryText) {
+                            webBudgetCount = webSearchPolicy.max_search_calls;
+                            webSearchCount += 1;
+                            webQueryCharsTotal += queryText.length;
+                            try {
+                                const result = await serperSearch({
+                                    apiKey: serperKey,
+                                    query: queryText,
+                                    country: gl,
+                                    language: hl,
+                                    limit: 5,
+                                    timeoutMs: webSearchPolicy.timeout_ms,
+                                    signal: abortSignal,
+                                });
+                                try {
+                                    const rawBytes = JSON.stringify(result.raw ?? result).length;
+                                    webResponseBytesTotal += rawBytes;
+                                }
+                                catch {
+                                    // ignore
+                                }
+                                const snippetBudgetChars = webSearchPolicy.max_total_snippet_tokens * 4;
+                                const compactOrganic = compactSearchResults(result.organic, snippetBudgetChars);
+                                const webContext = formatSearchContext(compactOrganic);
+                                if (webContext) {
+                                    googleInput = `웹 검색 결과:\n${webContext}\n\n${input}`;
+                                }
+                                else {
+                                    console.warn("[gemini-web-search] Serper returned empty organic results", {
+                                        query: queryText,
+                                        hasOrganic: Array.isArray(result.organic) && result.organic.length > 0,
+                                        organicCount: Array.isArray(result.organic) ? result.organic.length : 0,
+                                    });
+                                }
+                            }
+                            catch (serperErr) {
+                                console.warn("[gemini-web-search] Serper search failed", {
+                                    query: queryText,
+                                    error: serperErr instanceof Error ? serperErr.message : String(serperErr),
+                                });
+                            }
+                        }
+                    }
                     const r = await (0, providerClients_1.googleSimulateChat)({
                         apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
                         apiKey: auth.apiKey,
                         model: modelApiId,
-                        input,
+                        input: googleInput,
                         maxTokens: safeMaxTokens,
                         templateBody: injectedTemplate || undefined,
                         signal: abortSignal,
@@ -1939,44 +2366,88 @@ async function chatRun(req, res) {
                 const tmpl = injectedTemplate && typeof injectedTemplate === "object" && !Array.isArray(injectedTemplate) ? injectedTemplate : null;
                 const promptFromTemplate = tmpl && typeof tmpl.prompt === "string" && tmpl.prompt.trim() ? tmpl.prompt.trim() : "";
                 const promptForImage = promptFromTemplate || prompt;
-                const r = incomingImageDataUrls.length > 0
-                    ? await (0, providerClients_1.openaiEditImage)({
-                        apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-                        apiKey: auth.apiKey,
-                        model: modelApiId,
-                        prompt: promptForImage,
-                        image_data_url: incomingImageDataUrls[0],
-                        n,
-                        size,
-                        signal: abortSignal,
-                    })
-                    : await (0, providerClients_1.openaiGenerateImage)({
-                        apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-                        apiKey: auth.apiKey,
-                        model: modelApiId,
-                        prompt: promptForImage,
-                        n,
-                        size,
-                        quality,
-                        style,
-                        background,
-                        signal: abortSignal,
+                let r;
+                try {
+                    r =
+                        incomingImageDataUrls.length > 0
+                            ? await (0, providerClients_1.openaiEditImage)({
+                                apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                                apiKey: auth.apiKey,
+                                model: modelApiId,
+                                prompt: promptForImage,
+                                image_data_url: incomingImageDataUrls[0],
+                                n,
+                                size,
+                                signal: abortSignal,
+                            })
+                            : await (0, providerClients_1.openaiGenerateImage)({
+                                apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                                apiKey: auth.apiKey,
+                                model: modelApiId,
+                                prompt: promptForImage,
+                                n,
+                                size,
+                                quality,
+                                style,
+                                background,
+                                signal: abortSignal,
+                            });
+                }
+                catch (e) {
+                    const msg = e instanceof Error ? e.message : String(e);
+                    const parsed = parseOpenAiImageError(msg);
+                    const err = parsed?.error || null;
+                    const code = typeof err?.code === "string" ? String(err.code) : "";
+                    const type = typeof err?.type === "string" ? String(err.type) : "";
+                    const isModeration = code === "moderation_blocked" || type === "image_generation_user_error";
+                    if (isModeration) {
+                        const attachmentInfo = {
+                            received_attachments: Array.isArray(attachments) ? attachments.length : 0,
+                            received_image_data_urls: incomingImageDataUrls.length,
+                        };
+                        return await failAndRespond(400, {
+                            message: incomingImageDataUrls.length > 0
+                                ? "첨부 이미지는 정상 수신되었으나 안전 정책에 의해 차단되었습니다. 다른 이미지/프롬프트로 다시 시도해 주세요."
+                                : "요청이 안전 정책에 의해 차단되었습니다. 다른 이미지/프롬프트로 다시 시도해 주세요.",
+                            details: {
+                                code,
+                                type,
+                                request_id: parsed?.requestId || null,
+                                ...attachmentInfo,
+                            },
+                        });
+                    }
+                    return await failAndRespond(500, {
+                        message: "OpenAI 이미지 요청에 실패했습니다.",
+                        details: msg,
                     });
-                // Prefer real URLs; if API returns base64 only, fall back to data URLs.
-                const sourceUrls = (r.urls && r.urls.length ? r.urls : r.data_urls) || [];
-                const blocks = sourceUrls.length
-                    ? sourceUrls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
+                }
+                const appliedOptions = Object.fromEntries(Object.entries(incomingImageDataUrls.length > 0
+                    ? { n, size }
+                    : { n, size, quality, style, background }).filter(([, v]) => v !== undefined));
+                optionsForAssistant = appliedOptions;
+                // Prefer data URLs when available; otherwise download URLs to keep assets permanent.
+                const sourceUrls = (r.data_urls && r.data_urls.length ? r.data_urls : r.urls) || [];
+                const resolvedUrls = await materializeImageUrlsToDataUrls(sourceUrls, abortSignal);
+                imageUsage = {
+                    count: resolvedUrls.length || n,
+                    size: typeof size === "string" ? size : undefined,
+                    quality: typeof quality === "string" ? quality : undefined,
+                };
+                const blocks = resolvedUrls.length
+                    ? resolvedUrls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
                     : [{ type: "markdown", markdown: "이미지 생성 결과를 받지 못했습니다." }];
                 const blockJson = {
                     title: "이미지 생성",
                     summary: incomingImageDataUrls.length > 0 ? "첨부 이미지(참조)를 기반으로 편집한 결과입니다." : "요청한 이미지 생성 결과입니다.",
                     blocks,
+                    options: appliedOptions,
                 };
                 out = {
                     output_text: JSON.stringify(blockJson),
                     // NOTE: keep a safe(raw) payload from provider client for debugging (it omits huge base64 strings).
                     raw: isRecord(r.raw) ? { ...r.raw, _debug: { used_edit: incomingImageDataUrls.length > 0 } } : r.raw,
-                    content: { ...blockJson, images: sourceUrls.map((u) => ({ url: u })), raw: r.raw },
+                    content: { ...blockJson, images: resolvedUrls.map((u) => ({ url: u })), raw: r.raw },
                 };
             }
             else if (mt === "audio" || mt === "music") {
@@ -2008,6 +2479,23 @@ async function chatRun(req, res) {
                     speed,
                     signal: abortSignal,
                 });
+                if (mt === "music") {
+                    const seconds = typeof mergedOptions?.seconds === "number"
+                        ? Number(mergedOptions.seconds)
+                        : typeof mergedOptions?.duration === "number"
+                            ? Number(mergedOptions.duration)
+                            : 0;
+                    const sampleRate = typeof mergedOptions?.sample_rate === "number"
+                        ? Number(mergedOptions.sample_rate)
+                        : undefined;
+                    const channels = typeof mergedOptions?.channels === "string"
+                        ? String(mergedOptions.channels)
+                        : undefined;
+                    const bitDepth = typeof mergedOptions?.bit_depth === "number"
+                        ? Number(mergedOptions.bit_depth)
+                        : undefined;
+                    musicUsage = { seconds, sample_rate: sampleRate, channels, bit_depth: bitDepth };
+                }
                 const blockJson = {
                     title: mt === "music" ? "음악 생성" : "오디오 생성",
                     summary: "오디오 생성이 완료되었습니다.",
@@ -2029,6 +2517,12 @@ async function chatRun(req, res) {
                 return await failAndRespond(400, { message: `Unsupported model_type=${mt}` });
             }
         }
+        if (!optionsForAssistant && mergedOptions && Object.keys(mergedOptions).length > 0) {
+            optionsForAssistant = mergedOptions;
+        }
+        if (optionsForAssistant && isRecord(out.content)) {
+            out = { ...out, content: { ...out.content, options: optionsForAssistant } };
+        }
         // Assetize media fields (image/audio/video data URLs) before persisting assistant message.
         const rewritten = rewriteContentWithAssetUrls(out.content);
         const assistantContentInput = isRecord(rewritten.content) ? { ...rewritten.content } : {};
@@ -2037,6 +2531,9 @@ async function chatRun(req, res) {
             assistantContentInput.output_text = out.output_text;
         }
         let normalizedAssistantContent = (0, normalizeAiContent_1.normalizeAiContent)(assistantContentInput);
+        if (optionsForAssistant && Object.keys(optionsForAssistant).length > 0) {
+            normalizedAssistantContent = { ...normalizedAssistantContent, options: optionsForAssistant };
+        }
         const normalizedBlocks = Array.isArray(normalizedAssistantContent.blocks) ? normalizedAssistantContent.blocks : [];
         if (normalizedBlocks.length === 0 && typeof out.output_text === "string" && out.output_text.trim()) {
             normalizedAssistantContent = (0, normalizeAiContent_1.normalizeAiContent)({ output_text: out.output_text });
@@ -2072,15 +2569,15 @@ async function chatRun(req, res) {
         // Persist assets (FK requires message row exists).
         if (didUpdateAssistant) {
             for (const a of rewritten.assets) {
-                await (0, mediaAssetsService_1.storeImageDataUrlAsAsset)({
-                    tenantId,
-                    userId: userId || null,
+                await (0, fileServiceClient_1.storeImageDataUrlAsAsset)({
                     conversationId: convId,
                     messageId: assistantMessageId,
                     assetId: a.assetId,
                     dataUrl: a.dataUrl,
                     index: a.index,
                     kind: a.kind,
+                    sourceType: "ai_generated",
+                    authHeader,
                 });
             }
         }
@@ -2090,6 +2587,214 @@ async function chatRun(req, res) {
         // best-effort: keep conversation model_id updated to last used model
         if (didUpdateAssistant) {
             await (0, db_1.query)(`UPDATE model_conversations SET model_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [convId, chosenModelDbId]);
+        }
+        // Update conversation title: use content.title if present, otherwise fallback
+        if (didUpdateAssistant) {
+            const responseTitle = typeof normalizedAssistantContent.title === "string" && normalizedAssistantContent.title.trim()
+                ? normalizedAssistantContent.title.trim()
+                : null;
+            const finalTitle = responseTitle || getFallbackTitle(mt, prompt);
+            // Only update if title is still a temp title (to avoid overwriting user-edited titles)
+            const tempTitle = getTempTitle(mt);
+            await (0, db_1.query)(`UPDATE model_conversations SET title = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND title = $3`, [convId, finalTitle, tempTitle]);
+        }
+        // ✅ usage log (best-effort)
+        try {
+            if (usedProviderId && usedModelDbId && usedModelApiId) {
+                const usage = extractUsageFromProviderRaw(out?.raw);
+                const inputTokens = usage.input_tokens;
+                const cachedInputTokens = usage.cached_input_tokens;
+                const outputTokens = usage.output_tokens;
+                const totalTokens = usage.total_tokens || inputTokens + outputTokens;
+                const modality = toLlmModality(mt, incomingImageDataUrls.length > 0 || incomingImageUrls.length > 0);
+                const pricing = await (0, pricingService_1.lookupModelPricing)(usedProviderSlug, usedModelApiId, modality);
+                const costs = (0, pricingService_1.calculateCost)(pricing, inputTokens, cachedInputTokens, outputTokens);
+                const { inputCost, cachedInputCost, outputCost, totalCost } = costs;
+                const costCurrency = costs.currency;
+                const featureName = mt === "text" || mt === "code" || mt === "multimodal" ? "chat" : mt;
+                const requestedModel = model_api_id ? String(model_api_id).trim() : usedModelApiId;
+                const attachmentStats = { total: incoming.length, images: 0, files: 0, links: 0 };
+                for (const a of incoming) {
+                    if (!a || typeof a !== "object")
+                        continue;
+                    const kind = typeof a.kind === "string" ? String(a.kind) : "";
+                    if (kind === "image")
+                        attachmentStats.images += 1;
+                    else if (kind === "file")
+                        attachmentStats.files += 1;
+                    else if (kind === "link")
+                        attachmentStats.links += 1;
+                }
+                const requestData = {
+                    provider_slug: usedProviderSlug,
+                    model_type: mt,
+                    requested_model: requestedModel,
+                    resolved_model: usedModelApiId,
+                    max_tokens: safeMaxTokens,
+                    input_preview: prompt.slice(0, 500),
+                    static_context_preview: staticContext ? staticContext.slice(0, 1000) : "",
+                    dynamic_context_preview: dynamicContext ? dynamicContext.slice(0, 1000) : "",
+                    prompt_cache_key: promptCacheKey || null,
+                    prompt_cache_retention: promptCacheRetention || null,
+                    attachments: attachmentStats,
+                    web_allowed: Boolean(webAllowed),
+                    web_search_country: web_search_country || null,
+                    web_search_languages: web_search_languages || null,
+                };
+                const responseData = {
+                    output_text_preview: String(contentTextForHistory || "").slice(0, 1000),
+                    raw: out?.raw ?? null,
+                };
+                const modelParams = {
+                    max_tokens: safeMaxTokens,
+                    options: mergedOptions,
+                    profile_key: usedProfileKey,
+                };
+                const responseTimeMs = Date.now() - runStartedAtMs;
+                const status = didUpdateAssistant ? "success" : "failed";
+                const web_enabled = webAllowed;
+                const web_provider = webProvider;
+                const web_search_mode = webSearchMode;
+                const logRes = await (0, db_1.query)(`
+          INSERT INTO llm_usage_logs (
+            tenant_id, user_id, provider_id, model_id, credential_id, service_id,
+            requested_model, resolved_model, modality, feature_name, request_id,
+            conversation_id, model_message_id,
+            web_enabled, web_provider, web_search_mode, web_budget_count, web_search_count,
+            input_tokens, cached_input_tokens, output_tokens, total_tokens,
+            input_cost, cached_input_cost, output_cost, total_cost, currency,
+            response_time_ms, status, error_code, error_message,
+            request_data, response_data, model_parameters,
+            ip_address, user_agent, metadata
+          ) VALUES (
+            $1, $2, $3, $4, $5, $6,
+            $7, $8, $9, $10, $11,
+            $12, $13,
+            $14, $15, $16, $17, $18,
+            $19, $20, $21, $22,
+            $23, $24, $25, $26, $27,
+            $28, $29, $30, $31,
+            $32::jsonb, $33::jsonb, $34::jsonb,
+            $35::inet, $36, $37::jsonb
+          )
+          ON CONFLICT (tenant_id, request_id) DO UPDATE SET
+            status = EXCLUDED.status,
+            error_code = EXCLUDED.error_code,
+            error_message = EXCLUDED.error_message,
+            response_time_ms = EXCLUDED.response_time_ms,
+            input_tokens = EXCLUDED.input_tokens,
+            cached_input_tokens = EXCLUDED.cached_input_tokens,
+            output_tokens = EXCLUDED.output_tokens,
+            total_tokens = EXCLUDED.total_tokens,
+            input_cost = EXCLUDED.input_cost,
+            cached_input_cost = EXCLUDED.cached_input_cost,
+            output_cost = EXCLUDED.output_cost,
+            total_cost = EXCLUDED.total_cost,
+            currency = EXCLUDED.currency,
+            request_data = EXCLUDED.request_data,
+            response_data = EXCLUDED.response_data,
+            model_parameters = EXCLUDED.model_parameters,
+            model_message_id = COALESCE(llm_usage_logs.model_message_id, EXCLUDED.model_message_id),
+            conversation_id = COALESCE(llm_usage_logs.conversation_id, EXCLUDED.conversation_id),
+            web_search_count = EXCLUDED.web_search_count
+          RETURNING id
+          `, [
+                    tenantId,
+                    userId,
+                    usedProviderId,
+                    usedModelDbId,
+                    usedCredentialId,
+                    null,
+                    requestedModel,
+                    usedModelApiId,
+                    modality,
+                    featureName,
+                    requestIdForLog,
+                    convId,
+                    assistantMessageId,
+                    web_enabled,
+                    web_provider,
+                    web_search_mode,
+                    webBudgetCount,
+                    webSearchCount,
+                    inputTokens,
+                    cachedInputTokens,
+                    outputTokens,
+                    totalTokens,
+                    inputCost,
+                    cachedInputCost,
+                    outputCost,
+                    totalCost,
+                    costCurrency,
+                    responseTimeMs,
+                    status,
+                    null,
+                    null,
+                    JSON.stringify(requestData),
+                    JSON.stringify(responseData),
+                    JSON.stringify(modelParams),
+                    req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || (req.socket.remoteAddress ?? null),
+                    String(req.headers["user-agent"] || ""),
+                    JSON.stringify({
+                        api: "ai-agent-service",
+                        endpoint: "/api/ai/chat/run",
+                        client_request_id: clientRequestId || null,
+                        profile_key: usedProfileKey || null,
+                        profile_attempted: profileAttempted,
+                        profile_error: profileError ? String(profileError?.message || profileError) : null,
+                    }),
+                ]);
+                const usageLogId = logRes.rows[0]?.id;
+                if (usageLogId) {
+                    if (inputTokens > 0 || cachedInputTokens > 0 || outputTokens > 0) {
+                        await (0, db_1.query)(`
+              INSERT INTO llm_token_usages (
+                usage_log_id, input_tokens, cached_input_tokens, output_tokens, unit
+              )
+              SELECT $1, $2, $3, $4, 'tokens'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM llm_token_usages WHERE usage_log_id = $1
+              )
+              `, [usageLogId, inputTokens, cachedInputTokens, outputTokens]);
+                    }
+                    if (imageUsage) {
+                        await (0, db_1.query)(`
+              INSERT INTO llm_image_usages (
+                usage_log_id, image_count, size, quality, unit
+              )
+              SELECT $1, $2, $3, $4, 'image'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM llm_image_usages WHERE usage_log_id = $1
+              )
+              `, [usageLogId, imageUsage.count, imageUsage.size || null, imageUsage.quality || null]);
+                    }
+                    if (musicUsage) {
+                        await (0, db_1.query)(`
+              INSERT INTO llm_music_usages (
+                usage_log_id, seconds, sample_rate, channels, bit_depth, unit
+              )
+              SELECT $1, $2, $3, $4, $5, 'second'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM llm_music_usages WHERE usage_log_id = $1
+              )
+              `, [usageLogId, musicUsage.seconds, musicUsage.sample_rate || null, musicUsage.channels || null, musicUsage.bit_depth || null]);
+                    }
+                    if (webSearchCount > 0) {
+                        await (0, db_1.query)(`
+              INSERT INTO llm_web_search_usages (
+                usage_log_id, provider, count, query_chars_total, response_bytes_total, status, unit
+              )
+              SELECT $1, $2, $3, $4, $5, 'success', 'request'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM llm_web_search_usages WHERE usage_log_id = $1
+              )
+              `, [usageLogId, webProvider || "serper", webSearchCount, webQueryCharsTotal, webResponseBytesTotal]);
+                    }
+                }
+            }
+        }
+        catch (e) {
+            console.warn("[usage-log] insert failed:", e);
         }
         responseFinalized = true;
         const clientDebug = isRecord(req.body) && isRecord(req.body.client_debug) ? req.body.client_debug : null;

@@ -241,6 +241,78 @@ function detectLanguageCode(text: string): string | null {
   return null
 }
 
+/** 전략 A: 시간 맥락이 필요한 질문인지 감지. 이 경우에만 동적 context에 시간 정보를 추가해 캐시 효율 유지.
+ *  한글: \b가 한글 문자에서 동작하지 않으므로 패턴만 사용 (예: /오늘/).
+ *  영어: \b로 단어 경계 보장.
+ */
+function needsTimeContext(prompt: string): boolean {
+  const s = String(prompt || "").trim()
+  if (!s.length) return false
+  const lower = s.toLowerCase()
+  const patterns: RegExp[] = [
+    // 한글 (JS \b는 한글 비지원이므로 경계 없이)
+    /오늘/,
+    /최근/,
+    /이번\s*(달|주|월|주말)/,
+    /어제/,
+    /며칠/,
+    /몇\s*일/,
+    /몇\s*주/,
+    /몇\s*달/,
+    /지난\s*(달|주|월|주말)/,
+    /현재/,
+    /지금/,
+    /요즘/,
+    /당일|금일/,
+    // 영어 (\b 유지)
+    /\btoday\b/i,
+    /\brecent(ly)?\b/i,
+    /\byesterday\b/i,
+    /\bthis\s+(week|month)\b/i,
+    /\blast\s+(week|month)\b/i,
+    /\bnow\b/i,
+  ]
+  return patterns.some((re) => re.test(lower) || re.test(s))
+}
+
+/** 전략 B: "N일 전", "N주 전" 등 날짜 산술 패턴을 감지하고 계산된 날짜 힌트 반환. */
+function computeRelativeDateHints(prompt: string, baseDate: Date): string[] {
+  const hints: string[] = []
+  const s = String(prompt || "").trim()
+  if (!s.length) return hints
+  const patterns: Array<{ re: RegExp; unit: "day" | "week" | "month"; back: boolean }> = [
+    { re: /(\d+)\s*일\s*전/g, unit: "day", back: true },
+    { re: /(\d+)\s*일\s*후/g, unit: "day", back: false },
+    { re: /(\d+)\s*주\s*전/g, unit: "week", back: true },
+    { re: /(\d+)\s*주\s*후/g, unit: "week", back: false },
+    { re: /(\d+)\s*(달|개월)\s*전/g, unit: "month", back: true },
+    { re: /(\d+)\s*(달|개월)\s*후/g, unit: "month", back: false },
+    { re: /(\d+)\s*days?\s+ago/gi, unit: "day", back: true },
+    { re: /(\d+)\s*weeks?\s+ago/gi, unit: "week", back: true },
+    { re: /(\d+)\s*months?\s+ago/gi, unit: "month", back: true },
+  ]
+  const seen = new Set<string>()
+  for (const { re, unit, back } of patterns) {
+    let m: RegExpExecArray | null = null
+    re.lastIndex = 0
+    while ((m = re.exec(s)) !== null) {
+      const n = Math.min(parseInt(m[1], 10) || 0, 366)
+      if (n <= 0) continue
+      const mult = back ? -1 : 1
+      const d = new Date(baseDate)
+      if (unit === "day") d.setDate(d.getDate() + mult * n)
+      else if (unit === "week") d.setDate(d.getDate() + mult * n * 7)
+      else if (unit === "month") d.setMonth(d.getMonth() + mult * n)
+      const key = `${m[0]}=${d.toISOString().slice(0, 10)}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        hints.push(`참고: ${m[0]} = ${d.toISOString().slice(0, 10)}`)
+      }
+    }
+  }
+  return hints
+}
+
 function extractRequestedLanguage(text: string): string | null {
   const s = String(text || "").toLowerCase()
   // minimal patterns; can be extended
@@ -1858,13 +1930,6 @@ export async function chatRun(req: Request, res: Response) {
       response_schema_name: responseSchema?.name || "",
       response_schema_json: responseSchema?.schema || {},
       response_schema_strict: responseSchema?.strict !== false,
-      // Web search policy defaults (used by prompt_templates if present)
-      max_search_calls: webSearchPolicy.max_search_calls,
-      max_total_snippet_tokens: webSearchPolicy.max_total_snippet_tokens,
-      search_timeout_ms: webSearchPolicy.timeout_ms,
-      search_retry_max: webSearchPolicy.retry_max,
-      search_retry_base_delay_ms: webSearchPolicy.retry_base_delay_ms,
-      search_retry_max_delay_ms: webSearchPolicy.retry_max_delay_ms,
     }
     for (const [k, v] of Object.entries(mergedOptions || {})) {
       if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean") continue
@@ -1908,12 +1973,34 @@ export async function chatRun(req: Request, res: Response) {
       (providerKey === "google" || providerSlugLower.startsWith("google") ? "gemini" : null) ||
       (providerKey === "anthropic" || providerSlugLower.startsWith("anthropic") ? "claude" : null)
 
+    const webPolicyProviders = new Set(
+      (webSearchPolicy.enabled_providers || []).map((p: unknown) => String(p || "").toLowerCase()).filter(Boolean)
+    )
+    const providerAllowsWeb = webPolicyProviders.size ? webPolicyProviders.has(providerKey) : true
+    const webAllowed = Boolean(web_allowed) && mt === "text" && webSearchPolicy.enabled && providerAllowsWeb
+
     // language instruction (server-level)
     const langInstruction = finalLang ? `\n\n(출력 언어: ${finalLang})` : ""
+    // 전략 A+B: 시간 맥락이 필요한 질문에만 동적 context에 시간 정보 추가 (캐시 효율 유지)
+    // 웹 검색 활성화 시에는 항상 시간 맥락 추가 (recency 질문 가능성 높음)
+    const timeContextParts: string[] = []
+    const shouldAddTimeContext = needsTimeContext(prompt) || webAllowed
+    if (shouldAddTimeContext) {
+      timeContextParts.push(`현재 시각: ${currentDatetime} (타임존: ${currentTimezone})`)
+      const dateHints = computeRelativeDateHints(prompt, now)
+      if (dateHints.length) timeContextParts.push(dateHints.join("\n"))
+    }
+    const timeContextBlock =
+      timeContextParts.length > 0 ? `[시간 참고]\n${timeContextParts.join("\n")}` : ""
+    const webSearchContextBlock = webAllowed
+      ? `[웹 검색 정책]\n- 최대 검색 횟수: ${webSearchPolicy.max_search_calls}\n- 스니펫 최대 토큰: ${webSearchPolicy.max_total_snippet_tokens}\n- 검색 실패 시 재시도: ${webSearchPolicy.retry_max}회 (exponential backoff)`
+      : ""
     const input = [
       history.conversationSummary ? `대화 요약:\n${history.conversationSummary}\n` : "",
       history.longText ? `대화 요약(메시지 summary):\n${history.longText}\n` : "",
       history.shortText ? `최근 대화:\n${history.shortText}\n` : "",
+      timeContextBlock,
+      webSearchContextBlock,
       `사용자 요청:\n${prompt}${langInstruction}`,
     ]
       .filter(Boolean)
@@ -2108,11 +2195,6 @@ export async function chatRun(req: Request, res: Response) {
 
     let out: { output_text: string; raw: unknown; content: Record<string, unknown> } | null = null
 
-    const webPolicyProviders = new Set(
-      (webSearchPolicy.enabled_providers || []).map((p: unknown) => String(p || "").toLowerCase()).filter(Boolean)
-    )
-    const providerAllowsWeb = webPolicyProviders.size ? webPolicyProviders.has(providerKey) : true
-    const webAllowed = Boolean(web_allowed) && mt === "text" && webSearchPolicy.enabled && providerAllowsWeb
     const webProvider = webAllowed ? webSearchPolicy.provider : null
     const webSearchMode = webAllowed ? "auto" : "off"
     const forceBuiltinImageEdit = mt === "image" && incomingImageDataUrls.length > 0
@@ -2396,6 +2478,7 @@ export async function chatRun(req: Request, res: Response) {
 
           out = { output_text: finalText, raw: lastRaw, content: { output_text: finalText, raw: lastRaw as any } }
         } else {
+          // outputFormat은 이 코드 경로에서 block_json으로 고정. responseSchema는 ai_models.response_schema_id에서 로드됨.
           const r = await openaiSimulateChat({
             apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
             apiKey: auth.apiKey,
@@ -2441,26 +2524,39 @@ export async function chatRun(req: Request, res: Response) {
             webBudgetCount = webSearchPolicy.max_search_calls
             webSearchCount += 1
             webQueryCharsTotal += queryText.length
-            const result = await serperSearch({
-              apiKey: serperKey,
-              query: queryText,
-              country: gl,
-              language: hl,
-              limit: 5,
-              timeoutMs: webSearchPolicy.timeout_ms,
-              signal: abortSignal,
-            })
             try {
-              const rawBytes = JSON.stringify(result.raw ?? result).length
-              webResponseBytesTotal += rawBytes
-            } catch {
-              // ignore
-            }
-            const snippetBudgetChars = webSearchPolicy.max_total_snippet_tokens * 4
-            const compactOrganic = compactSearchResults(result.organic, snippetBudgetChars)
-            const webContext = formatSearchContext(compactOrganic)
-            if (webContext) {
-              googleInput = `웹 검색 결과:\n${webContext}\n\n${input}`
+              const result = await serperSearch({
+                apiKey: serperKey,
+                query: queryText,
+                country: gl,
+                language: hl,
+                limit: 5,
+                timeoutMs: webSearchPolicy.timeout_ms,
+                signal: abortSignal,
+              })
+              try {
+                const rawBytes = JSON.stringify(result.raw ?? result).length
+                webResponseBytesTotal += rawBytes
+              } catch {
+                // ignore
+              }
+              const snippetBudgetChars = webSearchPolicy.max_total_snippet_tokens * 4
+              const compactOrganic = compactSearchResults(result.organic, snippetBudgetChars)
+              const webContext = formatSearchContext(compactOrganic)
+              if (webContext) {
+                googleInput = `웹 검색 결과:\n${webContext}\n\n${input}`
+              } else {
+                console.warn("[gemini-web-search] Serper returned empty organic results", {
+                  query: queryText,
+                  hasOrganic: Array.isArray(result.organic) && result.organic.length > 0,
+                  organicCount: Array.isArray(result.organic) ? result.organic.length : 0,
+                })
+              }
+            } catch (serperErr) {
+              console.warn("[gemini-web-search] Serper search failed", {
+                query: queryText,
+                error: serperErr instanceof Error ? serperErr.message : String(serperErr),
+              })
             }
           }
         }

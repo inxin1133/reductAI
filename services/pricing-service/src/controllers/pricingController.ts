@@ -592,6 +592,529 @@ export async function bulkUpdateRates(req: Request, res: Response) {
   }
 }
 
+// ========================================
+// SKU CRUD
+// ========================================
+
+const VALID_MODALITIES = new Set(["text", "code", "image", "video", "audio", "web_search"])
+const VALID_USAGE_KINDS = new Set([
+  "input_tokens",
+  "cached_input_tokens",
+  "output_tokens",
+  "image_generation",
+  "seconds",
+  "requests",
+])
+const VALID_TOKEN_CATEGORIES = new Set(["text", "image"])
+const VALID_UNITS = new Set(["tokens", "image", "second", "request"])
+
+export async function listSkus(req: Request, res: Response) {
+  try {
+    const q = toStr(req.query.q)
+    const providerSlug = toStr(req.query.provider_slug)
+    const modelKey = toStr(req.query.model_key)
+    const modality = toStr(req.query.modality)
+    const usageKind = toStr(req.query.usage_kind)
+    const tokenCategory = toStr(req.query.token_category)
+    const isActive = toStr(req.query.is_active)
+
+    const limit = Math.min(toInt(req.query.limit, 50), 500)
+    const offset = toInt(req.query.offset, 0)
+
+    const where: string[] = []
+    const params: any[] = []
+
+    if (providerSlug) {
+      where.push(`provider_slug = $${params.length + 1}`)
+      params.push(providerSlug)
+    }
+    if (modelKey) {
+      where.push(`model_key = $${params.length + 1}`)
+      params.push(modelKey)
+    }
+    if (modality) {
+      where.push(`modality = $${params.length + 1}`)
+      params.push(modality)
+    }
+    if (usageKind) {
+      where.push(`usage_kind = $${params.length + 1}`)
+      params.push(usageKind)
+    }
+    if (tokenCategory) {
+      where.push(`token_category = $${params.length + 1}`)
+      params.push(tokenCategory)
+    }
+    if (isActive === "true" || isActive === "false") {
+      where.push(`is_active = $${params.length + 1}`)
+      params.push(isActive === "true")
+    }
+    if (q) {
+      where.push(
+        `(
+          model_name ILIKE $${params.length + 1}
+          OR model_key ILIKE $${params.length + 1}
+          OR provider_slug ILIKE $${params.length + 1}
+          OR sku_code ILIKE $${params.length + 1}
+        )`
+      )
+      params.push(`%${q}%`)
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : ""
+
+    const countRes = await query(`SELECT COUNT(*)::int AS total FROM pricing_skus ${whereSql}`, params)
+
+    const listRes = await query(
+      `
+      SELECT
+        id, sku_code, provider_slug, model_id, model_key, model_name,
+        modality, usage_kind, token_category, unit, unit_size, currency,
+        is_active, metadata, created_at, updated_at
+      FROM pricing_skus
+      ${whereSql}
+      ORDER BY provider_slug ASC, model_key ASC, modality ASC, usage_kind ASC
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `,
+      [...params, limit, offset]
+    )
+
+    return res.json({
+      ok: true,
+      total: countRes.rows[0]?.total ?? 0,
+      limit,
+      offset,
+      rows: listRes.rows,
+    })
+  } catch (e: any) {
+    console.error("listSkus error:", e)
+    return res.status(500).json({ message: "Failed to list SKUs", details: String(e?.message || e) })
+  }
+}
+
+function buildSkuCode(providerSlug: string, modelKey: string, modality: string, usageKind: string, tokenCategory: string | null, metadata?: any): string {
+  const base = `${providerSlug}.${modelKey}.${modality}.${usageKind}`
+  if (tokenCategory) return `${base}.${tokenCategory}`
+  if (metadata && typeof metadata === "object") {
+    const parts: string[] = []
+    if (metadata.quality) parts.push(metadata.quality)
+    if (metadata.size) parts.push(metadata.size)
+    if (metadata.resolution) parts.push(metadata.resolution)
+    if (metadata.task) parts.push(metadata.task)
+    if (parts.length) return `${base}.${parts.join(".")}`
+  }
+  return base
+}
+
+export async function checkSkuCodeAvailability(req: Request, res: Response) {
+  try {
+    const skuCode = toStr(req.query.sku_code)
+    if (!skuCode) return res.status(400).json({ message: "sku_code query is required" })
+
+    const result = await query(
+      `SELECT 1 FROM pricing_skus WHERE sku_code = $1 LIMIT 1`,
+      [skuCode]
+    )
+    const exists = result.rows.length > 0
+
+    return res.json({ ok: true, exists })
+  } catch (e: any) {
+    console.error("checkSkuCodeAvailability error:", e)
+    return res.status(500).json({ message: "Failed to check SKU code", details: String(e?.message || e) })
+  }
+}
+
+export async function createSku(req: Request, res: Response) {
+  try {
+    const providerSlug = toStr(req.body?.provider_slug)
+    const modelKey = toStr(req.body?.model_key)
+    const modelName = toStr(req.body?.model_name)
+    const modality = toStr(req.body?.modality)
+    const usageKind = toStr(req.body?.usage_kind)
+    const tokenCategory = toStr(req.body?.token_category) || null
+    const unit = toStr(req.body?.unit)
+    const unitSize = toInt(req.body?.unit_size, 0)
+    const currency = toStr(req.body?.currency) || "USD"
+    const metadata = req.body?.metadata && typeof req.body.metadata === "object" ? req.body.metadata : {}
+    const skuCodeOverride = toStr(req.body?.sku_code)
+
+    if (!providerSlug) return res.status(400).json({ message: "provider_slug is required" })
+    if (!modelKey) return res.status(400).json({ message: "model_key is required" })
+    if (!modelName) return res.status(400).json({ message: "model_name is required" })
+    if (!VALID_MODALITIES.has(modality)) return res.status(400).json({ message: "invalid modality" })
+    if (!VALID_USAGE_KINDS.has(usageKind)) return res.status(400).json({ message: "invalid usage_kind" })
+    if (tokenCategory && !VALID_TOKEN_CATEGORIES.has(tokenCategory)) return res.status(400).json({ message: "invalid token_category" })
+    if (!VALID_UNITS.has(unit)) return res.status(400).json({ message: "invalid unit" })
+    if (unitSize <= 0) return res.status(400).json({ message: "unit_size must be positive" })
+
+    const skuCode = skuCodeOverride || buildSkuCode(providerSlug, modelKey, modality, usageKind, tokenCategory, metadata)
+
+    const modelRes = await query(
+      `SELECT id FROM ai_models WHERE model_id = $1 OR name = $1 LIMIT 1`,
+      [modelKey]
+    )
+    const modelId = modelRes.rows[0]?.id || null
+
+    const result = await query(
+      `
+      INSERT INTO pricing_skus (
+        sku_code, provider_slug, model_id, model_key, model_name,
+        modality, usage_kind, token_category, unit, unit_size, currency, is_active, metadata
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,TRUE,$12)
+      RETURNING *
+      `,
+      [skuCode, providerSlug, modelId, modelKey, modelName, modality, usageKind, tokenCategory, unit, unitSize, currency, metadata]
+    )
+
+    return res.status(201).json({ ok: true, row: result.rows[0] })
+  } catch (e: any) {
+    if (e?.code === "23505") {
+      return res.status(409).json({ message: "SKU already exists", details: String(e?.detail || "") })
+    }
+    console.error("createSku error:", e)
+    return res.status(500).json({ message: "Failed to create SKU", details: String(e?.message || e) })
+  }
+}
+
+export async function updateSku(req: Request, res: Response) {
+  try {
+    const id = String(req.params.id || "")
+    if (!id) return res.status(400).json({ message: "id is required" })
+
+    const input = req.body || {}
+    const fields: string[] = []
+    const params: any[] = []
+
+    const setField = (name: string, value: any) => {
+      fields.push(`${name} = $${params.length + 1}`)
+      params.push(value)
+    }
+
+    if (input.model_name !== undefined) {
+      const v = toStr(input.model_name)
+      if (!v) return res.status(400).json({ message: "model_name must be non-empty" })
+      setField("model_name", v)
+    }
+    if (input.modality !== undefined) {
+      if (!VALID_MODALITIES.has(toStr(input.modality))) return res.status(400).json({ message: "invalid modality" })
+      setField("modality", toStr(input.modality))
+    }
+    if (input.usage_kind !== undefined) {
+      if (!VALID_USAGE_KINDS.has(toStr(input.usage_kind))) return res.status(400).json({ message: "invalid usage_kind" })
+      setField("usage_kind", toStr(input.usage_kind))
+    }
+    if (input.token_category !== undefined) {
+      const tc = toStr(input.token_category) || null
+      if (tc && !VALID_TOKEN_CATEGORIES.has(tc)) return res.status(400).json({ message: "invalid token_category" })
+      setField("token_category", tc)
+    }
+    if (input.unit !== undefined) {
+      if (!VALID_UNITS.has(toStr(input.unit))) return res.status(400).json({ message: "invalid unit" })
+      setField("unit", toStr(input.unit))
+    }
+    if (input.unit_size !== undefined) {
+      const us = toInt(input.unit_size, 0)
+      if (us <= 0) return res.status(400).json({ message: "unit_size must be positive" })
+      setField("unit_size", us)
+    }
+    if (input.currency !== undefined) {
+      setField("currency", toStr(input.currency) || "USD")
+    }
+    if (input.is_active !== undefined) {
+      setField("is_active", Boolean(input.is_active))
+    }
+    if (input.metadata !== undefined) {
+      setField("metadata", input.metadata && typeof input.metadata === "object" ? input.metadata : {})
+    }
+
+    if (fields.length === 0) return res.status(400).json({ message: "No fields to update" })
+
+    const result = await query(
+      `
+      UPDATE pricing_skus
+      SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $${params.length + 1}
+      RETURNING *
+      `,
+      [...params, id]
+    )
+
+    if (result.rows.length === 0) return res.status(404).json({ message: "SKU not found" })
+    return res.json({ ok: true, row: result.rows[0] })
+  } catch (e: any) {
+    console.error("updateSku error:", e)
+    return res.status(500).json({ message: "Failed to update SKU", details: String(e?.message || e) })
+  }
+}
+
+export async function deleteSku(req: Request, res: Response) {
+  try {
+    const id = String(req.params.id || "")
+    if (!id) return res.status(400).json({ message: "id is required" })
+
+    const result = await query(
+      `UPDATE pricing_skus SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING id, sku_code, is_active`,
+      [id]
+    )
+
+    if (result.rows.length === 0) return res.status(404).json({ message: "SKU not found" })
+    return res.json({ ok: true, row: result.rows[0] })
+  } catch (e: any) {
+    console.error("deleteSku error:", e)
+    return res.status(500).json({ message: "Failed to deactivate SKU", details: String(e?.message || e) })
+  }
+}
+
+// ========================================
+// Rate Card - Missing SKUs & Add Rates
+// ========================================
+
+export async function listMissingSkus(req: Request, res: Response) {
+  try {
+    const rateCardId = String(req.params.id || "")
+    if (!rateCardId) return res.status(400).json({ message: "rate card id is required" })
+
+    const q = toStr(req.query.q)
+    const providerSlug = toStr(req.query.provider_slug)
+    const modality = toStr(req.query.modality)
+
+    const where: string[] = [
+      "s.is_active = TRUE",
+      `s.id NOT IN (SELECT sku_id FROM pricing_rates WHERE rate_card_id = $1)`,
+    ]
+    const params: any[] = [rateCardId]
+
+    if (providerSlug) {
+      where.push(`s.provider_slug = $${params.length + 1}`)
+      params.push(providerSlug)
+    }
+    if (modality) {
+      where.push(`s.modality = $${params.length + 1}`)
+      params.push(modality)
+    }
+    if (q) {
+      where.push(
+        `(
+          s.model_name ILIKE $${params.length + 1}
+          OR s.model_key ILIKE $${params.length + 1}
+          OR s.provider_slug ILIKE $${params.length + 1}
+          OR s.sku_code ILIKE $${params.length + 1}
+        )`
+      )
+      params.push(`%${q}%`)
+    }
+
+    const whereSql = where.join(" AND ")
+
+    const result = await query(
+      `
+      SELECT
+        s.id, s.sku_code, s.provider_slug, s.model_key, s.model_name,
+        s.modality, s.usage_kind, s.token_category, s.unit, s.unit_size,
+        s.currency, s.metadata
+      FROM pricing_skus s
+      WHERE ${whereSql}
+      ORDER BY s.provider_slug, s.model_key, s.usage_kind
+      `,
+      params
+    )
+
+    return res.json({ ok: true, rows: result.rows })
+  } catch (e: any) {
+    console.error("listMissingSkus error:", e)
+    return res.status(500).json({ message: "Failed to list missing SKUs", details: String(e?.message || e) })
+  }
+}
+
+export async function addRatesToCard(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const rateCardId = String(req.params.id || "")
+    if (!rateCardId) return res.status(400).json({ message: "rate card id is required" })
+
+    const rates = req.body?.rates
+    if (!Array.isArray(rates) || rates.length === 0) {
+      return res.status(400).json({ message: "rates array is required and must not be empty" })
+    }
+
+    const cardCheck = await client.query(`SELECT id FROM pricing_rate_cards WHERE id = $1`, [rateCardId])
+    if (cardCheck.rows.length === 0) {
+      return res.status(404).json({ message: "Rate card not found" })
+    }
+
+    await client.query("BEGIN")
+
+    let inserted = 0
+    for (const r of rates) {
+      const skuId = String(r.sku_id || "")
+      const rateValue = Number(r.rate_value)
+      if (!skuId) continue
+      if (!Number.isFinite(rateValue) || rateValue < 0) continue
+
+      const tierUnit = r.tier_unit || null
+      const tierMin = r.tier_min != null ? Number(r.tier_min) : null
+      const tierMax = r.tier_max != null ? Number(r.tier_max) : null
+
+      await client.query(
+        `
+        INSERT INTO pricing_rates (rate_card_id, sku_id, rate_value, tier_unit, tier_min, tier_max)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (rate_card_id, sku_id, tier_unit, tier_min, tier_max) DO NOTHING
+        `,
+        [rateCardId, skuId, rateValue, tierUnit, tierMin, tierMax]
+      )
+      inserted++
+    }
+
+    await client.query("COMMIT")
+    return res.status(201).json({ ok: true, inserted })
+  } catch (e: any) {
+    await client.query("ROLLBACK")
+    console.error("addRatesToCard error:", e)
+    return res.status(500).json({ message: "Failed to add rates", details: String(e?.message || e) })
+  } finally {
+    client.release()
+  }
+}
+
+// ========================================
+// SKU Auto-generation from model
+// ========================================
+
+type SkuTemplateEntry = {
+  usage_kind: string
+  token_category: string | null
+  unit: string
+  unit_size: number
+  metadata?: Record<string, any>
+}
+
+const SKU_TEMPLATES: Record<string, SkuTemplateEntry[]> = {
+  text: [
+    { usage_kind: "input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "cached_input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "output_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+  ],
+  code: [
+    { usage_kind: "input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "cached_input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "output_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+  ],
+  image: [
+    { usage_kind: "input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "cached_input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "output_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "input_tokens", token_category: "image", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "cached_input_tokens", token_category: "image", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "output_tokens", token_category: "image", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "image_generation", token_category: null, unit: "image", unit_size: 1, metadata: { quality: "low", size: "1024x1024" } },
+    { usage_kind: "image_generation", token_category: null, unit: "image", unit_size: 1, metadata: { quality: "medium", size: "1024x1024" } },
+    { usage_kind: "image_generation", token_category: null, unit: "image", unit_size: 1, metadata: { quality: "high", size: "1024x1024" } },
+  ],
+  audio: [
+    { usage_kind: "input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "cached_input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "output_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "seconds", token_category: null, unit: "second", unit_size: 1 },
+  ],
+  video: [
+    { usage_kind: "seconds", token_category: null, unit: "second", unit_size: 1 },
+  ],
+  web_search: [
+    { usage_kind: "requests", token_category: null, unit: "request", unit_size: 1 },
+  ],
+  multimodal: [
+    { usage_kind: "input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "cached_input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "output_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+  ],
+  embedding: [
+    { usage_kind: "input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+  ],
+}
+
+export async function generateSkusForModel(req: Request, res: Response) {
+  try {
+    const modelId = toStr(req.body?.model_id)
+    const modalityOverride = toStr(req.body?.modality)
+
+    if (!modelId) return res.status(400).json({ message: "model_id (UUID) is required" })
+
+    const modelRes = await query(
+      `
+      SELECT m.id, m.model_id AS model_key, m.display_name, m.model_type,
+             p.slug AS provider_slug
+      FROM ai_models m
+      LEFT JOIN ai_providers p ON p.id = m.provider_id
+      WHERE m.id = $1
+      `,
+      [modelId]
+    )
+
+    if (modelRes.rows.length === 0) return res.status(404).json({ message: "Model not found" })
+
+    const model = modelRes.rows[0]
+    const modality = modalityOverride || model.model_type || "text"
+    const templates = SKU_TEMPLATES[modality] || SKU_TEMPLATES.text
+
+    const created: any[] = []
+    const skipped: string[] = []
+
+    for (const tpl of templates) {
+      const skuCode = buildSkuCode(
+        model.provider_slug || "unknown",
+        model.model_key,
+        modality,
+        tpl.usage_kind,
+        tpl.token_category,
+        tpl.metadata
+      )
+
+      try {
+        const result = await query(
+          `
+          INSERT INTO pricing_skus (
+            sku_code, provider_slug, model_id, model_key, model_name,
+            modality, usage_kind, token_category, unit, unit_size, currency, is_active, metadata
+          )
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'USD',TRUE,$11)
+          RETURNING id, sku_code
+          `,
+          [
+            skuCode,
+            model.provider_slug || "unknown",
+            model.id,
+            model.model_key,
+            model.display_name || model.model_key,
+            modality,
+            tpl.usage_kind,
+            tpl.token_category,
+            tpl.unit,
+            tpl.unit_size,
+            tpl.metadata || {},
+          ]
+        )
+        created.push(result.rows[0])
+      } catch (insertErr: any) {
+        if (insertErr?.code === "23505") {
+          skipped.push(skuCode)
+        } else {
+          throw insertErr
+        }
+      }
+    }
+
+    return res.status(201).json({ ok: true, created, skipped, modality, templates_used: templates.length })
+  } catch (e: any) {
+    console.error("generateSkusForModel error:", e)
+    return res.status(500).json({ message: "Failed to generate SKUs", details: String(e?.message || e) })
+  }
+}
+
+// ========================================
+// Markups
+// ========================================
+
 export async function listMarkups(req: Request, res: Response) {
   try {
     const q = toStr(req.query.q)

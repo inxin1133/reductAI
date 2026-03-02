@@ -28,7 +28,7 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, Pencil, Plus, Search, Trash2, RefreshCcw, Play, GripVertical } from "lucide-react"
+import { Loader2, Pencil, Plus, Search, Trash2, RefreshCcw, Play, GripVertical, Tags } from "lucide-react"
 import { AdminPage } from "@/components/layout/AdminPage"
 
 type ProviderStatus = "active" | "inactive" | "deprecated"
@@ -458,6 +458,32 @@ export default function ModelManager() {
     }
   }
 
+  const generateSkusForModel = async (m: AIModel) => {
+    if (!confirm(`"${m.display_name}" (${m.model_id}) 모델의 SKU를 자동 생성하시겠습니까?\n모달리티: ${m.model_type}`)) return
+    try {
+      const res = await fetch("/api/ai/pricing/skus/generate-for-model", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ model_id: m.id, modality: m.model_type }),
+      })
+      const json = await res.json().catch(() => ({})) as { ok?: boolean; created?: { sku_code: string }[]; skipped?: string[]; modality?: string }
+      if (!res.ok || !json.ok) {
+        alert("SKU 생성에 실패했습니다.")
+        return
+      }
+      const createdCount = json.created?.length ?? 0
+      const skippedCount = json.skipped?.length ?? 0
+      const msg = [`SKU 자동 생성 완료 (모달리티: ${json.modality})`]
+      if (createdCount > 0) msg.push(`생성: ${createdCount}건`)
+      if (skippedCount > 0) msg.push(`이미 존재 (건너뜀): ${skippedCount}건`)
+      if (createdCount > 0) msg.push(`\nRates 페이지에서 "누락 SKU 추가"로 요율을 설정할 수 있습니다.`)
+      alert(msg.join("\n"))
+    } catch (e) {
+      console.error(e)
+      alert(`SKU 생성 중 오류: ${errorMessage(e)}`)
+    }
+  }
+
   const patchModelRow = async (id: string, patch: Partial<Pick<AIModel, "status" | "is_available" | "response_schema_id">>) => {
     setRowSaving((p) => ({ ...p, [id]: true }))
     try {
@@ -800,13 +826,16 @@ export default function ModelManager() {
                   <TableCell className="text-xs text-muted-foreground">{m.context_window ?? "-"}</TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
-                      <Button variant="ghost" size="icon" onClick={() => openSim(m)}>
+                      <Button variant="ghost" size="icon" onClick={() => openSim(m)} title="시뮬레이터">
                         <Play className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" onClick={() => openEdit(m)}>
+                      <Button variant="ghost" size="icon" onClick={() => generateSkusForModel(m)} title="SKU 자동 생성">
+                        <Tags className="h-4 w-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => openEdit(m)} title="수정">
                         <Pencil className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" onClick={() => handleDelete(m)}>
+                      <Button variant="ghost" size="icon" onClick={() => handleDelete(m)} title="삭제">
                         <Trash2 className="h-4 w-4 text-destructive" />
                       </Button>
                     </div>

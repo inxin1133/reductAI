@@ -24,7 +24,6 @@ CREATE INDEX idx_pricing_rate_cards_effective_at ON pricing_rate_cards(effective
 CREATE TABLE pricing_skus (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     sku_code VARCHAR(200) NOT NULL UNIQUE,
-    provider_id UUID,
     provider_slug VARCHAR(100) NOT NULL,
     model_id UUID,
     model_key VARCHAR(255) NOT NULL,

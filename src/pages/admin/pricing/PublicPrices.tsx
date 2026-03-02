@@ -147,7 +147,7 @@ export default function PublicPrices() {
       <div className="flex items-center justify-between gap-2">
         <div>
           <div className="text-xl font-semibold">가격/요율 관리 - 사용자 공개 요금표</div>
-          <div className="text-sm text-muted-foreground">pricing_model_cost_summaries 기준 조회</div>
+          <div className="text-sm text-muted-foreground">pricing_model_cost_summaries 기준 조회 (USD 1 = 1,000 credits)</div>
         </div>
         <div className="flex items-center gap-2" />
       </div>
@@ -190,12 +190,12 @@ export default function PublicPrices() {
               <TableHead>Modality</TableHead>
               <TableHead>Unit</TableHead>
               <TableHead>Tier</TableHead>
-              <TableHead className="text-right">Input $/1K</TableHead>
-              <TableHead className="text-right">Output $/1K</TableHead>
-              <TableHead className="text-right">Avg $/1K</TableHead>
-              <TableHead className="text-right">Cost/Unit</TableHead>
+              <TableHead className="text-right">Input cr/credit</TableHead>
+              <TableHead className="text-right">Output cr/credit</TableHead>
+              <TableHead className="text-right">Avg cr/credit</TableHead>
+              <TableHead className="text-right">Cost/Unit (cr)</TableHead>
               <TableHead className="text-right">Margin %</TableHead>
-              <TableHead className="text-right">Cost (w/ margin)</TableHead>
+              <TableHead className="text-right">Cost (w/ margin, cr)</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>

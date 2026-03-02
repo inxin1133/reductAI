@@ -41,14 +41,14 @@ exports.deleteTypeModelAccess = deleteTypeModelAccess;
 const db_1 = __importStar(require("../config/db"));
 const systemTenantService_1 = require("../services/systemTenantService");
 function isTenantType(x) {
-    return x === "personal" || x === "team" || x === "enterprise";
+    return x === "personal" || x === "team" || x === "group";
 }
 // 목록 조회 (tenant_type 필수)
 async function getTypeModelAccess(req, res) {
     try {
         const tenant_type = req.query.tenant_type;
         if (!tenant_type || !isTenantType(tenant_type)) {
-            return res.status(400).json({ message: "tenant_type is required (personal|team|enterprise)" });
+            return res.status(400).json({ message: "tenant_type is required (personal|team|group)" });
         }
         const result = await (0, db_1.query)(`SELECT
         a.id,

@@ -15,6 +15,50 @@ function isRecord(v: unknown): v is JsonRecord {
   return Boolean(v) && typeof v === "object" && !Array.isArray(v)
 }
 
+/**
+ * Repairs JSON strings where models emit raw newlines/tabs inside quoted strings.
+ * This makes JSON.parse succeed for common "JSON-ish" model outputs without adding json5.
+ */
+function repairJsonForNewlines(input: string): string {
+  let out = ""
+  let inString = false
+  let escaped = false
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i]
+    if (escaped) {
+      out += ch
+      escaped = false
+      continue
+    }
+    if (ch === "\\") {
+      out += ch
+      escaped = true
+      continue
+    }
+    if (ch === '"') {
+      out += ch
+      inString = !inString
+      continue
+    }
+    if (inString) {
+      if (ch === "\n") {
+        out += "\\n"
+        continue
+      }
+      if (ch === "\r") {
+        out += "\\r"
+        continue
+      }
+      if (ch === "\t") {
+        out += "\\t"
+        continue
+      }
+    }
+    out += ch
+  }
+  return out
+}
+
 function parseJsonLikeString(input: string): JsonRecord | null {
   let raw = String(input || "").trim()
   if (!raw) return null
@@ -31,28 +75,77 @@ function parseJsonLikeString(input: string): JsonRecord | null {
     const parsed: unknown = JSON.parse(raw)
     return isRecord(parsed) ? parsed : null
   } catch {
-    return null
+    try {
+      const repaired = repairJsonForNewlines(raw)
+      const parsed: unknown = JSON.parse(repaired)
+      return isRecord(parsed) ? parsed : null
+    } catch {
+      return null
+    }
   }
+}
+
+/**
+ * Parses markdown-style table string (| A | B |\n| 1 | 2 |) into headers and rows.
+ * Some models return table as a string instead of headers/rows arrays.
+ */
+function parseMarkdownTableString(tableStr: string): { headers: string[]; rows: string[][] } | null {
+  const lines = tableStr.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+  if (!lines.length) return null
+  const parseRow = (line: string): string[] =>
+    line
+      .split("|")
+      .map((c) => c.trim())
+      .filter((c) => c.length > 0)
+  const first = parseRow(lines[0])
+  if (!first.length) return null
+  const isSeparator = (row: string[]) => row.every((c) => /^[-:]+$/.test(c))
+  const dataLines = isSeparator(first) ? lines.slice(1) : lines
+  if (!dataLines.length) return null
+  const headerRow = parseRow(dataLines[0])
+  if (isSeparator(headerRow)) {
+    if (dataLines.length < 2) return null
+    const headers = parseRow(dataLines[1])
+    const rows = dataLines.slice(2).map((l) => parseRow(l)).filter((r) => r.length > 0)
+    return { headers, rows }
+  }
+  const rows = dataLines.slice(1).map((l) => parseRow(l)).filter((r) => r.length > 0)
+  return { headers: headerRow, rows }
 }
 
 function normalizeTableBlock(block: BlockShape): JsonRecord {
   const { headers, rows, data, ...rest } = block as JsonRecord
   const dataObj = isRecord(data) ? (data as JsonRecord) : null
   const contentObj = isRecord((block as unknown as JsonRecord).content) ? ((block as unknown as JsonRecord).content as JsonRecord) : null
-  const normalizedHeaders = Array.isArray(headers)
-    ? headers.map(String)
+  const tableStr =
+    typeof (block as unknown as JsonRecord).table === "string"
+      ? String((block as unknown as JsonRecord).table)
+      : typeof contentObj?.table === "string"
+        ? String(contentObj.table)
+        : ""
+
+  let normalizedHeaders: string[] = Array.isArray(headers)
+    ? (headers as unknown[]).map(String)
     : Array.isArray(contentObj?.headers)
       ? (contentObj?.headers as unknown[]).map(String)
       : Array.isArray(dataObj?.headers)
         ? (dataObj?.headers as unknown[]).map(String)
         : []
-  const normalizedRows = Array.isArray(rows)
+  let normalizedRows: unknown[] = Array.isArray(rows)
     ? rows
     : Array.isArray(contentObj?.rows)
       ? (contentObj?.rows as unknown[])
       : Array.isArray(dataObj?.rows)
         ? (dataObj?.rows as unknown[])
         : []
+
+  if (tableStr && !normalizedHeaders.length && !normalizedRows.length) {
+    const parsed = parseMarkdownTableString(tableStr)
+    if (parsed) {
+      normalizedHeaders = parsed.headers
+      normalizedRows = parsed.rows
+    }
+  }
   const normalizedData = Array.isArray(data)
     ? data
     : Array.isArray(contentObj)

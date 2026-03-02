@@ -7,6 +7,7 @@ exports.chatCompletion = chatCompletion;
 const db_1 = require("../config/db");
 const providerClients_1 = require("../services/providerClients");
 const systemTenantService_1 = require("../services/systemTenantService");
+const pricingService_1 = require("../services/pricingService");
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const crypto_1 = __importDefault(require("crypto"));
 function blockJsonInstruction(userPrompt) {
@@ -63,6 +64,18 @@ function safeJsonParse(s) {
     }
 }
 function extractUsageFromProviderRaw(raw) {
+    const au = raw?.usage;
+    if (au &&
+        (typeof au.cache_read_input_tokens === "number" || typeof au.cache_creation_input_tokens === "number") &&
+        typeof au.input_tokens === "number") {
+        const input = Number(au.input_tokens || 0);
+        const cacheRead = Number(au.cache_read_input_tokens || 0);
+        const cacheCreate = Number(au.cache_creation_input_tokens || 0);
+        const totalInput = input + cacheRead + cacheCreate;
+        const output = Number(au.output_tokens || 0);
+        const total = totalInput + output;
+        return { input_tokens: totalInput, cached_input_tokens: cacheRead, output_tokens: output, total_tokens: total };
+    }
     // OpenAI responses API
     const u = raw?.usage;
     if (u && (typeof u.input_tokens === "number" || typeof u.output_tokens === "number")) {
@@ -84,18 +97,10 @@ function extractUsageFromProviderRaw(raw) {
     return { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 };
 }
 async function resolveAiModelId(providerId, modelApiId) {
-    const r = await (0, db_1.query)(`SELECT id, input_token_cost_per_1k, output_token_cost_per_1k, currency
-     FROM ai_models
-     WHERE provider_id = $1 AND model_id = $2
-     LIMIT 1`, [providerId, modelApiId]);
+    const r = await (0, db_1.query)(`SELECT id FROM ai_models WHERE provider_id = $1 AND model_id = $2 LIMIT 1`, [providerId, modelApiId]);
     if (r.rows.length === 0)
         return null;
-    return {
-        id: r.rows[0].id,
-        input_cost_per_1k: Number(r.rows[0].input_token_cost_per_1k || 0),
-        output_cost_per_1k: Number(r.rows[0].output_token_cost_per_1k || 0),
-        currency: r.rows[0].currency || "USD",
-    };
+    return { id: r.rows[0].id };
 }
 // Admin에서 관리하는 Provider/Credential을 기반으로 Chat 요청을 실행합니다.
 // - 프론트에서는 provider_slug + model(=API 모델 ID)만 넘기면 됩니다.
@@ -179,45 +184,53 @@ async function chatCompletion(req, res) {
             try {
                 if (modelRow) {
                     const usage = extractUsageFromProviderRaw(out.raw);
-                    const inputCost = (usage.input_tokens / 1000) * modelRow.input_cost_per_1k;
-                    const outputCost = (usage.output_tokens / 1000) * modelRow.output_cost_per_1k;
-                    const totalCost = inputCost + outputCost;
+                    const pricing = await (0, pricingService_1.lookupModelPricing)(provider_slug, model, "text");
+                    const costs = (0, pricingService_1.calculateCost)(pricing, usage.input_tokens, usage.cached_input_tokens, usage.output_tokens);
                     const responseTimeMs = Date.now() - started;
-                    await (0, db_1.query)(`
-            INSERT INTO model_usage_logs (
-              tenant_id, user_id, model_id, credential_id, feature_name, request_id,
-              input_tokens, output_tokens, total_tokens,
-              input_cost, output_cost, total_cost, currency,
+                    const logRes = await (0, db_1.query)(`
+            INSERT INTO llm_usage_logs (
+              tenant_id, user_id, provider_id, model_id, credential_id, service_id,
+              requested_model, resolved_model, modality, feature_name, request_id,
+              input_tokens, cached_input_tokens, output_tokens, total_tokens,
+              input_cost, cached_input_cost, output_cost, total_cost, currency,
               response_time_ms, status, request_data, response_data, model_parameters,
               ip_address, user_agent, metadata
             ) VALUES (
-              $1, $2, $3, $4, 'chat', $5,
-              $6, $7, $8,
-              $9, $10, $11, $12,
-              $13, 'success', $14::jsonb, $15::jsonb, $16::jsonb,
-              $17::inet, $18, $19::jsonb
+              $1, $2, $3, $4, $5, $6,
+              $7, $8, $9, 'chat', $10,
+              $11, $12, $13, $14,
+              $15, $16, $17, $18, $19,
+              $20, 'success', $21::jsonb, $22::jsonb, $23::jsonb,
+              $24::inet, $25, $26::jsonb
             )
-            ON CONFLICT (request_id) DO NOTHING
+            ON CONFLICT (tenant_id, request_id) DO UPDATE SET request_id = EXCLUDED.request_id
+            RETURNING id
             `, [
                         tenantId,
                         userId,
+                        providerId,
                         modelRow.id,
                         auth.credentialId || null,
+                        null,
+                        model,
+                        model,
+                        "text",
                         requestId,
                         usage.input_tokens,
+                        usage.cached_input_tokens,
                         usage.output_tokens,
                         usage.total_tokens,
-                        inputCost,
-                        outputCost,
-                        totalCost,
-                        modelRow.currency,
+                        costs.inputCost,
+                        costs.cachedInputCost,
+                        costs.outputCost,
+                        costs.totalCost,
+                        costs.currency,
                         responseTimeMs,
                         JSON.stringify({
                             provider_slug,
                             model,
                             max_tokens,
                             output_format: output_format || null,
-                            // 민감/대용량 방지용: 프롬프트는 프리뷰만 저장
                             input_preview: String(input || "").slice(0, 500),
                         }),
                         JSON.stringify({
@@ -235,6 +248,18 @@ async function chatCompletion(req, res) {
                             endpoint: "/api/ai/chat",
                         }),
                     ]);
+                    const usageLogId = logRes.rows[0]?.id;
+                    if (usageLogId) {
+                        await (0, db_1.query)(`
+              INSERT INTO llm_token_usages (
+                usage_log_id, input_tokens, cached_input_tokens, output_tokens, unit
+              )
+              SELECT $1, $2, $3, $4, 'tokens'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM llm_token_usages WHERE usage_log_id = $1
+              )
+              `, [usageLogId, usage.input_tokens, usage.cached_input_tokens, usage.output_tokens]);
+                    }
                 }
             }
             catch (e) {
@@ -259,41 +284,47 @@ async function chatCompletion(req, res) {
             try {
                 if (modelRow) {
                     const usage = extractUsageFromProviderRaw(out.raw);
-                    const inputCost = (usage.input_tokens / 1000) * modelRow.input_cost_per_1k;
-                    const cachedInputCost = (usage.cached_input_tokens / 1000) * modelRow.input_cost_per_1k;
-                    const outputCost = (usage.output_tokens / 1000) * modelRow.output_cost_per_1k;
-                    const totalCost = inputCost + outputCost;
+                    const pricing = await (0, pricingService_1.lookupModelPricing)(provider_slug, model, "text");
+                    const costs = (0, pricingService_1.calculateCost)(pricing, usage.input_tokens, usage.cached_input_tokens, usage.output_tokens);
                     const responseTimeMs = Date.now() - started;
-                    await (0, db_1.query)(`
-            INSERT INTO model_usage_logs (
-              tenant_id, user_id, model_id, credential_id, feature_name, request_id,
+                    const logRes = await (0, db_1.query)(`
+            INSERT INTO llm_usage_logs (
+              tenant_id, user_id, provider_id, model_id, credential_id, service_id,
+              requested_model, resolved_model, modality, feature_name, request_id,
               input_tokens, cached_input_tokens, output_tokens, total_tokens,
               input_cost, cached_input_cost, output_cost, total_cost, currency,
               response_time_ms, status, request_data, response_data, model_parameters,
               ip_address, user_agent, metadata
             ) VALUES (
-              $1, $2, $3, $4, 'chat', $5,
-              $6, $7, $8, $9,
-              $10, $11, $12, $13, $14,
-              $15, 'success', $16::jsonb, $17::jsonb, $18::jsonb,
-              $19::inet, $20, $21::jsonb
+              $1, $2, $3, $4, $5, $6,
+              $7, $8, $9, 'chat', $10,
+              $11, $12, $13, $14,
+              $15, $16, $17, $18, $19,
+              $20, 'success', $21::jsonb, $22::jsonb, $23::jsonb,
+              $24::inet, $25, $26::jsonb
             )
-            ON CONFLICT (request_id) DO NOTHING
+            ON CONFLICT (tenant_id, request_id) DO UPDATE SET request_id = EXCLUDED.request_id
+            RETURNING id
             `, [
                         tenantId,
                         userId,
+                        providerId,
                         modelRow.id,
                         auth.credentialId || null,
+                        null,
+                        model,
+                        model,
+                        "text",
                         requestId,
                         usage.input_tokens,
                         usage.cached_input_tokens,
                         usage.output_tokens,
                         usage.total_tokens,
-                        inputCost,
-                        cachedInputCost,
-                        outputCost,
-                        totalCost,
-                        modelRow.currency,
+                        costs.inputCost,
+                        costs.cachedInputCost,
+                        costs.outputCost,
+                        costs.totalCost,
+                        costs.currency,
                         responseTimeMs,
                         JSON.stringify({
                             provider_slug,
@@ -310,6 +341,18 @@ async function chatCompletion(req, res) {
                         String(req.headers["user-agent"] || ""),
                         JSON.stringify({ api: "ai-agent-service", endpoint: "/api/ai/chat" }),
                     ]);
+                    const usageLogId = logRes.rows[0]?.id;
+                    if (usageLogId) {
+                        await (0, db_1.query)(`
+              INSERT INTO llm_token_usages (
+                usage_log_id, input_tokens, cached_input_tokens, output_tokens, unit
+              )
+              SELECT $1, $2, $3, $4, 'tokens'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM llm_token_usages WHERE usage_log_id = $1
+              )
+              `, [usageLogId, usage.input_tokens, usage.cached_input_tokens, usage.output_tokens]);
+                    }
                 }
             }
             catch (e) {
@@ -339,24 +382,32 @@ async function chatCompletion(req, res) {
                 const requestId = `req_${Date.now()}_${Math.random().toString(16).slice(2)}`;
                 if (modelRow) {
                     await (0, db_1.query)(`
-            INSERT INTO model_usage_logs (
-              tenant_id, user_id, model_id, feature_name, request_id,
-              input_tokens, output_tokens, total_tokens,
-              total_cost, currency,
+            INSERT INTO llm_usage_logs (
+              tenant_id, user_id, provider_id, model_id, credential_id, service_id,
+              requested_model, resolved_model, modality, feature_name, request_id,
+              input_tokens, cached_input_tokens, output_tokens, total_tokens,
+              input_cost, cached_input_cost, output_cost, total_cost, currency,
               response_time_ms, status, error_code, error_message, request_data, metadata
             ) VALUES (
-              $1, $2, $3, 'chat', $4,
-              0, 0, 0,
-              0, $5,
-              NULL, 'error', NULL, $6, $7::jsonb, $8::jsonb
+              $1, $2, $3, $4, $5, $6,
+              $7, $8, $9, 'chat', $10,
+              0, 0, 0, 0,
+              0, 0, 0, 0, $11,
+              NULL, 'error', NULL, $12, $13::jsonb, $14::jsonb
             )
-            ON CONFLICT (request_id) DO NOTHING
+            ON CONFLICT (tenant_id, request_id) DO UPDATE SET request_id = EXCLUDED.request_id
             `, [
                         tenantId,
                         userId,
+                        providerId,
                         modelRow.id,
+                        null,
+                        null,
+                        String(model),
+                        String(model),
+                        "text",
                         requestId,
-                        modelRow.currency,
+                        "USD",
                         String(e?.message || e),
                         JSON.stringify({
                             provider_slug,

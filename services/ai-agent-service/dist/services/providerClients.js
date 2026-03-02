@@ -794,6 +794,10 @@ async function openaiSimulateChat(args) {
         const out = { ...templateBody };
         // `responses` API does not accept chat-style `messages`. We still use it to derive `instructions`.
         delete out.messages;
+        // Internal-only config (not supported by OpenAI responses API)
+        delete out.web_search_config;
+        // Responses API uses text.format instead of response_format
+        delete out.response_format;
         return out;
     }
     function buildInstructionsFromTemplate(templateBody) {
@@ -810,6 +814,19 @@ async function openaiSimulateChat(args) {
         const schema = args.responseSchema || (args.outputFormat === "block_json" ? openAiBlockJsonSchema() : null);
         const templateInstructions = buildInstructionsFromTemplate(args.templateBody || null);
         const sanitizedTemplate = sanitizeTemplateForResponses(args.templateBody || null);
+        const textConfig = schema
+            ? {
+                format: {
+                    type: "json_schema",
+                    name: schema.name,
+                    schema: schema.schema,
+                    strict: schema.strict !== false,
+                },
+            }
+            : {
+                format: { type: "text" },
+                verbosity: "low",
+            };
         const baseBody = {
             model: args.model,
             input: args.input,
@@ -819,22 +836,9 @@ async function openaiSimulateChat(args) {
             reasoning: { effort: reasoningEffortForModel(args.model) },
             ...(templateInstructions ? { instructions: templateInstructions } : {}),
             // 서버 레벨 JSON 강제 (가능한 경우)
-            ...(schema
-                ? {
-                    // 기본: json_schema (가능한 모델/계정에서 가장 강력한 강제)
-                    response_format: {
-                        type: "json_schema",
-                        json_schema: {
-                            name: schema.name,
-                            schema: schema.schema,
-                            strict: schema.strict !== false,
-                        },
-                    },
-                }
-                : {
-                    // 텍스트 출력 우선
-                    text: { verbosity: "low" },
-                }),
+            text: textConfig,
+            ...(args.promptCacheKey ? { prompt_cache_key: args.promptCacheKey } : {}),
+            ...(args.promptCacheRetention ? { prompt_cache_retention: args.promptCacheRetention } : {}),
         };
         // templateBody(JSONB)를 base body에 merge (runtime/base wins)
         return sanitizedTemplate && typeof sanitizedTemplate === "object" ? deepMerge(sanitizedTemplate, baseBody) : baseBody;
@@ -850,8 +854,9 @@ async function openaiSimulateChat(args) {
             max_output_tokens: args.maxTokens,
             reasoning: { effort: reasoningEffortForModel(args.model) },
             ...(templateInstructions ? { instructions: templateInstructions } : {}),
-            response_format: { type: "json_object" },
-            text: { verbosity: "low" },
+            text: { format: { type: "json_object" }, verbosity: "low" },
+            ...(args.promptCacheKey ? { prompt_cache_key: args.promptCacheKey } : {}),
+            ...(args.promptCacheRetention ? { prompt_cache_retention: args.promptCacheRetention } : {}),
         };
     }
     function responsesBodyPlain() {
@@ -865,14 +870,19 @@ async function openaiSimulateChat(args) {
             max_output_tokens: args.maxTokens,
             reasoning: { effort: reasoningEffortForModel(args.model) },
             ...(templateInstructions ? { instructions: templateInstructions } : {}),
-            text: { verbosity: "low" },
+            text: { format: { type: "text" }, verbosity: "low" },
+            ...(args.promptCacheKey ? { prompt_cache_key: args.promptCacheKey } : {}),
+            ...(args.promptCacheRetention ? { prompt_cache_retention: args.promptCacheRetention } : {}),
         };
     }
+    let lastResponsesError = null;
     async function tryResponsesWithNonEmptyText(bodies) {
         for (const body of bodies) {
             const r = await postJson(`${apiRoot}/responses`, body);
-            if (!r.res.ok)
+            if (!r.res.ok) {
+                lastResponsesError = { status: r.res.status, json: r.json };
                 continue;
+            }
             const text = extractTextFromResponses(r.json);
             const truncated = r.json?.incomplete_details?.reason === "max_output_tokens";
             // 토큰 제한으로 잘린 경우: 1회 더 큰 토큰으로 재시도해서 "완성본"을 우선 반환
@@ -883,12 +893,22 @@ async function openaiSimulateChat(args) {
                 if (retry.res.ok) {
                     const t2 = extractTextFromResponses(retry.json);
                     if (t2 && t2.length >= (text || "").length) {
+                        if (retry.json && typeof retry.json === "object") {
+                            ;
+                            retry.json._meta = { endpoint: "responses", retried: true };
+                        }
                         return { ok: true, raw: retry.json, output_text: t2 };
                     }
                 }
             }
-            if (text)
+            if (text) {
+                if (r.json && typeof r.json === "object") {
+                    ;
+                    r.json._meta = { endpoint: "responses" };
+                }
                 return { ok: true, raw: r.json, output_text: text };
+            }
+            lastResponsesError = { status: r.res.status, json: r.json, reason: "empty_text" };
         }
         return { ok: false };
     }
@@ -945,6 +965,13 @@ async function openaiSimulateChat(args) {
                 const tried = await tryResponsesWithNonEmptyText([responsesBody(), responsesBodyJsonObject(), responsesBodyPlain()]);
                 if (tried.ok)
                     return { raw: tried.raw, output_text: tried.output_text };
+            }
+            if (json && typeof json === "object") {
+                ;
+                json._meta = {
+                    endpoint: "chat.completions",
+                    responses_error: lastResponsesError,
+                };
             }
             if (text && text.trim())
                 return { raw: json, output_text: text };
@@ -1025,6 +1052,59 @@ async function anthropicSimulateChat(args) {
         messages: [{ role: "user", content: args.input }],
     };
     const body = args.templateBody && typeof args.templateBody === "object" ? deepMerge(args.templateBody, baseBody) : baseBody;
+    if (args.cacheControl) {
+        const ttl = args.cacheControl.ttl;
+        const cacheControl = ttl ? { type: "ephemeral", ttl } : { type: "ephemeral" };
+        const sys = body.system;
+        const hasCacheControl = (blocks) => blocks.some((b) => typeof b.cache_control === "object" && b.cache_control !== null);
+        if (typeof sys === "string") {
+            const text = sys.trim();
+            if (text) {
+                ;
+                body.system = [{ type: "text", text, cache_control: cacheControl }];
+            }
+        }
+        else if (Array.isArray(sys)) {
+            const blocks = sys
+                .map((b) => {
+                if (!b || typeof b !== "object")
+                    return null;
+                const bo = b;
+                if (typeof bo.type !== "string")
+                    bo.type = "text";
+                return bo;
+            })
+                .filter(Boolean);
+            if (blocks.length > 0) {
+                if (!hasCacheControl(blocks)) {
+                    for (let i = blocks.length - 1; i >= 0; i -= 1) {
+                        const block = blocks[i];
+                        if (!block)
+                            continue;
+                        const text = typeof block.text === "string" ? block.text.trim() : "";
+                        if (text) {
+                            block.cache_control = cacheControl;
+                            break;
+                        }
+                    }
+                }
+                ;
+                body.system = blocks;
+            }
+            else if (args.staticSystemText && args.staticSystemText.trim()) {
+                ;
+                body.system = [
+                    { type: "text", text: args.staticSystemText.trim(), cache_control: cacheControl },
+                ];
+            }
+        }
+        else if (args.staticSystemText && args.staticSystemText.trim()) {
+            ;
+            body.system = [
+                { type: "text", text: args.staticSystemText.trim(), cache_control: cacheControl },
+            ];
+        }
+    }
     const res = await fetch(`${base}/messages`, {
         method: "POST",
         headers: {
