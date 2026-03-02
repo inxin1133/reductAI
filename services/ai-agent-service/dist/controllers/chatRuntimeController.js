@@ -121,6 +121,17 @@ function extractUsageFromProviderRaw(raw) {
         const total = typeof cu.total_tokens === "number" ? Number(cu.total_tokens) : input + output;
         return { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: total };
     }
+    // Google Gemini: usageMetadata (promptTokenCount, candidatesTokenCount)
+    // - REST API: camelCase (promptTokenCount, candidatesTokenCount, totalTokenCount)
+    // - cached_content_token_count: 캐시 사용 시에만 존재 (implicit/explicit context caching)
+    const um = raw?.usageMetadata || raw?.usage_metadata;
+    if (um && (typeof um.promptTokenCount === "number" || typeof um.prompt_token_count === "number" || typeof um.candidatesTokenCount === "number" || typeof um.candidates_token_count === "number")) {
+        const input = Number(um.promptTokenCount ?? um.prompt_token_count ?? 0);
+        const output = Number(um.candidatesTokenCount ?? um.candidates_token_count ?? 0);
+        const total = Number(um.totalTokenCount ?? um.total_token_count ?? 0) || input + output;
+        const cached = Number(um.cachedContentTokenCount ?? um.cached_content_token_count ?? 0);
+        return { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: total };
+    }
     return { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 };
 }
 function toLlmModality(modelType, hasImageInput) {
