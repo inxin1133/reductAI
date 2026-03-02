@@ -76,9 +76,6 @@ CREATE TABLE ai_models (
     capabilities JSONB DEFAULT '{}', -- 모델 지원 기능/제약 메타데이터 (객체 권장) 예: {"supports":{"json_schema":true},"limits":{"max_input_tokens":200000}}
     context_window INTEGER, -- 컨텍스트 윈도우 크기 (토큰 수)
     max_output_tokens INTEGER, -- 최대 출력 토큰 수
-    input_token_cost_per_1k DECIMAL(10, 6) DEFAULT 0, -- 입력 토큰당 비용 (1K 토큰 기준)
-    output_token_cost_per_1k DECIMAL(10, 6) DEFAULT 0, -- 출력 토큰당 비용 (1K 토큰 기준)
-    currency VARCHAR(3) DEFAULT 'USD', -- 통화
     is_available BOOLEAN DEFAULT TRUE, -- 사용 가능 여부
     is_default BOOLEAN DEFAULT FALSE, -- 기본 모델 여부 (같은 타입 내에서)
     status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'deprecated', 'beta')),
@@ -112,9 +109,6 @@ COMMENT ON COLUMN ai_models.model_type IS '모델 타입: text(텍스트), image
 COMMENT ON COLUMN ai_models.capabilities IS '모델 지원 기능/제약 메타데이터 (JSON 객체 권장). 예: {"supports":{"json_schema":true},"limits":{"max_input_tokens":200000}}';
 COMMENT ON COLUMN ai_models.context_window IS '컨텍스트 윈도우 크기 (토큰 수, 예: 128000)';
 COMMENT ON COLUMN ai_models.max_output_tokens IS '최대 출력 토큰 수';
-COMMENT ON COLUMN ai_models.input_token_cost_per_1k IS '입력 토큰당 비용 (1K 토큰 기준, USD)';
-COMMENT ON COLUMN ai_models.output_token_cost_per_1k IS '출력 토큰당 비용 (1K 토큰 기준, USD)';
-COMMENT ON COLUMN ai_models.currency IS '통화 코드';
 COMMENT ON COLUMN ai_models.is_available IS '사용 가능 여부';
 COMMENT ON COLUMN ai_models.is_default IS '기본 모델 여부 (같은 타입 내에서 하나만 TRUE)';
 COMMENT ON COLUMN ai_models.status IS '모델 상태: active(활성), inactive(비활성), deprecated(사용 중단), beta(베타)';
@@ -801,21 +795,69 @@ CREATE TRIGGER trigger_update_conversation_tokens
     AFTER INSERT OR DELETE ON model_messages
     FOR EACH ROW EXECUTE FUNCTION update_conversation_tokens();
 
--- Function to calculate total cost from usage log
+-- Function to calculate total cost using pricing system (pricing_skus + pricing_rates)
+-- p_provider_slug: provider 식별자 (예: 'openai', 'google')
+-- p_model_key: model API id (예: 'gpt-5.2', 'gemini-3-pro')
+-- p_modality: 모달리티 (예: 'text', 'image', 'code')
+-- p_input_tokens, p_cached_input_tokens, p_output_tokens: 토큰 사용량
+-- Returns: 총 원가(provider cost, 마진 미포함). 마진 적용은 애플리케이션 계층에서 처리.
 CREATE OR REPLACE FUNCTION calculate_model_usage_cost(
+    p_provider_slug VARCHAR,
+    p_model_key VARCHAR,
+    p_modality VARCHAR,
     p_input_tokens INTEGER,
-    p_output_tokens INTEGER,
-    p_input_cost_per_1k DECIMAL,
-    p_output_cost_per_1k DECIMAL
+    p_cached_input_tokens INTEGER DEFAULT 0,
+    p_output_tokens INTEGER DEFAULT 0
 )
-RETURNS DECIMAL AS $$
+RETURNS TABLE (
+    input_cost DECIMAL,
+    cached_input_cost DECIMAL,
+    output_cost DECIMAL,
+    total_cost DECIMAL,
+    currency VARCHAR
+) AS $$
+DECLARE
+    v_rate_card_id UUID;
 BEGIN
-    RETURN (p_input_tokens::DECIMAL / 1000.0 * p_input_cost_per_1k) + 
-           (p_output_tokens::DECIMAL / 1000.0 * p_output_cost_per_1k);
-END;
-$$ LANGUAGE plpgsql IMMUTABLE;
+    SELECT id INTO v_rate_card_id
+    FROM pricing_rate_cards
+    WHERE status = 'active' AND effective_at <= NOW()
+    ORDER BY effective_at DESC, version DESC
+    LIMIT 1;
 
-COMMENT ON FUNCTION calculate_model_usage_cost IS '모델 사용 비용을 계산하는 함수 (입력/출력 토큰 분리)';
+    IF v_rate_card_id IS NULL THEN
+        RETURN QUERY SELECT 0::DECIMAL, 0::DECIMAL, 0::DECIMAL, 0::DECIMAL, 'USD'::VARCHAR;
+        RETURN;
+    END IF;
+
+    RETURN QUERY
+    WITH costs AS (
+        SELECT
+            s.usage_kind,
+            s.unit_size,
+            r.rate_value
+        FROM pricing_skus s
+        JOIN pricing_rates r ON r.sku_id = s.id AND r.rate_card_id = v_rate_card_id
+        WHERE s.provider_slug = p_provider_slug
+          AND s.model_key = p_model_key
+          AND s.modality = p_modality
+          AND s.unit = 'tokens'
+          AND (s.token_category IS NULL OR s.token_category = 'text')
+          AND s.is_active = TRUE
+          AND s.usage_kind IN ('input_tokens', 'cached_input_tokens', 'output_tokens')
+    )
+    SELECT
+        COALESCE((SELECT (p_input_tokens::DECIMAL / c_in.unit_size) * c_in.rate_value FROM costs c_in WHERE c_in.usage_kind = 'input_tokens'), 0) AS input_cost,
+        COALESCE((SELECT (p_cached_input_tokens::DECIMAL / c_ci.unit_size) * c_ci.rate_value FROM costs c_ci WHERE c_ci.usage_kind = 'cached_input_tokens'), 0) AS cached_input_cost,
+        COALESCE((SELECT (p_output_tokens::DECIMAL / c_out.unit_size) * c_out.rate_value FROM costs c_out WHERE c_out.usage_kind = 'output_tokens'), 0) AS output_cost,
+        COALESCE((SELECT (p_input_tokens::DECIMAL / c_in2.unit_size) * c_in2.rate_value FROM costs c_in2 WHERE c_in2.usage_kind = 'input_tokens'), 0)
+        + COALESCE((SELECT (p_output_tokens::DECIMAL / c_out2.unit_size) * c_out2.rate_value FROM costs c_out2 WHERE c_out2.usage_kind = 'output_tokens'), 0)
+            AS total_cost,
+        'USD'::VARCHAR AS currency;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+COMMENT ON FUNCTION calculate_model_usage_cost IS 'pricing 시스템(pricing_skus + pricing_rates)을 기반으로 모델 사용 비용을 계산하는 함수. 마진은 포함하지 않음.';
 
 -- ============================================
 -- 12. INITIAL DATA - DEFAULT PROVIDERS AND MODELS

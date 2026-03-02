@@ -83,7 +83,7 @@ docker compose up -d --build ai-agent-service
 docker compose up -d --build file-service
 docker compose up -d --build post-service
 docker compose up -d --build billing-service
-
+docker compose up -d --build pricing-service
 
 
 # 서비스만 간단히 재시작

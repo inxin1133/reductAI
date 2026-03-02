@@ -25,14 +25,19 @@ type PriceRow = {
   model_key: string
   model_name: string
   modality: string
+  usage_kind?: string | null
+  token_category?: string | null
+  unit_type?: string | null
   tier_unit?: string | null
   tier_min?: number | null
   tier_max?: number | null
   input_cost_per_1k?: string | number | null
   output_cost_per_1k?: string | number | null
   avg_cost_per_1k?: string | number | null
+  cost_per_unit?: string | number | null
   margin_percent?: string | number | null
   avg_cost_per_1k_with_margin?: string | number | null
+  cost_per_unit_with_margin?: string | number | null
 }
 
 type ListResponse = {
@@ -71,6 +76,18 @@ function formatTier(row: PriceRow) {
   if (typeof min === "number") return `${row.tier_unit} ≥${min}`
   if (typeof max === "number") return `${row.tier_unit} ≤${max}`
   return row.tier_unit
+}
+
+function formatUnitType(row: PriceRow) {
+  const u = row.unit_type
+  if (u === "tokens") {
+    const tc = row.token_category
+    return tc ? `tokens (${tc})` : "tokens"
+  }
+  if (u === "image") return "per image"
+  if (u === "second") return "per second"
+  if (u === "request") return "per request"
+  return u || "-"
 }
 
 export default function PublicPrices() {
@@ -171,31 +188,35 @@ export default function PublicPrices() {
               <TableHead>Provider</TableHead>
               <TableHead>Model</TableHead>
               <TableHead>Modality</TableHead>
+              <TableHead>Unit</TableHead>
               <TableHead>Tier</TableHead>
               <TableHead className="text-right">Input $/1K</TableHead>
               <TableHead className="text-right">Output $/1K</TableHead>
               <TableHead className="text-right">Avg $/1K</TableHead>
+              <TableHead className="text-right">Cost/Unit</TableHead>
               <TableHead className="text-right">Margin %</TableHead>
-              <TableHead className="text-right">Avg+Margin</TableHead>
+              <TableHead className="text-right">Cost (w/ margin)</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={9} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={12} className="py-8 text-center text-muted-foreground">
                   <Loader2 className="h-4 w-4 inline-block animate-spin mr-2" />
                   로딩 중...
                 </TableCell>
               </TableRow>
             ) : rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={12} className="py-8 text-center text-muted-foreground">
                   결과가 없습니다.
                 </TableCell>
               </TableRow>
             ) : (
               rows.map((r, idx) => (
-                <TableRow key={`${r.provider_slug}-${r.model_key}-${r.tier_unit ?? "none"}-${r.tier_min ?? 0}-${idx}`}>
+                <TableRow
+                  key={`${r.provider_slug}-${r.model_key}-${r.usage_kind ?? ""}-${r.token_category ?? ""}-${r.tier_unit ?? "none"}-${r.tier_min ?? 0}-${idx}`}
+                >
                   <TableCell className="font-mono">{r.provider_slug || "-"}</TableCell>
                   <TableCell>
                     <div className="flex flex-col">
@@ -204,12 +225,16 @@ export default function PublicPrices() {
                     </div>
                   </TableCell>
                   <TableCell className="font-mono">{r.modality || "-"}</TableCell>
+                  <TableCell className="font-mono text-xs">{formatUnitType(r)}</TableCell>
                   <TableCell className="font-mono text-xs">{formatTier(r)}</TableCell>
                   <TableCell className="text-right font-mono">{fmtMoney(r.input_cost_per_1k)}</TableCell>
                   <TableCell className="text-right font-mono">{fmtMoney(r.output_cost_per_1k)}</TableCell>
                   <TableCell className="text-right font-mono">{fmtMoney(r.avg_cost_per_1k)}</TableCell>
+                  <TableCell className="text-right font-mono">{fmtMoney(r.cost_per_unit)}</TableCell>
                   <TableCell className="text-right font-mono">{fmtPercent(r.margin_percent)}</TableCell>
-                  <TableCell className="text-right font-mono">{fmtMoney(r.avg_cost_per_1k_with_margin)}</TableCell>
+                  <TableCell className="text-right font-mono">
+                    {fmtMoney(r.avg_cost_per_1k_with_margin ?? r.cost_per_unit_with_margin)}
+                  </TableCell>
                 </TableRow>
               ))
             )}

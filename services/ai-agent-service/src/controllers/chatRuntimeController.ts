@@ -16,6 +16,7 @@ import { resolveAuthForModelApiProfile } from "../services/authProfilesService"
 import { newAssetId, storeImageDataUrlAsAsset } from "../services/fileServiceClient"
 import { normalizeAiContent } from "../utils/normalizeAiContent"
 import { getWebSearchPolicy } from "../services/webSearchSettingsService"
+import { lookupModelPricing, calculateCost } from "../services/pricingService"
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 
@@ -1720,9 +1721,6 @@ export async function chatRun(req: Request, res: Response) {
         m.id,
         m.model_id AS model_api_id,
         m.max_output_tokens,
-        m.input_token_cost_per_1k,
-        m.output_token_cost_per_1k,
-        m.currency,
         m.prompt_template_id,
         m.response_schema_id,
         m.capabilities,
@@ -2760,15 +2758,12 @@ export async function chatRun(req: Request, res: Response) {
         const outputTokens = usage.output_tokens
         const totalTokens = usage.total_tokens || inputTokens + outputTokens
 
-        const inputCostPer1k = Number(row.input_token_cost_per_1k || 0)
-        const outputCostPer1k = Number(row.output_token_cost_per_1k || 0)
-        const costCurrency = String(row.currency || "USD")
-        const inputCost = (inputTokens / 1000) * inputCostPer1k
-        const cachedInputCost = (cachedInputTokens / 1000) * inputCostPer1k
-        const outputCost = (outputTokens / 1000) * outputCostPer1k
-        const totalCost = inputCost + outputCost
-
         const modality = toLlmModality(mt, incomingImageDataUrls.length > 0 || incomingImageUrls.length > 0)
+
+        const pricing = await lookupModelPricing(usedProviderSlug, usedModelApiId, modality)
+        const costs = calculateCost(pricing, inputTokens, cachedInputTokens, outputTokens)
+        const { inputCost, cachedInputCost, outputCost, totalCost } = costs
+        const costCurrency = costs.currency
         const featureName = mt === "text" || mt === "code" || mt === "multimodal" ? "chat" : mt
         const requestedModel = model_api_id ? String(model_api_id).trim() : usedModelApiId
 

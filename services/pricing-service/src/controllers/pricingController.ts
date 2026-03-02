@@ -63,17 +63,22 @@ export async function listPublicPrices(req: Request, res: Response) {
         model_key,
         model_name,
         modality,
+        usage_kind,
+        token_category,
+        unit_type,
         tier_unit,
         tier_min,
         tier_max,
         input_cost_per_1k,
         output_cost_per_1k,
         avg_cost_per_1k,
+        cost_per_unit,
         margin_percent,
-        avg_cost_per_1k_with_margin
+        avg_cost_per_1k_with_margin,
+        cost_per_unit_with_margin
       FROM pricing_model_cost_summaries
       ${whereSql}
-      ORDER BY provider_slug ASC, model_name ASC, tier_unit NULLS FIRST, tier_min NULLS FIRST
+      ORDER BY provider_slug ASC, model_name ASC, modality ASC, usage_kind ASC, tier_unit NULLS FIRST, tier_min NULLS FIRST
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
       [...params, limit, offset]

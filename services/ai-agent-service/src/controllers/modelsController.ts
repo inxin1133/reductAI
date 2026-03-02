@@ -104,9 +104,6 @@ export async function createModel(req: Request, res: Response) {
       capabilities = {},
       context_window = null,
       max_output_tokens = null,
-      input_token_cost_per_1k = 0,
-      output_token_cost_per_1k = 0,
-      currency = "USD",
       is_available = true,
       is_default = false,
       status = "active",
@@ -123,9 +120,9 @@ export async function createModel(req: Request, res: Response) {
     const result = await query(
       `INSERT INTO ai_models
         (provider_id, name, model_id, display_name, description, model_type, prompt_template_id, response_schema_id, capabilities, context_window, max_output_tokens,
-         input_token_cost_per_1k, output_token_cost_per_1k, currency, is_available, is_default, status, released_at, deprecated_at, sort_order, metadata)
+         is_available, is_default, status, released_at, deprecated_at, sort_order, metadata)
        VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb)
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb)
        RETURNING *`,
       [
         provider_id,
@@ -139,9 +136,6 @@ export async function createModel(req: Request, res: Response) {
         JSON.stringify(normalizeCapabilities(capabilities)),
         context_window,
         max_output_tokens,
-        input_token_cost_per_1k,
-        output_token_cost_per_1k,
-        currency,
         is_available,
         is_default,
         status,
@@ -185,16 +179,13 @@ export async function updateModel(req: Request, res: Response) {
         capabilities = COALESCE($10::jsonb, capabilities),
         context_window = COALESCE($11, context_window),
         max_output_tokens = COALESCE($12, max_output_tokens),
-        input_token_cost_per_1k = COALESCE($13, input_token_cost_per_1k),
-        output_token_cost_per_1k = COALESCE($14, output_token_cost_per_1k),
-        currency = COALESCE($15, currency),
-        is_available = COALESCE($16, is_available),
-        is_default = COALESCE($17, is_default),
-        status = COALESCE($18, status),
-        released_at = COALESCE($19, released_at),
-        deprecated_at = COALESCE($20, deprecated_at),
-        sort_order = COALESCE($21, sort_order),
-        metadata = COALESCE($22::jsonb, metadata),
+        is_available = COALESCE($13, is_available),
+        is_default = COALESCE($14, is_default),
+        status = COALESCE($15, status),
+        released_at = COALESCE($16, released_at),
+        deprecated_at = COALESCE($17, deprecated_at),
+        sort_order = COALESCE($18, sort_order),
+        metadata = COALESCE($19::jsonb, metadata),
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $1
       RETURNING *`,
@@ -211,9 +202,6 @@ export async function updateModel(req: Request, res: Response) {
         body.capabilities !== undefined ? JSON.stringify(normalizeCapabilities(body.capabilities)) : null,
         body.context_window ?? null,
         body.max_output_tokens ?? null,
-        body.input_token_cost_per_1k ?? null,
-        body.output_token_cost_per_1k ?? null,
-        body.currency ?? null,
         typeof body.is_available === "boolean" ? body.is_available : null,
         typeof body.is_default === "boolean" ? body.is_default : null,
         body.status ?? null,

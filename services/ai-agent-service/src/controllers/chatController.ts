@@ -2,6 +2,7 @@ import { Request, Response } from "express"
 import { query } from "../config/db"
 import { getProviderAuth, getProviderBase, openaiSimulateChat, anthropicSimulateChat } from "../services/providerClients"
 import { ensureSystemTenantId } from "../services/systemTenantService"
+import { lookupModelPricing, calculateCost } from "../services/pricingService"
 import jwt from "jsonwebtoken"
 import crypto from "crypto"
 
@@ -106,19 +107,11 @@ function extractUsageFromProviderRaw(raw: any): {
 
 async function resolveAiModelId(providerId: string, modelApiId: string) {
   const r = await query(
-    `SELECT id, input_token_cost_per_1k, output_token_cost_per_1k, currency
-     FROM ai_models
-     WHERE provider_id = $1 AND model_id = $2
-     LIMIT 1`,
+    `SELECT id FROM ai_models WHERE provider_id = $1 AND model_id = $2 LIMIT 1`,
     [providerId, modelApiId]
   )
   if (r.rows.length === 0) return null
-  return {
-    id: r.rows[0].id as string,
-    input_cost_per_1k: Number(r.rows[0].input_token_cost_per_1k || 0),
-    output_cost_per_1k: Number(r.rows[0].output_token_cost_per_1k || 0),
-    currency: (r.rows[0].currency as string | null) || "USD",
-  }
+  return { id: r.rows[0].id as string }
 }
 
 // Admin에서 관리하는 Provider/Credential을 기반으로 Chat 요청을 실행합니다.
@@ -225,10 +218,8 @@ export async function chatCompletion(req: Request, res: Response) {
       try {
         if (modelRow) {
           const usage = extractUsageFromProviderRaw(out.raw)
-          const inputCost = (usage.input_tokens / 1000) * modelRow.input_cost_per_1k
-          const cachedInputCost = 0
-          const outputCost = (usage.output_tokens / 1000) * modelRow.output_cost_per_1k
-          const totalCost = inputCost + outputCost
+          const pricing = await lookupModelPricing(provider_slug, model, "text")
+          const costs = calculateCost(pricing, usage.input_tokens, usage.cached_input_tokens, usage.output_tokens)
           const responseTimeMs = Date.now() - started
           const logRes = await query(
             `
@@ -265,18 +256,17 @@ export async function chatCompletion(req: Request, res: Response) {
               usage.cached_input_tokens,
               usage.output_tokens,
               usage.total_tokens,
-              inputCost,
-              cachedInputCost,
-              outputCost,
-              totalCost,
-              modelRow.currency,
+              costs.inputCost,
+              costs.cachedInputCost,
+              costs.outputCost,
+              costs.totalCost,
+              costs.currency,
               responseTimeMs,
               JSON.stringify({
                 provider_slug,
                 model,
                 max_tokens,
                 output_format: output_format || null,
-                // 민감/대용량 방지용: 프롬프트는 프리뷰만 저장
                 input_preview: String(input || "").slice(0, 500),
               }),
               JSON.stringify({
@@ -336,10 +326,8 @@ export async function chatCompletion(req: Request, res: Response) {
       try {
         if (modelRow) {
           const usage = extractUsageFromProviderRaw(out.raw)
-          const inputCost = (usage.input_tokens / 1000) * modelRow.input_cost_per_1k
-          const cachedInputCost = (usage.cached_input_tokens / 1000) * modelRow.input_cost_per_1k
-          const outputCost = (usage.output_tokens / 1000) * modelRow.output_cost_per_1k
-          const totalCost = inputCost + outputCost
+          const pricing = await lookupModelPricing(provider_slug, model, "text")
+          const costs = calculateCost(pricing, usage.input_tokens, usage.cached_input_tokens, usage.output_tokens)
           const responseTimeMs = Date.now() - started
           const logRes = await query(
             `
@@ -376,11 +364,11 @@ export async function chatCompletion(req: Request, res: Response) {
               usage.cached_input_tokens,
               usage.output_tokens,
               usage.total_tokens,
-              inputCost,
-              cachedInputCost,
-              outputCost,
-              totalCost,
-              modelRow.currency,
+              costs.inputCost,
+              costs.cachedInputCost,
+              costs.outputCost,
+              costs.totalCost,
+              costs.currency,
               responseTimeMs,
               JSON.stringify({
                 provider_slug,
@@ -469,7 +457,7 @@ export async function chatCompletion(req: Request, res: Response) {
               String(model),
               "text",
               requestId,
-              modelRow.currency,
+              "USD",
               String(e?.message || e),
               JSON.stringify({
                 provider_slug,

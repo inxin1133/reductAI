@@ -58,9 +58,6 @@ interface AIModel {
   capabilities?: unknown
   context_window?: number | null
   max_output_tokens?: number | null
-  input_token_cost_per_1k?: number | null
-  output_token_cost_per_1k?: number | null
-  currency?: string | null
   is_available: boolean
   is_default: boolean
   status: ModelStatus
@@ -138,9 +135,6 @@ export default function ModelManager() {
     description: string
     context_window: string
     max_output_tokens: string
-    input_token_cost_per_1k: string
-    output_token_cost_per_1k: string
-    currency: string
     is_available: boolean
     is_default: boolean
     status: ModelStatus
@@ -156,9 +150,6 @@ export default function ModelManager() {
     description: "",
     context_window: "",
     max_output_tokens: "",
-    input_token_cost_per_1k: "",
-    output_token_cost_per_1k: "",
-    currency: "USD",
     is_available: true,
     is_default: false,
     status: "active",
@@ -293,9 +284,6 @@ export default function ModelManager() {
       description: "",
       context_window: "",
       max_output_tokens: "",
-      input_token_cost_per_1k: "",
-      output_token_cost_per_1k: "",
-      currency: "USD",
       is_available: true,
       is_default: false,
       status: "active",
@@ -330,9 +318,6 @@ export default function ModelManager() {
       description: m.description || "",
       context_window: m.context_window?.toString() ?? "",
       max_output_tokens: m.max_output_tokens?.toString() ?? "",
-      input_token_cost_per_1k: (m.input_token_cost_per_1k ?? "").toString(),
-      output_token_cost_per_1k: (m.output_token_cost_per_1k ?? "").toString(),
-      currency: m.currency || "USD",
       is_available: !!m.is_available,
       is_default: !!m.is_default,
       status: m.status,
@@ -386,9 +371,6 @@ export default function ModelManager() {
         capabilities: normalizeCapabilities(JSON.parse(capabilitiesText || "{}")),
         context_window: formData.context_window ? Number(formData.context_window) : null,
         max_output_tokens: formData.max_output_tokens ? Number(formData.max_output_tokens) : null,
-        input_token_cost_per_1k: formData.input_token_cost_per_1k ? Number(formData.input_token_cost_per_1k) : 0,
-        output_token_cost_per_1k: formData.output_token_cost_per_1k ? Number(formData.output_token_cost_per_1k) : 0,
-        currency: formData.currency || "USD",
         is_available: !!formData.is_available,
         is_default: !!formData.is_default,
         status: formData.status,
@@ -964,21 +946,6 @@ export default function ModelManager() {
             <div className="grid grid-cols-4 items-center gap-4">
               <Label className="text-right">deprecated_at</Label>
               <Input className="col-span-3" type="date" value={formData.deprecated_at} onChange={(e) => setFormData((p) => ({ ...p, deprecated_at: e.target.value }))} />
-            </div>
-
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label className="text-right">input cost / 1k</Label>
-              <Input className="col-span-3" type="number" value={formData.input_token_cost_per_1k} onChange={(e) => setFormData((p) => ({ ...p, input_token_cost_per_1k: e.target.value }))} />
-            </div>
-
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label className="text-right">output cost / 1k</Label>
-              <Input className="col-span-3" type="number" value={formData.output_token_cost_per_1k} onChange={(e) => setFormData((p) => ({ ...p, output_token_cost_per_1k: e.target.value }))} />
-            </div>
-
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label className="text-right">currency</Label>
-              <Input className="col-span-3" value={formData.currency} onChange={(e) => setFormData((p) => ({ ...p, currency: e.target.value }))} />
             </div>
 
             <div className="grid grid-cols-4 items-center gap-4">
