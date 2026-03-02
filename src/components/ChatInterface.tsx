@@ -76,6 +76,7 @@ export interface ChatInterfaceProps {
     summary?: string
     providerSlug?: string
     model?: string
+    truncated?: boolean
   }) => void
   submitMode?: "send" | "emit"
   onSubmit?: (payload: {
@@ -115,6 +116,9 @@ type UiModel = {
   is_default: boolean
   sort_order: number
   capabilities?: Record<string, unknown>
+  context_window?: number | null
+  max_input_tokens?: number | null
+  max_output_tokens?: number | null
 }
 
 type UiProviderGroup = {
@@ -383,6 +387,41 @@ function extractTextFromJsonContent(content: Record<string, unknown>): string {
   return ""
 }
 
+/** Truncated JSON에서 output_text 또는 markdown 필드 내용 추출 (마크다운 형태로 표시) */
+function extractPartialFromTruncatedJson(raw: string): string | null {
+  const unescape = (s: string) =>
+    s.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "\t").replace(/\\"/g, '"')
+  for (const key of ["output_text", "markdown", "content"]) {
+    const prefix = `"${key}"`
+    const idx = raw.indexOf(prefix)
+    if (idx < 0) continue
+    const colonIdx = raw.indexOf(":", idx + prefix.length)
+    if (colonIdx < 0) continue
+    const valueStart = raw.indexOf('"', colonIdx + 1)
+    if (valueStart < 0) continue
+    let end = valueStart + 1
+    let result = ""
+    while (end < raw.length) {
+      const ch = raw[end]
+      if (ch === "\\") {
+        if (end + 1 < raw.length) {
+          result += raw[end] + raw[end + 1]
+          end += 2
+          continue
+        }
+        break
+      }
+      if (ch === '"') {
+        return unescape(result) || null
+      }
+      result += ch
+      end += 1
+    }
+    if (result.trim()) return unescape(result.trim())
+  }
+  return null
+}
+
 function parseBlockJson(text: string): { parsed?: Record<string, unknown>; displayText: string } {
   let raw = (text || "").trim()
   if (raw.startsWith("```")) {
@@ -512,6 +551,9 @@ function parseBlockJson(text: string): { parsed?: Record<string, unknown>; displ
         .trim()
       if (msg) return { displayText: msg }
     }
+    // Truncated JSON: extract partial content from "output_text":"..." or "markdown":"..."
+    const partial = extractPartialFromTruncatedJson(raw)
+    if (partial && partial.trim()) return { displayText: partial.trim() }
     // Retry with a repaired version for common invalid JSON outputs.
     try {
       const repaired = repairJsonForNewlines(raw)
@@ -2263,7 +2305,16 @@ export function ChatInterface({
 
       try {
         setIsWaitingForResponse(true)
-        const maxTokens = sendModelType === "text" ? 2048 : 512
+        const DEFAULT_MAX_TOKENS_TEXT = 20000
+        const DEFAULT_MAX_TOKENS_OTHER = 512
+        const modelsForType = providerGroup?.models ?? []
+        const pickedModel = modelsForType.find((m) => m.model_api_id === modelApiId)
+        const maxTokens =
+          sendModelType === "text"
+            ? (pickedModel?.max_output_tokens != null && pickedModel.max_output_tokens > 0
+                ? pickedModel.max_output_tokens
+                : DEFAULT_MAX_TOKENS_TEXT)
+            : DEFAULT_MAX_TOKENS_OTHER
 
         const webAllowedForRequest = Boolean(effectiveWebAllowed) && sendModelType === "text"
         const webCountry = webAllowedForRequest ? inferCountryFromBrowser() : null
@@ -2320,6 +2371,7 @@ export function ChatInterface({
         }
 
         const outText = String(json.output_text || "")
+        const truncated = json.truncated === true
         const conv = json.conversation_id ? String(json.conversation_id) : ""
         if (conv && conv !== (conversationId || "")) onConversationId?.(conv)
         const chosenObj = isRecord(json.chosen) ? json.chosen : {}
@@ -2341,10 +2393,11 @@ export function ChatInterface({
         onMessage?.({
           role: "assistant",
           content: parsed.displayText,
-          contentJson: normalizedContent,
+          contentJson: truncated ? { ...(normalizedContent as Record<string, unknown>), truncated: true } : normalizedContent,
           summary: assistantSummary(typeof parsed.parsed?.summary === "string" ? parsed.parsed.summary : outText),
           providerSlug,
           model: chosenModel,
+          truncated,
         })
         if (notifyOnAssistantComplete && typeof window !== "undefined") {
           const convoId = String(conv || conversationId || "")

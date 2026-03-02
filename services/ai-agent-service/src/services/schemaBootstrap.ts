@@ -1077,6 +1077,22 @@ export async function ensureResponseSchemasSchema() {
       END IF;
     END $$;
   `)
+
+  // ai_models.max_input_tokens (이전: capabilities.limits.max_input_tokens → DB 컬럼으로 단일 소스)
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'ai_models') THEN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'ai_models' AND column_name = 'max_input_tokens'
+        ) THEN
+          ALTER TABLE ai_models ADD COLUMN max_input_tokens INTEGER;
+          COMMENT ON COLUMN ai_models.max_input_tokens IS '최대 입력(프롬프트) 토큰 수. Provider 문서의 context length와 동일 권장.';
+        END IF;
+      END IF;
+    END $$;
+  `)
 }
 
 /**

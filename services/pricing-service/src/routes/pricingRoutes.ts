@@ -2,6 +2,7 @@ import express from "express"
 import {
   addRatesToCard,
   bulkUpdateRates,
+  checkModelNeedsSkuGeneration,
   checkSkuCodeAvailability,
   cloneRateCard,
   createMarkup,
@@ -36,6 +37,7 @@ router.put("/rates/:id", updateRate)
 router.post("/rates/bulk-update", bulkUpdateRates)
 router.get("/skus", listSkus)
 router.get("/skus/check-availability", checkSkuCodeAvailability)
+router.get("/skus/needs-generation", checkModelNeedsSkuGeneration)
 router.post("/skus", createSku)
 router.put("/skus/:id", updateSku)
 router.delete("/skus/:id", deleteSku)

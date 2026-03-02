@@ -39,6 +39,8 @@ export async function getTypeModelAccess(req: Request, res: Response) {
         m.model_id AS model_api_id,
         m.model_type,
         m.context_window,
+        m.max_input_tokens,
+        m.max_output_tokens,
         p.product_name AS provider_product_name,
         p.slug AS provider_slug,
         c.credential_name AS credential_name

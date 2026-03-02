@@ -1,15 +1,18 @@
 # GPT-Sora-2
 
 `prompt_templates.body`
+```json
 {
   "model": "{{model}}",
   "prompt": "{{input}}\n\nVideo direction:\n- cinematic lighting\n- smooth camera movement\n- stable frame-to-frame (avoid flicker)\n- avoid artifacts, glitches\n- avoid text/letters/logos/watermarks",
   "seconds": "{{params_seconds}}",
   "size": "{{params_size}}"
 }
+```
 
 
 `response_schemas.schemas`
+```json
 {
   "type": "object",
   "required": ["title", "summary", "blocks", "video"],
@@ -43,10 +46,12 @@
     }
   }
 }
+```
 
 
 
 `ai_models.capabilities`
+```json
 {
   "model": "sora-2",
   "limits": {
@@ -77,10 +82,12 @@
     "size": true
   }
 }
+```
 
 IMPORTANT: 현재 reductai는 video 생성이 `model_api_profiles(purpose=video)`로 호출됩니다.
 아래는 OpenAI(Sora) 계열을 위한 기본 프로필 예시입니다. (환경/버전에 따라 path/필드명이 다를 수 있어 필요시 조정하세요.)
 `model_api_profiles` 
+```json
 {
   "provider_family": "openai",
   "purpose": "video",
@@ -113,6 +120,7 @@ IMPORTANT: 현재 reductai는 video 생성이 `model_api_profiles(purpose=video)
     ]
   }
 }
+```
 
 ----------------------------------------------------------
 

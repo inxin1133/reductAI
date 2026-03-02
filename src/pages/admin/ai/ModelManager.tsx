@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   Table,
   TableBody,
@@ -29,6 +29,13 @@ import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Pencil, Plus, Search, Trash2, RefreshCcw, Play, GripVertical, Tags } from "lucide-react"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { AdminPage } from "@/components/layout/AdminPage"
 
 type ProviderStatus = "active" | "inactive" | "deprecated"
@@ -57,6 +64,7 @@ interface AIModel {
   response_schema_id?: string | null
   capabilities?: unknown
   context_window?: number | null
+  max_input_tokens?: number | null
   max_output_tokens?: number | null
   is_available: boolean
   is_default: boolean
@@ -73,6 +81,7 @@ const PROVIDERS_API_URL = "/api/ai/providers"
 const MODELS_API_URL = "/api/ai/models"
 const PROMPT_TEMPLATES_API_URL = "/api/ai/prompt-templates"
 const RESPONSE_SCHEMAS_API_URL = "/api/ai/response-schemas"
+const PRICING_SKUS_API_URL = "/api/ai/pricing/skus"
 
 async function tryFetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const res = await fetch(input, init)
@@ -134,6 +143,7 @@ export default function ModelManager() {
     response_schema_id: string
     description: string
     context_window: string
+    max_input_tokens: string
     max_output_tokens: string
     is_available: boolean
     is_default: boolean
@@ -149,6 +159,7 @@ export default function ModelManager() {
     response_schema_id: "__none__",
     description: "",
     context_window: "",
+    max_input_tokens: "",
     max_output_tokens: "",
     is_available: true,
     is_default: false,
@@ -156,6 +167,16 @@ export default function ModelManager() {
     released_at: "",
     deprecated_at: "",
   })
+
+  // SKU 드롭다운 (모델별)
+  const [skuMenuModel, setSkuMenuModel] = useState<AIModel | null>(null)
+  const skuMenuModelRef = useRef<AIModel | null>(null)
+  useEffect(() => {
+    skuMenuModelRef.current = skuMenuModel
+  }, [skuMenuModel])
+  const [skuList, setSkuList] = useState<Array<{ sku_code: string; usage_kind: string }>>([])
+  const [skuNeedsGeneration, setSkuNeedsGeneration] = useState(false)
+  const [skuLoading, setSkuLoading] = useState(false)
 
   // 시뮬레이터
   const [isSimOpen, setIsSimOpen] = useState(false)
@@ -283,6 +304,7 @@ export default function ModelManager() {
       response_schema_id: "__none__",
       description: "",
       context_window: "",
+      max_input_tokens: "",
       max_output_tokens: "",
       is_available: true,
       is_default: false,
@@ -317,6 +339,7 @@ export default function ModelManager() {
       response_schema_id: m.response_schema_id ? String(m.response_schema_id) : "__none__",
       description: m.description || "",
       context_window: m.context_window?.toString() ?? "",
+      max_input_tokens: m.max_input_tokens?.toString() ?? "",
       max_output_tokens: m.max_output_tokens?.toString() ?? "",
       is_available: !!m.is_available,
       is_default: !!m.is_default,
@@ -370,6 +393,7 @@ export default function ModelManager() {
         response_schema_id: formData.response_schema_id === "__none__" ? null : formData.response_schema_id,
         capabilities: normalizeCapabilities(JSON.parse(capabilitiesText || "{}")),
         context_window: formData.context_window ? Number(formData.context_window) : null,
+        max_input_tokens: formData.max_input_tokens ? Number(formData.max_input_tokens) : null,
         max_output_tokens: formData.max_output_tokens ? Number(formData.max_output_tokens) : null,
         is_available: !!formData.is_available,
         is_default: !!formData.is_default,
@@ -458,10 +482,33 @@ export default function ModelManager() {
     }
   }
 
-  const generateSkusForModel = async (m: AIModel) => {
+  const loadSkuMenu = async (m: AIModel) => {
+    const modelId = m.id
+    setSkuLoading(true)
+    setSkuList([])
+    setSkuNeedsGeneration(false)
+    try {
+      const [skusRes, needsRes] = await Promise.all([
+        fetch(`${PRICING_SKUS_API_URL}?model_key=${encodeURIComponent(m.model_id)}&limit=50`, { headers: authHeaders() }),
+        fetch(`${PRICING_SKUS_API_URL}/needs-generation?model_id=${encodeURIComponent(m.id)}`, { headers: authHeaders() }),
+      ])
+      const skusData = (await skusRes.json().catch(() => ({}))) as { ok?: boolean; rows?: Array<{ sku_code: string; usage_kind: string }> }
+      const needsData = (await needsRes.json().catch(() => ({}))) as { ok?: boolean; needsGeneration?: boolean }
+      if (skuMenuModelRef.current?.id !== modelId) return
+      setSkuList(skusData.rows ?? [])
+      setSkuNeedsGeneration(needsData.needsGeneration ?? false)
+    } catch (e) {
+      console.error(e)
+      if (skuMenuModelRef.current?.id === modelId) setSkuList([{ sku_code: "조회 실패", usage_kind: "" }])
+    } finally {
+      if (skuMenuModelRef.current?.id === modelId) setSkuLoading(false)
+    }
+  }
+
+  const generateSkusForModel = async (m: AIModel, onSuccess?: () => void) => {
     if (!confirm(`"${m.display_name}" (${m.model_id}) 모델의 SKU를 자동 생성하시겠습니까?\n모달리티: ${m.model_type}`)) return
     try {
-      const res = await fetch("/api/ai/pricing/skus/generate-for-model", {
+      const res = await fetch(`${PRICING_SKUS_API_URL}/generate-for-model`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ model_id: m.id, modality: m.model_type }),
@@ -478,6 +525,7 @@ export default function ModelManager() {
       if (skippedCount > 0) msg.push(`이미 존재 (건너뜀): ${skippedCount}건`)
       if (createdCount > 0) msg.push(`\nRates 페이지에서 "누락 SKU 추가"로 요율을 설정할 수 있습니다.`)
       alert(msg.join("\n"))
+      onSuccess?.()
     } catch (e) {
       console.error(e)
       alert(`SKU 생성 중 오류: ${errorMessage(e)}`)
@@ -719,19 +767,21 @@ export default function ModelManager() {
               <TableHead>출시일</TableHead>
               <TableHead>중단일</TableHead>
               <TableHead>Context</TableHead>
+              <TableHead>Max_input</TableHead>
+              <TableHead>max_output</TableHead>
               <TableHead className="text-right">관리</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={12} className="h-24 text-center">
+                <TableCell colSpan={14} className="h-24 text-center">
                   <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                 </TableCell>
               </TableRow>
             ) : filteredModels.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={12} className="h-24 text-center">
+                <TableCell colSpan={14} className="h-24 text-center">
                   등록된 모델이 없습니다.
                 </TableCell>
               </TableRow>
@@ -824,14 +874,62 @@ export default function ModelManager() {
                   <TableCell className="text-xs text-muted-foreground">{asDateInputValue(m.released_at) || "-"}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{asDateInputValue(m.deprecated_at) || "-"}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{m.context_window ?? "-"}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{m.max_input_tokens ?? "-"}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{m.max_output_tokens ?? "-"}</TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
                       <Button variant="ghost" size="icon" onClick={() => openSim(m)} title="시뮬레이터">
                         <Play className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" onClick={() => generateSkusForModel(m)} title="SKU 자동 생성">
-                        <Tags className="h-4 w-4" />
-                      </Button>
+                      <DropdownMenu
+                        open={skuMenuModel?.id === m.id}
+                        onOpenChange={(open) => {
+                          if (!open) {
+                            setSkuMenuModel(null)
+                          } else {
+                            setSkuMenuModel(m)
+                            loadSkuMenu(m)
+                          }
+                        }}
+                      >
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" title="SKU 목록">
+                            <Tags className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="min-w-[240px] max-h-[320px] overflow-y-auto">
+                          {skuLoading ? (
+                            <div className="flex items-center justify-center gap-2 py-4 text-sm text-muted-foreground">
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              로딩 중...
+                            </div>
+                          ) : skuList.length === 0 && !skuNeedsGeneration ? (
+                            <div className="py-3 px-2 text-sm text-muted-foreground">등록된 SKU 없음</div>
+                          ) : (
+                            <>
+                              {skuList.map((s) => (
+                                <DropdownMenuItem key={s.sku_code} disabled className="font-mono text-xs">
+                                  {s.sku_code}
+                                </DropdownMenuItem>
+                              ))}
+                              {skuNeedsGeneration && (
+                                <>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    onClick={() =>
+                                      generateSkusForModel(m, () => {
+                                        loadSkuMenu(m)
+                                      })
+                                    }
+                                  >
+                                    SKU 자동 생성
+                                  </DropdownMenuItem>
+                                </>
+                              )}
+                            </>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                       <Button variant="ghost" size="icon" onClick={() => openEdit(m)} title="수정">
                         <Pencil className="h-4 w-4" />
                       </Button>
@@ -960,6 +1058,11 @@ export default function ModelManager() {
             <div className="grid grid-cols-4 items-center gap-4">
               <Label className="text-right">context_window</Label>
               <Input className="col-span-3" type="number" value={formData.context_window} onChange={(e) => setFormData((p) => ({ ...p, context_window: e.target.value }))} />
+            </div>
+
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label className="text-right">max_input_tokens</Label>
+              <Input className="col-span-3" type="number" value={formData.max_input_tokens} onChange={(e) => setFormData((p) => ({ ...p, max_input_tokens: e.target.value }))} />
             </div>
 
             <div className="grid grid-cols-4 items-center gap-4">

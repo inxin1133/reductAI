@@ -24,6 +24,9 @@ export async function getChatUiConfig(_req: Request, res: Response) {
         m.is_default,
         m.sort_order,
         m.capabilities,
+        m.context_window,
+        m.max_input_tokens,
+        m.max_output_tokens,
         p.id AS provider_id,
         p.name AS provider_name,
         p.product_name AS provider_product_name,
@@ -80,6 +83,9 @@ export async function getChatUiConfig(_req: Request, res: Response) {
         is_default: Boolean(r.is_default),
         sort_order: Number(r.sort_order || 0),
         capabilities: r.capabilities && typeof r.capabilities === "object" ? r.capabilities : {},
+        context_window: typeof r.context_window === "number" ? r.context_window : null,
+        max_input_tokens: typeof r.max_input_tokens === "number" ? r.max_input_tokens : null,
+        max_output_tokens: typeof r.max_output_tokens === "number" ? r.max_output_tokens : null,
       })
     }
 

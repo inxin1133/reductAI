@@ -4,7 +4,7 @@
 > - `capabilities.options`: 사용자 입력 컨트롤 정의 (type: enum/int/number)
 > - `capabilities.defaults`: 초기값
 > - `capabilities.supports`: 특정 옵션을 숨기고 싶을 때 `{ "<optionKey>": false }` 로 사용
-> - `capabilities.limits`: “헬퍼/검증 보조”용 숫자 제한 (예: max_images_per_request)
+> - `capabilities.limits`: 모달리티별 제한만 (예: max_images_per_request). token(max_input_tokens, max_output_tokens)은 DB 컬럼 사용
 
 ## 1️⃣.1 (OpenAI) ChatGPT - gpt-5-mini
 
@@ -13,10 +13,6 @@
 ```json
 {
   "model": "gpt-5-mini",
-  "limits": {
-    "max_input_tokens": 200000,
-    "max_output_tokens": 16384
-  },
   "supports": {
     "temperature": true,
     "top_p": true,
@@ -50,10 +46,6 @@
 ```json
 {
   "model": "gpt-5.2",
-  "limits": {
-    "max_input_tokens": 200000,
-    "max_output_tokens": 16384
-  },
   "supports": {
     "temperature": true,
     "top_p": true,
@@ -92,10 +84,6 @@
 ```json
 {
   "model": "gemini-3-flash-preview",
-  "limits": {
-    "max_input_tokens": 1000000,
-    "max_output_tokens": 8192
-  },
   "supports": {
     "temperature": true,
     "top_p": true,
@@ -127,10 +115,6 @@
 ```json
 {
   "model": "gemini-3-pro-preview",
-  "limits": {
-    "max_input_tokens": 1000000,
-    "max_output_tokens": 8192
-  },
   "supports": {
     "temperature": true,
     "top_p": true,

@@ -933,7 +933,8 @@ export async function openaiSimulateChat(args: {
 
       // 토큰 제한으로 잘린 경우: 1회 더 큰 토큰으로 재시도해서 "완성본"을 우선 반환
       if (truncated) {
-        const bigger = Math.min(Math.max(args.maxTokens, 2048), 4096)
+        const effectiveMax = typeof args.maxTokens === "number" && args.maxTokens > 0 ? args.maxTokens : 20000
+        const bigger = Math.max(effectiveMax, 4096)
         const bodyObj = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
         const retry = await postJson(`${apiRoot}/responses`, { ...bodyObj, max_output_tokens: bigger })
         if (retry.res.ok) {
@@ -951,7 +952,7 @@ export async function openaiSimulateChat(args: {
         if (r.json && typeof r.json === "object") {
           ;(r.json as Record<string, unknown>)._meta = { endpoint: "responses" }
         }
-        return { ok: true as const, raw: r.json, output_text: text }
+        return { ok: true as const, raw: r.json, output_text: text, truncated: truncated || undefined }
       }
       lastResponsesError = { status: r.res.status, json: r.json, reason: "empty_text" }
     }
@@ -961,7 +962,7 @@ export async function openaiSimulateChat(args: {
   // outputFormat이 있는 경우: 서버 레벨 강제를 위해 responses API를 우선 사용합니다.
   if (args.outputFormat === "block_json") {
     const tried = await tryResponsesWithNonEmptyText([responsesBody(), responsesBodyJsonObject(), responsesBodyPlain()])
-    if (tried.ok) return { raw: tried.raw, output_text: tried.output_text }
+    if (tried.ok) return { raw: tried.raw, output_text: tried.output_text, truncated: tried.truncated }
     // responses가 미지원/차단이면 chat/completions로 fallback (프롬프트 기반 + json_object)
   }
 
@@ -971,7 +972,7 @@ export async function openaiSimulateChat(args: {
 
   if (preferResponses) {
     const tried = await tryResponsesWithNonEmptyText([responsesBody(), responsesBodyJsonObject(), responsesBodyPlain()])
-    if (tried.ok) return { raw: tried.raw, output_text: tried.output_text }
+    if (tried.ok) return { raw: tried.raw, output_text: tried.output_text, truncated: tried.truncated }
     // responses가 막혀있거나 미지원이면 chat/completions로 fallback
   }
 
@@ -988,10 +989,12 @@ export async function openaiSimulateChat(args: {
           ]
         : [{ role: "user", content: args.input }]
 
+    // block_json: caller의 maxTokens를 그대로 사용. 없으면 20000 (구조적 출력 시 추론+출력 공간 확보)
+    const defaultMaxForBlockJson = 20000
     const maxCompletionTokens =
-      // If the caller requests structured output and we're forced into chat/completions,
-      // give the model enough room to both reason and emit visible output.
-      args.outputFormat === "block_json" ? Math.min(Math.max(args.maxTokens, 2048), 4096) : args.maxTokens
+      args.outputFormat === "block_json"
+        ? (typeof args.maxTokens === "number" && args.maxTokens > 0 ? args.maxTokens : defaultMaxForBlockJson)
+        : args.maxTokens
 
     const { res, json } = await postJson(`${apiRoot}/chat/completions`, {
       model: args.model,

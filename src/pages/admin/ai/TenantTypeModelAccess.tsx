@@ -44,6 +44,8 @@ interface Model {
   model_id: string
   model_type: string
   context_window?: number | null
+  max_input_tokens?: number | null
+  max_output_tokens?: number | null
   status: string
   is_available: boolean
 }
@@ -81,6 +83,8 @@ interface TypeModelAccessRow {
   model_api_id?: string
   model_type?: string
   context_window?: number | null
+  max_input_tokens?: number | null
+  max_output_tokens?: number | null
   provider_product_name?: string
   provider_slug?: string
   credential_name?: string | null

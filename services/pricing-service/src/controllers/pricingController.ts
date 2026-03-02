@@ -1033,6 +1033,46 @@ const SKU_TEMPLATES: Record<string, SkuTemplateEntry[]> = {
   ],
 }
 
+// GET /skus/needs-generation?model_id=xxx → { needsGeneration: boolean }
+export async function checkModelNeedsSkuGeneration(req: Request, res: Response) {
+  try {
+    const modelId = toStr(req.query?.model_id)
+    if (!modelId) return res.status(400).json({ message: "model_id query is required" })
+
+    const modelRes = await query(
+      `SELECT m.id, m.model_id AS model_key, m.model_type, p.slug AS provider_slug
+       FROM ai_models m
+       LEFT JOIN ai_providers p ON p.id = m.provider_id
+       WHERE m.id = $1`,
+      [modelId]
+    )
+    if (modelRes.rows.length === 0) return res.status(404).json({ message: "Model not found" })
+
+    const model = modelRes.rows[0]
+    const modality = model.model_type || "text"
+    const templates = SKU_TEMPLATES[modality] || SKU_TEMPLATES.text
+
+    for (const tpl of templates) {
+      const skuCode = buildSkuCode(
+        model.provider_slug || "unknown",
+        model.model_key,
+        modality,
+        tpl.usage_kind,
+        tpl.token_category,
+        tpl.metadata
+      )
+      const existRes = await query(`SELECT 1 FROM pricing_skus WHERE sku_code = $1 LIMIT 1`, [skuCode])
+      if (existRes.rows.length === 0) {
+        return res.json({ ok: true, needsGeneration: true })
+      }
+    }
+    return res.json({ ok: true, needsGeneration: false })
+  } catch (e: any) {
+    console.error("checkModelNeedsSkuGeneration error:", e)
+    return res.status(500).json({ message: "Failed to check", details: String(e?.message || e) })
+  }
+}
+
 export async function generateSkusForModel(req: Request, res: Response) {
   try {
     const modelId = toStr(req.body?.model_id)

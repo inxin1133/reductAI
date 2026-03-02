@@ -1745,8 +1745,9 @@ export async function chatRun(req: Request, res: Response) {
     // We'll fill history language later if conversation exists.
     let historyLang: string | null = null
 
-    // safe max_tokens
-    const maxTokensRequested = clampInt(Number(max_tokens ?? 512) || 512, 16, 8192)
+    // safe max_tokens: 클라이언트/모델 max_output_tokens가 100000 등일 수 있으므로 상한을 200000으로 설정 (model 로드 후 safeMaxTokens에서 모델 상한 적용)
+    const DEFAULT_MAX_REQUESTED = 20000
+    const maxTokensRequested = clampInt(Number(max_tokens ?? DEFAULT_MAX_REQUESTED) || DEFAULT_MAX_REQUESTED, 16, 200000)
 
     // 1) routing rule evaluation -> 2) model selection
     let chosenModelDbId: string | null = null
@@ -2412,7 +2413,7 @@ export async function chatRun(req: Request, res: Response) {
               ...(allowTools ? { tools, tool_choice: "auto" } : {}),
               // keep JSON-only behavior consistent with existing UI parser
               response_format: { type: "json_object" },
-              max_completion_tokens: Math.min(Math.max(safeMaxTokens, 1024), 4096),
+              max_completion_tokens: Math.max(safeMaxTokens, 1024),
             })
             lastRaw = j0
             if (!r0.ok) throw new Error(`OPENAI_TOOL_LOOP_FAILED_${r0.status}@${apiRoot}:${JSON.stringify(j0)}`)
@@ -3092,6 +3093,7 @@ export async function chatRun(req: Request, res: Response) {
       },
       output_text: out.output_text,
       raw: out.raw,
+      truncated: (out as { truncated?: boolean }).truncated,
       debug: {
         received_attachments: Array.isArray(attachments) ? attachments.length : 0,
         received_image_data_urls: incomingImageDataUrls.length,

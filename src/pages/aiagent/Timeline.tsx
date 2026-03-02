@@ -351,6 +351,7 @@ type TimelineMessage = {
   providerLogoKey?: string | null
   isPending?: boolean
   status?: MessageStatus
+  truncated?: boolean
   createdAt: string // ISO
 }
 
@@ -380,6 +381,7 @@ type TimelineUiMessage = {
   providerLogoKey?: string | null
   isPending?: boolean
   status?: MessageStatus
+  truncated?: boolean
   createdAt?: string // ISO
 }
 
@@ -2388,12 +2390,25 @@ export default function Timeline() {
                               return <span className="text-sm text-muted-foreground">{statusNotice}</span>
                             }
 
+                            const isTruncated =
+                              m.truncated === true ||
+                              (m.contentJson && typeof m.contentJson === "object" && (m.contentJson as Record<string, unknown>).truncated === true)
+                            const truncatedNotice = isTruncated ? (
+                              <div className="mb-3 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
+                                <p className="font-medium">응답이 잘렸습니다.</p>
+                                <p className="mt-1 text-muted-foreground">
+                                  더 긴 답변이 필요하면 질문을 나누어 주세요. 또는 상위 모델을 이용해 주세요.
+                                </p>
+                              </div>
+                            ) : null
+
                             const normalized = normalizeContentJson(m.contentJson)
                             if (normalized) {
                               const pmDoc = aiJsonToPmDoc(normalized)
                               if (pmDoc) {
                                 return (
                                   <div className="space-y-3">
+                                    {truncatedNotice}
                                     <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" viewerKey={m.id ? String(m.id) : undefined} />
                                   </div>
                                 )
@@ -2406,6 +2421,7 @@ export default function Timeline() {
                                 if (pmDoc) {
                                   return (
                                     <div className="space-y-3">
+                                      {truncatedNotice}
                                       <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" viewerKey={m.id ? String(m.id) : undefined} />
                                     </div>
                                   )
@@ -2416,6 +2432,7 @@ export default function Timeline() {
                                   if (pmDocFromExtracted) {
                                     return (
                                       <div className="space-y-3">
+                                        {truncatedNotice}
                                         <ProseMirrorViewer docJson={pmDocFromExtracted} className="pm-viewer--timeline" viewerKey={m.id ? String(m.id) : undefined} />
                                       </div>
                                     )
@@ -2432,6 +2449,7 @@ export default function Timeline() {
                                 if (pmDoc) {
                                   return (
                                     <div className="space-y-3">
+                                      {truncatedNotice}
                                       <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" viewerKey={m.id ? String(m.id) : undefined} />
                                     </div>
                                   )
@@ -2443,12 +2461,18 @@ export default function Timeline() {
                               if (pmDoc) {
                                 return (
                                   <div className="space-y-3">
+                                    {truncatedNotice}
                                     <ProseMirrorViewer docJson={pmDoc} className="pm-viewer--timeline" viewerKey={m.id ? String(m.id) : undefined} />
                                   </div>
                                 )
                               }
                             }
-                            return <>{m.content}</>
+                            return (
+                              <div className="space-y-3">
+                                {truncatedNotice}
+                                {m.content}
+                              </div>
+                            )
                           })()}
                         </div>
                          <div className="flex gap-3 items-center">
@@ -2625,6 +2649,7 @@ export default function Timeline() {
                   const isStopped =
                     (normalized && typeof (normalized as Record<string, unknown>).stopped === "boolean" && Boolean((normalized as Record<string, unknown>).stopped)) ||
                     String(msg.content || "") === "사용자의 요청에 의해 요청 및 답변이 중지 되었습니다."
+                  const isTruncated = msg.truncated === true
                   let derivedText = extractTextFromJsonContent(normalized ?? msg.content) || String(msg.content || "")
                   if (typeof derivedText === "string" && derivedText.trim().startsWith("{")) {
                     const extracted = extractMessageFromJsonishString(derivedText)
@@ -2651,6 +2676,7 @@ export default function Timeline() {
                       providerSlug: msg.providerSlug,
                       providerLogoKey: null,
                       status: (isStopped ? "stopped" : "success") as MessageStatus,
+                      truncated: isTruncated || undefined,
                       createdAt: new Date().toISOString(),
                     }
                     if (realIdx >= 0) next[realIdx] = { ...next[realIdx], ...row, isPending: false }

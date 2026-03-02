@@ -73,8 +73,9 @@ CREATE TABLE ai_models (
     display_name VARCHAR(255) NOT NULL, -- 표시 이름 (예: 'GPT-4', 'Claude 3 Opus')
     description TEXT,
     model_type VARCHAR(50) NOT NULL CHECK (model_type IN ('text', 'image', 'audio', 'music', 'video', 'multimodal', 'embedding', 'code')),
-    capabilities JSONB DEFAULT '{}', -- 모델 지원 기능/제약 메타데이터 (객체 권장) 예: {"supports":{"json_schema":true},"limits":{"max_input_tokens":200000}}
-    context_window INTEGER, -- 컨텍스트 윈도우 크기 (토큰 수)
+    capabilities JSONB DEFAULT '{}', -- 모델 지원 기능/제약 메타데이터 (객체 권장). limits는 모달리티별만 (예: max_images_per_request)
+    context_window INTEGER, -- 컨텍스트 윈도우 크기 (토큰 수, 입력 한도와 동일 또는 총합)
+    max_input_tokens INTEGER, -- 최대 입력(프롬프트) 토큰 수
     max_output_tokens INTEGER, -- 최대 출력 토큰 수
     is_available BOOLEAN DEFAULT TRUE, -- 사용 가능 여부
     is_default BOOLEAN DEFAULT FALSE, -- 기본 모델 여부 (같은 타입 내에서)
@@ -106,8 +107,9 @@ COMMENT ON COLUMN ai_models.model_id IS 'API에서 사용하는 모델 ID (예: 
 COMMENT ON COLUMN ai_models.display_name IS '모델 표시 이름 (예: GPT-4 Turbo, Claude 3 Opus)';
 COMMENT ON COLUMN ai_models.description IS '모델 설명';
 COMMENT ON COLUMN ai_models.model_type IS '모델 타입: text(텍스트), image(이미지), audio(오디오), music(음악), video(비디오), multimodal(멀티모달), embedding(임베딩), code(코드)';
-COMMENT ON COLUMN ai_models.capabilities IS '모델 지원 기능/제약 메타데이터 (JSON 객체 권장). 예: {"supports":{"json_schema":true},"limits":{"max_input_tokens":200000}}';
-COMMENT ON COLUMN ai_models.context_window IS '컨텍스트 윈도우 크기 (토큰 수, 예: 128000)';
+COMMENT ON COLUMN ai_models.capabilities IS '모델 지원 기능/제약 메타데이터 (JSON 객체 권장). limits는 모달리티별만 (max_images_per_request 등). max_input/max_output은 DB 컬럼 사용';
+COMMENT ON COLUMN ai_models.context_window IS '컨텍스트 윈도우 크기 (토큰 수, 예: 128000). max_input_tokens와 동일값 권장';
+COMMENT ON COLUMN ai_models.max_input_tokens IS '최대 입력(프롬프트) 토큰 수. Provider 문서의 context length 참조';
 COMMENT ON COLUMN ai_models.max_output_tokens IS '최대 출력 토큰 수';
 COMMENT ON COLUMN ai_models.is_available IS '사용 가능 여부';
 COMMENT ON COLUMN ai_models.is_default IS '기본 모델 여부 (같은 타입 내에서 하나만 TRUE)';

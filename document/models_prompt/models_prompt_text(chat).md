@@ -1,3 +1,15 @@
+### 모델별 권장 값 (성능 반영)
+
+| model_api_id | context_window | max_input_tokens | max_output_tokens |
+| --- | --- | --- | --- |
+| gpt-5.2 | 400000 | 300000 | 100000 |
+| gpt-5-mini | 400000 | 250000 | 32000 |
+| gemini-3-pro | 1048576 | 850000 | 65536 |
+| gemini-3-flash | 1048576 | 750000 | 16384 |
+| claude-3-5-sonnet-20241022 | 200000 | 160000 | 40000 |
+| grok-2-latest | 128000 | 100000 | 20000 |
+
+
 # GPT-5.2
 
 `prompt_templates.body`
@@ -113,14 +125,10 @@
 
 
 
-`ai_models.capabilities`
+`ai_models.capabilities` (limits는 DB 컬럼 context_window, max_input_tokens, max_output_tokens 사용)
 ```json
 {
   "model": "gpt-5.2",
-  "limits": {
-    "max_input_tokens": 200000,
-    "max_output_tokens": 16384
-  },
   "options": {
     "top_p": {
       "max": 1,
@@ -202,14 +210,10 @@
 
 
 
-`ai_models.capabilities`
+`ai_models.capabilities` (limits는 DB 컬럼 사용)
 ```json
 {
   "model": "gpt-5-mini",
-  "limits": {
-    "max_input_tokens": 200000,
-    "max_output_tokens": 16384
-  },
   "options": {},
   "defaults": {},
   "supports": {
@@ -307,14 +311,10 @@
 }
 ```
 
-`ai_models.capabilities`
+`ai_models.capabilities` (limits는 DB 컬럼 사용)
 ```json
 {
   "model": "gemini-3-flash",
-  "limits": {
-    "max_input_tokens": 1000000,
-    "max_output_tokens": 8192
-  },
   "options": {
     "top_k": {
       "max": 100,
@@ -431,14 +431,10 @@
 }
 ```
 
-`ai_models.capabilities`
+`ai_models.capabilities` (limits는 DB 컬럼 사용)
 ```json
 {
   "model": "claude-3-5-sonnet-20241022",
-  "limits": {
-    "max_input_tokens": 200000,
-    "max_output_tokens": 8192
-  },
   "options": {
     "top_k": {
       "max": 200,
@@ -564,14 +560,10 @@
 }
 ```
 
-`ai_models.capabilities`
+`ai_models.capabilities` (limits는 DB 컬럼 사용)
 ```json
 {
   "model": "grok-2-latest",
-  "limits": {
-    "max_input_tokens": 128000,
-    "max_output_tokens": 4096
-  },
   "options": {
     "top_p": {
       "max": 1,
