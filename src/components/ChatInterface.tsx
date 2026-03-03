@@ -50,18 +50,169 @@ import {
 } from "@/components/ui/drawer"
 import { ProviderLogo } from "@/components/icons/providerLogoRegistry"
 import { ModelOptionsPanel } from "@/components/ModelOptionsPanel"
+import { getCreditTabStyles, PLAN_TIER_LABELS, normalizePlanTier, type PlanTier } from "@/lib/planTier"
 
-type PaidTokenProps = { className?: string }
+type GrantedCredit = {
+  tenant_id: string
+  tenant_name?: string | null
+  tenant_type?: string | null
+  plan_tier?: string | null
+  role_slug?: string | null
+  account_id: string | null
+  service?: {
+    total_credits: number
+    used_credits: number
+    user_used_credits: number
+    remaining_credits: number
+  } | null
+  topup_auto_use?: boolean
+}
 
-function PaidToken({ className }: PaidTokenProps) {
-  return (
-    <div className={cn("flex items-center gap-2", className)}>
-      <div className="bg-primary flex gap-[10px] items-center justify-center px-[12px] py-[6px] rounded-full shadow-sm shrink-0">
-        <p className="font-medium leading-[20px] text-primary-foreground text-[14px]">개인:Pro</p>
-        <div className="bg-primary-foreground flex flex-col gap-[10px] h-[20px] items-center justify-center px-[4px] py-[2px] rounded-full shrink-0">
-          <p className="font-medium leading-[16px] text-primary text-[12px] font-mono">20.000</p>
+type PaidTokenProps = {
+  className?: string
+  authHeaders: () => HeadersInit
+}
+
+function formatCredits(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "0"
+  return Math.floor(value).toLocaleString("ko-KR")
+}
+
+function PaidToken({ className, authHeaders }: PaidTokenProps) {
+  const [grants, setGrants] = React.useState<GrantedCredit[]>([])
+  const [selectedAccountId, setSelectedAccountId] = React.useState<string | null>(null)
+  const [loading, setLoading] = React.useState(true)
+
+  const fetchData = React.useCallback(async () => {
+    const headers = authHeaders()
+    if (!(headers as Record<string, string>)?.["Authorization"]) {
+      setLoading(false)
+      return
+    }
+    try {
+      const [grantsRes, prefsRes] = await Promise.all([
+        fetch("/api/ai/credits/my/granted-credits", { headers }),
+        fetch("/api/ai/credits/my/preferences", { headers }),
+      ])
+      const grantsJson = (await grantsRes.json().catch(() => null)) as { ok?: boolean; grants?: GrantedCredit[] } | null
+      const prefsJson = (await prefsRes.json().catch(() => null)) as { ok?: boolean; selected_account_id?: string | null } | null
+      const grants = grantsJson?.ok && Array.isArray(grantsJson.grants) ? grantsJson.grants : []
+      const displayable = grants.filter((g) => g.account_id != null && (g.service?.remaining_credits ?? 0) >= 0)
+      const defaultAccountId =
+        displayable.find((g) => g.role_slug === "owner" || g.role_slug === "tenant_owner")?.account_id ??
+        displayable[0]?.account_id ??
+        null
+      const storedSelected = prefsJson?.ok && prefsJson.selected_account_id !== undefined ? (prefsJson.selected_account_id ?? null) : null
+      const isStoredValid = storedSelected != null && displayable.some((g) => g.account_id === storedSelected)
+      const effectiveSelected = isStoredValid ? storedSelected : defaultAccountId
+      if (effectiveSelected != null && effectiveSelected !== storedSelected) {
+        try {
+          const patchRes = await fetch("/api/ai/credits/my/preferences", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json", ...headers } as HeadersInit,
+            body: JSON.stringify({ selected_account_id: effectiveSelected }),
+          })
+          if (!patchRes.ok) {
+            setGrants(grants)
+            setSelectedAccountId(defaultAccountId)
+            return
+          }
+        } catch {
+          setGrants(grants)
+          setSelectedAccountId(defaultAccountId)
+          return
+        }
+      }
+      setGrants(grants)
+      setSelectedAccountId(effectiveSelected)
+    } catch (e) {
+      console.error("PaidToken fetch error:", e)
+    } finally {
+      setLoading(false)
+    }
+  }, [authHeaders])
+
+  React.useEffect(() => {
+    fetchData()
+  }, [fetchData])
+
+  const handleTabClick = React.useCallback(
+    async (accountId: string) => {
+      const headers = authHeaders()
+      if (!(headers as Record<string, string>)?.["Authorization"]) return
+      try {
+        const res = await fetch("/api/ai/credits/my/preferences", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", ...headers },
+          body: JSON.stringify({ selected_account_id: accountId }),
+        })
+        const json = (await res.json().catch(() => null)) as { ok?: boolean; selected_account_id?: string | null } | null
+        if (json?.ok) {
+          setSelectedAccountId(json.selected_account_id ?? null)
+        }
+      } catch (e) {
+        console.error("PaidToken update preferences error:", e)
+      }
+    },
+    [authHeaders]
+  )
+
+  if (loading) {
+    return (
+      <div className={cn("flex items-center gap-2", className)}>
+        <div className="flex gap-2 h-8 items-center rounded-full px-3 py-1.5 animate-pulse bg-muted">
+          <div className="h-4 w-16 rounded bg-muted-foreground/20" />
+          <div className="h-5 w-12 rounded-full bg-muted-foreground/20" />
         </div>
       </div>
+    )
+  }
+
+  const displayableGrants = grants.filter((g) => g.account_id != null && (g.service?.remaining_credits ?? 0) >= 0)
+  if (displayableGrants.length === 0) {
+    return null
+  }
+
+  return (
+    <div className={cn("flex items-center gap-2 flex-wrap", className)}>
+      {displayableGrants.map((grant) => {
+        const tier = normalizePlanTier(grant.plan_tier) ?? "free"
+        const styles = getCreditTabStyles(tier)
+        const isSelected = selectedAccountId === grant.account_id
+        const label =
+          (grant.tenant_type === "personal" ? "개인" : grant.tenant_name || "개인") +
+          ":" +
+          (PLAN_TIER_LABELS[tier as PlanTier] || grant.plan_tier || "Free")
+        const remaining = grant.service?.remaining_credits ?? 0
+        return (
+          <button
+            key={grant.account_id!}
+            type="button"
+            onClick={() => grant.account_id && handleTabClick(grant.account_id)}
+            className={cn(
+              "flex gap-[10px] items-center justify-center px-[12px] py-[6px] rounded-full shadow-sm shrink-0 transition-colors",
+              isSelected ? styles.outerSelected : styles.outerUnselected
+            )}
+          >
+            <p
+              className={cn(
+                "font-medium leading-[20px] text-[14px] whitespace-nowrap",
+                isSelected ? styles.labelSelected : styles.labelUnselected
+              )}
+            >
+              {label}
+            </p>
+            <div
+              className={cn(
+                "flex flex-col h-[20px] items-center justify-center px-[6px] py-[2px] rounded-full shrink-0 font-mono font-medium text-[12px] leading-[16px]",
+                isSelected ? styles.badgeSelected : styles.badgeUnselected
+              )}
+            >
+              {formatCredits(remaining)}
+            </div>
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -2665,7 +2816,7 @@ export function ChatInterface({
       <div className={`flex flex-col gap-[16px] items-center relative shrink-0 w-full max-w-[800px] ${className || ""}`}>
         {!isCompact && (
           <div className="w-full flex items-center gap-4">
-            <PaidToken />
+            <PaidToken authHeaders={authHeaders} />
           </div>
         )}
 
@@ -2749,7 +2900,7 @@ export function ChatInterface({
                           >
                             <ChevronDown className="size-5" />
                           </button>
-                          <PaidToken />
+                          <PaidToken authHeaders={authHeaders} />
                         </div>
                         <ModeTabs />
                         <div className="max-h-[320px] overflow-y-auto mt-3">

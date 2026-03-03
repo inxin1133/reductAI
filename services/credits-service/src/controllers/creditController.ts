@@ -2465,7 +2465,6 @@ export async function getMyGrantedCredits(req: Request, res: Response) {
       WHERE utr.user_id = $1
         AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
         AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
-        AND r.slug NOT IN ('owner', 'tenant_owner')
       ORDER BY utr.joined_at ASC
       `,
       [userId]
@@ -2481,6 +2480,7 @@ export async function getMyGrantedCredits(req: Request, res: Response) {
       tenant_type: string | null
       plan_tier: string | null
       role_slug: string | null
+      account_id: string | null
       service: {
         total_credits: number
         used_credits: number
@@ -2524,7 +2524,7 @@ export async function getMyGrantedCredits(req: Request, res: Response) {
         | undefined
 
       if (!sub) {
-        grants.push({ tenant_id: tenantId, tenant_name: tenantName, tenant_type: tenantType, plan_tier: null, role_slug: roleSlug, service: null, topup_auto_use: false })
+        grants.push({ tenant_id: tenantId, tenant_name: tenantName, tenant_type: tenantType, plan_tier: null, role_slug: roleSlug, account_id: null, service: null, topup_auto_use: false })
         continue
       }
 
@@ -2579,8 +2579,13 @@ export async function getMyGrantedCredits(req: Request, res: Response) {
         ? Math.max(0, Number(subAccount.balance_credits ?? 0) - Number(subAccount.reserved_credits ?? 0))
         : 0
       const totalCredits = planTotal > 0 ? planTotal : tenantUsed + accountRemaining
-      const remaining = planTotal > 0 ? Math.max(0, totalCredits - tenantUsed) : accountRemaining
+      const tenantRemaining = planTotal > 0 ? Math.max(0, totalCredits - tenantUsed) : accountRemaining
       const usagePercent = totalCredits > 0 ? Math.min(100, (tenantUsed / totalCredits) * 100) : 0
+
+      const remaining =
+        maxPerPeriod != null
+          ? Math.max(0, Math.min(maxPerPeriod - userUsed, tenantRemaining))
+          : tenantRemaining
 
       let topupAutoUse = false
       const topupAccountRes = await query(
@@ -2602,6 +2607,7 @@ export async function getMyGrantedCredits(req: Request, res: Response) {
         tenant_type: tenantType,
         plan_tier: sub.plan_tier ?? null,
         role_slug: roleSlug,
+        account_id: subAccount?.id ?? null,
         service: {
           total_credits: totalCredits,
           used_credits: tenantUsed,
@@ -2621,6 +2627,68 @@ export async function getMyGrantedCredits(req: Request, res: Response) {
   } catch (e: any) {
     console.error("getMyGrantedCredits error:", e)
     return res.status(500).json({ message: "Failed to load granted credits", details: String(e?.message || e) })
+  }
+}
+
+export async function getMyCreditPreferences(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const userId = toStr(authed.userId)
+    if (!userId) return res.status(401).json({ message: "user_id is required" })
+
+    const res_ = await query(
+      `SELECT selected_account_id FROM credit_user_preferences WHERE user_id = $1 LIMIT 1`,
+      [userId]
+    )
+    const row = res_.rows[0] as { selected_account_id: string | null } | undefined
+    return res.json({
+      ok: true,
+      selected_account_id: row?.selected_account_id ?? null,
+    })
+  } catch (e: any) {
+    console.error("getMyCreditPreferences error:", e)
+    return res.status(500).json({ message: "Failed to get credit preferences", details: String(e?.message || e) })
+  }
+}
+
+export async function updateMyCreditPreferences(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const userId = toStr(authed.userId)
+    if (!userId) return res.status(401).json({ message: "user_id is required" })
+
+    const rawAccountId = req.body?.selected_account_id
+    const selectedAccountId =
+      rawAccountId === null || rawAccountId === undefined || rawAccountId === ""
+        ? null
+        : toStr(String(rawAccountId))
+
+    if (selectedAccountId !== null) {
+      if (!isUuid(selectedAccountId)) {
+        return res.status(400).json({ message: "selected_account_id must be a valid UUID" })
+      }
+      const accessRes = await query(
+        `SELECT 1 FROM credit_account_access WHERE user_id = $1 AND account_id = $2 AND is_active = TRUE LIMIT 1`,
+        [userId, selectedAccountId]
+      )
+      if (accessRes.rows.length === 0) {
+        return res.status(403).json({ message: "No access to the specified credit account" })
+      }
+    }
+
+    await query(
+      `
+      INSERT INTO credit_user_preferences (user_id, selected_account_id)
+      VALUES ($1, $2)
+      ON CONFLICT (user_id) DO UPDATE SET selected_account_id = EXCLUDED.selected_account_id, updated_at = CURRENT_TIMESTAMP
+      `,
+      [userId, selectedAccountId]
+    )
+
+    return res.json({ ok: true, selected_account_id: selectedAccountId })
+  } catch (e: any) {
+    console.error("updateMyCreditPreferences error:", e)
+    return res.status(500).json({ message: "Failed to update credit preferences", details: String(e?.message || e) })
   }
 }
 
