@@ -50,8 +50,8 @@ CREATE TABLE credit_topup_products (
     sku_code VARCHAR(100) NOT NULL UNIQUE,
     name VARCHAR(255) NOT NULL,
     price_usd DECIMAL(10, 2) NOT NULL,
-    credits BIGINT NOT NULL,
-    bonus_credits BIGINT NOT NULL DEFAULT 0,
+    credits NUMERIC(18, 2) NOT NULL,
+    bonus_credits NUMERIC(18, 2) NOT NULL DEFAULT 0,
     currency VARCHAR(3) NOT NULL DEFAULT 'USD',
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     metadata JSONB DEFAULT '{}'::jsonb,
@@ -82,8 +82,8 @@ CREATE TABLE credit_plan_grants (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     plan_slug VARCHAR(50) NOT NULL, -- free/pro/premium/business/enterprise
     billing_cycle VARCHAR(20) NOT NULL DEFAULT 'monthly' CHECK (billing_cycle IN ('monthly', 'yearly')),
-    monthly_credits BIGINT NOT NULL DEFAULT 0,
-    initial_credits BIGINT NOT NULL DEFAULT 0,
+    monthly_credits NUMERIC(18, 2) NOT NULL DEFAULT 0,
+    initial_credits NUMERIC(18, 2) NOT NULL DEFAULT 0,
     credit_type VARCHAR(20) NOT NULL DEFAULT 'subscription' CHECK (credit_type IN ('subscription', 'topup')),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     metadata JSONB DEFAULT '{}'::jsonb,
@@ -116,8 +116,8 @@ CREATE TABLE credit_accounts (
     source_tenant_id UUID REFERENCES tenants(id) ON DELETE SET NULL, -- tenant that funds the credits
     credit_type VARCHAR(20) NOT NULL CHECK (credit_type IN ('subscription', 'topup')),
     status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended', 'expired')),
-    balance_credits BIGINT NOT NULL DEFAULT 0,
-    reserved_credits BIGINT NOT NULL DEFAULT 0,
+    balance_credits NUMERIC(18, 2) NOT NULL DEFAULT 0,
+    reserved_credits NUMERIC(18, 2) NOT NULL DEFAULT 0,
     expires_at TIMESTAMP WITH TIME ZONE,
     display_name VARCHAR(255),
     metadata JSONB DEFAULT '{}'::jsonb,
@@ -166,7 +166,7 @@ CREATE TABLE credit_account_access (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     account_id UUID NOT NULL REFERENCES credit_accounts(id) ON DELETE CASCADE,
     priority INTEGER NOT NULL DEFAULT 0 CHECK (priority >= 0),
-    max_per_period BIGINT,
+    max_per_period NUMERIC(18, 2),
     allow_when_empty BOOLEAN NOT NULL DEFAULT FALSE,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -203,7 +203,7 @@ CREATE TABLE credit_transfers (
     from_account_id UUID NOT NULL REFERENCES credit_accounts(id) ON DELETE RESTRICT,
     to_account_id UUID NOT NULL REFERENCES credit_accounts(id) ON DELETE RESTRICT,
     transfer_type VARCHAR(20) NOT NULL DEFAULT 'grant' CHECK (transfer_type IN ('grant', 'revoke')),
-    amount_credits BIGINT NOT NULL CHECK (amount_credits > 0),
+    amount_credits NUMERIC(18, 2) NOT NULL CHECK (amount_credits > 0),
     status VARCHAR(20) NOT NULL DEFAULT 'completed' CHECK (status IN ('pending', 'completed', 'revoked', 'cancelled')),
     requested_by UUID REFERENCES users(id) ON DELETE SET NULL,
     approved_by UUID REFERENCES users(id) ON DELETE SET NULL,
@@ -249,8 +249,8 @@ CREATE TABLE credit_ledger_entries (
     entry_type VARCHAR(30) NOT NULL CHECK (
         entry_type IN ('subscription_grant', 'topup_purchase', 'transfer_in', 'transfer_out', 'usage', 'adjustment', 'expiry', 'refund', 'reversal')
     ),
-    amount_credits BIGINT NOT NULL, -- positive for credit, negative for debit
-    balance_after BIGINT,
+    amount_credits NUMERIC(18, 2) NOT NULL, -- positive for credit, negative for debit
+    balance_after NUMERIC(18, 2),
     usage_log_id UUID REFERENCES llm_usage_logs(id) ON DELETE SET NULL,
     transfer_id UUID REFERENCES credit_transfers(id) ON DELETE SET NULL,
     subscription_id UUID REFERENCES billing_subscriptions(id) ON DELETE SET NULL,
@@ -299,7 +299,7 @@ CREATE TABLE credit_usage_allocations (
     usage_log_id UUID NOT NULL REFERENCES llm_usage_logs(id) ON DELETE CASCADE,
     user_id UUID REFERENCES users(id) ON DELETE SET NULL,
     account_id UUID NOT NULL REFERENCES credit_accounts(id) ON DELETE RESTRICT,
-    amount_credits BIGINT NOT NULL CHECK (amount_credits > 0),
+    amount_credits NUMERIC(18, 2) NOT NULL CHECK (amount_credits > 0),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (usage_log_id, account_id)
 );

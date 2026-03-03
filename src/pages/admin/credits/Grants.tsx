@@ -293,8 +293,8 @@ export default function CreditGrants() {
           plan_slug: form.plan_slug.trim(),
           billing_cycle: form.billing_cycle,
           credit_type: form.credit_type,
-          monthly_credits: Math.floor(monthlyCredits),
-          initial_credits: Math.floor(initialCredits),
+          monthly_credits: Math.round(monthlyCredits * 100) / 100,
+          initial_credits: Math.round(initialCredits * 100) / 100,
           is_active: form.is_active,
           metadata: metadataValue,
         }),
@@ -567,7 +567,9 @@ export default function CreditGrants() {
                 {transferRows.map((row) => (
                   <TableRow key={row.id}>
                     <TableCell className="font-mono">{row.transfer_type}</TableCell>
-                    <TableCell className="font-mono">{Number(row.amount_credits).toLocaleString()}</TableCell>
+                    <TableCell className="font-mono">
+                      {Number(row.amount_credits).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </TableCell>
                     <TableCell>
                       <div className="flex flex-col">
                         <span className="font-medium">{formatOwner(row, "from")}</span>

@@ -304,7 +304,7 @@ export default function CreditUsageAllocations() {
                 </TableCell>
                 <TableCell className="text-sm">{row.modality || "-"}</TableCell>
                 <TableCell className="text-sm">
-                  {row.amount_credits}
+                  {Number(row.amount_credits).toLocaleString(undefined, { maximumFractionDigits: 2 })}
                   <div className="text-xs text-muted-foreground">{row.credit_type || "-"}</div>
                 </TableCell>
                 <TableCell>

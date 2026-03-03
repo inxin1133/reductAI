@@ -270,7 +270,8 @@ function formatDateTime(value?: string | null) {
 function formatCredits(value?: number | null) {
   if (value === null || value === undefined) return "-"
   if (!Number.isFinite(value)) return "-"
-  return Math.floor(value).toLocaleString()
+  const n = Math.round(value * 100) / 100
+  return n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 }
 
 function formatRelativeTime(value?: string | null) {
@@ -434,21 +435,14 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
   const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null)
   const [passwordSaving, setPasswordSaving] = useState(false)
   const [passwordCreateMode, setPasswordCreateMode] = useState(false)
-  const usageRows = useMemo(
-    () => [
-      ["2026-02-10 10:12", "GPT-5.2", "입력 12K / 출력 4K", "3.20"],
-      ["2026-02-09 15:30", "Gemini 3 Pro", "입력 6K / 출력 2K", "1.15"],
-      ["2026-02-08 18:45", "Sora 2", "영상 20초", "2.80"],
-    ],
-    []
-  )
+  const [usageRows, setUsageRows] = useState<Array<[string, string, string, string, string]>>([])
+  const [usageLoading, setUsageLoading] = useState(false)
+  const [usageError, setUsageError] = useState<string | null>(null)
+  const [usageTotal, setUsageTotal] = useState(0)
   const usagePageSize = 20
-  const usageTotalPages = Math.max(1, Math.ceil(usageRows.length / usagePageSize))
-  const usagePageSafe = Math.min(usagePage, usageTotalPages)
-  const usagePageRows = useMemo(() => {
-    const start = (usagePageSafe - 1) * usagePageSize
-    return usageRows.slice(start, start + usagePageSize)
-  }, [usagePageSafe, usagePageSize, usageRows])
+  const usageTotalPages = Math.max(1, Math.ceil(usageTotal / usagePageSize))
+  const usagePageSafe = Math.min(Math.max(1, usagePage), usageTotalPages)
+  const usagePageRows = usageRows
 
   const activeLabel = useMemo(() => {
     const menu = PERSONAL_MENUS.find((item) => item.id === activeMenu)
@@ -1448,6 +1442,48 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
   }, [usagePage, usageTotalPages])
 
   useEffect(() => {
+    if (!open || activeMenu !== "usage") return
+    const headers = authHeaders()
+    if (!(headers as Record<string, string>)?.["Authorization"]) {
+      setUsageRows([])
+      setUsageTotal(0)
+      setUsageLoading(false)
+      return
+    }
+    setUsageLoading(true)
+    setUsageError(null)
+    const offset = (usagePageSafe - 1) * usagePageSize
+    fetch(
+      `/api/ai/credits/my/usage-history?limit=${usagePageSize}&offset=${offset}`,
+      { headers }
+    )
+      .then((r) => r.json().catch(() => null))
+      .then((json: { ok?: boolean; rows?: Array<{ created_at: string; model: string; usage_desc: string; credits: number; tenant_label?: string }>; total?: number } | null) => {
+        if (!json?.ok || !Array.isArray(json.rows)) {
+          setUsageRows([])
+          setUsageTotal(0)
+          setUsageError("사용 내역을 불러올 수 없습니다.")
+          return
+        }
+        const rows: Array<[string, string, string, string, string]> = json.rows.map((r) => [
+          formatDateTime(r.created_at),
+          r.model,
+          r.usage_desc,
+          r.tenant_label ?? "-",
+          formatCredits(r.credits),
+        ])
+        setUsageRows(rows)
+        setUsageTotal(json.total ?? rows.length)
+      })
+      .catch(() => {
+        setUsageRows([])
+        setUsageTotal(0)
+        setUsageError("사용 내역을 불러오는 중 오류가 발생했습니다.")
+      })
+      .finally(() => setUsageLoading(false))
+  }, [open, activeMenu, usagePageSafe, usagePageSize, authHeaders])
+
+  useEffect(() => {
     writeSettingsDialogOpenFlag(open)
   }, [open])
 
@@ -2109,8 +2145,8 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                           )}
                         >
                           <CardHeader className="px-4 pt-4 pb-1">
-                            <CardTitle className="text-lg font-bold text-foreground">+{totalCredits.toLocaleString()}</CardTitle>
-                            <p className="text-[11px] text-muted-foreground">크레딧{product.bonus_credits > 0 ? ` (보너스 +${Number(product.bonus_credits).toLocaleString()})` : ""}</p>
+                            <CardTitle className="text-lg font-bold text-foreground">+{totalCredits.toLocaleString(undefined, { maximumFractionDigits: 2 })}</CardTitle>
+                            <p className="text-[11px] text-muted-foreground">크레딧{product.bonus_credits > 0 ? ` (보너스 +${Number(product.bonus_credits).toLocaleString(undefined, { maximumFractionDigits: 2 })})` : ""}</p>
                           </CardHeader>
                           <CardContent className="px-4 pb-2">
                             <div className="text-2xl font-extrabold text-foreground gap-1 flex items-center">${product.price_usd}
@@ -2245,31 +2281,49 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                 // 사용내역
                 <div className="flex h-full flex-col min-h-0">
                   <div className="flex-1 overflow-y-auto">
-                    <Table className="">
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="text-xs">날짜</TableHead>
-                          <TableHead className="text-xs">모델</TableHead>
-                          <TableHead className="text-xs">사용량</TableHead>
-                          <TableHead className="text-right text-xs">크레딧</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {usagePageRows.map((row) => (
-                          <TableRow key={row[0]}>
-                            <TableCell className="text-muted-foreground text-xs">{row[0]}</TableCell>
-                            <TableCell className="text-muted-foreground text-xs">{row[1]}</TableCell>
-                            <TableCell className="text-muted-foreground text-xs whitespace-normal break-words break-all">{row[2]}</TableCell>
-                            <TableCell className="text-right text-foreground text-xs">{row[3]}</TableCell>
+                    {usageError ? (
+                      <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                        {usageError}
+                      </div>
+                    ) : usageLoading ? (
+                      <div className="px-3 py-4 text-xs text-muted-foreground">불러오는 중...</div>
+                    ) : (
+                      <Table className="">
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="text-xs">날짜</TableHead>
+                            <TableHead className="text-xs">모델</TableHead>
+                            <TableHead className="text-xs">사용량</TableHead>
+                            <TableHead className="text-xs">사용 테넌트</TableHead>
+                            <TableHead className="text-right text-xs">크레딧</TableHead>
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
+                        </TableHeader>
+                        <TableBody>
+                          {usagePageRows.length === 0 ? (
+                            <TableRow>
+                              <TableCell colSpan={5} className="text-center text-xs text-muted-foreground py-8">
+                                사용 내역이 없습니다.
+                              </TableCell>
+                            </TableRow>
+                          ) : (
+                            usagePageRows.map((row, idx) => (
+                              <TableRow key={`${row[0]}-${row[1]}-${idx}`}>
+                                <TableCell className="text-muted-foreground text-xs">{row[0]}</TableCell>
+                                <TableCell className="text-muted-foreground text-xs">{row[1]}</TableCell>
+                                <TableCell className="text-muted-foreground text-xs whitespace-normal break-words break-all">{row[2]}</TableCell>
+                                <TableCell className="text-muted-foreground text-xs">{row[3]}</TableCell>
+                                <TableCell className="text-right text-foreground text-xs">{row[4]}</TableCell>
+                              </TableRow>
+                            ))
+                          )}
+                        </TableBody>
+                      </Table>
+                    )}
                   </div>
                   <div className="sticky bottom-0 mt-3 border-t border-border bg-background pt-3">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
                       <span>
-                        총 {usageRows.length}개 · {usagePageSafe}/{usageTotalPages}
+                        총 {usageTotal}개 · {usagePageSafe}/{usageTotalPages}
                       </span>
                       <div className="flex items-center gap-2">
                         <Button
@@ -2277,7 +2331,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                           size="sm"
                           className="h-7 px-2 text-xs"
                           onClick={() => setUsagePage((prev) => Math.max(1, prev - 1))}
-                          disabled={usagePageSafe <= 1}
+                          disabled={usageLoading || usagePageSafe <= 1}
                         >
                           이전
                         </Button>
@@ -2286,7 +2340,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                           size="sm"
                           className="h-7 px-2 text-xs"
                           onClick={() => setUsagePage((prev) => Math.min(usageTotalPages, prev + 1))}
-                          disabled={usagePageSafe >= usageTotalPages}
+                          disabled={usageLoading || usagePageSafe >= usageTotalPages}
                         >
                           다음
                         </Button>

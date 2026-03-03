@@ -92,12 +92,15 @@ export async function getChatUiConfig(_req: Request, res: Response) {
     // include only types that actually have providers (for tabs)
     const activeModelTypes = MODEL_TYPES.filter((t) => (providersByType[t] || []).length > 0)
     const webSearchPolicy = await getWebSearchPolicy(tenantId)
+    const creditsServiceKey = process.env.CREDITS_SERVICE_KEY
+    const credits_system_ready = Boolean(creditsServiceKey && creditsServiceKey.trim())
 
     return res.json({
       ok: true,
       model_types: activeModelTypes,
       providers_by_type: providersByType,
       web_search_policy: webSearchPolicy,
+      credits_system_ready,
     })
   } catch (e: any) {
     console.error("getChatUiConfig error:", e)

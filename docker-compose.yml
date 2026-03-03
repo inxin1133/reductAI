@@ -155,6 +155,9 @@ services:
       - ./services/ai-agent-service:/app
       - /app/node_modules
     command: sh -c "npm ci --no-audit --no-fund || npm install --no-audit --no-fund; npm run dev"
+    env_file:
+      # CREDITS_SERVICE_KEY 등: auth-service/.env와 공유 (채팅 deduct, chat-ui config 필요)
+      - ./services/auth-service/.env
     environment:
       - PORT=3007
       - POSTGRES_USER=${POSTGRES_USER}
@@ -165,6 +168,10 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - SERPER_API_KEY=${SERPER_API_KEY}
       - FILE_SERVICE_URL=http://file-service:3008
+      - CREDITS_SERVICE_URL=http://credits-service:3011
+      - CREDITS_SERVICE_KEY=${CREDITS_SERVICE_KEY:-reductai-credits-internal}
+    depends_on:
+      - credits-service
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

@@ -731,7 +731,7 @@ async function buildSubscriptionChangeQuote(
 
   chargeAmount = roundMoney(chargeAmount, currency)
   refundAmount = roundMoney(refundAmount, currency)
-  creditDelta = Math.max(0, Math.round(creditDelta))
+  creditDelta = Math.max(0, Math.round(creditDelta * 100) / 100)
   const taxAmount =
     chargeAmount > 0 && taxRatePercent > 0 ? roundMoney(chargeAmount * (taxRatePercent / 100), currency) : 0
   const totalAmount = roundMoney(chargeAmount + taxAmount, currency)

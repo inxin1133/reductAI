@@ -162,7 +162,7 @@ CREATE TABLE billing_subscription_changes (
     change_type VARCHAR(20) NOT NULL CHECK (change_type IN ('upgrade', 'downgrade', 'cancel', 'resume')),
     effective_at TIMESTAMP WITH TIME ZONE NOT NULL,
     proration_amount_usd DECIMAL(10, 2) DEFAULT 0,
-    credit_proration_credits BIGINT DEFAULT 0,
+    credit_proration_credits NUMERIC(18, 2) DEFAULT 0,
     status VARCHAR(20) NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'applied', 'cancelled')),
     requested_by UUID REFERENCES users(id) ON DELETE SET NULL,
     metadata JSONB DEFAULT '{}'::jsonb,

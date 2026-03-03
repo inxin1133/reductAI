@@ -22,6 +22,8 @@ type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" |
 
 const MODEL_TYPES: ModelType[] = ["text", "image", "audio", "music", "video", "multimodal", "embedding", "code"]
 const FILE_SERVICE_URL = process.env.FILE_SERVICE_URL || "http://localhost:3008"
+const CREDITS_SERVICE_URL = process.env.CREDITS_SERVICE_URL || "http://localhost:3011"
+const CREDITS_SERVICE_KEY = process.env.CREDITS_SERVICE_KEY || ""
 
 type AudioFormat = "mp3" | "wav" | "opus" | "aac" | "flac"
 
@@ -1156,6 +1158,15 @@ async function ensureConversationOwned(args: { tenantId: string; userId: string;
   return r.rows.length > 0
 }
 
+/** conversation_id가 있을 때 해당 대화의 tenant_id 조회. 사용자 소유면 tenant_id 반환, 아니면 null */
+async function getConversationTenantIfOwned(conversationId: string, userId: string): Promise<string | null> {
+  const r = await query(
+    `SELECT tenant_id FROM model_conversations WHERE id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
+    [conversationId, userId]
+  )
+  return r.rows[0]?.tenant_id ? String(r.rows[0].tenant_id) : null
+}
+
 // 모달리티별 임시 제목
 function getTempTitle(modelType: ModelType): string {
   switch (modelType) {
@@ -1285,12 +1296,19 @@ export async function cancelChatRun(req: Request, res: Response) {
   try {
     const userId = (req as AuthedRequest).userId
     const authHeader = String(req.headers.authorization || "")
-    const tenantId = await ensureSystemTenantId()
     const body = (req.body || {}) as { conversation_id?: string; request_id?: string }
     const conversationId = String(body.conversation_id || "").trim()
     const requestId = String(body.request_id || "").trim()
     if (!conversationId && !requestId) return res.status(400).json({ message: "conversation_id or request_id is required" })
     if (conversationId && !isUuid(conversationId)) return res.status(400).json({ message: "conversation_id is invalid" })
+
+    let tenantId: string
+    if (conversationId) {
+      const convTenant = await getConversationTenantIfOwned(conversationId, String(userId || ""))
+      tenantId = convTenant ?? (await ensureSystemTenantId())
+    } else {
+      tenantId = await ensureSystemTenantId()
+    }
 
     const stopText = "사용자의 요청에 의해 요청 및 답변이 중지 되었습니다."
     if (requestId) {
@@ -1566,11 +1584,12 @@ export async function getConversationContext(req: Request, res: Response) {
   try {
     const userId = (req as AuthedRequest).userId
     const authHeader = String(req.headers.authorization || "")
-    const tenantId = await ensureSystemTenantId()
     const params = (req.params || {}) as Record<string, string | undefined>
     const conversationId = String(params.id || "").trim()
     if (!isUuid(conversationId)) return res.status(400).json({ message: "Invalid conversation id" })
 
+    const convTenant = await getConversationTenantIfOwned(conversationId, String(userId || ""))
+    const tenantId = convTenant ?? (await ensureSystemTenantId())
     const ok = await ensureConversationOwned({ tenantId, userId, conversationId })
     if (!ok) return res.status(404).json({ message: "Conversation not found" })
 
@@ -1689,9 +1708,25 @@ export async function chatRun(req: Request, res: Response) {
   let imageUsage: { count: number; size?: string; quality?: string } | null = null
   let musicUsage: { seconds: number; sample_rate?: number; channels?: string; bit_depth?: number } | null = null
   try {
+    if (!CREDITS_SERVICE_KEY || !CREDITS_SERVICE_KEY.trim()) {
+      return res.status(503).json({
+        message: "크레딧 시스템이 설정되지 않았습니다. 채팅을 사용할 수 없습니다.",
+        details: "CREDITS_SERVICE_KEY가 ai-agent-service에 설정되지 않았습니다. 관리자에게 문의해 주세요.",
+      })
+    }
     const userId = (req as AuthedRequest).userId
     const authHeader = String(req.headers.authorization || "")
-    const tenantId = await ensureSystemTenantId()
+    const convIdFromBody = req.body?.conversation_id ? String(req.body.conversation_id).trim() : ""
+    // 기존 대화 이어갈 때: 해당 대화의 tenant_id 사용 (Timeline 조회와 일치)
+    // 신규 대화: 항상 system tenant (Timeline이 system tenant 기준으로 목록 조회하므로 표시됨)
+    // 크레딧 차감은 deduct에서 selected_account_id로 별도 처리
+    let tenantId: string
+    if (convIdFromBody && isUuid(convIdFromBody)) {
+      const convTenant = await getConversationTenantIfOwned(convIdFromBody, String(userId || ""))
+      tenantId = convTenant ?? (await ensureSystemTenantId())
+    } else {
+      tenantId = await ensureSystemTenantId()
+    }
     const webSearchPolicy = await getWebSearchPolicy(tenantId)
 
     const {
@@ -3073,6 +3108,31 @@ export async function chatRun(req: Request, res: Response) {
               `,
               [usageLogId, webProvider || "serper", webSearchCount, webQueryCharsTotal, webResponseBytesTotal]
             )
+          }
+
+          if (status === "success" && totalCost > 0 && userId && CREDITS_SERVICE_KEY) {
+            const deductUrl = new URL("/api/ai/credits/internal/deduct-for-usage", CREDITS_SERVICE_URL)
+            try {
+              const deductRes = await fetch(deductUrl.toString(), {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "x-service-key": CREDITS_SERVICE_KEY },
+                body: JSON.stringify({ usage_log_id: usageLogId }),
+              })
+              const deductJson = (await deductRes.json().catch(() => null)) as
+                | { ok?: boolean; deducted?: number; skipped?: boolean; reason?: string }
+                | null
+              if (!deductRes.ok) {
+                console.warn("[credits-deduct] deduct-for-usage failed:", deductRes.status, deductJson)
+              } else if (deductJson?.skipped && deductJson?.reason) {
+                console.warn("[credits-deduct] deduct skipped:", deductJson.reason, "usage_log_id=", usageLogId)
+              } else if ((deductJson?.deducted ?? 0) > 0) {
+                console.log("[credits-deduct] deducted", deductJson.deducted, "credits for usage_log_id=", usageLogId)
+              }
+            } catch (err) {
+              console.warn("[credits-deduct] deduct-for-usage failed:", err)
+            }
+          } else if (status === "success" && totalCost > 0 && userId && !CREDITS_SERVICE_KEY) {
+            console.warn("[credits-deduct] CREDITS_SERVICE_KEY not configured; skip deduct-for-usage")
           }
         }
       }

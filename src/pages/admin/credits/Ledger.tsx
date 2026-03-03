@@ -274,11 +274,11 @@ export default function CreditLedger() {
                 </TableCell>
                 <TableCell className="font-mono text-xs">{row.entry_type}</TableCell>
                 <TableCell className="font-mono">
-                  {Number(row.amount_credits).toLocaleString()}
+                  {Number(row.amount_credits).toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </TableCell>
                 <TableCell className="font-mono">
                   {row.balance_after !== null && row.balance_after !== undefined
-                    ? Number(row.balance_after).toLocaleString()
+                    ? Number(row.balance_after).toLocaleString(undefined, { maximumFractionDigits: 2 })
                     : "-"}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">

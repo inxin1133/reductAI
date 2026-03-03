@@ -10,6 +10,12 @@ function toInt(v: unknown, fallback: number | null = null) {
   return Math.floor(n)
 }
 
+/** 소수점 2자리 반올림 (크레딧 정확도) */
+function roundToCredit(n: number): number {
+  if (!Number.isFinite(n)) return 0
+  return Math.round(n * 100) / 100
+}
+
 function toStr(v: unknown) {
   const s = typeof v === "string" ? v : ""
   return s.trim()
@@ -227,8 +233,8 @@ export async function createTopupProduct(req: Request, res: Response) {
         skuCode,
         name,
         priceUsd,
-        Math.floor(credits),
-        Math.floor(bonusCredits),
+        roundToCredit(credits),
+        roundToCredit(bonusCredits),
         currency,
         isActive === null ? true : isActive,
         JSON.stringify(metadataValue || {}),
@@ -281,14 +287,14 @@ export async function updateTopupProduct(req: Request, res: Response) {
       if (!Number.isFinite(credits) || credits <= 0) {
         return res.status(400).json({ message: "credits must be positive" })
       }
-      setField("credits", Math.floor(credits))
+      setField("credits", roundToCredit(credits))
     }
     if (input.bonus_credits !== undefined) {
       const bonusCredits = Number(input.bonus_credits)
       if (!Number.isFinite(bonusCredits) || bonusCredits < 0) {
         return res.status(400).json({ message: "bonus_credits must be >= 0" })
       }
-      setField("bonus_credits", Math.floor(bonusCredits))
+      setField("bonus_credits", roundToCredit(bonusCredits))
     }
     if (input.currency !== undefined) {
       const currency = toStr(input.currency).toUpperCase()
@@ -446,8 +452,8 @@ export async function createPlanGrant(req: Request, res: Response) {
         planSlug,
         billingCycle,
         creditType,
-        Math.floor(monthlyCredits),
-        Math.floor(initialCredits),
+        roundToCredit(monthlyCredits),
+        roundToCredit(initialCredits),
         isActive === null ? true : isActive,
         JSON.stringify(metadataValue || {}),
       ]
@@ -501,14 +507,14 @@ export async function updatePlanGrant(req: Request, res: Response) {
       if (!Number.isFinite(monthlyCredits) || monthlyCredits < 0) {
         return res.status(400).json({ message: "monthly_credits must be >= 0" })
       }
-      setField("monthly_credits", Math.floor(monthlyCredits))
+      setField("monthly_credits", roundToCredit(monthlyCredits))
     }
     if (input.initial_credits !== undefined) {
       const initialCredits = Number(input.initial_credits)
       if (!Number.isFinite(initialCredits) || initialCredits < 0) {
         return res.status(400).json({ message: "initial_credits must be >= 0" })
       }
-      setField("initial_credits", Math.floor(initialCredits))
+      setField("initial_credits", roundToCredit(initialCredits))
     }
     if (input.is_active !== undefined) {
       const isActive = toBool(input.is_active)
@@ -1922,6 +1928,147 @@ export async function getMyTopupUsage(req: Request, res: Response) {
   }
 }
 
+function formatUsageNumber(n: number): string {
+  if (!Number.isFinite(n)) return "0"
+  const v = roundToCredit(n)
+  if (v >= 1000) return `${(v / 1000).toFixed(1).replace(/\.0$/, "")}K`
+  return v % 1 === 0 ? String(Math.round(v)) : v.toFixed(2)
+}
+
+export async function getMyUsageHistory(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const userId = toStr(authed.userId)
+    if (!userId) return res.status(401).json({ message: "user_id is required" })
+
+    const limit = Math.min(Math.max(1, toInt(req.query.limit, 20) ?? 20), 100)
+    const offset = Math.max(0, toInt(req.query.offset, 0) ?? 0)
+    const from = toStr(req.query.from)
+    const to = toStr(req.query.to)
+
+    const where: string[] = ["cua.user_id = $1"]
+    const params: unknown[] = [userId]
+    if (from) {
+      params.push(from)
+      where.push(`cua.created_at >= $${params.length}::timestamptz`)
+    }
+    if (to) {
+      params.push(to)
+      where.push(`cua.created_at <= $${params.length}::timestamptz`)
+    }
+    const whereSql = where.join(" AND ")
+
+    const countRes = await query(
+      `
+      SELECT COUNT(*)::int AS total
+      FROM credit_usage_allocations cua
+      WHERE ${whereSql}
+      `,
+      params
+    )
+    const total = countRes.rows[0]?.total ?? 0
+
+    const listRes = await query(
+      `
+      SELECT
+        cua.created_at,
+        cua.amount_credits,
+        l.resolved_model,
+        l.modality,
+        l.input_tokens,
+        l.output_tokens,
+        l.total_tokens,
+        m.display_name AS model_display_name,
+        ca.owner_tenant_id,
+        t.name AS tenant_name,
+        t.slug AS tenant_slug,
+        COALESCE(iu.image_count, 0)::int AS image_count,
+        COALESCE(vu.video_seconds, 0)::numeric AS video_seconds,
+        COALESCE(mu.music_seconds, 0)::numeric AS music_seconds,
+        COALESCE(au.audio_seconds, 0)::numeric AS audio_seconds
+      FROM credit_usage_allocations cua
+      JOIN llm_usage_logs l ON l.id = cua.usage_log_id
+      JOIN credit_accounts ca ON ca.id = cua.account_id
+      LEFT JOIN tenants t ON t.id = ca.owner_tenant_id AND t.deleted_at IS NULL
+      LEFT JOIN ai_models m ON m.id = l.model_id
+      LEFT JOIN (
+        SELECT usage_log_id, SUM(image_count)::int AS image_count
+        FROM llm_image_usages
+        GROUP BY usage_log_id
+      ) iu ON iu.usage_log_id = l.id
+      LEFT JOIN (
+        SELECT usage_log_id, SUM(seconds) AS video_seconds
+        FROM llm_video_usages
+        GROUP BY usage_log_id
+      ) vu ON vu.usage_log_id = l.id
+      LEFT JOIN (
+        SELECT usage_log_id, SUM(seconds) AS music_seconds
+        FROM llm_music_usages
+        GROUP BY usage_log_id
+      ) mu ON mu.usage_log_id = l.id
+      LEFT JOIN (
+        SELECT usage_log_id, SUM(seconds) AS audio_seconds
+        FROM llm_audio_usages
+        GROUP BY usage_log_id
+      ) au ON au.usage_log_id = l.id
+      WHERE ${whereSql}
+      ORDER BY cua.created_at DESC
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `,
+      [...params, limit, offset]
+    )
+
+    const rows = listRes.rows.map((row: Record<string, unknown>) => {
+      const modality = String(row.modality || "text")
+      const inputT = Number(row.input_tokens ?? 0)
+      const outputT = Number(row.output_tokens ?? 0)
+      const imageCount = Number(row.image_count ?? 0)
+      const videoSec = Number(row.video_seconds ?? 0)
+      const musicSec = Number(row.music_seconds ?? 0)
+      const audioSec = Number(row.audio_seconds ?? 0)
+
+      let usageDesc = ""
+      if (modality === "image_create" && imageCount > 0) {
+        usageDesc = `이미지 ${formatUsageNumber(imageCount)}장`
+      } else if (modality === "video" && videoSec > 0) {
+        usageDesc = `영상 ${Math.round(videoSec)}초`
+      } else if (modality === "music" && musicSec > 0) {
+        usageDesc = `음악 ${Math.round(musicSec)}초`
+      } else if (modality === "audio" && audioSec > 0) {
+        usageDesc = `음성 ${Math.round(audioSec)}초`
+      } else {
+        usageDesc = `입력 ${formatUsageNumber(inputT)} / 출력 ${formatUsageNumber(outputT)}`
+      }
+
+      const model =
+        row.model_display_name && String(row.model_display_name).trim()
+          ? String(row.model_display_name)
+          : String(row.resolved_model || "-")
+      const credits = normalizeUsageAmount(Number(row.amount_credits ?? 0))
+      const tenantName = row.tenant_name && String(row.tenant_name).trim() ? String(row.tenant_name) : null
+      const tenantSlug = row.tenant_slug && String(row.tenant_slug).trim() ? String(row.tenant_slug) : null
+      const tenantLabel = tenantName || tenantSlug || (row.owner_tenant_id ? String(row.owner_tenant_id).slice(0, 8) + "…" : "-")
+
+      return {
+        created_at: toIsoString(row.created_at),
+        model,
+        usage_desc: usageDesc,
+        credits,
+        tenant_name: tenantName,
+        tenant_slug: tenantSlug,
+        tenant_label: tenantLabel,
+      }
+    })
+
+    return res.json({ ok: true, rows, total })
+  } catch (e: unknown) {
+    console.error("getMyUsageHistory error:", e)
+    return res
+      .status(500)
+      .json({ message: "Failed to load usage history", details: String((e as Error)?.message ?? e) })
+  }
+}
+
 export async function updateMemberTopupCreditAccess(req: Request, res: Response) {
   try {
     const authed = req as AuthedRequest
@@ -1993,6 +2140,394 @@ export async function updateMemberTopupCreditAccess(req: Request, res: Response)
   } catch (e: any) {
     console.error("updateMemberTopupCreditAccess error:", e)
     return res.status(500).json({ message: "Failed to update member topup credit access", details: String(e?.message || e) })
+  }
+}
+
+export async function deductCreditsForUsage(req: Request, res: Response) {
+  const usageLogId = toStr(req.body?.usage_log_id)
+  if (!usageLogId || !isUuid(usageLogId)) {
+    return res.status(400).json({ message: "usage_log_id is required (valid UUID)" })
+  }
+
+  const client = await pool.connect()
+  let transactionStarted = false
+  try {
+    await client.query("BEGIN")
+    transactionStarted = true
+
+    const logRes = await client.query(
+      `
+      SELECT
+        l.tenant_id,
+        l.user_id,
+        l.total_cost,
+        l.currency,
+        l.status,
+        l.modality,
+        l.model_id,
+        l.provider_id,
+        p.slug AS provider_slug,
+        m.model_id AS model_key
+      FROM llm_usage_logs l
+      LEFT JOIN ai_providers p ON p.id = l.provider_id
+      LEFT JOIN ai_models m ON m.id = l.model_id
+      WHERE l.id = $1
+      LIMIT 1
+      `,
+      [usageLogId]
+    )
+    const logRow = logRes.rows[0] as
+      | {
+          tenant_id: string
+          user_id: string | null
+          total_cost: number
+          currency: string
+          status: string
+          modality: string | null
+          model_id: string | null
+          provider_id: string | null
+          provider_slug: string | null
+          model_key: string | null
+        }
+      | undefined
+    if (!logRow) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      return res.status(404).json({ message: "usage log not found" })
+    }
+    let tenantId = String(logRow.tenant_id)
+    const userId = logRow.user_id ? String(logRow.user_id) : null
+
+    // 사용자가 크레딧 탭에서 선택한 계정(selected_account_id)이 있으면, 해당 계정의 tenant를 우선 사용
+    const prefResForTenant = await client.query(
+      `SELECT cup.selected_account_id
+       FROM credit_user_preferences cup
+       WHERE cup.user_id = $1 AND cup.selected_account_id IS NOT NULL
+       LIMIT 1`,
+      [userId]
+    )
+    const selectedAccId = prefResForTenant.rows[0]?.selected_account_id
+      ? String(prefResForTenant.rows[0].selected_account_id)
+      : null
+    if (selectedAccId) {
+      const accTenantRes = await client.query(
+        `
+        SELECT ca.owner_tenant_id, ca.source_tenant_id, ca.owner_type
+        FROM credit_accounts ca
+        WHERE ca.id = $1 AND ca.status = 'active'
+          AND (
+            EXISTS (SELECT 1 FROM credit_account_access caa WHERE caa.user_id = $2 AND caa.account_id = ca.id AND caa.is_active = TRUE)
+            OR EXISTS (SELECT 1 FROM tenants t WHERE t.id = ca.owner_tenant_id AND t.owner_id = $2 AND t.deleted_at IS NULL)
+          )
+        LIMIT 1
+        `,
+        [selectedAccId, userId]
+      )
+      const accRow = accTenantRes.rows[0] as { owner_tenant_id?: string; source_tenant_id?: string; owner_type?: string } | undefined
+      if (accRow) {
+        const resolvedTenant = accRow.owner_type === "tenant" && accRow.owner_tenant_id
+          ? accRow.owner_tenant_id
+          : accRow.source_tenant_id
+        if (resolvedTenant) tenantId = String(resolvedTenant)
+      }
+    }
+    const totalCost = Number(logRow.total_cost ?? 0)
+    const currency = String(logRow.currency || "USD").toUpperCase()
+    const status = String(logRow.status || "")
+
+    if (!userId) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      return res.status(400).json({ message: "usage log has no user_id" })
+    }
+    if (status !== "success") {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      console.warn("[deduct] skip usage_log_id=%s reason=status_not_success status=%s", usageLogId, status)
+      return res.json({ ok: true, deducted: 0, skipped: true, reason: "status_not_success" })
+    }
+    if (!Number.isFinite(totalCost) || totalCost <= 0) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      console.warn("[deduct] skip usage_log_id=%s reason=no_cost total_cost=%s", usageLogId, totalCost)
+      return res.json({ ok: true, deducted: 0, skipped: true, reason: "no_cost" })
+    }
+
+    // llm_usage_logs may have tenant_id=system (platform-wide). credit_accounts live on user's tenant.
+    // Resolve user's primary tenant when log tenant is system.
+    const systemTenantRes = await client.query(
+      `SELECT id FROM tenants WHERE slug = 'system' AND deleted_at IS NULL LIMIT 1`
+    )
+    const systemTenantId = systemTenantRes.rows[0]?.id ? String(systemTenantRes.rows[0].id) : null
+    if (systemTenantId && tenantId === systemTenantId) {
+      const primaryRes = await client.query(
+        `
+        SELECT utr.tenant_id
+        FROM user_tenant_roles utr
+        JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+        WHERE utr.user_id = $1
+          AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+          AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+        ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC
+        LIMIT 1
+        `,
+        [userId]
+      )
+      const primaryTenantId = primaryRes.rows[0]?.tenant_id ? String(primaryRes.rows[0].tenant_id) : null
+      if (primaryTenantId) {
+        tenantId = primaryTenantId
+      }
+    }
+
+    // Map llm_usage_logs.modality → pricing_markup_rules.modality
+    const pricingModality = (() => {
+      const m = String(logRow?.modality ?? "text").toLowerCase()
+      const map: Record<string, string> = {
+        text: "text",
+        image_read: "image",
+        image_create: "image",
+        audio: "audio",
+        video: "video",
+        music: "audio",
+        code: "code",
+        multimodal: "text",
+        embedding: "text",
+      }
+      return map[m] ?? "text"
+    })()
+
+    let marginPercent = 0
+    try {
+      await client.query("SAVEPOINT margin_lookup")
+      // Support document/schema_pricing (is_active, effective_at, model_id, modality, scope_type)
+      const marginRes = await client.query(
+        `
+        SELECT margin_percent
+        FROM pricing_markup_rules
+        WHERE is_active = TRUE
+          AND (effective_at IS NULL OR effective_at <= NOW())
+          AND (model_id IS NULL OR model_id = $1)
+          AND (modality IS NULL OR modality = $2)
+        ORDER BY
+          (CASE WHEN model_id IS NOT NULL THEN 2 ELSE 0 END)
+          + (CASE WHEN modality IS NOT NULL THEN 1 ELSE 0 END) DESC,
+          priority DESC
+        LIMIT 1
+        `,
+        [logRow?.model_id ?? null, pricingModality]
+      )
+      marginPercent = Number(marginRes.rows[0]?.margin_percent ?? 0)
+      await client.query("RELEASE SAVEPOINT margin_lookup")
+    } catch {
+      try {
+        await client.query("ROLLBACK TO SAVEPOINT margin_lookup")
+      } catch {
+        // savepoint may already be consumed
+      }
+    }
+
+    const costWithMargin = totalCost * (1 + marginPercent / 100)
+    const settingsRes = await client.query(
+      `SELECT credits_per_usd FROM credit_settings WHERE currency = $1 LIMIT 1`,
+      [currency]
+    )
+    const creditsPerUsd = Number(settingsRes.rows[0]?.credits_per_usd ?? 1000)
+    const creditsToDeduct = roundToCredit(costWithMargin * creditsPerUsd)
+    if (creditsToDeduct <= 0) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      console.warn(
+        "[deduct] skip usage_log_id=%s reason=credits_zero total_cost=%s margin_percent=%s cost_with_margin=%s credits_per_usd=%s",
+        usageLogId,
+        totalCost,
+        marginPercent,
+        costWithMargin,
+        creditsPerUsd
+      )
+      return res.json({ ok: true, deducted: 0, skipped: true, reason: "credits_zero" })
+    }
+
+    const existingAlloc = await client.query(
+      `SELECT 1 FROM credit_usage_allocations WHERE usage_log_id = $1 LIMIT 1`,
+      [usageLogId]
+    )
+    if (existingAlloc.rows.length > 0) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      return res.json({ ok: true, deducted: 0, skipped: true, reason: "already_allocated" })
+    }
+
+    const prefRes = await client.query(
+      `SELECT selected_account_id FROM credit_user_preferences WHERE user_id = $1 LIMIT 1`,
+      [userId]
+    )
+    const selectedAccountId = prefRes.rows[0]?.selected_account_id
+      ? String(prefRes.rows[0].selected_account_id)
+      : null
+
+    const accountsRes = await client.query(
+      `
+      SELECT id, balance_credits, reserved_credits, priority, credit_type
+      FROM (
+        (
+          SELECT ca.id, ca.balance_credits, ca.reserved_credits, caa.priority, ca.credit_type
+          FROM credit_account_access caa
+          JOIN credit_accounts ca ON ca.id = caa.account_id AND ca.status = 'active'
+            AND ca.owner_type = 'tenant' AND ca.owner_tenant_id = $2
+          WHERE caa.user_id = $1
+            AND caa.is_active = TRUE
+            AND (
+              ca.credit_type = 'subscription'
+              OR (ca.credit_type = 'topup' AND caa.allow_when_empty = TRUE)
+            )
+        )
+        UNION
+        (
+          SELECT ca.id, ca.balance_credits, ca.reserved_credits, 0 AS priority, ca.credit_type
+          FROM credit_accounts ca
+          JOIN tenants t ON t.id = ca.owner_tenant_id AND t.owner_id = $1
+          WHERE ca.status = 'active'
+            AND ca.owner_type = 'tenant' AND ca.owner_tenant_id = $2
+            AND (
+              ca.credit_type = 'subscription'
+              OR ca.credit_type = 'topup'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM credit_account_access caa2
+              WHERE caa2.user_id = $1 AND caa2.account_id = ca.id
+            )
+        )
+      ) sub
+      ORDER BY
+        CASE WHEN id::text = $3 THEN 0 ELSE 1 END,
+        priority ASC,
+        CASE credit_type WHEN 'subscription' THEN 0 ELSE 1 END
+      `,
+      [userId, tenantId, selectedAccountId || ""]
+    )
+
+    const accounts = accountsRes.rows as Array<{
+      id: string
+      balance_credits: number
+      reserved_credits: number
+      priority: number
+      credit_type: string
+    }>
+    const withBalance = accounts.filter((a) => {
+      const avail = Math.max(0, Number(a.balance_credits ?? 0) - Number(a.reserved_credits ?? 0))
+      return avail > 0
+    })
+    if (withBalance.length === 0) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      console.warn(
+        "[deduct] skip usage_log_id=%s reason=insufficient_balance userId=%s tenantId=%s accounts=%d (0 with balance)",
+        usageLogId,
+        userId,
+        tenantId,
+        accounts.length
+      )
+      return res.json({ ok: true, deducted: 0, skipped: true, reason: "insufficient_balance" })
+    }
+
+    let remaining = creditsToDeduct
+    const allocations: Array<{ account_id: string; amount: number }> = []
+
+    for (const acc of withBalance) {
+      if (remaining <= 0) break
+      const avail = Math.max(
+        0,
+        roundToCredit(Number(acc.balance_credits ?? 0) - Number(acc.reserved_credits ?? 0))
+      )
+      if (avail <= 0) continue
+      let deduct = Math.min(remaining, avail)
+      const deductRounded = roundToCredit(deduct)
+      if (deductRounded > avail) deduct = 0
+      else deduct = deductRounded
+      if (deduct <= 0) continue
+      remaining -= deduct
+      allocations.push({ account_id: acc.id, amount: deduct })
+    }
+
+    if (remaining > 0) {
+      await client.query("ROLLBACK")
+      transactionStarted = false
+      console.warn(
+        "[deduct] skip usage_log_id=%s reason=insufficient_balance remaining=%d creditsToDeduct=%d",
+        usageLogId,
+        remaining,
+        creditsToDeduct
+      )
+      return res.json({ ok: true, deducted: 0, skipped: true, reason: "insufficient_balance" })
+    }
+
+    const occurredAt = new Date().toISOString()
+    for (const alloc of allocations) {
+      const accRes = await client.query(
+        `SELECT id, balance_credits FROM credit_accounts WHERE id = $1 FOR UPDATE`,
+        [alloc.account_id]
+      )
+      const acc = accRes.rows[0] as { id: string; balance_credits: number }
+      if (!acc) continue
+      const balanceBefore = Number(acc.balance_credits ?? 0)
+      const balanceAfter = Math.max(0, balanceBefore - alloc.amount)
+      await client.query(
+        `UPDATE credit_accounts SET balance_credits = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+        [balanceAfter, alloc.account_id]
+      )
+      await client.query(
+        `
+        INSERT INTO credit_ledger_entries
+          (account_id, entry_type, amount_credits, balance_after, usage_log_id, occurred_at, metadata)
+        VALUES ($1, 'usage', $2, $3, $4, $5::timestamptz, $6::jsonb)
+        `,
+        [
+          alloc.account_id,
+          -alloc.amount,
+          balanceAfter,
+          usageLogId,
+          occurredAt,
+          JSON.stringify({
+            usage_log_id: usageLogId,
+            user_id: userId,
+            base_cost_usd: totalCost,
+            margin_percent: marginPercent,
+            cost_with_margin_usd: costWithMargin,
+          }),
+        ]
+      )
+      await client.query(
+        `
+        INSERT INTO credit_usage_allocations (usage_log_id, user_id, account_id, amount_credits)
+        VALUES ($1, $2, $3, $4)
+        `,
+        [usageLogId, userId, alloc.account_id, alloc.amount]
+      )
+    }
+
+    await client.query("COMMIT")
+    transactionStarted = false
+    console.log(
+      "[deduct] success usage_log_id=%s base_cost=%.6f margin%%=%s cost_with_margin=%.6f deducted=%d",
+      usageLogId,
+      totalCost,
+      marginPercent,
+      costWithMargin,
+      creditsToDeduct
+    )
+    return res.json({
+      ok: true,
+      deducted: creditsToDeduct,
+      allocations: allocations.map((a) => ({ account_id: a.account_id, amount: a.amount })),
+    })
+  } catch (e: unknown) {
+    if (transactionStarted) await client.query("ROLLBACK")
+    console.error("deductCreditsForUsage error:", e)
+    return res
+      .status(500)
+      .json({ message: "Failed to deduct credits", details: String((e as Error)?.message ?? e) })
+  } finally {
+    client.release()
   }
 }
 
@@ -2070,9 +2605,9 @@ export async function grantSubscriptionCredits(req: Request, res: Response) {
 
     const baseGrant =
       grantAmountOverride !== null
-        ? Math.floor(grantAmountOverride)
-        : Math.floor(Number(planRow?.monthly_credits ?? 0))
-    const initialCredits = Math.floor(Number(planRow?.initial_credits ?? 0))
+        ? roundToCredit(grantAmountOverride)
+        : roundToCredit(Number(planRow?.monthly_credits ?? 0))
+    const initialCredits = roundToCredit(Number(planRow?.initial_credits ?? 0))
 
     const accountRes = await client.query(
       `
@@ -2115,7 +2650,7 @@ export async function grantSubscriptionCredits(req: Request, res: Response) {
     }
 
     const balanceAfter =
-      grantMode === "reset" ? totalGrant : Math.max(0, balanceBefore + totalGrant)
+      grantMode === "reset" ? totalGrant : Math.max(0, roundToCredit(balanceBefore + totalGrant))
     const delta = balanceAfter - balanceBefore
 
     await client.query(
@@ -2493,6 +3028,8 @@ export async function getMyGrantedCredits(req: Request, res: Response) {
         period_end: string | null
       } | null
       topup_auto_use: boolean
+      topup_account_id: string | null
+      topup_remaining_credits: number
     }> = []
 
     for (const tenantRow of tenantsRes.rows) {
@@ -2524,7 +3061,81 @@ export async function getMyGrantedCredits(req: Request, res: Response) {
         | undefined
 
       if (!sub) {
-        grants.push({ tenant_id: tenantId, tenant_name: tenantName, tenant_type: tenantType, plan_tier: null, role_slug: roleSlug, account_id: null, service: null, topup_auto_use: false })
+        const subAccountNoSubRes = await query(
+          `SELECT id, balance_credits, reserved_credits FROM credit_accounts WHERE owner_type = 'tenant' AND owner_tenant_id = $1 AND credit_type = 'subscription' LIMIT 1`,
+          [tenantId]
+        )
+        const subAccountNoSub = subAccountNoSubRes.rows[0] as { id: string; balance_credits: number; reserved_credits: number } | undefined
+        const isOwnerNoSub = roleSlug === "owner" || roleSlug === "tenant_owner"
+        const hasAccessNoSub = isOwnerNoSub || (subAccountNoSub?.id
+          ? (await query(
+              `SELECT 1 FROM credit_account_access WHERE user_id = $1 AND account_id = $2 AND is_active = TRUE LIMIT 1`,
+              [userId, subAccountNoSub.id]
+            )).rows.length > 0
+          : false)
+        let accountIdNoSub: string | null = null
+        let serviceNoSub: typeof grants[0]["service"] = null
+        if (subAccountNoSub?.id && hasAccessNoSub) {
+          const accountRemainingNoSub = Math.max(0, Number(subAccountNoSub.balance_credits ?? 0) - Number(subAccountNoSub.reserved_credits ?? 0))
+          let userUsedNoSub = 0
+          let maxPerPeriodNoSub: number | null = null
+          const accessNoSubRes = await query(
+            `SELECT max_per_period FROM credit_account_access WHERE user_id = $1 AND account_id = $2 LIMIT 1`,
+            [userId, subAccountNoSub.id]
+          )
+          if (accessNoSubRes.rows[0]?.max_per_period != null) {
+            maxPerPeriodNoSub = Number(accessNoSubRes.rows[0].max_per_period)
+            const userUsageNoSubRes = await query(
+              `SELECT COALESCE(SUM(amount_credits), 0) AS total FROM credit_usage_allocations WHERE account_id = $1 AND user_id = $2`,
+              [subAccountNoSub.id, userId]
+            )
+            userUsedNoSub = normalizeUsageAmount(Number(userUsageNoSubRes.rows[0]?.total ?? 0))
+          }
+          const remainingNoSub = maxPerPeriodNoSub != null
+            ? Math.max(0, Math.min(maxPerPeriodNoSub - userUsedNoSub, accountRemainingNoSub))
+            : accountRemainingNoSub
+          accountIdNoSub = subAccountNoSub.id
+          serviceNoSub = {
+            total_credits: accountRemainingNoSub,
+            used_credits: 0,
+            user_used_credits: userUsedNoSub,
+            remaining_credits: remainingNoSub,
+            usage_percent: 0,
+            max_per_period: maxPerPeriodNoSub,
+            is_active: true,
+            period_start: null,
+            period_end: null,
+          }
+        }
+        const topupNoSubRes = await query(
+          `SELECT id, balance_credits, reserved_credits FROM credit_accounts WHERE owner_type = 'tenant' AND owner_tenant_id = $1 AND credit_type = 'topup' LIMIT 1`,
+          [tenantId]
+        )
+        const topupNoSub = topupNoSubRes.rows[0] as { id: string; balance_credits: number; reserved_credits: number } | undefined
+        let topupAutoUseNoSub = false
+        let topupRemainingNoSub = 0
+        if (topupNoSub?.id) {
+          const topupAccessNoSub = await query(
+            `SELECT allow_when_empty FROM credit_account_access WHERE user_id = $1 AND account_id = $2 LIMIT 1`,
+            [userId, topupNoSub.id]
+          )
+          topupAutoUseNoSub = topupAccessNoSub.rows[0]?.allow_when_empty === true
+          if (isOwnerNoSub || topupAutoUseNoSub) {
+            topupRemainingNoSub = Math.max(0, Number(topupNoSub.balance_credits ?? 0) - Number(topupNoSub.reserved_credits ?? 0))
+          }
+        }
+        grants.push({
+          tenant_id: tenantId,
+          tenant_name: tenantName,
+          tenant_type: tenantType,
+          plan_tier: "free",
+          role_slug: roleSlug,
+          account_id: accountIdNoSub,
+          service: serviceNoSub,
+          topup_auto_use: isOwnerNoSub || topupAutoUseNoSub,
+          topup_account_id: topupNoSub?.id ?? null,
+          topup_remaining_credits: topupRemainingNoSub,
+        })
         continue
       }
 
@@ -2588,17 +3199,22 @@ export async function getMyGrantedCredits(req: Request, res: Response) {
           : tenantRemaining
 
       let topupAutoUse = false
+      let topupRemaining = 0
       const topupAccountRes = await query(
-        `SELECT id FROM credit_accounts WHERE owner_type = 'tenant' AND owner_tenant_id = $1 AND credit_type = 'topup' LIMIT 1`,
+        `SELECT id, balance_credits, reserved_credits FROM credit_accounts WHERE owner_type = 'tenant' AND owner_tenant_id = $1 AND credit_type = 'topup' LIMIT 1`,
         [tenantId]
       )
-      const topupAccountId = topupAccountRes.rows[0]?.id
+      const topupAccountRow = topupAccountRes.rows[0] as { id: string; balance_credits: number; reserved_credits: number } | undefined
+      const topupAccountId = topupAccountRow?.id ?? null
       if (topupAccountId) {
         const topupAccessRes = await query(
           `SELECT allow_when_empty FROM credit_account_access WHERE user_id = $1 AND account_id = $2 LIMIT 1`,
           [userId, topupAccountId]
         )
         topupAutoUse = topupAccessRes.rows[0]?.allow_when_empty === true
+        if (topupAutoUse) {
+          topupRemaining = Math.max(0, Number(topupAccountRow.balance_credits ?? 0) - Number(topupAccountRow.reserved_credits ?? 0))
+        }
       }
 
       grants.push({
@@ -2620,6 +3236,8 @@ export async function getMyGrantedCredits(req: Request, res: Response) {
           period_end: periodEnd || null,
         },
         topup_auto_use: topupAutoUse,
+        topup_account_id: topupAccountId,
+        topup_remaining_credits: topupRemaining,
       })
     }
 

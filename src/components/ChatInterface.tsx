@@ -51,6 +51,7 @@ import {
 import { ProviderLogo } from "@/components/icons/providerLogoRegistry"
 import { ModelOptionsPanel } from "@/components/ModelOptionsPanel"
 import { getCreditTabStyles, PLAN_TIER_LABELS, PLAN_TIER_STYLES, normalizePlanTier, type PlanTier } from "@/lib/planTier"
+import { withActiveTenantHeader } from "@/lib/tenantContext"
 
 type GrantedCredit = {
   tenant_id: string
@@ -66,6 +67,8 @@ type GrantedCredit = {
     remaining_credits: number
   } | null
   topup_auto_use?: boolean
+  topup_account_id?: string | null
+  topup_remaining_credits?: number
 }
 
 type PaidTokenProps = {
@@ -76,7 +79,8 @@ type PaidTokenProps = {
 
 function formatCredits(value: number): string {
   if (!Number.isFinite(value) || value < 0) return "0"
-  return Math.floor(value).toLocaleString("ko-KR")
+  const n = Math.round(value * 100) / 100
+  return n.toLocaleString("ko-KR", { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 }
 
 function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps) {
@@ -98,13 +102,37 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
       const grantsJson = (await grantsRes.json().catch(() => null)) as { ok?: boolean; grants?: GrantedCredit[] } | null
       const prefsJson = (await prefsRes.json().catch(() => null)) as { ok?: boolean; selected_account_id?: string | null } | null
       const grants = grantsJson?.ok && Array.isArray(grantsJson.grants) ? grantsJson.grants : []
-      const displayable = grants.filter((g) => g.account_id != null && (g.service?.remaining_credits ?? 0) >= 0)
+      const buildTabs = (glist: typeof grants) => {
+        const tabs: Array<{ accountId: string }> = []
+        for (const g of glist) {
+          const serviceRemaining = g.service?.remaining_credits ?? 0
+          const topupRemaining = g.topup_remaining_credits ?? 0
+          const hasTopupAccess = g.topup_auto_use || g.role_slug === "owner" || g.role_slug === "tenant_owner"
+          if (serviceRemaining > 0 && g.account_id) {
+            tabs.push({ accountId: g.account_id })
+          } else if (topupRemaining > 0 && hasTopupAccess && g.topup_account_id) {
+            tabs.push({ accountId: g.topup_account_id })
+          } else if (g.account_id) {
+            tabs.push({ accountId: g.account_id })
+          } else if (hasTopupAccess && g.topup_account_id) {
+            tabs.push({ accountId: g.topup_account_id })
+          }
+        }
+        return tabs
+      }
+      const tabs = buildTabs(grants)
+      const allAccountIds = tabs.map((t) => t.accountId)
+      const ownerGrant = grants.find((g) => g.role_slug === "owner" || g.role_slug === "tenant_owner")
       const defaultAccountId =
-        displayable.find((g) => g.role_slug === "owner" || g.role_slug === "tenant_owner")?.account_id ??
-        displayable[0]?.account_id ??
-        null
+        (ownerGrant
+          ? (ownerGrant.service?.remaining_credits ?? 0) > 0
+            ? ownerGrant.account_id
+            : (ownerGrant.topup_remaining_credits ?? 0) > 0
+              ? ownerGrant.topup_account_id
+              : ownerGrant.account_id ?? ownerGrant.topup_account_id ?? null
+          : null) ?? tabs[0]?.accountId ?? null
       const storedSelected = prefsJson?.ok && prefsJson.selected_account_id !== undefined ? (prefsJson.selected_account_id ?? null) : null
-      const isStoredValid = storedSelected != null && displayable.some((g) => g.account_id === storedSelected)
+      const isStoredValid = storedSelected != null && allAccountIds.includes(storedSelected)
       const effectiveSelected = isStoredValid ? storedSelected : defaultAccountId
       if (effectiveSelected != null && effectiveSelected !== storedSelected) {
         try {
@@ -135,6 +163,12 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
 
   React.useEffect(() => {
     fetchData()
+  }, [fetchData])
+
+  React.useEffect(() => {
+    const onRefresh = () => fetchData()
+    window.addEventListener("reductai:credits-refresh", onRefresh)
+    return () => window.removeEventListener("reductai:credits-refresh", onRefresh)
   }, [fetchData])
 
   const handleTabClick = React.useCallback(
@@ -177,30 +211,53 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
     )
   }
 
-  const displayableGrants = grants.filter((g) => g.account_id != null && (g.service?.remaining_credits ?? 0) >= 0)
-  if (displayableGrants.length === 0) {
+  const creditTabs: Array<{
+    type: "subscription" | "topup"
+    accountId: string
+    grant: GrantedCredit
+    label: string
+    remaining: number
+  }> = []
+  for (const g of grants) {
+    const serviceRemaining = g.service?.remaining_credits ?? 0
+    const topupRemaining = g.topup_remaining_credits ?? 0
+    const hasTopupAccess = g.topup_auto_use || g.role_slug === "owner" || g.role_slug === "tenant_owner"
+    const tier = normalizePlanTier(g.plan_tier) ?? "free"
+    const planLabel = PLAN_TIER_LABELS[tier as PlanTier] || g.plan_tier || "Free"
+    const tenantLabel = g.tenant_type === "personal" ? "개인" : g.tenant_name || "개인"
+    const label = `${tenantLabel}:${planLabel}`
+
+    if (serviceRemaining > 0 && g.account_id) {
+      creditTabs.push({ type: "subscription", accountId: g.account_id, grant: g, label, remaining: serviceRemaining })
+    } else if (topupRemaining > 0 && hasTopupAccess && g.topup_account_id) {
+      creditTabs.push({ type: "topup", accountId: g.topup_account_id, grant: g, label, remaining: topupRemaining })
+    } else if (g.account_id != null) {
+      creditTabs.push({ type: "subscription", accountId: g.account_id, grant: g, label, remaining: serviceRemaining })
+    } else if (hasTopupAccess && g.topup_account_id != null) {
+      creditTabs.push({ type: "topup", accountId: g.topup_account_id, grant: g, label, remaining: topupRemaining })
+    }
+  }
+
+  if (creditTabs.length === 0) {
     return null
   }
 
   if (variant === "compact") {
-    const selectedGrant =
-      displayableGrants.find((g) => g.account_id === selectedAccountId) ?? displayableGrants[0]
-    const tier = normalizePlanTier(selectedGrant.plan_tier) ?? "free"
-    const label =
-      (selectedGrant.tenant_type === "personal" ? "개인" : selectedGrant.tenant_name || "개인") +
-      ":" +
-      (PLAN_TIER_LABELS[tier as PlanTier] || selectedGrant.plan_tier || "Free")
-    const remaining = selectedGrant.service?.remaining_credits ?? 0
+    const selectedTab =
+      creditTabs.find((t) => t.accountId === selectedAccountId) ?? creditTabs[0]
+    const tier = selectedTab.type === "subscription" ? normalizePlanTier(selectedTab.grant.plan_tier) ?? "free" : "premium"
     return (
       <div className={cn("flex items-center gap-2 shrink-0", className)}>
-        <p className="font-medium text-sm text-foreground leading-5 whitespace-nowrap">{label}</p>
+        <p className="font-medium text-sm text-foreground leading-5 whitespace-nowrap">{selectedTab.label}</p>
         <div
           className={cn(
-            "flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 py-0.5 font-mono text-xs font-medium text-primary-foreground",
-            PLAN_TIER_STYLES[tier as PlanTier]?.avatar ?? "bg-muted-foreground"
+            "flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 py-0.5 font-mono text-xs font-medium",
+            selectedTab.type === "topup"
+              ? "bg-indigo-500 text-white"
+              : (PLAN_TIER_STYLES[tier as PlanTier]?.avatar ?? "bg-muted-foreground") + " text-primary-foreground"
           )}
         >
-          {formatCredits(remaining)}
+          {selectedTab.type === "topup" ? `충전:${formatCredits(selectedTab.remaining)}` : formatCredits(selectedTab.remaining)}
         </div>
       </div>
     )
@@ -208,40 +265,42 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
 
   return (
     <div className={cn("flex items-center gap-2 flex-wrap", className)}>
-      {displayableGrants.map((grant) => {
-        const tier = normalizePlanTier(grant.plan_tier) ?? "free"
-        const styles = getCreditTabStyles(tier)
-        const isSelected = selectedAccountId === grant.account_id
-        const label =
-          (grant.tenant_type === "personal" ? "개인" : grant.tenant_name || "개인") +
-          ":" +
-          (PLAN_TIER_LABELS[tier as PlanTier] || grant.plan_tier || "Free")
-        const remaining = grant.service?.remaining_credits ?? 0
+      {creditTabs.map((tab) => {
+        const isTopup = tab.type === "topup"
+        const tier = isTopup ? "premium" : (normalizePlanTier(tab.grant.plan_tier) ?? "free")
+        const styles = getCreditTabStyles(tier as PlanTier)
+        const isSelected = selectedAccountId === tab.accountId
         return (
           <button
-            key={grant.account_id!}
+            key={tab.accountId}
             type="button"
-            onClick={() => grant.account_id && handleTabClick(grant.account_id)}
+            onClick={() => handleTabClick(tab.accountId)}
             className={cn(
               "flex gap-1 items-center justify-center px-3 py-1 rounded-full shadow-sm shrink-0 transition-colors",
-              isSelected ? styles.outerSelected : styles.outerUnselected
+              isTopup
+                ? isSelected
+                  ? "bg-indigo-500"
+                  : "bg-background border border-border ring-1 ring-indigo-500"
+                : isSelected
+                  ? styles.outerSelected
+                  : styles.outerUnselected
             )}
           >
             <p
               className={cn(
                 "font-medium leading-[20px] text-[14px] whitespace-nowrap",
-                isSelected ? styles.labelSelected : styles.labelUnselected
+                isTopup ? (isSelected ? "text-white" : "text-indigo-600") : isSelected ? styles.labelSelected : styles.labelUnselected
               )}
             >
-              {label}
+              {tab.label}
             </p>
             <div
               className={cn(
                 "flex flex-col h-[20px] items-center justify-center px-[6px] py-[2px] rounded-full shrink-0 font-mono font-medium text-[12px] leading-[16px]",
-                isSelected ? styles.badgeSelected : styles.badgeUnselected
+                isTopup ? "bg-indigo-500 text-white" : isSelected ? styles.badgeSelected : styles.badgeUnselected
               )}
             >
-              {formatCredits(remaining)}
+              {isTopup ? `충전:${formatCredits(tab.remaining)}` : formatCredits(tab.remaining)}
             </div>
           </button>
         )
@@ -324,6 +383,7 @@ type ChatUiConfig = {
   model_types: ModelType[]
   providers_by_type: Record<string, UiProviderGroup[]>
   web_search_policy?: WebSearchPolicy
+  credits_system_ready?: boolean
 }
 
 type WebSearchPolicy = {
@@ -858,7 +918,8 @@ export function ChatInterface({
 
   const authHeaders = React.useCallback((): HeadersInit => {
     const token = localStorage.getItem("token")
-    return token ? { Authorization: `Bearer ${token}` } : {}
+    const base = token ? { Authorization: `Bearer ${token}` } : {}
+    return withActiveTenantHeader(base as Record<string, string>) as HeadersInit
   }, [])
   const getAuthToken = React.useCallback(() => String(localStorage.getItem("token") || ""), [])
   const withAuthToken = React.useCallback(
@@ -875,6 +936,41 @@ export function ChatInterface({
   const [uiLoading, setUiLoading] = React.useState(false)
   const [uiConfig, setUiConfig] = React.useState<ChatUiConfig | null>(null)
   const webSearchPolicy = uiConfig?.web_search_policy
+
+  const [hasCredits, setHasCredits] = React.useState(true)
+  const creditsSystemReady = uiConfig === null ? true : (uiConfig?.credits_system_ready !== false)
+  const canSend = hasCredits && creditsSystemReady
+  const fetchHasCredits = React.useCallback(() => {
+    const token = localStorage.getItem("token")
+    if (!token) {
+      setHasCredits(true)
+      return
+    }
+    fetch("/api/ai/credits/my/granted-credits", { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.json().catch(() => null))
+      .then((json: { ok?: boolean; grants?: Array<{ service?: { remaining_credits?: number }; topup_auto_use?: boolean; topup_remaining_credits?: number; role_slug?: string }> } | null) => {
+        if (!json?.ok || !Array.isArray(json.grants)) {
+          setHasCredits(true)
+          return
+        }
+        const canSend = json.grants.some((g) => {
+          const svc = g.service?.remaining_credits ?? 0
+          const topup = g.topup_remaining_credits ?? 0
+          const hasTopupAccess = g.topup_auto_use || g.role_slug === "owner" || g.role_slug === "tenant_owner"
+          return svc > 0 || (hasTopupAccess && topup > 0)
+        })
+        setHasCredits(canSend)
+      })
+      .catch(() => setHasCredits(true))
+  }, [])
+  React.useEffect(() => {
+    fetchHasCredits()
+  }, [fetchHasCredits])
+  React.useEffect(() => {
+    const onRefresh = () => fetchHasCredits()
+    window.addEventListener("reductai:credits-refresh", onRefresh)
+    return () => window.removeEventListener("reductai:credits-refresh", onRefresh)
+  }, [fetchHasCredits])
 
   // 마지막 선택 상태 저장 키
   const SELECTION_STORAGE_KEY = "reductai.chat.lastSelection.v1"
@@ -2324,6 +2420,14 @@ export function ChatInterface({
       overrideOptions?: Record<string, unknown>
     ) => {
       if (isWaitingForResponse) return
+      if (!creditsSystemReady) {
+        alert("크레딧 시스템이 설정되지 않았습니다. 채팅을 사용할 수 없습니다. 관리자에게 문의해 주세요.")
+        return
+      }
+      if (!hasCredits) {
+        alert("크레딧이 모두 소진되었습니다. 필요시, 충전 크레딧을 구매해 주세요")
+        return
+      }
       if (isPreparingAttachments || hasPendingAttachments) {
         alert("첨부파일 업로드가 완료되지 않았습니다. 완료 후 다시 시도해 주세요")
         return
@@ -2591,6 +2695,9 @@ export function ChatInterface({
             })
           )
         }
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("reductai:credits-refresh"))
+        }
         clearAttachments()
       } catch (e) {
         if (e instanceof DOMException && e.name === "AbortError") {
@@ -2639,6 +2746,9 @@ export function ChatInterface({
       submitMode,
       userSummary,
       webAllowed,
+      hasCredits,
+      creditsSystemReady,
+      canSend,
       isPreparingAttachments,
       hasPendingAttachments,
       isWaitingForResponse,
@@ -2989,7 +3099,7 @@ export function ChatInterface({
                     {!isCompact || compactPromptMode === "multi" ? (
                       <textarea
                         ref={promptInputRef}
-                        placeholder={uiSelectedModelLabel}
+                        placeholder={canSend ? uiSelectedModelLabel : creditsSystemReady ? "크레딧이 모두 소진 되었습니다." : "크레딧 시스템 설정 중입니다."}
                         className="w-full border-none outline-none text-[16px] placeholder:text-muted-foreground bg-transparent resize-none overflow-y-auto leading-6"
                         value={prompt}
                         rows={1}
@@ -3131,7 +3241,7 @@ export function ChatInterface({
                           value={prompt}
                           rows={1}
                           wrap="off"
-                          placeholder="프롬프트를 입력해주세요"
+                          placeholder={canSend ? "프롬프트를 입력해주세요" : creditsSystemReady ? "크레딧이 모두 소진 되었습니다." : "크레딧 시스템 설정 중입니다."}
                           className="w-full border-none outline-none leading-6 px-0 py-2 bg-transparent text-4 placeholder:text-muted-foreground resize-none overflow-hidden"
                           onChange={(e) => {
                             const v = e.currentTarget.value
@@ -3241,7 +3351,7 @@ export function ChatInterface({
                       onMouseLeave={() => {
                         if (isWaitingForResponse) setIsStopHovered(false)
                       }}
-                      disabled={isWaitingForResponse ? false : !prompt.trim() || isPreparingAttachments || hasPendingAttachments}
+                      disabled={isWaitingForResponse ? false : !prompt.trim() || !canSend || isPreparingAttachments || hasPendingAttachments}
                     >
                       {isWaitingForResponse ? (
                         isStopHovered ? (

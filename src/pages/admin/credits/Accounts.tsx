@@ -335,8 +335,12 @@ export default function CreditAccounts() {
                 <TableCell className="font-mono text-xs">
                   {row.owner_type}/{row.credit_type}
                 </TableCell>
-                <TableCell className="font-mono">{Number(row.balance_credits).toLocaleString()}</TableCell>
-                <TableCell className="font-mono">{Number(row.reserved_credits).toLocaleString()}</TableCell>
+                <TableCell className="font-mono">
+                  {Number(row.balance_credits).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </TableCell>
+                <TableCell className="font-mono">
+                  {Number(row.reserved_credits).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </TableCell>
                 <TableCell className="text-xs text-muted-foreground">{fmtDate(row.expires_at)}</TableCell>
                 <TableCell>
                   <Badge variant="outline" className={badgeClass(row.status)}>

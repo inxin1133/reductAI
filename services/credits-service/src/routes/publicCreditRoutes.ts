@@ -1,5 +1,5 @@
 import express from "express"
-import { getMyCreditPreferences, getMyCreditSummary, getMyGrantedCredits, getMyServiceUsage, getMyTopupUsage, listPublicTopupProducts, updateMemberCreditAccess, updateMemberTopupCreditAccess, updateMyCreditPreferences, updateMyTopupAutoUse } from "../controllers/creditController"
+import { getMyCreditPreferences, getMyCreditSummary, getMyGrantedCredits, getMyServiceUsage, getMyTopupUsage, getMyUsageHistory, listPublicTopupProducts, updateMemberCreditAccess, updateMemberTopupCreditAccess, updateMyCreditPreferences, updateMyTopupAutoUse } from "../controllers/creditController"
 
 const router = express.Router()
 
@@ -9,6 +9,7 @@ router.get("/preferences", getMyCreditPreferences)
 router.patch("/preferences", updateMyCreditPreferences)
 router.get("/service-usage", getMyServiceUsage)
 router.get("/topup-usage", getMyTopupUsage)
+router.get("/usage-history", getMyUsageHistory)
 router.get("/topup-products", listPublicTopupProducts)
 router.patch("/member-credit-access", updateMemberCreditAccess)
 router.patch("/member-topup-credit-access", updateMemberTopupCreditAccess)
