@@ -2028,7 +2028,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                         <div className="mt-3 h-2 w-full rounded-full bg-muted">
                           <div
                             className={cn("h-full rounded-full", creditCard.planStyle.avatar)}
-                            style={{ width: `100-${creditCard.percent}%` }}
+                            style={{ width: `${creditCard.percent}%` }}
                           />
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
@@ -2068,7 +2068,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                         <div className="mt-3 h-2 w-full rounded-full bg-muted">
                           <div
                             className="h-full rounded-full bg-primary"
-                            style={{ width: `100-${topupCard.percent}%` }}
+                            style={{ width: `${topupCard.percent}%` }}
                           />
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">

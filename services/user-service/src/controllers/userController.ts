@@ -29,6 +29,48 @@ const buildPersonalTenantSlug = (nameOrEmail: string, userId: string) => {
   return base ? `${base}-${suffix}` : suffix;
 };
 
+const CREDITS_SERVICE_URL = process.env.CREDITS_SERVICE_URL || 'http://localhost:3011';
+const CREDITS_SERVICE_KEY = process.env.CREDITS_SERVICE_KEY || '';
+
+async function grantInitialFreeCredits(tenantId: string): Promise<{ ok: boolean }> {
+  if (!CREDITS_SERVICE_KEY) {
+    console.warn('credits-service key not configured; skip initial credit grant');
+    return { ok: false };
+  }
+  const periodEnd = new Date();
+  periodEnd.setFullYear(periodEnd.getFullYear() + 1);
+  const periodEndIso = periodEnd.toISOString();
+  const grantKey = `initial-free:${tenantId}`;
+  try {
+    const res = await fetch(new URL('/api/ai/credits/internal/subscription-grant', CREDITS_SERVICE_URL).toString(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-service-key': CREDITS_SERVICE_KEY,
+      },
+      body: JSON.stringify({
+        tenant_id: tenantId,
+        plan_slug: 'free',
+        billing_cycle: 'monthly',
+        period_end: periodEndIso,
+        grant_mode: 'reset',
+        grant_key: grantKey,
+        reason: 'admin_user_create_initial',
+        credit_type: 'subscription',
+      }),
+    });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      console.error('credits-service initial grant failed:', res.status, json);
+      return { ok: false };
+    }
+    return { ok: true };
+  } catch (e) {
+    console.error('credits-service initial grant error:', e);
+    return { ok: false };
+  }
+}
+
 type DeleteEligibility = {
   ok: boolean;
   reason?: string;
@@ -717,6 +759,9 @@ export const createUser = async (req: Request, res: Response) => {
     }
 
     await client.query('COMMIT');
+
+    await grantInitialFreeCredits(tenantId);
+
     return res.status(201).json({
       user,
       tenant_id: tenantId,

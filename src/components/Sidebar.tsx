@@ -1,17 +1,11 @@
 import {
-  BadgeDollarSign,
   Mail,
   BookOpen,
   Bot,
-  Check,
-  ChevronRight,
-  ChevronsUpDown,
   Clock,
   Ellipsis,
-  LogOut,
   Menu,
   MessageSquareMore,
-  Monitor,
   Moon,
   PanelLeftClose,
   Pencil,
@@ -36,7 +30,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Input } from "@/components/ui/input"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
-import { ProfileAvatar } from "@/lib/ProfileAvatar"
+import { SidebarProfileBlock } from "@/components/sidebar/SidebarProfileBlock"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -130,11 +124,6 @@ function normalizePlanTier(value: unknown): PlanTier | null {
   if (!raw) return null
   if (PLAN_TIER_ORDER.includes(raw as PlanTier)) return raw as PlanTier
   return null
-}
-
-function pickHighestTier(tiers: PlanTier[]): PlanTier {
-  if (!tiers.length) return "free"
-  return tiers.reduce((best, tier) => (PLAN_TIER_ORDER.indexOf(tier) > PLAN_TIER_ORDER.indexOf(best) ? tier : best), "free")
 }
 
 function formatDateShort(value?: string | null) {
@@ -867,19 +856,11 @@ const profileBadges = useMemo(() => {
     return { name, email: rawEmail, initial }
   }, [])
 
-  const tierCandidates = useMemo(() => {
-    const tiers: PlanTier[] = []
-    if (tenantType || tenantPlanTier) {
-      tiers.push(resolveServiceTier({ tenant_type: tenantType, plan_tier: tenantPlanTier }))
-    }
-    tenantMemberships.forEach((t) => {
-      tiers.push(resolveServiceTier(t))
-    })
-    return tiers
-  }, [tenantMemberships, tenantPlanTier, tenantType])
-
-  const highestTier = useMemo(() => pickHighestTier(tierCandidates), [tierCandidates])
-  const avatarBgClass = PLAN_TIER_STYLES[highestTier]?.avatar || "bg-muted-foreground"
+  const currentTier = useMemo(
+    () => resolveServiceTier({ tenant_type: tenantType, plan_tier: tenantPlanTier }),
+    [tenantType, tenantPlanTier]
+  )
+  const avatarBgClass = PLAN_TIER_STYLES[currentTier]?.avatar || "bg-muted-foreground"
 
   const authProviderIcons = useMemo(() => {
     const items: Array<{ key: string; node: React.ReactNode }> = []
@@ -1978,194 +1959,6 @@ const profileBadges = useMemo(() => {
     if (isTenantSettingsDialogOpen) setIsTenantSettingsDialogOpen(false)
   }, [canManageTeamTenant, isTenantSettingsDialogOpen])
 
-  // Profile Popover Content (Shared) - 프로필 팝오버 콘텐츠 (공유)
-  const ProfilePopoverContent = () => (
-    <PopoverContent
-      className="w-64 p-1 mx-2 z-[100]"
-      align="start"
-      side="bottom"
-      sideOffset={8}
-    >
-      {/* User Info Section - 유저 정보 섹션 */}
-      <div className="flex flex-col gap-1 px-1 py-1">
-        <div className="flex gap-2 items-center px-2 py-1.5 rounded-sm">
-          <ProfileAvatar
-            size={40}
-            rounded="lg"
-            src={profileImageUrl}
-            name={userProfile.name}
-            initial={userProfile.initial}
-            fallbackClassName={avatarBgClass}
-            textClassName="text-lg"
-            showBrokenIcon
-          />
-          <div className="flex flex-col flex-1 min-w-0">
-            <p className="text-lg font-bold text-popover-foreground truncate">{userProfile.name}</p>
-          </div>
-        </div>
-
-        <div className="flex gap-2 items-center pl-2 py-1.5 rounded-sm">
-          {authProviderIcons.length ? (
-            <div className="flex items-center gap-2 shrink-0">
-              {authProviderIcons.map((item) => (
-                <span key={item.key} className="inline-flex items-center">
-                  {item.node}
-                </span>
-              ))}
-            </div>
-          ) : null}
-          <p className="text-xs text-muted-foreground truncate flex-1">{userProfile.email || "-"}</p>
-        </div>
-        <div className="flex gap-1 items-center px-2 py-1.5 rounded-sm">
-          <div className="flex gap-1 items-center flex-wrap">
-            {profileBadges.length ? (
-              profileBadges.map((b) => (
-                <span
-                  key={b.key}
-                  className={cn(
-                    "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold",
-                    PLAN_TIER_STYLES[b.tier]?.badge || PLAN_TIER_STYLES.free.badge
-                  )}
-                >
-                  {b.label}
-                </span>
-              ))
-            ) : (
-              <span
-                className={cn(
-                  "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold",
-                  PLAN_TIER_STYLES.free.badge
-                )}
-              >
-                개인:{PLAN_TIER_LABELS.free}
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <Separator className="my-2" />
-
-      {/* Settings Section - 설정 섹션 */}
-      <div className="flex flex-col gap-0 px-1">
-        <button
-          type="button"
-          className="flex w-full gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors text-left"
-          onClick={openSettingsDialog}
-        >
-          <Settings className="size-4 text-popover-foreground shrink-0" />
-          <p className="text-sm text-popover-foreground flex-1">개인 설정</p>
-        </button>
-        <button
-          type="button"
-          className="flex w-full gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors text-left"
-          onClick={openPlanDialog}
-        >
-          <BadgeDollarSign className="size-4 text-popover-foreground shrink-0" />
-          <p className="text-sm text-popover-foreground flex-1">요금제</p>
-        </button>
-        <button
-          type="button"
-          className="flex w-full gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors text-left"
-          onClick={openBillingSettingsDialog}
-        >
-          <Wallet className="size-4 text-popover-foreground shrink-0" />
-          <p className="text-sm text-popover-foreground flex-1">결제 관리</p>
-        </button>
-      </div>
-
-      <Separator className="my-2" />
-
-      {/* Theme & Language Section - 테마 및 언어 섹션 */}
-      <div className="flex flex-col gap-0 px-1">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
-              <div className="flex gap-1 items-center flex-1">
-                {themeMode === "system" ? (
-                  <Monitor className="size-4 text-popover-foreground shrink-0" />
-                ) : theme === "dark" ? (
-                  <Moon className="size-4 text-popover-foreground shrink-0" />
-                ) : (
-                  <Sun className="size-4 text-popover-foreground shrink-0" />
-                )}
-                <p className="text-sm text-popover-foreground">
-                  {themeMode === "system" ? "System" : themeMode === "dark" ? "Dark" : "Light"}
-                </p>
-              </div>
-              <ChevronRight className="size-4 text-popover-foreground shrink-0" />
-            </div>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" side="right" sideOffset={9} className="w-36">
-            <DropdownMenuItem onSelect={() => setThemeMode("light")}>
-              <span className="flex-1">Light</span>
-              {themeMode === "light" ? <Check className="size-4" /> : null}
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => setThemeMode("dark")}>
-              <span className="flex-1">Dark</span>
-              {themeMode === "dark" ? <Check className="size-4" /> : null}
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => setThemeMode("system")}>
-              <span className="flex-1">System</span>
-              {themeMode === "system" ? <Check className="size-4" /> : null}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <div className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors">
-              <div className="flex gap-1 items-center flex-1">
-                <span className="text-sm">
-                  {(() => {
-                    const current = languages.find((l: Language) => l.code === currentLang)
-                    return current?.flag_emoji || "🌐"
-                  })()}
-                </span>
-                <p className="text-sm text-popover-foreground">
-                  {(() => {
-                    const current = languages.find((l: Language) => l.code === currentLang)
-                    return current?.native_name || "언어 선택"
-                  })()}
-                </p>
-              </div>
-              <ChevronRight className="size-4 text-popover-foreground shrink-0" />
-            </div>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" side="right" sideOffset={9} className="w-44">
-            {languages.map((lang) => (
-              <DropdownMenuItem
-                key={lang.code}
-                onSelect={() => {
-                  setCurrentLang(lang.code)
-                  localStorage.setItem(LANGUAGE_STORAGE_KEY, lang.code)
-                  window.dispatchEvent(new CustomEvent("reductai:language", { detail: { lang: lang.code } }))
-                }}
-              >
-                <span className="flex-1">
-                  {lang.flag_emoji} {lang.native_name}
-                </span>
-                {currentLang === lang.code ? <Check className="size-4" /> : null}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-
-      <Separator className="my-2" />
-
-      {/* Logout Section - 로그아웃 섹션 */}
-      <div className="flex flex-col gap-0 px-1 pb-1">
-        <div
-          className="flex gap-2 h-8 items-center px-2 py-1.5 rounded-sm cursor-pointer hover:bg-accent transition-colors"
-          onClick={handleLogout}
-        >
-          <LogOut className="size-4 text-popover-foreground shrink-0" />
-          <p className="text-sm text-popover-foreground flex-1">Log out</p>
-        </div>
-      </div>
-    </PopoverContent>
-  )
-
   // 모바일 헤더 (축소 상태)
   if (isMobile && !isMobileMenuOpen) {
     return (
@@ -2183,22 +1976,36 @@ const profileBadges = useMemo(() => {
         </div>
 
         {/* Mobile Profile Popover Trigger */}
-        <Popover open={isMobileProfileOpen} onOpenChange={setIsMobileProfileOpen}>
-          <PopoverTrigger asChild>
-            <ProfileAvatar
-              size={32}
-              rounded="md"
-              src={profileImageUrl}
-              name={userProfile.name}
-              initial={userProfile.initial}
-              fallbackClassName={avatarBgClass}
-              textClassName="text-sm font-bold"
-              className="cursor-pointer"
-              showBrokenIcon
-            />
-          </PopoverTrigger>
-          <ProfilePopoverContent />
-        </Popover>
+        <SidebarProfileBlock
+          variant="mobile"
+          open={isMobileProfileOpen}
+          onOpenChange={setIsMobileProfileOpen}
+          profile={{
+            imageUrl: profileImageUrl,
+            name: userProfile.name,
+            email: userProfile.email || "",
+            initial: userProfile.initial,
+          }}
+          avatarBgClass={avatarBgClass}
+          currentTier={currentTier}
+          profileBadges={profileBadges}
+          authProviderIcons={authProviderIcons}
+          onOpenSettings={openSettingsDialog}
+          onOpenPlan={openPlanDialog}
+          onOpenBilling={openBillingSettingsDialog}
+          onLogout={handleLogout}
+          themeMode={themeMode}
+          setThemeMode={setThemeMode}
+          theme={theme}
+          languages={languages}
+          currentLang={currentLang}
+          onLanguageChange={(code: string) => {
+            setCurrentLang(code)
+            localStorage.setItem(LANGUAGE_STORAGE_KEY, code)
+            window.dispatchEvent(new CustomEvent("reductai:language", { detail: { lang: code } }))
+          }}
+          languageStorageKey={LANGUAGE_STORAGE_KEY}
+        />
         {CategoryDeleteDialog}
         {CreateCategoryDialog}
         {settingsDialog}
@@ -2227,22 +2034,36 @@ const profileBadges = useMemo(() => {
           </div>
 
           {/* Mobile Menu Profile Popover Trigger */}
-          <Popover open={isMobileProfileOpen} onOpenChange={setIsMobileProfileOpen}>
-            <PopoverTrigger asChild>
-              <ProfileAvatar
-                size={32}
-                rounded="md"
-                src={profileImageUrl}
-                name={userProfile.name}
-                initial={userProfile.initial}
-                fallbackClassName={avatarBgClass}
-                textClassName="text-sm font-bold"
-                className="cursor-pointer"
-                showBrokenIcon
-              />
-            </PopoverTrigger>
-            <ProfilePopoverContent />
-          </Popover>
+          <SidebarProfileBlock
+            variant="mobile"
+            open={isMobileProfileOpen}
+            onOpenChange={setIsMobileProfileOpen}
+            profile={{
+              imageUrl: profileImageUrl,
+              name: userProfile.name,
+              email: userProfile.email || "",
+              initial: userProfile.initial,
+            }}
+            avatarBgClass={avatarBgClass}
+            currentTier={currentTier}
+            profileBadges={profileBadges}
+            authProviderIcons={authProviderIcons}
+            onOpenSettings={openSettingsDialog}
+            onOpenPlan={openPlanDialog}
+            onOpenBilling={openBillingSettingsDialog}
+            onLogout={handleLogout}
+            themeMode={themeMode}
+            setThemeMode={setThemeMode}
+            theme={theme}
+            languages={languages}
+            currentLang={currentLang}
+            onLanguageChange={(code) => {
+              setCurrentLang(code)
+              localStorage.setItem(LANGUAGE_STORAGE_KEY, code)
+              window.dispatchEvent(new CustomEvent("reductai:language", { detail: { lang: code } }))
+            }}
+            languageStorageKey={LANGUAGE_STORAGE_KEY}
+          />
         </div>
 
         {/* 모바일 메뉴 콘텐츠 (데스크탑과 동일한 구조지만 전체 너비) */}
@@ -2614,54 +2435,37 @@ const profileBadges = useMemo(() => {
 
       {/* User Profile - 유저 프로필 */}
       <div className={cn("p-2", !isOpen && "flex justify-center")}>
-        <Popover open={isProfileOpen} onOpenChange={setIsProfileOpen}>
-          <PopoverTrigger asChild>
-            <div className={cn("flex items-center gap-2 p-2 cursor-pointer hover:bg-accent/50 rounded-md transition-colors", !isOpen && "justify-center p-0")}>
-              {isOpen ? (
-                <>
-                  <ProfileAvatar
-                    size={40}
-                    rounded="lg"
-                    src={profileImageUrl}
-                    name={userProfile.name}
-                    initial={userProfile.initial}
-                    fallbackClassName={avatarBgClass}
-                    textClassName="text-lg"
-                    showBrokenIcon
-                  />
-                  <div className="flex flex-col flex-1 min-w-0">
-                    <p className="text-sm text-left font-semibold text-sidebar-foreground truncate">{userProfile.name}</p>
-                    <div className="flex items-center flex-wrap gap-1">
-                      <span
-                        className={cn(
-                          "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold",
-                          PLAN_TIER_STYLES[highestTier]?.badge || PLAN_TIER_STYLES.free.badge
-                        )}
-                      >
-                        {PLAN_TIER_LABELS[highestTier]}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground">
-                    <ChevronsUpDown className="size-full" />
-                  </div>
-                </>
-              ) : (
-                <ProfileAvatar
-                  size={32}
-                  rounded="md"
-                  src={profileImageUrl}
-                  name={userProfile.name}
-                  initial={userProfile.initial}
-                  fallbackClassName={avatarBgClass}
-                  textClassName="text-base"
-                  showBrokenIcon
-                />
-              )}
-            </div>
-          </PopoverTrigger>
-          <ProfilePopoverContent />
-        </Popover>
+        <SidebarProfileBlock
+          variant={isOpen ? "expanded" : "collapsed"}
+          isSidebarOpen={isOpen}
+          open={isProfileOpen}
+          onOpenChange={setIsProfileOpen}
+          profile={{
+            imageUrl: profileImageUrl,
+            name: userProfile.name,
+            email: userProfile.email || "",
+            initial: userProfile.initial,
+          }}
+          avatarBgClass={avatarBgClass}
+          currentTier={currentTier}
+          profileBadges={profileBadges}
+          authProviderIcons={authProviderIcons}
+          onOpenSettings={openSettingsDialog}
+          onOpenPlan={openPlanDialog}
+          onOpenBilling={openBillingSettingsDialog}
+          onLogout={handleLogout}
+          themeMode={themeMode}
+          setThemeMode={setThemeMode}
+          theme={theme}
+          languages={languages}
+          currentLang={currentLang}
+          onLanguageChange={(code: string) => {
+            setCurrentLang(code)
+            localStorage.setItem(LANGUAGE_STORAGE_KEY, code)
+            window.dispatchEvent(new CustomEvent("reductai:language", { detail: { lang: code } }))
+          }}
+          languageStorageKey={LANGUAGE_STORAGE_KEY}
+        />
       </div>
 
       {/* Scrollable area - Menu + Pages */}

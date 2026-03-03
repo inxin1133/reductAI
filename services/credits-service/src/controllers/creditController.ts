@@ -946,14 +946,21 @@ export async function getMyCreditSummary(req: Request, res: Response) {
       | { id: string; balance_credits: number; reserved_credits: number; expires_at?: string | null }
       | undefined
 
-    const summaryPeriodStart = toIsoString(subscription?.current_period_start)
-    const summaryPeriodEnd = toIsoString(subscription?.current_period_end)
+    let summaryPeriodStart = toIsoString(subscription?.current_period_start)
+    let summaryPeriodEnd = toIsoString(subscription?.current_period_end)
+    if (!summaryPeriodStart && !summaryPeriodEnd && subscriptionAccount?.expires_at) {
+      const exp = new Date(subscriptionAccount.expires_at)
+      summaryPeriodEnd = exp.toISOString()
+      const start = new Date(exp)
+      start.setFullYear(start.getFullYear() - 1)
+      summaryPeriodStart = start.toISOString()
+    }
 
     const userId = toStr((authed as AuthedRequest).userId)
 
     let usedInPeriod = 0
     let userUsedInPeriod = 0
-    if (subscription && subscriptionAccount?.id && summaryPeriodStart && summaryPeriodEnd) {
+    if (subscriptionAccount?.id && summaryPeriodStart && summaryPeriodEnd) {
       const usageRes = await query(
         `
         SELECT COALESCE(SUM(amount_credits), 0) AS total
@@ -1042,19 +1049,19 @@ export async function getMyCreditSummary(req: Request, res: Response) {
     const topupTotal = topupRemaining + topupUsedInPeriod
     const topupPercent = topupTotal > 0 ? Math.min(100, Math.round((topupUsedInPeriod / topupTotal) * 100)) : 0
 
-    return res.json({
-      ok: true,
-      tenant_id: tenantId,
-      subscription: subscription
+    const hasSubscriptionAccount = Boolean(subscriptionAccount?.id)
+    const hasBillingSubscription = Boolean(subscription)
+    const subscriptionPayload =
+      hasSubscriptionAccount || hasBillingSubscription
         ? {
-            subscription_id: subscription.id,
-            plan_slug: subscription.plan_slug,
-            plan_tier: subscription.plan_tier,
-            billing_cycle: subscription.billing_cycle,
-            period_start: subscription.current_period_start,
-            period_end: subscription.current_period_end,
-            next_charge_at: subscription.current_period_end,
-            expires_at: subscription.current_period_end,
+            subscription_id: subscription?.id ?? null,
+            plan_slug: subscription?.plan_slug ?? "free",
+            plan_tier: subscription?.plan_tier ?? "free",
+            billing_cycle: subscription?.billing_cycle ?? "monthly",
+            period_start: subscription?.current_period_start ?? summaryPeriodStart ?? null,
+            period_end: subscription?.current_period_end ?? summaryPeriodEnd ?? subscriptionAccount?.expires_at ?? null,
+            next_charge_at: subscription?.current_period_end ?? subscriptionAccount?.expires_at ?? null,
+            expires_at: subscription?.current_period_end ?? subscriptionAccount?.expires_at ?? null,
             grant_monthly: Number(planGrant?.monthly_credits ?? 0),
             grant_initial: Number(planGrant?.initial_credits ?? 0),
             account_id: subscriptionAccount?.id ?? null,
@@ -1064,7 +1071,12 @@ export async function getMyCreditSummary(req: Request, res: Response) {
             used_credits: usedInPeriod,
             user_used_credits: userUsedInPeriod,
           }
-        : null,
+        : null
+
+    return res.json({
+      ok: true,
+      tenant_id: tenantId,
+      subscription: subscriptionPayload,
       topup: {
         account_id: topupAccount?.id ?? null,
         balance_credits: topupBalance,

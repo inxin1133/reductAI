@@ -40,6 +40,49 @@ const otpStore: Record<string, { code: string; expiresAt: number }> = {};
 const oauthStateStore: Record<string, number> = {};
 let ssoPendingReady = false;
 
+const CREDITS_SERVICE_URL = process.env.CREDITS_SERVICE_URL || 'http://localhost:3011';
+const CREDITS_SERVICE_KEY = process.env.CREDITS_SERVICE_KEY || '';
+
+async function grantInitialFreeCredits(tenantId: string): Promise<{ ok: boolean }> {
+  if (!CREDITS_SERVICE_KEY) {
+    console.warn('credits-service key not configured; skip initial credit grant');
+    return { ok: false };
+  }
+  const periodEnd = new Date();
+  periodEnd.setFullYear(periodEnd.getFullYear() + 1);
+  const periodEndIso = periodEnd.toISOString();
+  const grantKey = `initial-free:${tenantId}`;
+  try {
+    const res = await fetch(new URL('/api/ai/credits/internal/subscription-grant', CREDITS_SERVICE_URL).toString(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-service-key': CREDITS_SERVICE_KEY,
+      },
+      body: JSON.stringify({
+        tenant_id: tenantId,
+        plan_slug: 'free',
+        billing_cycle: 'monthly',
+        period_end: periodEndIso,
+        grant_mode: 'reset',
+        grant_key: grantKey,
+        reason: 'signup_initial',
+        credit_type: 'subscription',
+      }),
+    });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      console.error('credits-service initial grant failed:', res.status, json);
+      return { ok: false };
+    }
+    if (json?.duplicated) return { ok: true };
+    return { ok: true };
+  } catch (e) {
+    console.error('credits-service initial grant error:', e);
+    return { ok: false };
+  }
+}
+
 const getPrimaryTenantId = async (userId: string) => {
   const result = await db.query(
     `
@@ -608,6 +651,10 @@ export const verifySsoEmailCode = async (req: Request, res: Response) => {
     await client.query('DELETE FROM sso_pending WHERE id = $1', [pending.id]);
     await client.query('COMMIT');
 
+    if (isNewUser && tenantId) {
+      await grantInitialFreeCredits(tenantId);
+    }
+
     delete otpStore[email];
 
     const redirectUrl = await buildJwtRedirect(req, userRow, provider, tenantId, isNewUser);
@@ -925,6 +972,8 @@ export const register = async (req: Request, res: Response) => {
 
     await client.query('COMMIT');
 
+    await grantInitialFreeCredits(tenantId);
+
     const platformRole = await getPlatformRoleSlug(user.id);
     // Generate JWT
     const token = jwt.sign(
@@ -1233,6 +1282,10 @@ export const handleGoogleOAuthCallback = async (req: Request, res: Response) => 
       await client.query('UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = $1', [userRow.id]);
 
       await client.query('COMMIT');
+
+      if (isNewUser && tenantId) {
+        await grantInitialFreeCredits(tenantId);
+      }
     } catch (dbError) {
       await client.query('ROLLBACK');
       console.error('Google OAuth DB error:', dbError);

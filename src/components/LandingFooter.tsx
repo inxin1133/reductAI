@@ -32,6 +32,11 @@ export function LandingFooter() {
             <p className="text-xs text-muted-foreground">
               © {new Date().getFullYear()} ReductAI. All rights reserved.
             </p>
+            <p className="text-xs text-muted-foreground">
+              리덕트, 이강우, 399-11-02812, (통신판매업신고번호) 
+              <br />
+              경기도 안양시 동안구 갈산로 15
+            </p>            
           </div>
 
           {/* Navigation */}
@@ -77,6 +82,9 @@ export function LandingFooter() {
                 >
                   admin@reduct.page
                 </a>
+                <p className="text-xs text-muted-foreground">
+                  개인정보보호책임자(이강우)
+                </p>
               </p>
               <p>
                 <a

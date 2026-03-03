@@ -17,22 +17,28 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- 1. CREDIT SETTINGS
 -- ============================================
 
+
+-- credit_settings 테이블: 글로벌 크레딧 환율 및 만료 등 기본 정책을 설정하는 테이블입니다.
+-- 주로 크레딧 시스템의 글로벌 옵션(환율, 만료 주기 등)을 정의하며, 보통 1개(통화별 1개)만 존재합니다.
+
 CREATE TABLE credit_settings (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    credits_per_usd INTEGER NOT NULL DEFAULT 1000,
-    topup_expiry_months INTEGER NOT NULL DEFAULT 36,
-    currency VARCHAR(3) NOT NULL DEFAULT 'USD',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (currency)
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), -- 고유 식별자 (UUID)
+    credits_per_usd INTEGER NOT NULL DEFAULT 1000, -- 1 USD 당 지급되는 크레딧 수 (예: 1000이면 1달러=1000크레딧)
+    topup_expiry_months INTEGER NOT NULL DEFAULT 36, -- 충전(탑업) 크레딧의 만료 개월(단위: 개월, 기본 36개월)
+    currency VARCHAR(3) NOT NULL DEFAULT 'USD', -- 해당 설정이 적용되는 통화(ISO 통화코드, 예: USD)
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- 생성 시각
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- 마지막 수정 시각
+    UNIQUE (currency) -- 같은 통화에 대해 한 줄만 가질 수 있도록 제한
 );
 
-COMMENT ON TABLE credit_settings IS '글로벌 크레딧 변환 및 만료 설정.';
-COMMENT ON COLUMN credit_settings.credits_per_usd IS '1 USD당 크레딧 수.';
-COMMENT ON COLUMN credit_settings.topup_expiry_months IS '탑업 크레딧 만료 개월 수.';
-COMMENT ON COLUMN credit_settings.currency IS '크레딧 통화.';
-COMMENT ON COLUMN credit_settings.created_at IS '생성 시간.';
-COMMENT ON COLUMN credit_settings.updated_at IS '수정 시간.';
+COMMENT ON TABLE credit_settings IS '글로벌 크레딧 환율 및 만료 설정을 정의하는 테이블. (시스템 전체/통화별 정책)';
+COMMENT ON COLUMN credit_settings.id IS '테이블 고유 ID (UUID)';
+COMMENT ON COLUMN credit_settings.credits_per_usd IS '1 USD 당 지급되는 크레딧 수 (크레딧 환율)';
+COMMENT ON COLUMN credit_settings.topup_expiry_months IS '충전(탑업) 크레딧의 유효 기간(개월 단위)';
+COMMENT ON COLUMN credit_settings.currency IS '해당 설정이 적용되는 통화(ISO 코드)';
+COMMENT ON COLUMN credit_settings.created_at IS '설정 생성 일시';
+COMMENT ON COLUMN credit_settings.updated_at IS '설정 수정(갱신) 일시';
+
 
 
 -- ============================================
