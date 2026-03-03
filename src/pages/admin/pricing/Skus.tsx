@@ -45,6 +45,7 @@ type SkuRow = {
   id: string
   sku_code: string
   provider_slug: string
+  model_id?: string | null
   model_key: string
   model_name: string
   modality: string
@@ -72,6 +73,7 @@ type ModelOption = {
   model_id: string
   display_name: string
   provider_slug: string
+  model_type?: string
 }
 
 type FormState = {
@@ -92,8 +94,24 @@ const API_URL = "/api/ai/pricing/skus"
 const MODELS_API_URL = "/api/ai/models"
 const SELECT_ALL = "__all__"
 const SELECT_NONE = "__none__"
+const MODEL_NONE = "__none__"
 
 const MODALITIES = ["text", "code", "image", "video", "audio", "web_search"] as const
+
+/** ai_models.model_type → pricing_skus.modality 매핑 */
+function modelTypeToModality(modelType: string): string {
+  const map: Record<string, string> = {
+    text: "text",
+    code: "code",
+    image: "image",
+    video: "video",
+    audio: "audio",
+    music: "audio",
+    multimodal: "text",
+    embedding: "text",
+  }
+  return map[modelType] ?? "text"
+}
 const USAGE_KINDS = ["input_tokens", "cached_input_tokens", "output_tokens", "image_generation", "seconds", "requests"] as const
 const TOKEN_CATEGORIES = ["text", "image"] as const
 const UNITS = ["tokens", "image", "second", "request"] as const
@@ -198,6 +216,7 @@ export default function Skus() {
           model_id: String(m?.model_id ?? ""),
           display_name: String(m?.display_name ?? m?.name ?? ""),
           provider_slug: String(m?.provider_slug ?? ""),
+          model_type: String(m?.model_type ?? "text"),
         }))
         .filter((m: ModelOption) => m.id && m.model_id && m.display_name)
       setModels(normalized)
@@ -258,7 +277,9 @@ export default function Skus() {
       sku_code: row.sku_code || "",
       metadata_text: JSON.stringify(row.metadata || {}, null, 2),
     })
+    setSelectedModelId(row.model_id && row.model_id.trim() ? row.model_id : MODEL_NONE)
     setDialogOpen(true)
+    fetchModels()
   }
 
   function buildPayload() {
@@ -268,7 +289,7 @@ export default function Skus() {
     } catch { /* ignore */ }
 
     if (editing) {
-      return {
+      const payload: Record<string, unknown> = {
         model_name: form.model_name.trim(),
         modality: form.modality,
         usage_kind: form.usage_kind,
@@ -278,6 +299,16 @@ export default function Skus() {
         currency: form.currency.trim() || "USD",
         metadata,
       }
+      if (selectedModelId === MODEL_NONE) {
+        payload.model_id = null
+        payload.provider_slug = form.provider_slug.trim()
+        payload.model_key = form.model_key.trim()
+      } else {
+        payload.model_id = selectedModelId
+        payload.provider_slug = form.provider_slug.trim()
+        payload.model_key = form.model_key.trim()
+      }
+      return payload
     }
 
     return {
@@ -291,13 +322,18 @@ export default function Skus() {
       unit_size: Number(form.unit_size),
       currency: form.currency.trim() || "USD",
       sku_code: form.sku_code.trim() || undefined,
+      model_id: selectedModelId && selectedModelId !== MODEL_NONE ? selectedModelId : undefined,
       metadata,
     }
   }
 
   function validate(): string | null {
-    if (!editing) {
-      if (!selectedModelId) return "모델을 선택해주세요."
+    if (selectedModelId === MODEL_NONE) {
+      if (!form.provider_slug.trim()) return "provider_slug를 입력해주세요."
+      if (!form.model_key.trim()) return "model_key를 입력해주세요."
+    } else if (!selectedModelId) {
+      return "모델을 선택하거나 '모델 없음'을 선택해주세요."
+    } else if (selectedModelId !== MODEL_NONE) {
       if (!form.provider_slug.trim()) return "모델 선택 시 provider_slug가 자동 적용됩니다. 모델을 선택해주세요."
       if (!form.model_key.trim()) return "모델 선택 시 model_key가 자동 적용됩니다. 모델을 선택해주세요."
     }
@@ -320,12 +356,14 @@ export default function Skus() {
     }
 
     const payload = buildPayload()
-    const effectiveCode = (payload as { sku_code?: string }).sku_code ?? (form.sku_code.trim() || autoCode)
-    if (effectiveCode) {
-      const exists = await checkSkuCodeExists(effectiveCode)
-      if (exists) {
-        alert("이미 존재하는 SKU 코드입니다. 다른 코드를 입력해주세요.")
-        return
+    if (!editing) {
+      const effectiveCode = (payload as { sku_code?: string }).sku_code ?? (form.sku_code.trim() || autoCode)
+      if (effectiveCode) {
+        const exists = await checkSkuCodeExists(effectiveCode)
+        if (exists) {
+          alert("이미 존재하는 SKU 코드입니다. 다른 코드를 입력해주세요.")
+          return
+        }
       }
     }
     try {
@@ -474,6 +512,7 @@ export default function Skus() {
           <TableHeader>
             <TableRow>
               <TableHead>SKU Code</TableHead>
+              <TableHead className="w-[120px]">model_id</TableHead>
               <TableHead>Provider</TableHead>
               <TableHead>Model</TableHead>
               <TableHead>Modality</TableHead>
@@ -487,14 +526,14 @@ export default function Skus() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={9} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">
                   <Loader2 className="h-4 w-4 inline-block animate-spin mr-2" />
                   로딩 중...
                 </TableCell>
               </TableRow>
             ) : rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">
                   결과가 없습니다.
                 </TableCell>
               </TableRow>
@@ -503,6 +542,16 @@ export default function Skus() {
                 <TableRow key={r.id} className={r.is_active ? "" : "opacity-50"}>
                   <TableCell className="font-mono text-xs max-w-[240px] truncate" title={r.sku_code}>
                     {r.sku_code}
+                  </TableCell>
+                  <TableCell
+                    className="font-mono text-xs max-w-[120px] truncate text-muted-foreground"
+                    title={r.model_id ?? "null"}
+                  >
+                    {r.model_id
+                      ? r.model_id.length > 12
+                        ? `${r.model_id.slice(0, 12)}…`
+                        : r.model_id
+                      : "null"}
                   </TableCell>
                   <TableCell className="font-mono">{r.provider_slug}</TableCell>
                   <TableCell>
@@ -570,82 +619,111 @@ export default function Skus() {
             <DialogTitle>{editing ? "SKU 수정" : "새 SKU 생성"}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
-            {!editing && (
-              <div className="space-y-3">
-                <div className="space-y-1">
-                  <div className="text-sm font-medium">모델 선택 *</div>
-                  <Popover open={modelPopoverOpen} onOpenChange={setModelPopoverOpen}>
-                    <PopoverTrigger asChild>
-                      <Button
-                        variant="outline"
-                        role="combobox"
-                        aria-expanded={modelPopoverOpen}
-                        className="w-full justify-between font-normal"
-                        disabled={modelsLoading}
-                      >
-                        {modelsLoading ? (
-                          <>
-                            <Loader2 className="size-4 animate-spin" />
-                            모델 로딩 중...
-                          </>
-                        ) : selectedModelId ? (
-                          (() => {
-                            const m = models.find((x) => x.id === selectedModelId)
-                            return m
-                              ? `${m.provider_slug} · ${m.display_name} (${m.model_id})`
-                              : "모델 선택"
-                          })()
-                        ) : (
-                          "모델 검색 또는 선택..."
-                        )}
-                        <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-[400px] p-0" align="start">
-                      <Command>
-                        <CommandInput placeholder="모델명/model_id/provider 검색..." />
-                        <CommandList>
-                          <CommandEmpty>검색 결과가 없습니다.</CommandEmpty>
-                          <CommandGroup>
-                            {models.map((m) => (
-                              <CommandItem
-                                key={m.id}
-                                value={`${m.provider_slug} ${m.display_name} ${m.model_id}`}
-                                onSelect={() => {
-                                  setSelectedModelId(m.id)
-                                  setForm((p) => ({
-                                    ...p,
-                                    provider_slug: m.provider_slug,
-                                    model_key: m.model_id,
-                                    model_name: m.display_name,
-                                  }))
-                                  setModelPopoverOpen(false)
-                                }}
-                              >
-                                <span className="font-mono text-muted-foreground">{m.provider_slug}</span>
-                                <span className="mx-2">·</span>
-                                <span>{m.display_name}</span>
-                                <span className="ml-1 text-muted-foreground">({m.model_id})</span>
-                              </CommandItem>
-                            ))}
-                          </CommandGroup>
-                        </CommandList>
-                      </Command>
-                    </PopoverContent>
-                  </Popover>
-                </div>
-                {selectedModelId && (
-                  <div className="grid grid-cols-2 gap-3 text-sm text-muted-foreground">
-                    <div>
-                      <span className="font-medium text-foreground">Provider:</span> {form.provider_slug}
-                    </div>
-                    <div>
-                      <span className="font-medium text-foreground">Model Key:</span> {form.model_key}
-                    </div>
-                  </div>
-                )}
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <div className="text-sm font-medium">모델 선택 *</div>
+                <Popover open={modelPopoverOpen} onOpenChange={setModelPopoverOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={modelPopoverOpen}
+                      className="w-full justify-between font-normal"
+                      disabled={modelsLoading}
+                    >
+                      {modelsLoading ? (
+                        <>
+                          <Loader2 className="size-4 animate-spin" />
+                          모델 로딩 중...
+                        </>
+                      ) : selectedModelId === MODEL_NONE ? (
+                        "모델 없음 (직접 입력)"
+                      ) : selectedModelId ? (
+                        (() => {
+                          const m = models.find((x) => x.id === selectedModelId)
+                          return m
+                            ? `${m.provider_slug} · ${m.display_name} (${m.model_id})`
+                            : "모델 검색 또는 선택..."
+                        })()
+                      ) : (
+                        "모델 검색 또는 선택..."
+                      )}
+                      <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[400px] max-h-[70vh] p-0" align="start">
+                    <Command className="flex flex-col max-h-[70vh]">
+                      <CommandInput placeholder="모델명/model_id/provider 검색..." />
+                      <CommandList className="max-h-[60vh] overflow-y-auto overscroll-contain">
+                        <CommandEmpty>검색 결과가 없습니다.</CommandEmpty>
+                        <CommandGroup>
+                          <CommandItem
+                            value="모델 없음 직접 입력 serper web_search"
+                            onSelect={() => {
+                              setSelectedModelId(MODEL_NONE)
+                              setModelPopoverOpen(false)
+                            }}
+                          >
+                            <span className="text-muted-foreground italic">모델 없음 (Serper 등 직접 입력)</span>
+                          </CommandItem>
+                          {models.map((m) => (
+                            <CommandItem
+                              key={m.id}
+                              value={`${m.provider_slug} ${m.display_name} ${m.model_id}`}
+                              onSelect={() => {
+                                setSelectedModelId(m.id)
+                                setForm((p) => ({
+                                  ...p,
+                                  provider_slug: m.provider_slug,
+                                  model_key: m.model_id,
+                                  model_name: m.display_name,
+                                  modality: modelTypeToModality(m.model_type ?? "text"),
+                                }))
+                                setModelPopoverOpen(false)
+                              }}
+                            >
+                              <span className="font-mono text-muted-foreground">{m.provider_slug}</span>
+                              <span className="mx-2">·</span>
+                              <span>{m.display_name}</span>
+                              <span className="ml-1 text-muted-foreground">({m.model_id})</span>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
-            )}
+              {selectedModelId === MODEL_NONE ? (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <div className="text-sm font-medium">Provider</div>
+                    <Input
+                      value={form.provider_slug}
+                      onChange={(e) => setForm((p) => ({ ...p, provider_slug: e.target.value }))}
+                      placeholder="예: serper"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-sm font-medium">Model Key</div>
+                    <Input
+                      value={form.model_key}
+                      onChange={(e) => setForm((p) => ({ ...p, model_key: e.target.value }))}
+                      placeholder="예: serper"
+                    />
+                  </div>
+                </div>
+              ) : selectedModelId ? (
+                <div className="grid grid-cols-2 gap-3 text-sm text-muted-foreground">
+                  <div>
+                    <span className="font-medium text-foreground">Provider:</span> {form.provider_slug}
+                  </div>
+                  <div>
+                    <span className="font-medium text-foreground">Model Key:</span> {form.model_key}
+                  </div>
+                </div>
+              ) : null}
+            </div>
 
             <div className="space-y-1">
               <div className="text-sm font-medium">Model Name (표시명) *</div>

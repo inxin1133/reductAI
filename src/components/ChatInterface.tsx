@@ -2952,14 +2952,16 @@ export function ChatInterface({
                             const v = e.currentTarget.value
                             setPrompt(v)
                             // If it would wrap (or contains newline), upgrade to multi textarea.
+                            // Double rAF: input/IME 처리 완료 후 전환하여 마지막 문자 중복 방지
                             const el = e.currentTarget
-                            // Defer measurement to next frame so scrollWidth reflects updated layout.
                             window.requestAnimationFrame(() => {
-                              const shouldMulti = v.includes("\n") || el.scrollWidth > el.clientWidth + 2
-                              if (shouldMulti) {
-                                if (isComposingRef.current) return
-                                upgradeCompactToMulti(el, v)
-                              }
+                              window.requestAnimationFrame(() => {
+                                const shouldMulti = v.includes("\n") || el.scrollWidth > el.clientWidth + 2
+                                if (shouldMulti) {
+                                  if (isComposingRef.current) return
+                                  upgradeCompactToMulti(el, v)
+                                }
+                              })
                             })
                           }}
                           onPaste={(e) => {
@@ -2969,10 +2971,13 @@ export function ChatInterface({
                           onCompositionEnd={(e) => {
                             isComposingRef.current = false
                             const el = e.currentTarget
+                            const v = el.value
+                            // Double rAF: 조합 완료 후 전환하여 문자 중복 방지
                             window.requestAnimationFrame(() => {
-                              const v = el.value
-                              const shouldMulti = v.includes("\n") || el.scrollWidth > el.clientWidth + 2
-                              if (shouldMulti) upgradeCompactToMulti(el, v)
+                              window.requestAnimationFrame(() => {
+                                const shouldMulti = v.includes("\n") || el.scrollWidth > el.clientWidth + 2
+                                if (shouldMulti) upgradeCompactToMulti(el, v)
+                              })
                             })
                           }}
                           onKeyDown={(e) => {
@@ -3219,9 +3224,18 @@ export function ChatInterface({
                         type="button"
                         className="text-xs px-2 py-1 rounded-full bg-muted hover:bg-accent transition-colors"
                         onClick={() => {
-                          setPrompt(s.text)
-                          // focus after state update
-                          window.setTimeout(() => promptInputRef.current?.focus(), 0)
+                          const text = s.text
+                          setPrompt(text)
+
+                          // Timeline compact: 긴 텍스트일 경우 multi-line 모드로 전환 (채팅창 확장)
+                          if (isCompact && (text.includes("\n") || text.trim().length > 40)) {
+                            upgradeCompactToMulti(compactSingleTextareaRef.current, text)
+                          }
+
+                          // 리렌더 후 포커스 (multi 전환 시 promptInputRef, 아니면 compactSingleTextareaRef)
+                          window.setTimeout(() => {
+                            (promptInputRef.current ?? compactSingleTextareaRef.current)?.focus()
+                          }, 0)
                         }}
                       >
                         {label}

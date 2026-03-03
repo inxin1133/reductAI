@@ -612,6 +612,7 @@ export async function listSkus(req: Request, res: Response) {
   try {
     const q = toStr(req.query.q)
     const providerSlug = toStr(req.query.provider_slug)
+    const modelId = toStr(req.query.model_id)
     const modelKey = toStr(req.query.model_key)
     const modality = toStr(req.query.modality)
     const usageKind = toStr(req.query.usage_kind)
@@ -628,7 +629,10 @@ export async function listSkus(req: Request, res: Response) {
       where.push(`provider_slug = $${params.length + 1}`)
       params.push(providerSlug)
     }
-    if (modelKey) {
+    if (modelId) {
+      where.push(`model_id = $${params.length + 1}`)
+      params.push(modelId)
+    } else if (modelKey) {
       where.push(`model_key = $${params.length + 1}`)
       params.push(modelKey)
     }
@@ -664,15 +668,34 @@ export async function listSkus(req: Request, res: Response) {
 
     const countRes = await query(`SELECT COUNT(*)::int AS total FROM pricing_skus ${whereSql}`, params)
 
+    const includeRate = !!modelId
     const listRes = await query(
+      includeRate
+        ? `
+      SELECT
+        s.id, s.sku_code, s.provider_slug, s.model_id, s.model_key, s.model_name,
+        s.modality, s.usage_kind, s.token_category, s.unit, s.unit_size, s.currency,
+        s.is_active, s.metadata, s.created_at, s.updated_at,
+        (SELECT r.rate_value::text
+         FROM pricing_rates r
+         JOIN pricing_rate_cards rc ON r.rate_card_id = rc.id
+         WHERE rc.status = 'active' AND rc.effective_at <= NOW()
+           AND r.sku_id = s.id
+         ORDER BY rc.effective_at DESC, r.tier_min NULLS FIRST
+         LIMIT 1) AS rate_value
+      FROM pricing_skus s
+      ${whereSql}
+      ORDER BY s.sku_code ASC, s.model_key ASC, s.modality ASC
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `
+        : `
       SELECT
         id, sku_code, provider_slug, model_id, model_key, model_name,
         modality, usage_kind, token_category, unit, unit_size, currency,
         is_active, metadata, created_at, updated_at
       FROM pricing_skus
       ${whereSql}
-      ORDER BY provider_slug ASC, model_key ASC, modality ASC, usage_kind ASC
+      ORDER BY sku_code ASC, model_key ASC, modality ASC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
       [...params, limit, offset]
@@ -748,11 +771,17 @@ export async function createSku(req: Request, res: Response) {
 
     const skuCode = skuCodeOverride || buildSkuCode(providerSlug, modelKey, modality, usageKind, tokenCategory, metadata)
 
-    const modelRes = await query(
-      `SELECT id FROM ai_models WHERE model_id = $1 OR name = $1 LIMIT 1`,
-      [modelKey]
-    )
-    const modelId = modelRes.rows[0]?.id || null
+    const bodyModelId = req.body?.model_id
+    let modelId: string | null = null
+    if (bodyModelId && typeof bodyModelId === "string" && bodyModelId.trim()) {
+      modelId = bodyModelId.trim()
+    } else {
+      const modelRes = await query(
+        `SELECT id FROM ai_models WHERE model_id = $1 OR name = $1 LIMIT 1`,
+        [modelKey]
+      )
+      modelId = modelRes.rows[0]?.id || null
+    }
 
     const result = await query(
       `
@@ -790,6 +819,20 @@ export async function updateSku(req: Request, res: Response) {
       params.push(value)
     }
 
+    if (input.model_id !== undefined) {
+      const v = input.model_id === null || input.model_id === "" ? null : toStr(input.model_id)
+      setField("model_id", v)
+    }
+    if (input.provider_slug !== undefined) {
+      const v = toStr(input.provider_slug)
+      if (!v) return res.status(400).json({ message: "provider_slug must be non-empty when provided" })
+      setField("provider_slug", v)
+    }
+    if (input.model_key !== undefined) {
+      const v = toStr(input.model_key)
+      if (!v) return res.status(400).json({ message: "model_key must be non-empty when provided" })
+      setField("model_key", v)
+    }
     if (input.model_name !== undefined) {
       const v = toStr(input.model_name)
       if (!v) return res.status(400).json({ message: "model_name must be non-empty" })
@@ -1034,39 +1077,20 @@ const SKU_TEMPLATES: Record<string, SkuTemplateEntry[]> = {
 }
 
 // GET /skus/needs-generation?model_id=xxx → { needsGeneration: boolean }
+// Uses pricing_skus.model_id (FK to ai_models.id) as primary linkage.
 export async function checkModelNeedsSkuGeneration(req: Request, res: Response) {
   try {
     const modelId = toStr(req.query?.model_id)
     if (!modelId) return res.status(400).json({ message: "model_id query is required" })
 
-    const modelRes = await query(
-      `SELECT m.id, m.model_id AS model_key, m.model_type, p.slug AS provider_slug
-       FROM ai_models m
-       LEFT JOIN ai_providers p ON p.id = m.provider_id
-       WHERE m.id = $1`,
+    const existRes = await query(
+      `SELECT 1 FROM pricing_skus WHERE model_id = $1 AND is_active = TRUE LIMIT 1`,
       [modelId]
     )
-    if (modelRes.rows.length === 0) return res.status(404).json({ message: "Model not found" })
-
-    const model = modelRes.rows[0]
-    const modality = model.model_type || "text"
-    const templates = SKU_TEMPLATES[modality] || SKU_TEMPLATES.text
-
-    for (const tpl of templates) {
-      const skuCode = buildSkuCode(
-        model.provider_slug || "unknown",
-        model.model_key,
-        modality,
-        tpl.usage_kind,
-        tpl.token_category,
-        tpl.metadata
-      )
-      const existRes = await query(`SELECT 1 FROM pricing_skus WHERE sku_code = $1 LIMIT 1`, [skuCode])
-      if (existRes.rows.length === 0) {
-        return res.json({ ok: true, needsGeneration: true })
-      }
+    if (existRes.rows.length > 0) {
+      return res.json({ ok: true, needsGeneration: false })
     }
-    return res.json({ ok: true, needsGeneration: false })
+    return res.json({ ok: true, needsGeneration: true })
   } catch (e: any) {
     console.error("checkModelNeedsSkuGeneration error:", e)
     return res.status(500).json({ message: "Failed to check", details: String(e?.message || e) })

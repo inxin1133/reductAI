@@ -227,7 +227,12 @@ export async function chatCompletion(req: Request, res: Response) {
       try {
         if (modelRow) {
           const usage = extractUsageFromProviderRaw(out.raw)
-          const pricing = await lookupModelPricing(provider_slug, model, "text")
+          const pricing = await lookupModelPricing(
+            provider_slug,
+            model,
+            "text",
+            modelRow.id,
+          )
           const costs = calculateCost(pricing, usage.input_tokens, usage.cached_input_tokens, usage.output_tokens)
           const responseTimeMs = Date.now() - started
           const logRes = await query(
@@ -335,7 +340,12 @@ export async function chatCompletion(req: Request, res: Response) {
       try {
         if (modelRow) {
           const usage = extractUsageFromProviderRaw(out.raw)
-          const pricing = await lookupModelPricing(provider_slug, model, "text")
+          const pricing = await lookupModelPricing(
+            provider_slug,
+            model,
+            "text",
+            modelRow.id,
+          )
           const costs = calculateCost(pricing, usage.input_tokens, usage.cached_input_tokens, usage.output_tokens)
           const responseTimeMs = Date.now() - started
           const logRes = await query(

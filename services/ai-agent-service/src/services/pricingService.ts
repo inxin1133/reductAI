@@ -17,40 +17,92 @@ const FALLBACK_PRICING: ModelPricing = {
 }
 
 /**
+ * llm_usage_logs.modality → pricing_skus.modality 매핑
+ * pricing_skus에는 text, code, image, video, audio, web_search만 존재
+ */
+function mapModalityForPricing(llmModality: string): string {
+  const map: Record<string, string> = {
+    text: "text",
+    image_read: "image",
+    image_create: "image",
+    audio: "audio",
+    video: "video",
+    music: "audio",
+    code: "code",
+    multimodal: "text",
+    embedding: "text",
+  }
+  return map[llmModality] ?? "text"
+}
+
+/**
  * pricing_skus + pricing_rates 에서 모델의 토큰 단가를 조회한다.
- * 결과는 unit_size(보통 1M tokens) 기준 USD 단가.
+ * pricing_rates.rate_value만 사용 (마진은 크레딧 차감 시 적용).
+ *
+ * 매칭 우선순위:
+ * 1. modelId(ai_models.id)로 매칭 — pricing_skus.model_id FK로 강한 연결
+ * 2. providerSlug + modelKey — model_id가 없거나 매칭 실패 시 폴백
  */
 export async function lookupModelPricing(
   providerSlug: string,
   modelKey: string,
   modality: string,
+  modelId?: string | null,
 ): Promise<ModelPricing> {
+  const pricingModality = mapModalityForPricing(modality)
+
   try {
-    const r = await query(
-      `
-      WITH active_rc AS (
-        SELECT id FROM pricing_rate_cards
-        WHERE status = 'active' AND effective_at <= NOW()
-        ORDER BY effective_at DESC, version DESC
-        LIMIT 1
+    type Row = { usage_kind: string; unit_size: number; rate_value: number }
+    let r: { rows: Row[] } | null = null
+
+    if (modelId) {
+      r = await query(
+        `
+        WITH active_rc AS (
+          SELECT id FROM pricing_rate_cards
+          WHERE status = 'active' AND effective_at <= NOW()
+          ORDER BY effective_at DESC, version DESC
+          LIMIT 1
+        )
+        SELECT s.usage_kind, s.unit_size, r.rate_value
+        FROM pricing_skus s
+        JOIN pricing_rates r ON r.sku_id = s.id
+        JOIN active_rc arc ON r.rate_card_id = arc.id
+        WHERE s.model_id = $1
+          AND s.modality = $2
+          AND s.unit = 'tokens'
+          AND (s.token_category IS NULL OR s.token_category = 'text')
+          AND s.is_active = TRUE
+          AND s.usage_kind IN ('input_tokens', 'cached_input_tokens', 'output_tokens')
+        `,
+        [modelId, pricingModality],
       )
-      SELECT
-        s.usage_kind,
-        s.unit_size,
-        r.rate_value
-      FROM pricing_skus s
-      JOIN pricing_rates r ON r.sku_id = s.id
-      JOIN active_rc arc ON r.rate_card_id = arc.id
-      WHERE s.provider_slug = $1
-        AND s.model_key = $2
-        AND s.modality = $3
-        AND s.unit = 'tokens'
-        AND (s.token_category IS NULL OR s.token_category = 'text')
-        AND s.is_active = TRUE
-        AND s.usage_kind IN ('input_tokens', 'cached_input_tokens', 'output_tokens')
-      `,
-      [providerSlug, modelKey, modality],
-    )
+    }
+
+    if (!r || r.rows.length === 0) {
+      r = await query(
+        `
+        WITH active_rc AS (
+          SELECT id FROM pricing_rate_cards
+          WHERE status = 'active' AND effective_at <= NOW()
+          ORDER BY effective_at DESC, version DESC
+          LIMIT 1
+        )
+        SELECT s.usage_kind, s.unit_size, r.rate_value
+        FROM pricing_skus s
+        JOIN pricing_rates r ON r.sku_id = s.id
+        JOIN active_rc arc ON r.rate_card_id = arc.id
+        WHERE s.provider_slug = $1
+          AND s.model_key = $2
+          AND s.modality = $3
+          AND s.unit = 'tokens'
+          AND (s.token_category IS NULL OR s.token_category = 'text')
+          AND s.is_active = TRUE
+          AND s.usage_kind IN ('input_tokens', 'cached_input_tokens', 'output_tokens')
+        `,
+        [providerSlug, modelKey, pricingModality],
+      )
+    }
 
     if (r.rows.length === 0) return FALLBACK_PRICING
 

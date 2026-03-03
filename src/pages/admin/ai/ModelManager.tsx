@@ -33,7 +33,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { AdminPage } from "@/components/layout/AdminPage"
@@ -174,8 +173,7 @@ export default function ModelManager() {
   useEffect(() => {
     skuMenuModelRef.current = skuMenuModel
   }, [skuMenuModel])
-  const [skuList, setSkuList] = useState<Array<{ sku_code: string; usage_kind: string }>>([])
-  const [skuNeedsGeneration, setSkuNeedsGeneration] = useState(false)
+  const [skuList, setSkuList] = useState<Array<{ sku_code: string; usage_kind: string; rate_value?: string | null }>>([])
   const [skuLoading, setSkuLoading] = useState(false)
 
   // 시뮬레이터
@@ -486,49 +484,19 @@ export default function ModelManager() {
     const modelId = m.id
     setSkuLoading(true)
     setSkuList([])
-    setSkuNeedsGeneration(false)
     try {
-      const [skusRes, needsRes] = await Promise.all([
-        fetch(`${PRICING_SKUS_API_URL}?model_key=${encodeURIComponent(m.model_id)}&limit=50`, { headers: authHeaders() }),
-        fetch(`${PRICING_SKUS_API_URL}/needs-generation?model_id=${encodeURIComponent(m.id)}`, { headers: authHeaders() }),
-      ])
-      const skusData = (await skusRes.json().catch(() => ({}))) as { ok?: boolean; rows?: Array<{ sku_code: string; usage_kind: string }> }
-      const needsData = (await needsRes.json().catch(() => ({}))) as { ok?: boolean; needsGeneration?: boolean }
+      const skusRes = await fetch(`${PRICING_SKUS_API_URL}?model_id=${encodeURIComponent(m.id)}&limit=50`, { headers: authHeaders() })
+      const skusData = (await skusRes.json().catch(() => ({}))) as {
+        ok?: boolean
+        rows?: Array<{ sku_code: string; usage_kind: string; rate_value?: string | null }>
+      }
       if (skuMenuModelRef.current?.id !== modelId) return
       setSkuList(skusData.rows ?? [])
-      setSkuNeedsGeneration(needsData.needsGeneration ?? false)
     } catch (e) {
       console.error(e)
       if (skuMenuModelRef.current?.id === modelId) setSkuList([{ sku_code: "조회 실패", usage_kind: "" }])
     } finally {
       if (skuMenuModelRef.current?.id === modelId) setSkuLoading(false)
-    }
-  }
-
-  const generateSkusForModel = async (m: AIModel, onSuccess?: () => void) => {
-    if (!confirm(`"${m.display_name}" (${m.model_id}) 모델의 SKU를 자동 생성하시겠습니까?\n모달리티: ${m.model_type}`)) return
-    try {
-      const res = await fetch(`${PRICING_SKUS_API_URL}/generate-for-model`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ model_id: m.id, modality: m.model_type }),
-      })
-      const json = await res.json().catch(() => ({})) as { ok?: boolean; created?: { sku_code: string }[]; skipped?: string[]; modality?: string }
-      if (!res.ok || !json.ok) {
-        alert("SKU 생성에 실패했습니다.")
-        return
-      }
-      const createdCount = json.created?.length ?? 0
-      const skippedCount = json.skipped?.length ?? 0
-      const msg = [`SKU 자동 생성 완료 (모달리티: ${json.modality})`]
-      if (createdCount > 0) msg.push(`생성: ${createdCount}건`)
-      if (skippedCount > 0) msg.push(`이미 존재 (건너뜀): ${skippedCount}건`)
-      if (createdCount > 0) msg.push(`\nRates 페이지에서 "누락 SKU 추가"로 요율을 설정할 수 있습니다.`)
-      alert(msg.join("\n"))
-      onSuccess?.()
-    } catch (e) {
-      console.error(e)
-      alert(`SKU 생성 중 오류: ${errorMessage(e)}`)
     }
   }
 
@@ -897,36 +865,23 @@ export default function ModelManager() {
                             <Tags className="h-4 w-4" />
                           </Button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="min-w-[240px] max-h-[320px] overflow-y-auto">
+                        <DropdownMenuContent align="end" className="min-w-[280px] max-h-[320px] overflow-y-auto">
                           {skuLoading ? (
                             <div className="flex items-center justify-center gap-2 py-4 text-sm text-muted-foreground">
                               <Loader2 className="h-4 w-4 animate-spin" />
                               로딩 중...
                             </div>
-                          ) : skuList.length === 0 && !skuNeedsGeneration ? (
+                          ) : skuList.length === 0 ? (
                             <div className="py-3 px-2 text-sm text-muted-foreground">등록된 SKU 없음</div>
                           ) : (
-                            <>
-                              {skuList.map((s) => (
-                                <DropdownMenuItem key={s.sku_code} disabled className="font-mono text-xs">
-                                  {s.sku_code}
-                                </DropdownMenuItem>
-                              ))}
-                              {skuNeedsGeneration && (
-                                <>
-                                  <DropdownMenuSeparator />
-                                  <DropdownMenuItem
-                                    onClick={() =>
-                                      generateSkusForModel(m, () => {
-                                        loadSkuMenu(m)
-                                      })
-                                    }
-                                  >
-                                    SKU 자동 생성
-                                  </DropdownMenuItem>
-                                </>
-                              )}
-                            </>
+                            skuList.map((s) => (
+                              <DropdownMenuItem key={s.sku_code} disabled className="font-mono text-xs flex flex-col items-start gap-0.5 py-2">
+                                <span>{s.sku_code}</span>
+                                {s.rate_value != null && s.rate_value !== "" ? (
+                                  <span className="text-muted-foreground font-normal">rate: {s.rate_value}</span>
+                                ) : null}
+                              </DropdownMenuItem>
+                            ))
                           )}
                         </DropdownMenuContent>
                       </DropdownMenu>

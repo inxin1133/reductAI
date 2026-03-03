@@ -2868,7 +2868,12 @@ export async function chatRun(req: Request, res: Response) {
 
         const modality = toLlmModality(mt, incomingImageDataUrls.length > 0 || incomingImageUrls.length > 0)
 
-        const pricing = await lookupModelPricing(usedProviderSlug, usedModelApiId, modality)
+        const pricing = await lookupModelPricing(
+          usedProviderSlug,
+          usedModelApiId,
+          modality,
+          usedModelDbId,
+        )
         const costs = calculateCost(pricing, inputTokens, cachedInputTokens, outputTokens)
         const { inputCost, cachedInputCost, outputCost, totalCost } = costs
         const costCurrency = costs.currency

@@ -65,6 +65,7 @@ CREATE TABLE pricing_skus (
 );
 
 CREATE INDEX idx_pricing_skus_provider ON pricing_skus(provider_slug);
+CREATE INDEX idx_pricing_skus_model_id ON pricing_skus(model_id);
 CREATE INDEX idx_pricing_skus_model_key ON pricing_skus(model_key);
 CREATE INDEX idx_pricing_skus_modality ON pricing_skus(modality);
 CREATE INDEX idx_pricing_skus_usage_kind ON pricing_skus(usage_kind);
@@ -410,9 +411,18 @@ SELECT
     TRUE,
     s.metadata
 FROM sku_data s
-LEFT JOIN ai_models m
-  ON m.model_id = s.model_key OR m.name = s.model_key OR m.display_name = s.model_name
-ON CONFLICT (sku_code) DO NOTHING;
+LEFT JOIN LATERAL (
+  SELECT m.id
+  FROM ai_models m
+  JOIN ai_providers p ON p.id = m.provider_id AND p.slug = s.provider_slug
+  WHERE m.model_id = s.model_key
+     OR m.model_id LIKE s.model_key || '-%'
+     OR m.name = s.model_key
+     OR m.display_name = s.model_name
+  ORDER BY CASE WHEN m.model_id = s.model_key THEN 0 ELSE 1 END
+  LIMIT 1
+) m ON TRUE
+ON CONFLICT (sku_code) DO UPDATE SET model_id = EXCLUDED.model_id;
 
 WITH rate_card AS (
     SELECT id FROM pricing_rate_cards
