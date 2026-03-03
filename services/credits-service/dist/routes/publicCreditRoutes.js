@@ -1,0 +1,21 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = __importDefault(require("express"));
+const creditController_1 = require("../controllers/creditController");
+const router = express_1.default.Router();
+router.get("/summary", creditController_1.getMyCreditSummary);
+router.get("/tenant-usage-history", creditController_1.getTenantUsageHistory);
+router.get("/granted-credits", creditController_1.getMyGrantedCredits);
+router.get("/preferences", creditController_1.getMyCreditPreferences);
+router.patch("/preferences", creditController_1.updateMyCreditPreferences);
+router.get("/service-usage", creditController_1.getMyServiceUsage);
+router.get("/topup-usage", creditController_1.getMyTopupUsage);
+router.get("/usage-history", creditController_1.getMyUsageHistory);
+router.get("/topup-products", creditController_1.listPublicTopupProducts);
+router.patch("/member-credit-access", creditController_1.updateMemberCreditAccess);
+router.patch("/member-topup-credit-access", creditController_1.updateMemberTopupCreditAccess);
+router.patch("/topup-auto-use", creditController_1.updateMyTopupAutoUse);
+exports.default = router;

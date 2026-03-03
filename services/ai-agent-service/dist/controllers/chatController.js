@@ -94,6 +94,15 @@ function extractUsageFromProviderRaw(raw) {
         const total = typeof cu.total_tokens === "number" ? Number(cu.total_tokens) : input + output;
         return { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: total };
     }
+    // Google Gemini: usageMetadata (promptTokenCount, candidatesTokenCount)
+    const um = raw?.usageMetadata || raw?.usage_metadata;
+    if (um && (typeof um.promptTokenCount === "number" || typeof um.prompt_token_count === "number" || typeof um.candidatesTokenCount === "number" || typeof um.candidates_token_count === "number")) {
+        const input = Number(um.promptTokenCount ?? um.prompt_token_count ?? 0);
+        const output = Number(um.candidatesTokenCount ?? um.candidates_token_count ?? 0);
+        const total = Number(um.totalTokenCount ?? um.total_token_count ?? 0) || input + output;
+        const cached = Number(um.cachedContentTokenCount ?? um.cached_content_token_count ?? 0);
+        return { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: total };
+    }
     return { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0 };
 }
 async function resolveAiModelId(providerId, modelApiId) {
@@ -184,7 +193,7 @@ async function chatCompletion(req, res) {
             try {
                 if (modelRow) {
                     const usage = extractUsageFromProviderRaw(out.raw);
-                    const pricing = await (0, pricingService_1.lookupModelPricing)(provider_slug, model, "text");
+                    const pricing = await (0, pricingService_1.lookupModelPricing)(provider_slug, model, "text", modelRow.id);
                     const costs = (0, pricingService_1.calculateCost)(pricing, usage.input_tokens, usage.cached_input_tokens, usage.output_tokens);
                     const responseTimeMs = Date.now() - started;
                     const logRes = await (0, db_1.query)(`
@@ -284,7 +293,7 @@ async function chatCompletion(req, res) {
             try {
                 if (modelRow) {
                     const usage = extractUsageFromProviderRaw(out.raw);
-                    const pricing = await (0, pricingService_1.lookupModelPricing)(provider_slug, model, "text");
+                    const pricing = await (0, pricingService_1.lookupModelPricing)(provider_slug, model, "text", modelRow.id);
                     const costs = (0, pricingService_1.calculateCost)(pricing, usage.input_tokens, usage.cached_input_tokens, usage.output_tokens);
                     const responseTimeMs = Date.now() - started;
                     const logRes = await (0, db_1.query)(`

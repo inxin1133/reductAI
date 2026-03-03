@@ -1182,10 +1182,12 @@ export async function generateSkusForModel(req: Request, res: Response) {
 export async function listMarkups(req: Request, res: Response) {
   try {
     const q = toStr(req.query.q)
-    const status = toStr(req.query.status)
-    const providerSlug = toStr(req.query.provider_slug)
-    const modelKey = toStr(req.query.model_key)
+    const scopeType = toStr(req.query.scope_type)
     const modality = toStr(req.query.modality)
+    const usageKind = toStr(req.query.usage_kind)
+    const tokenCategory = toStr(req.query.token_category)
+    const isActiveRaw = toStr(req.query.is_active)
+    const modelId = toStr(req.query.model_id)
 
     const limit = Math.min(toInt(req.query.limit, 50), 200)
     const offset = toInt(req.query.offset, 0)
@@ -1193,31 +1195,33 @@ export async function listMarkups(req: Request, res: Response) {
     const where: string[] = []
     const params: any[] = []
 
-    if (status) {
-      where.push(`status = $${params.length + 1}`)
-      params.push(status)
-    }
-    if (providerSlug) {
-      where.push(`provider_slug = $${params.length + 1}`)
-      params.push(providerSlug)
-    }
-    if (modelKey) {
-      where.push(`model_key = $${params.length + 1}`)
-      params.push(modelKey)
+    if (scopeType) {
+      where.push(`scope_type = $${params.length + 1}`)
+      params.push(scopeType)
     }
     if (modality) {
       where.push(`modality = $${params.length + 1}`)
       params.push(modality)
     }
+    if (usageKind) {
+      where.push(`usage_kind = $${params.length + 1}`)
+      params.push(usageKind)
+    }
+    if (tokenCategory) {
+      where.push(`token_category = $${params.length + 1}`)
+      params.push(tokenCategory)
+    }
+    if (isActiveRaw === "true") {
+      where.push(`is_active = TRUE`)
+    } else if (isActiveRaw === "false") {
+      where.push(`is_active = FALSE`)
+    }
+    if (modelId) {
+      where.push(`model_id = $${params.length + 1}`)
+      params.push(modelId)
+    }
     if (q) {
-      where.push(
-        `(
-          name ILIKE $${params.length + 1}
-          OR COALESCE(description, '') ILIKE $${params.length + 1}
-          OR COALESCE(provider_slug, '') ILIKE $${params.length + 1}
-          OR COALESCE(model_key, '') ILIKE $${params.length + 1}
-        )`
-      )
+      where.push(`name ILIKE $${params.length + 1}`)
       params.push(`%${q}%`)
     }
 
@@ -1228,21 +1232,25 @@ export async function listMarkups(req: Request, res: Response) {
     const listRes = await query(
       `
       SELECT
-        id,
-        name,
-        description,
-        provider_slug,
-        model_key,
-        modality,
-        margin_percent,
-        status,
-        effective_from,
-        effective_to,
-        created_at,
-        updated_at
-      FROM pricing_markup_rules
+        m.id,
+        m.name,
+        m.scope_type,
+        m.model_id,
+        m.modality,
+        m.usage_kind,
+        m.token_category,
+        m.margin_percent,
+        m.priority,
+        m.is_active,
+        m.effective_at,
+        m.created_at,
+        m.updated_at,
+        am.display_name AS model_display_name,
+        am.model_id AS model_api_id
+      FROM pricing_markup_rules m
+      LEFT JOIN ai_models am ON am.id = m.model_id
       ${whereSql}
-      ORDER BY created_at DESC
+      ORDER BY m.priority DESC, m.created_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
       [...params, limit, offset]
@@ -1261,43 +1269,44 @@ export async function listMarkups(req: Request, res: Response) {
   }
 }
 
-const MARKUP_STATUSES = new Set(["active", "inactive"])
+const MARKUP_SCOPE_TYPES = new Set(["global", "modality", "model", "model_usage"])
 
 export async function createMarkup(req: Request, res: Response) {
   try {
     const name = toStr(req.body?.name)
-    const description = typeof req.body?.description === "string" ? req.body.description : null
-    const providerSlug = toStr(req.body?.provider_slug)
-    const modelKey = toStr(req.body?.model_key)
-    const modality = toStr(req.body?.modality)
+    const scopeType = toStr(req.body?.scope_type) || "global"
+    const modelId = req.body?.model_id || null
+    const modality = req.body?.modality || null
+    const usageKind = req.body?.usage_kind || null
+    const tokenCategory = req.body?.token_category || null
     const marginPercent = Number(req.body?.margin_percent)
-    const status = toStr(req.body?.status) || "active"
-    const effectiveFrom = req.body?.effective_from || null
-    const effectiveTo = req.body?.effective_to || null
+    const priority = Number(req.body?.priority) || 0
+    const isActive = req.body?.is_active !== false
+    const effectiveAt = req.body?.effective_at || null
 
     if (!name) return res.status(400).json({ message: "name is required" })
     if (!Number.isFinite(marginPercent)) return res.status(400).json({ message: "margin_percent must be numeric" })
-    if (!MARKUP_STATUSES.has(status)) return res.status(400).json({ message: "invalid status" })
+    if (!MARKUP_SCOPE_TYPES.has(scopeType)) return res.status(400).json({ message: "invalid scope_type" })
 
     const result = await query(
       `
       INSERT INTO pricing_markup_rules (
-        name, description, provider_slug, model_key, modality, margin_percent, status, effective_from, effective_to
+        name, scope_type, model_id, modality, usage_kind, token_category, margin_percent, priority, is_active, effective_at
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-      RETURNING
-        id, name, description, provider_slug, model_key, modality, margin_percent, status, effective_from, effective_to, created_at, updated_at
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz)
+      RETURNING id, name, scope_type, model_id, modality, usage_kind, token_category, margin_percent, priority, is_active, effective_at, created_at, updated_at
       `,
       [
         name,
-        description,
-        providerSlug || null,
-        modelKey || null,
-        modality || null,
+        scopeType,
+        modelId && String(modelId).trim() ? modelId : null,
+        modality && String(modality).trim() ? modality : null,
+        usageKind && String(usageKind).trim() ? usageKind : null,
+        tokenCategory && String(tokenCategory).trim() ? tokenCategory : null,
         marginPercent,
-        status,
-        effectiveFrom,
-        effectiveTo,
+        Number.isFinite(priority) ? priority : 0,
+        isActive,
+        effectiveAt ? String(effectiveAt) : null,
       ]
     )
 
@@ -1327,37 +1336,37 @@ export async function updateMarkup(req: Request, res: Response) {
       if (!name) return res.status(400).json({ message: "name must be non-empty" })
       setField("name", name)
     }
-    if (input.description !== undefined) {
-      const description = typeof input.description === "string" ? input.description : null
-      setField("description", description)
+    if (input.scope_type !== undefined) {
+      const scopeType = toStr(input.scope_type)
+      if (!MARKUP_SCOPE_TYPES.has(scopeType)) return res.status(400).json({ message: "invalid scope_type" })
+      setField("scope_type", scopeType)
     }
-    if (input.provider_slug !== undefined) {
-      const providerSlug = toStr(input.provider_slug)
-      setField("provider_slug", providerSlug || null)
-    }
-    if (input.model_key !== undefined) {
-      const modelKey = toStr(input.model_key)
-      setField("model_key", modelKey || null)
+    if (input.model_id !== undefined) {
+      const modelId = input.model_id && String(input.model_id).trim() ? input.model_id : null
+      setField("model_id", modelId)
     }
     if (input.modality !== undefined) {
-      const modality = toStr(input.modality)
-      setField("modality", modality || null)
+      setField("modality", input.modality && String(input.modality).trim() ? input.modality : null)
+    }
+    if (input.usage_kind !== undefined) {
+      setField("usage_kind", input.usage_kind && String(input.usage_kind).trim() ? input.usage_kind : null)
+    }
+    if (input.token_category !== undefined) {
+      setField("token_category", input.token_category && String(input.token_category).trim() ? input.token_category : null)
     }
     if (input.margin_percent !== undefined) {
       const marginPercent = Number(input.margin_percent)
       if (!Number.isFinite(marginPercent)) return res.status(400).json({ message: "margin_percent must be numeric" })
       setField("margin_percent", marginPercent)
     }
-    if (input.status !== undefined) {
-      const status = toStr(input.status)
-      if (!MARKUP_STATUSES.has(status)) return res.status(400).json({ message: "invalid status" })
-      setField("status", status)
+    if (input.priority !== undefined) {
+      setField("priority", Number(input.priority) || 0)
     }
-    if (input.effective_from !== undefined) {
-      setField("effective_from", input.effective_from || null)
+    if (input.is_active !== undefined) {
+      setField("is_active", input.is_active === true || input.is_active === "true")
     }
-    if (input.effective_to !== undefined) {
-      setField("effective_to", input.effective_to || null)
+    if (input.effective_at !== undefined) {
+      setField("effective_at", input.effective_at ? String(input.effective_at) : null)
     }
 
     if (fields.length === 0) return res.status(400).json({ message: "No fields to update" })
@@ -1367,8 +1376,7 @@ export async function updateMarkup(req: Request, res: Response) {
       UPDATE pricing_markup_rules
       SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP
       WHERE id = $${params.length + 1}
-      RETURNING
-        id, name, description, provider_slug, model_key, modality, margin_percent, status, effective_from, effective_to, created_at, updated_at
+      RETURNING id, name, scope_type, model_id, modality, usage_kind, token_category, margin_percent, priority, is_active, effective_at, created_at, updated_at
       `,
       [...params, id]
     )

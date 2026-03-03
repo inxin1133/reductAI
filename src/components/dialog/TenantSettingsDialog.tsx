@@ -2667,7 +2667,7 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                               <TableHead className="text-xs">날짜</TableHead>
                               <TableHead className="text-xs">사용자</TableHead>
                               <TableHead className="text-xs">모델</TableHead>
-                              <TableHead className="text-xs">사용량</TableHead>
+                              <TableHead className="text-xs">사용내용</TableHead>
                               <TableHead className="text-right text-xs">크레딧</TableHead>
                             </TableRow>
                           </TableHeader>

@@ -671,6 +671,11 @@ async function ensureLlmUsageLogsSchema() {
       ADD COLUMN IF NOT EXISTS cached_input_cost DECIMAL(10, 6) DEFAULT 0,
       ADD COLUMN IF NOT EXISTS output_cost DECIMAL(10, 6) DEFAULT 0,
       ADD COLUMN IF NOT EXISTS total_cost DECIMAL(10, 6) DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS web_search_cost DECIMAL(10, 6) DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS image_cost DECIMAL(10, 6) DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS video_cost DECIMAL(10, 6) DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS audio_cost DECIMAL(10, 6) DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS music_cost DECIMAL(10, 6) DEFAULT 0,
       ADD COLUMN IF NOT EXISTS currency VARCHAR(3) DEFAULT 'USD',
       ADD COLUMN IF NOT EXISTS request_data JSONB,
       ADD COLUMN IF NOT EXISTS response_data JSONB,
@@ -1023,6 +1028,21 @@ async function ensureResponseSchemasSchema() {
           ALTER TABLE ai_models
           ADD CONSTRAINT fk_ai_models_response_schema_id
           FOREIGN KEY (response_schema_id) REFERENCES response_schemas(id) ON DELETE SET NULL;
+        END IF;
+      END IF;
+    END $$;
+  `);
+    // ai_models.max_input_tokens (이전: capabilities.limits.max_input_tokens → DB 컬럼으로 단일 소스)
+    await (0, db_1.query)(`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'ai_models') THEN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'ai_models' AND column_name = 'max_input_tokens'
+        ) THEN
+          ALTER TABLE ai_models ADD COLUMN max_input_tokens INTEGER;
+          COMMENT ON COLUMN ai_models.max_input_tokens IS '최대 입력(프롬프트) 토큰 수. Provider 문서의 context length와 동일 권장.';
         END IF;
       END IF;
     END $$;

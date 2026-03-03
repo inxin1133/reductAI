@@ -22,6 +22,9 @@ async function getChatUiConfig(_req, res) {
         m.is_default,
         m.sort_order,
         m.capabilities,
+        m.context_window,
+        m.max_input_tokens,
+        m.max_output_tokens,
         p.id AS provider_id,
         p.name AS provider_name,
         p.product_name AS provider_product_name,
@@ -77,16 +80,22 @@ async function getChatUiConfig(_req, res) {
                 is_default: Boolean(r.is_default),
                 sort_order: Number(r.sort_order || 0),
                 capabilities: r.capabilities && typeof r.capabilities === "object" ? r.capabilities : {},
+                context_window: typeof r.context_window === "number" ? r.context_window : null,
+                max_input_tokens: typeof r.max_input_tokens === "number" ? r.max_input_tokens : null,
+                max_output_tokens: typeof r.max_output_tokens === "number" ? r.max_output_tokens : null,
             });
         }
         // include only types that actually have providers (for tabs)
         const activeModelTypes = MODEL_TYPES.filter((t) => (providersByType[t] || []).length > 0);
         const webSearchPolicy = await (0, webSearchSettingsService_1.getWebSearchPolicy)(tenantId);
+        const creditsServiceKey = process.env.CREDITS_SERVICE_KEY;
+        const credits_system_ready = Boolean(creditsServiceKey && creditsServiceKey.trim());
         return res.json({
             ok: true,
             model_types: activeModelTypes,
             providers_by_type: providersByType,
             web_search_policy: webSearchPolicy,
+            credits_system_ready,
         });
     }
     catch (e) {

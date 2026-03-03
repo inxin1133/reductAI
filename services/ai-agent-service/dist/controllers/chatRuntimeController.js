@@ -50,6 +50,8 @@ const webSearchSettingsService_1 = require("../services/webSearchSettingsService
 const pricingService_1 = require("../services/pricingService");
 const MODEL_TYPES = ["text", "image", "audio", "music", "video", "multimodal", "embedding", "code"];
 const FILE_SERVICE_URL = process.env.FILE_SERVICE_URL || "http://localhost:3008";
+const CREDITS_SERVICE_URL = process.env.CREDITS_SERVICE_URL || "http://localhost:3011";
+const CREDITS_SERVICE_KEY = process.env.CREDITS_SERVICE_KEY || "";
 const ACTIVE_RUNS = new Map();
 const ACTIVE_RUNS_BY_REQUEST = new Map();
 function registerActiveRun(args) {
@@ -1114,6 +1116,11 @@ async function ensureConversationOwned(args) {
     const r = await (0, db_1.query)(`SELECT id FROM model_conversations WHERE id = $1 AND tenant_id = $2 AND user_id = $3 AND status = 'active' LIMIT 1`, [args.conversationId, args.tenantId, args.userId]);
     return r.rows.length > 0;
 }
+/** conversation_id가 있을 때 해당 대화의 tenant_id 조회. 사용자 소유면 tenant_id 반환, 아니면 null */
+async function getConversationTenantIfOwned(conversationId, userId) {
+    const r = await (0, db_1.query)(`SELECT tenant_id FROM model_conversations WHERE id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`, [conversationId, userId]);
+    return r.rows[0]?.tenant_id ? String(r.rows[0].tenant_id) : null;
+}
 // 모달리티별 임시 제목
 function getTempTitle(modelType) {
     switch (modelType) {
@@ -1201,7 +1208,6 @@ async function cancelChatRun(req, res) {
     try {
         const userId = req.userId;
         const authHeader = String(req.headers.authorization || "");
-        const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
         const body = (req.body || {});
         const conversationId = String(body.conversation_id || "").trim();
         const requestId = String(body.request_id || "").trim();
@@ -1209,6 +1215,14 @@ async function cancelChatRun(req, res) {
             return res.status(400).json({ message: "conversation_id or request_id is required" });
         if (conversationId && !isUuid(conversationId))
             return res.status(400).json({ message: "conversation_id is invalid" });
+        let tenantId;
+        if (conversationId) {
+            const convTenant = await getConversationTenantIfOwned(conversationId, String(userId || ""));
+            tenantId = convTenant ?? (await (0, systemTenantService_1.ensureSystemTenantId)());
+        }
+        else {
+            tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
+        }
         const stopText = "사용자의 요청에 의해 요청 및 답변이 중지 되었습니다.";
         if (requestId) {
             const activeByRequest = ACTIVE_RUNS_BY_REQUEST.get(requestId);
@@ -1452,11 +1466,12 @@ async function getConversationContext(req, res) {
     try {
         const userId = req.userId;
         const authHeader = String(req.headers.authorization || "");
-        const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
         const params = (req.params || {});
         const conversationId = String(params.id || "").trim();
         if (!isUuid(conversationId))
             return res.status(400).json({ message: "Invalid conversation id" });
+        const convTenant = await getConversationTenantIfOwned(conversationId, String(userId || ""));
+        const tenantId = convTenant ?? (await (0, systemTenantService_1.ensureSystemTenantId)());
         const ok = await ensureConversationOwned({ tenantId, userId, conversationId });
         if (!ok)
             return res.status(404).json({ message: "Conversation not found" });
@@ -1548,9 +1563,26 @@ async function chatRun(req, res) {
     let imageUsage = null;
     let musicUsage = null;
     try {
+        if (!CREDITS_SERVICE_KEY || !CREDITS_SERVICE_KEY.trim()) {
+            return res.status(503).json({
+                message: "크레딧 시스템이 설정되지 않았습니다. 채팅을 사용할 수 없습니다.",
+                details: "CREDITS_SERVICE_KEY가 ai-agent-service에 설정되지 않았습니다. 관리자에게 문의해 주세요.",
+            });
+        }
         const userId = req.userId;
         const authHeader = String(req.headers.authorization || "");
-        const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
+        const convIdFromBody = req.body?.conversation_id ? String(req.body.conversation_id).trim() : "";
+        // 기존 대화 이어갈 때: 해당 대화의 tenant_id 사용 (Timeline 조회와 일치)
+        // 신규 대화: 항상 system tenant (Timeline이 system tenant 기준으로 목록 조회하므로 표시됨)
+        // 크레딧 차감은 deduct에서 selected_account_id로 별도 처리
+        let tenantId;
+        if (convIdFromBody && isUuid(convIdFromBody)) {
+            const convTenant = await getConversationTenantIfOwned(convIdFromBody, String(userId || ""));
+            tenantId = convTenant ?? (await (0, systemTenantService_1.ensureSystemTenantId)());
+        }
+        else {
+            tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
+        }
         const webSearchPolicy = await (0, webSearchSettingsService_1.getWebSearchPolicy)(tenantId);
         const { model_type, conversation_id, userPrompt, max_tokens, session_language, 
         // optional: client-selected model override
@@ -1573,8 +1605,9 @@ async function chatRun(req, res) {
         const sessionLang = typeof session_language === "string" ? session_language.trim() : "";
         // We'll fill history language later if conversation exists.
         let historyLang = null;
-        // safe max_tokens
-        const maxTokensRequested = clampInt(Number(max_tokens ?? 512) || 512, 16, 8192);
+        // safe max_tokens: 클라이언트/모델 max_output_tokens가 100000 등일 수 있으므로 상한을 200000으로 설정 (model 로드 후 safeMaxTokens에서 모델 상한 적용)
+        const DEFAULT_MAX_REQUESTED = 20000;
+        const maxTokensRequested = clampInt(Number(max_tokens ?? DEFAULT_MAX_REQUESTED) || DEFAULT_MAX_REQUESTED, 16, 200000);
         // 1) routing rule evaluation -> 2) model selection
         let chosenModelDbId = null;
         // if client specifies explicit model_api_id + provider_id, try to resolve that exact model first
@@ -2185,7 +2218,7 @@ async function chatRun(req, res) {
                                 ...(allowTools ? { tools, tool_choice: "auto" } : {}),
                                 // keep JSON-only behavior consistent with existing UI parser
                                 response_format: { type: "json_object" },
-                                max_completion_tokens: Math.min(Math.max(safeMaxTokens, 1024), 4096),
+                                max_completion_tokens: Math.max(safeMaxTokens, 1024),
                             });
                             lastRaw = j0;
                             if (!r0.ok)
@@ -2618,9 +2651,18 @@ async function chatRun(req, res) {
                 const outputTokens = usage.output_tokens;
                 const totalTokens = usage.total_tokens || inputTokens + outputTokens;
                 const modality = toLlmModality(mt, incomingImageDataUrls.length > 0 || incomingImageUrls.length > 0);
-                const pricing = await (0, pricingService_1.lookupModelPricing)(usedProviderSlug, usedModelApiId, modality);
+                const pricing = await (0, pricingService_1.lookupModelPricing)(usedProviderSlug, usedModelApiId, modality, usedModelDbId);
                 const costs = (0, pricingService_1.calculateCost)(pricing, inputTokens, cachedInputTokens, outputTokens);
-                const { inputCost, cachedInputCost, outputCost, totalCost } = costs;
+                const tokenTotalCost = costs.totalCost;
+                const webSearchCost = webSearchCount > 0
+                    ? (await (0, pricingService_1.lookupWebSearchPricing)(webProvider || "serper")) * webSearchCount
+                    : 0;
+                const imageCost = 0;
+                const videoCost = 0;
+                const audioCost = 0;
+                const musicCost = 0;
+                const totalCost = tokenTotalCost + webSearchCost + imageCost + videoCost + audioCost + musicCost;
+                const { inputCost, cachedInputCost, outputCost } = costs;
                 const costCurrency = costs.currency;
                 const featureName = mt === "text" || mt === "code" || mt === "multimodal" ? "chat" : mt;
                 const requestedModel = model_api_id ? String(model_api_id).trim() : usedModelApiId;
@@ -2673,7 +2715,9 @@ async function chatRun(req, res) {
             conversation_id, model_message_id,
             web_enabled, web_provider, web_search_mode, web_budget_count, web_search_count,
             input_tokens, cached_input_tokens, output_tokens, total_tokens,
-            input_cost, cached_input_cost, output_cost, total_cost, currency,
+            input_cost, cached_input_cost, output_cost, total_cost,
+            web_search_cost, image_cost, video_cost, audio_cost, music_cost,
+            currency,
             response_time_ms, status, error_code, error_message,
             request_data, response_data, model_parameters,
             ip_address, user_agent, metadata
@@ -2683,10 +2727,12 @@ async function chatRun(req, res) {
             $12, $13,
             $14, $15, $16, $17, $18,
             $19, $20, $21, $22,
-            $23, $24, $25, $26, $27,
-            $28, $29, $30, $31,
-            $32::jsonb, $33::jsonb, $34::jsonb,
-            $35::inet, $36, $37::jsonb
+            $23, $24, $25, $26,
+            $27, $28, $29, $30, $31,
+            $32,
+            $33, $34, $35, $36,
+            $37::jsonb, $38::jsonb, $39::jsonb,
+            $40::inet, $41, $42::jsonb
           )
           ON CONFLICT (tenant_id, request_id) DO UPDATE SET
             status = EXCLUDED.status,
@@ -2701,6 +2747,11 @@ async function chatRun(req, res) {
             cached_input_cost = EXCLUDED.cached_input_cost,
             output_cost = EXCLUDED.output_cost,
             total_cost = EXCLUDED.total_cost,
+            web_search_cost = EXCLUDED.web_search_cost,
+            image_cost = EXCLUDED.image_cost,
+            video_cost = EXCLUDED.video_cost,
+            audio_cost = EXCLUDED.audio_cost,
+            music_cost = EXCLUDED.music_cost,
             currency = EXCLUDED.currency,
             request_data = EXCLUDED.request_data,
             response_data = EXCLUDED.response_data,
@@ -2736,6 +2787,11 @@ async function chatRun(req, res) {
                     cachedInputCost,
                     outputCost,
                     totalCost,
+                    webSearchCost,
+                    imageCost,
+                    videoCost,
+                    audioCost,
+                    musicCost,
                     costCurrency,
                     responseTimeMs,
                     status,
@@ -2801,6 +2857,32 @@ async function chatRun(req, res) {
               )
               `, [usageLogId, webProvider || "serper", webSearchCount, webQueryCharsTotal, webResponseBytesTotal]);
                     }
+                    if (status === "success" && totalCost > 0 && userId && CREDITS_SERVICE_KEY) {
+                        const deductUrl = new URL("/api/ai/credits/internal/deduct-for-usage", CREDITS_SERVICE_URL);
+                        try {
+                            const deductRes = await fetch(deductUrl.toString(), {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json", "x-service-key": CREDITS_SERVICE_KEY },
+                                body: JSON.stringify({ usage_log_id: usageLogId }),
+                            });
+                            const deductJson = (await deductRes.json().catch(() => null));
+                            if (!deductRes.ok) {
+                                console.warn("[credits-deduct] deduct-for-usage failed:", deductRes.status, deductJson);
+                            }
+                            else if (deductJson?.skipped && deductJson?.reason) {
+                                console.warn("[credits-deduct] deduct skipped:", deductJson.reason, "usage_log_id=", usageLogId);
+                            }
+                            else if ((deductJson?.deducted ?? 0) > 0) {
+                                console.log("[credits-deduct] deducted", deductJson?.deducted, "credits for usage_log_id=", usageLogId);
+                            }
+                        }
+                        catch (err) {
+                            console.warn("[credits-deduct] deduct-for-usage failed:", err);
+                        }
+                    }
+                    else if (status === "success" && totalCost > 0 && userId && !CREDITS_SERVICE_KEY) {
+                        console.warn("[credits-deduct] CREDITS_SERVICE_KEY not configured; skip deduct-for-usage");
+                    }
                 }
             }
         }
@@ -2825,6 +2907,7 @@ async function chatRun(req, res) {
             },
             output_text: out.output_text,
             raw: out.raw,
+            truncated: out.truncated,
             debug: {
                 received_attachments: Array.isArray(attachments) ? attachments.length : 0,
                 received_image_data_urls: incomingImageDataUrls.length,

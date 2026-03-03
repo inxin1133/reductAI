@@ -135,6 +135,48 @@ export async function lookupModelPricing(
 }
 
 /**
+ * 웹 검색(serper 등) request 단가를 조회한다.
+ * pricing_skus: modality=web_search, usage_kind=requests, unit=request
+ * providerSlug 예: "serper"
+ * @returns USD per request (예: 0.001). 조회 실패 시 0
+ */
+export async function lookupWebSearchPricing(providerSlug: string): Promise<number> {
+  if (!providerSlug || !String(providerSlug).trim()) return 0
+  const slug = String(providerSlug).trim().toLowerCase()
+  try {
+    const r = await query(
+      `
+      WITH active_rc AS (
+        SELECT id FROM pricing_rate_cards
+        WHERE status = 'active' AND effective_at <= NOW()
+        ORDER BY effective_at DESC, version DESC
+        LIMIT 1
+      )
+      SELECT r.rate_value, s.unit_size
+      FROM pricing_skus s
+      JOIN pricing_rates r ON r.sku_id = s.id
+      JOIN active_rc arc ON r.rate_card_id = arc.id
+      WHERE s.provider_slug = $1
+        AND s.modality = 'web_search'
+        AND s.usage_kind = 'requests'
+        AND s.unit = 'request'
+        AND s.is_active = TRUE
+      LIMIT 1
+      `,
+      [slug]
+    )
+    if (!r.rows.length) return 0
+    const row = r.rows[0] as { rate_value?: number; unit_size?: number }
+    const rateValue = Number(row?.rate_value ?? 0)
+    const unitSize = Math.max(1, Number(row?.unit_size ?? 1))
+    return rateValue / unitSize
+  } catch (e) {
+    console.warn("[pricingService] lookupWebSearchPricing failed:", e)
+    return 0
+  }
+}
+
+/**
  * 토큰 사용량과 단가로 비용을 계산한다.
  */
 export function calculateCost(

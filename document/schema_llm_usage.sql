@@ -96,6 +96,12 @@ CREATE TABLE llm_usage_logs (
     cached_input_cost DECIMAL(10, 6) DEFAULT 0,
     output_cost DECIMAL(10, 6) DEFAULT 0,
     total_cost DECIMAL(10, 6) DEFAULT 0,
+    -- 보조 비용 (토큰 외 모달리티별, total_cost = 토큰비용 + 합계)
+    web_search_cost DECIMAL(10, 6) DEFAULT 0,
+    image_cost DECIMAL(10, 6) DEFAULT 0,
+    video_cost DECIMAL(10, 6) DEFAULT 0,
+    audio_cost DECIMAL(10, 6) DEFAULT 0,
+    music_cost DECIMAL(10, 6) DEFAULT 0,
     currency VARCHAR(3) DEFAULT 'USD',
 
     -- 요청/응답 세부
@@ -206,7 +212,12 @@ COMMENT ON COLUMN llm_usage_logs.total_tokens IS '총 토큰 수(요약)';
 COMMENT ON COLUMN llm_usage_logs.input_cost IS '입력 토큰 비용(요약)';
 COMMENT ON COLUMN llm_usage_logs.cached_input_cost IS '캐시 입력 토큰 비용(요약)';
 COMMENT ON COLUMN llm_usage_logs.output_cost IS '출력 토큰 비용(요약)';
-COMMENT ON COLUMN llm_usage_logs.total_cost IS '총 비용(요약)';
+COMMENT ON COLUMN llm_usage_logs.total_cost IS '총 비용(요약) = 토큰비용 + web_search_cost + image_cost + video_cost + audio_cost + music_cost';
+COMMENT ON COLUMN llm_usage_logs.web_search_cost IS '웹검색 비용(USD)';
+COMMENT ON COLUMN llm_usage_logs.image_cost IS '이미지 생성 비용(USD)';
+COMMENT ON COLUMN llm_usage_logs.video_cost IS '영상 생성 비용(USD)';
+COMMENT ON COLUMN llm_usage_logs.audio_cost IS '오디오(STT/TTS) 비용(USD)';
+COMMENT ON COLUMN llm_usage_logs.music_cost IS '음악 생성 비용(USD)';
 COMMENT ON COLUMN llm_usage_logs.currency IS '통화 코드';
 
 COMMENT ON COLUMN llm_usage_logs.request_data IS '요청 데이터(요약/프리뷰 포함)';

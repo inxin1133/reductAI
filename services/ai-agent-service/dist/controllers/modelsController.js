@@ -117,15 +117,15 @@ async function getModel(req, res) {
 // 생성
 async function createModel(req, res) {
     try {
-        const { provider_id, name, model_id, display_name, description = null, model_type, prompt_template_id = null, response_schema_id = null, capabilities = {}, context_window = null, max_output_tokens = null, is_available = true, is_default = false, status = "active", released_at = null, deprecated_at = null, sort_order = null, metadata = {}, } = req.body;
+        const { provider_id, name, model_id, display_name, description = null, model_type, prompt_template_id = null, response_schema_id = null, capabilities = {}, context_window = null, max_input_tokens = null, max_output_tokens = null, is_available = true, is_default = false, status = "active", released_at = null, deprecated_at = null, sort_order = null, metadata = {}, } = req.body;
         if (!provider_id || !model_id || !display_name || !model_type) {
             return res.status(400).json({ message: "provider_id, model_id, display_name, model_type are required" });
         }
         const result = await (0, db_1.query)(`INSERT INTO ai_models
-        (provider_id, name, model_id, display_name, description, model_type, prompt_template_id, response_schema_id, capabilities, context_window, max_output_tokens,
+        (provider_id, name, model_id, display_name, description, model_type, prompt_template_id, response_schema_id, capabilities, context_window, max_input_tokens, max_output_tokens,
          is_available, is_default, status, released_at, deprecated_at, sort_order, metadata)
        VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb)
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb)
        RETURNING *`, [
             provider_id,
             name || model_id,
@@ -137,6 +137,7 @@ async function createModel(req, res) {
             response_schema_id,
             JSON.stringify(normalizeCapabilities(capabilities)),
             context_window,
+            max_input_tokens,
             max_output_tokens,
             is_available,
             is_default,
@@ -175,14 +176,15 @@ async function updateModel(req, res) {
         response_schema_id = COALESCE($9, response_schema_id),
         capabilities = COALESCE($10::jsonb, capabilities),
         context_window = COALESCE($11, context_window),
-        max_output_tokens = COALESCE($12, max_output_tokens),
-        is_available = COALESCE($13, is_available),
-        is_default = COALESCE($14, is_default),
-        status = COALESCE($15, status),
-        released_at = COALESCE($16, released_at),
-        deprecated_at = COALESCE($17, deprecated_at),
-        sort_order = COALESCE($18, sort_order),
-        metadata = COALESCE($19::jsonb, metadata),
+        max_input_tokens = COALESCE($12, max_input_tokens),
+        max_output_tokens = COALESCE($13, max_output_tokens),
+        is_available = COALESCE($14, is_available),
+        is_default = COALESCE($15, is_default),
+        status = COALESCE($16, status),
+        released_at = COALESCE($17, released_at),
+        deprecated_at = COALESCE($18, deprecated_at),
+        sort_order = COALESCE($19, sort_order),
+        metadata = COALESCE($20::jsonb, metadata),
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $1
       RETURNING *`, [
@@ -197,6 +199,7 @@ async function updateModel(req, res) {
             body.response_schema_id ?? null,
             body.capabilities !== undefined ? JSON.stringify(normalizeCapabilities(body.capabilities)) : null,
             body.context_window ?? null,
+            body.max_input_tokens ?? null,
             body.max_output_tokens ?? null,
             typeof body.is_available === "boolean" ? body.is_available : null,
             typeof body.is_default === "boolean" ? body.is_default : null,

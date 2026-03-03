@@ -1983,6 +1983,7 @@ export async function getTenantUsageHistory(req: Request, res: Response) {
         l.input_tokens,
         l.output_tokens,
         l.total_tokens,
+        COALESCE(l.web_search_count, 0)::int AS web_search_count,
         m.display_name AS model_display_name,
         COALESCE(iu.image_count, 0)::int AS image_count,
         COALESCE(vu.video_seconds, 0)::numeric AS video_seconds,
@@ -2027,6 +2028,7 @@ export async function getTenantUsageHistory(req: Request, res: Response) {
       const modality = String(row.modality || "text")
       const inputT = Number(row.input_tokens ?? 0)
       const outputT = Number(row.output_tokens ?? 0)
+      const webSearchCount = Number(row.web_search_count ?? 0)
       const imageCount = Number(row.image_count ?? 0)
       const videoSec = Number(row.video_seconds ?? 0)
       const musicSec = Number(row.music_seconds ?? 0)
@@ -2043,6 +2045,7 @@ export async function getTenantUsageHistory(req: Request, res: Response) {
         usageDesc = `음성 ${Math.round(audioSec)}초`
       } else {
         usageDesc = `입력 ${formatUsageNumber(inputT)} / 출력 ${formatUsageNumber(outputT)}`
+        if (webSearchCount > 0) usageDesc += ` / 웹서치 ${webSearchCount}`
       }
 
       const model =
@@ -2138,6 +2141,7 @@ export async function getMyUsageHistory(req: Request, res: Response) {
         l.input_tokens,
         l.output_tokens,
         l.total_tokens,
+        COALESCE(l.web_search_count, 0)::int AS web_search_count,
         m.display_name AS model_display_name,
         ca.owner_tenant_id,
         t.name AS tenant_name,
@@ -2182,6 +2186,7 @@ export async function getMyUsageHistory(req: Request, res: Response) {
       const modality = String(row.modality || "text")
       const inputT = Number(row.input_tokens ?? 0)
       const outputT = Number(row.output_tokens ?? 0)
+      const webSearchCount = Number(row.web_search_count ?? 0)
       const imageCount = Number(row.image_count ?? 0)
       const videoSec = Number(row.video_seconds ?? 0)
       const musicSec = Number(row.music_seconds ?? 0)
@@ -2198,6 +2203,7 @@ export async function getMyUsageHistory(req: Request, res: Response) {
         usageDesc = `음성 ${Math.round(audioSec)}초`
       } else {
         usageDesc = `입력 ${formatUsageNumber(inputT)} / 출력 ${formatUsageNumber(outputT)}`
+        if (webSearchCount > 0) usageDesc += ` / 웹서치 ${webSearchCount}`
       }
 
       const model =

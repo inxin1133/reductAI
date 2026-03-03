@@ -16,7 +16,7 @@ import { resolveAuthForModelApiProfile } from "../services/authProfilesService"
 import { newAssetId, storeImageDataUrlAsAsset } from "../services/fileServiceClient"
 import { normalizeAiContent } from "../utils/normalizeAiContent"
 import { getWebSearchPolicy } from "../services/webSearchSettingsService"
-import { lookupModelPricing, calculateCost } from "../services/pricingService"
+import { lookupModelPricing, lookupWebSearchPricing, calculateCost } from "../services/pricingService"
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 
@@ -2910,7 +2910,17 @@ export async function chatRun(req: Request, res: Response) {
           usedModelDbId,
         )
         const costs = calculateCost(pricing, inputTokens, cachedInputTokens, outputTokens)
-        const { inputCost, cachedInputCost, outputCost, totalCost } = costs
+        const tokenTotalCost = costs.totalCost
+        const webSearchCost =
+          webSearchCount > 0
+            ? (await lookupWebSearchPricing(webProvider || "serper")) * webSearchCount
+            : 0
+        const imageCost = 0
+        const videoCost = 0
+        const audioCost = 0
+        const musicCost = 0
+        const totalCost = tokenTotalCost + webSearchCost + imageCost + videoCost + audioCost + musicCost
+        const { inputCost, cachedInputCost, outputCost } = costs
         const costCurrency = costs.currency
         const featureName = mt === "text" || mt === "code" || mt === "multimodal" ? "chat" : mt
         const requestedModel = model_api_id ? String(model_api_id).trim() : usedModelApiId
@@ -2963,7 +2973,9 @@ export async function chatRun(req: Request, res: Response) {
             conversation_id, model_message_id,
             web_enabled, web_provider, web_search_mode, web_budget_count, web_search_count,
             input_tokens, cached_input_tokens, output_tokens, total_tokens,
-            input_cost, cached_input_cost, output_cost, total_cost, currency,
+            input_cost, cached_input_cost, output_cost, total_cost,
+            web_search_cost, image_cost, video_cost, audio_cost, music_cost,
+            currency,
             response_time_ms, status, error_code, error_message,
             request_data, response_data, model_parameters,
             ip_address, user_agent, metadata
@@ -2973,10 +2985,12 @@ export async function chatRun(req: Request, res: Response) {
             $12, $13,
             $14, $15, $16, $17, $18,
             $19, $20, $21, $22,
-            $23, $24, $25, $26, $27,
-            $28, $29, $30, $31,
-            $32::jsonb, $33::jsonb, $34::jsonb,
-            $35::inet, $36, $37::jsonb
+            $23, $24, $25, $26,
+            $27, $28, $29, $30, $31,
+            $32,
+            $33, $34, $35, $36,
+            $37::jsonb, $38::jsonb, $39::jsonb,
+            $40::inet, $41, $42::jsonb
           )
           ON CONFLICT (tenant_id, request_id) DO UPDATE SET
             status = EXCLUDED.status,
@@ -2991,6 +3005,11 @@ export async function chatRun(req: Request, res: Response) {
             cached_input_cost = EXCLUDED.cached_input_cost,
             output_cost = EXCLUDED.output_cost,
             total_cost = EXCLUDED.total_cost,
+            web_search_cost = EXCLUDED.web_search_cost,
+            image_cost = EXCLUDED.image_cost,
+            video_cost = EXCLUDED.video_cost,
+            audio_cost = EXCLUDED.audio_cost,
+            music_cost = EXCLUDED.music_cost,
             currency = EXCLUDED.currency,
             request_data = EXCLUDED.request_data,
             response_data = EXCLUDED.response_data,
@@ -3027,6 +3046,11 @@ export async function chatRun(req: Request, res: Response) {
             cachedInputCost,
             outputCost,
             totalCost,
+            webSearchCost,
+            imageCost,
+            videoCost,
+            audioCost,
+            musicCost,
             costCurrency,
             responseTimeMs,
             status,
@@ -3126,7 +3150,7 @@ export async function chatRun(req: Request, res: Response) {
               } else if (deductJson?.skipped && deductJson?.reason) {
                 console.warn("[credits-deduct] deduct skipped:", deductJson.reason, "usage_log_id=", usageLogId)
               } else if ((deductJson?.deducted ?? 0) > 0) {
-                console.log("[credits-deduct] deducted", deductJson.deducted, "credits for usage_log_id=", usageLogId)
+                console.log("[credits-deduct] deducted", deductJson?.deducted, "credits for usage_log_id=", usageLogId)
               }
             } catch (err) {
               console.warn("[credits-deduct] deduct-for-usage failed:", err)
