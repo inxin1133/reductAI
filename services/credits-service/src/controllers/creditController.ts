@@ -1307,8 +1307,31 @@ export async function getMyServiceUsage(req: Request, res: Response) {
           u.metadata->>'profile_image_asset_id' AS profile_image_asset_id,
           caa.max_per_period,
           caa.is_active,
-          COALESCE(SUM(cua.amount_credits), 0) AS used_credits
+          COALESCE(SUM(cua.amount_credits), 0) AS used_credits,
+          MAX(user_tier.user_plan_tier) AS user_plan_tier
         FROM user_tenant_roles utr
+        LEFT JOIN LATERAL (
+          SELECT COALESCE(
+            NULLIF((
+              SELECT TRIM(COALESCE(NULLIF(t.metadata->>'plan_tier',''), NULLIF(t.metadata->>'service_tier',''), NULLIF(t.metadata->>'tier','')))
+              FROM tenants t
+              WHERE t.owner_id = utr.user_id AND t.deleted_at IS NULL
+                AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+              LIMIT 1
+            ), ''),
+            NULLIF((
+              SELECT TRIM(COALESCE(NULLIF(t2.metadata->>'plan_tier',''), NULLIF(t2.metadata->>'service_tier',''), NULLIF(t2.metadata->>'tier','')))
+              FROM user_tenant_roles utr2
+              JOIN tenants t2 ON t2.id = utr2.tenant_id AND t2.deleted_at IS NULL
+              WHERE utr2.user_id = utr.user_id
+                AND (utr2.membership_status IS NULL OR utr2.membership_status = 'active')
+                AND COALESCE((t2.metadata->>'system')::boolean, FALSE) = FALSE
+              ORDER BY COALESCE(utr2.is_primary_tenant, FALSE) DESC, utr2.joined_at ASC NULLS LAST
+              LIMIT 1
+            ), ''),
+            'free'
+          ) AS user_plan_tier
+        ) user_tier ON TRUE
         JOIN roles r ON r.id = utr.role_id
         JOIN users u ON u.id = utr.user_id AND u.deleted_at IS NULL
         LEFT JOIN credit_account_access caa
@@ -1337,6 +1360,7 @@ export async function getMyServiceUsage(req: Request, res: Response) {
 
       members = memberUsageRes.rows.map((row) => {
         const profileAssetId = row.profile_image_asset_id ? String(row.profile_image_asset_id) : null
+        const planTierRaw = row.user_plan_tier ? String(row.user_plan_tier).trim().toLowerCase() : ""
         return {
           user_id: String(row.user_id || ""),
           used_credits: normalizeUsageAmount(Number(row.used_credits ?? 0)),
@@ -1348,6 +1372,7 @@ export async function getMyServiceUsage(req: Request, res: Response) {
           role_slug: row.role_slug ?? null,
           joined_at: row.joined_at ? toIsoString(row.joined_at) : null,
           profile_image_url: profileAssetId ? `/api/ai/media/assets/${profileAssetId}` : null,
+          plan_tier: planTierRaw || "free",
         }
       })
     }
@@ -1791,8 +1816,31 @@ export async function getMyTopupUsage(req: Request, res: Response) {
           u.email AS user_email,
           u.metadata->>'profile_image_asset_id' AS profile_image_asset_id,
           caa.is_active,
-          COALESCE(SUM(cua.amount_credits), 0) AS used_credits
+          COALESCE(SUM(cua.amount_credits), 0) AS used_credits,
+          MAX(user_tier.user_plan_tier) AS user_plan_tier
         FROM user_tenant_roles utr
+        LEFT JOIN LATERAL (
+          SELECT COALESCE(
+            NULLIF((
+              SELECT TRIM(COALESCE(NULLIF(t.metadata->>'plan_tier',''), NULLIF(t.metadata->>'service_tier',''), NULLIF(t.metadata->>'tier','')))
+              FROM tenants t
+              WHERE t.owner_id = utr.user_id AND t.deleted_at IS NULL
+                AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+              LIMIT 1
+            ), ''),
+            NULLIF((
+              SELECT TRIM(COALESCE(NULLIF(t2.metadata->>'plan_tier',''), NULLIF(t2.metadata->>'service_tier',''), NULLIF(t2.metadata->>'tier','')))
+              FROM user_tenant_roles utr2
+              JOIN tenants t2 ON t2.id = utr2.tenant_id AND t2.deleted_at IS NULL
+              WHERE utr2.user_id = utr.user_id
+                AND (utr2.membership_status IS NULL OR utr2.membership_status = 'active')
+                AND COALESCE((t2.metadata->>'system')::boolean, FALSE) = FALSE
+              ORDER BY COALESCE(utr2.is_primary_tenant, FALSE) DESC, utr2.joined_at ASC NULLS LAST
+              LIMIT 1
+            ), ''),
+            'free'
+          ) AS user_plan_tier
+        ) user_tier ON TRUE
         JOIN roles r ON r.id = utr.role_id
         JOIN users u ON u.id = utr.user_id AND u.deleted_at IS NULL
         JOIN credit_account_access svc_access
@@ -1827,6 +1875,7 @@ export async function getMyTopupUsage(req: Request, res: Response) {
         const profileAssetId = row.profile_image_asset_id ? String(row.profile_image_asset_id) : null
         const roleSlug = String(row.role_slug || "")
         const isOwner = roleSlug === "owner" || roleSlug === "tenant_owner"
+        const planTierRaw = row.user_plan_tier ? String(row.user_plan_tier).trim().toLowerCase() : ""
         return {
           user_id: String(row.user_id || ""),
           used_credits: normalizeUsageAmount(Number(row.used_credits ?? 0)),
@@ -1836,6 +1885,7 @@ export async function getMyTopupUsage(req: Request, res: Response) {
           role_slug: row.role_slug ?? null,
           joined_at: row.joined_at ? toIsoString(row.joined_at) : null,
           profile_image_url: profileAssetId ? `/api/ai/media/assets/${profileAssetId}` : null,
+          plan_tier: planTierRaw || "free",
         }
       })
     }

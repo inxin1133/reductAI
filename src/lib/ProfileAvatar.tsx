@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { ImageOff } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { type PlanTier, PLAN_TIER_STYLES } from "@/lib/planTier"
 
 type RoundedSize = "sm" | "md" | "lg" | "xl" | "full"
 
@@ -11,7 +12,10 @@ type ProfileAvatarProps = {
   size?: number
   rounded?: RoundedSize
   className?: string
+  /** 프로필 이미지 없을 때 배경색. tier가 있으면 planTier의 avatar 색상으로 무시됨 */
   fallbackClassName?: string
+  /** 서비스 플랜. 지정 시 planTier 기반 아바타 배경색 적용 */
+  tier?: PlanTier
   textClassName?: string
   showBrokenIcon?: boolean
   withAuthToken?: boolean
@@ -50,11 +54,13 @@ export function ProfileAvatar({
   rounded = "md",
   className,
   fallbackClassName = "bg-muted-foreground",
+  tier,
   textClassName,
   showBrokenIcon = false,
   withAuthToken = true,
   alt = "프로필 이미지",
 }: ProfileAvatarProps) {
+  const bgClass = tier ? PLAN_TIER_STYLES[tier]?.avatar ?? fallbackClassName : fallbackClassName
   const [isBroken, setIsBroken] = useState(false)
 
   const resolvedSrc = useMemo(() => {
@@ -76,7 +82,7 @@ export function ProfileAvatar({
       className={cn(
         "flex items-center justify-center shrink-0 overflow-hidden",
         ROUNDING[rounded],
-        fallbackClassName,
+        bgClass,
         className
       )}
       style={{ width: size, height: size }}
@@ -92,7 +98,7 @@ export function ProfileAvatar({
       ) : resolvedSrc && isBroken && showBrokenIcon ? (
         <ImageOff className="text-white/80" style={{ width: iconSize, height: iconSize }} />
       ) : (
-        <span className={cn("text-white font-semibold", textClassName)} style={{ fontSize }}>
+        <span className={cn("font-semibold", textClassName, "!text-white")} style={{ fontSize }}>
           {displayInitial}
         </span>
       )}

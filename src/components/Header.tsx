@@ -1,12 +1,16 @@
-import { useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { Eclipse } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/useTheme"
 import { isSessionExpired } from "@/lib/session"
+import { withActiveTenantHeader } from "@/lib/tenantContext"
+import { type PlanTier, resolveServiceTier } from "@/lib/planTier"
 import { Button } from "@/components/ui/button"
 import { LoginModal } from "@/components/LoginModal"
 import { ProfileAvatar } from "@/lib/ProfileAvatar"
+
+const TENANT_INFO_CACHE_KEY = "reductai:sidebar:tenantInfo:v1"
 
 type HeaderProps = {
   className?: string
@@ -59,6 +63,36 @@ export function Header({ className }: HeaderProps) {
     return { isLoggedIn }
   }, [])
 
+  const [currentTier, setCurrentTier] = useState<PlanTier>("free")
+  const loadTenantTier = useCallback(() => {
+    if (typeof window === "undefined" || !authState.isLoggedIn) return
+    const token = localStorage.getItem("token")
+    if (!token) return
+    const headers = withActiveTenantHeader({ Authorization: `Bearer ${token}` })
+    fetch("/api/posts/tenant/current", { headers })
+      .then((res) => res.json().catch(() => null) as Promise<{ tenant_type?: string; plan_tier?: string } | null>)
+      .then((data) => {
+        if (data?.tenant_type != null || data?.plan_tier != null) {
+          setCurrentTier(resolveServiceTier({ tenant_type: data.tenant_type, plan_tier: data.plan_tier }))
+        }
+      })
+      .catch(() => {})
+  }, [authState.isLoggedIn])
+
+  useEffect(() => {
+    if (!authState.isLoggedIn) return
+    try {
+      const raw = localStorage.getItem(TENANT_INFO_CACHE_KEY)
+      const j = raw ? JSON.parse(raw) : null
+      if (j && (j.tenant_type != null || j.plan_tier != null)) {
+        setCurrentTier(resolveServiceTier({ tenant_type: j.tenant_type, plan_tier: j.plan_tier }))
+      }
+    } catch {
+      // ignore
+    }
+    loadTenantTier()
+  }, [authState.isLoggedIn, loadTenantTier])
+
   const showLoginButton = !authState.isLoggedIn
 
   return (
@@ -84,7 +118,7 @@ export function Header({ className }: HeaderProps) {
               src={profileImageUrl}
               name={profile.name}
               initial={profile.initial}
-              fallbackClassName="bg-muted"
+              tier={currentTier}
               textClassName="text-xs text-foreground"
               showBrokenIcon
             />

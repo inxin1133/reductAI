@@ -123,6 +123,8 @@ type ServiceUsageMember = {
   role_slug?: string | null
   joined_at?: string | null
   profile_image_url?: string | null
+  /** 멤버가 소유한/속한 테넌트의 플랜 티어 */
+  plan_tier?: string | null
 }
 
 type ServiceUsageResponse = {
@@ -143,6 +145,8 @@ type TopupUsageMember = {
   role_slug?: string | null
   joined_at?: string | null
   profile_image_url?: string | null
+  /** 멤버가 소유한/속한 테넌트의 플랜 티어 */
+  plan_tier?: string | null
 }
 
 type TopupUsageSummary = {
@@ -184,6 +188,8 @@ type TenantMemberRow = {
   membership_status?: string | null
   joined_at?: string | null
   left_at?: string | null
+  /** 멤버가 소유한/속한 테넌트의 플랜 티어 */
+  user_plan_tier?: string | null
 }
 
 type TenantInvitationRow = {
@@ -315,6 +321,12 @@ function formatDate(value?: string | null) {
   } catch {
     return "-"
   }
+}
+
+function resolveMemberTier(row: { user_plan_tier?: string | null; plan_tier?: string | null }): PlanTier {
+  const raw = row.user_plan_tier ?? row.plan_tier
+  const tier = normalizePlanTier(raw)
+  return tier ?? "free"
 }
 
 function resolveMemberName(row: TenantMemberRow) {
@@ -1777,7 +1789,7 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                                         src={profileSrc}
                                         name={row.user_name || row.user_email}
                                         initial={initial}
-                                        fallbackClassName="bg-teal-500"
+                                        tier={resolveMemberTier(row)}
                                         textClassName="text-sm"
                                       />
                                       <div className="text-xs truncate">{resolveMemberName(row)}</div>
@@ -2213,7 +2225,7 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                                         src={row.profile_image_url}
                                         name={row.user_name || row.user_email}
                                         initial={resolveUsageMemberInitial(row)}
-                                        fallbackClassName="bg-teal-500"
+                                        tier={resolveMemberTier(row)}
                                         textClassName="text-sm"
                                       />
                                       <div className="flex flex-col leading-tight">
@@ -2498,13 +2510,15 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                                       <TableCell className="text-center text-xs text-muted-foreground">{index + 1}</TableCell>
                                       <TableCell className="text-foreground">
                                         <div className="flex items-center gap-1">
-                                          {row.profile_image_url ? (
-                                            <ProfileAvatar src={row.profile_image_url} alt={name} className="w-6 h-6 rounded-sm" />
-                                          ) : (
-                                            <div className="flex items-center justify-center w-6 h-6 bg-teal-500 rounded-sm">
-                                              <span className="text-white font-semibold text-sm">{initial}</span>
-                                            </div>
-                                          )}
+                                          <ProfileAvatar
+                                            size={24}
+                                            rounded="sm"
+                                            src={row.profile_image_url}
+                                            name={row.user_name || row.user_email}
+                                            initial={initial}
+                                            tier={resolveMemberTier(row)}
+                                            textClassName="text-sm"
+                                          />
                                           <div className="text-xs block max-w-[120px] truncate">{name}</div>
                                         </div>
                                       </TableCell>
@@ -2877,7 +2891,7 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                   src={creditAccessTarget.profile_image_url}
                   name={creditAccessTarget.user_name || creditAccessTarget.user_email}
                   initial={resolveUsageMemberInitial(creditAccessTarget)}
-                  fallbackClassName="bg-teal-500"
+                  tier={resolveMemberTier(creditAccessTarget)}
                 />
                 <div className="flex flex-col leading-tight">
                   <span className="text-sm font-medium text-foreground">

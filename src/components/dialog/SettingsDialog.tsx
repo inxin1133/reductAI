@@ -1,6 +1,6 @@
 import { type ChangeEvent, type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { type PlanTier, PLAN_TIER_ORDER, PLAN_TIER_LABELS, PLAN_TIER_STYLES } from "@/lib/planTier"
+import { type PlanTier, PLAN_TIER_ORDER, PLAN_TIER_LABELS, PLAN_TIER_STYLES, resolveServiceTier } from "@/lib/planTier"
 import { Dialog, DialogClose, DialogContent } from "@/components/ui/dialog"
 import {
   AlertDialog,
@@ -258,11 +258,6 @@ function normalizePlanTier(value: unknown): PlanTier | null {
   return null
 }
 
-function pickHighestTier(tiers: PlanTier[]): PlanTier {
-  if (!tiers.length) return "free"
-  return tiers.reduce((best, tier) => (PLAN_TIER_ORDER.indexOf(tier) > PLAN_TIER_ORDER.indexOf(best) ? tier : best), "free")
-}
-
 function formatDateTime(value?: string | null) {
   if (!value) return "-"
   try {
@@ -514,7 +509,10 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     return tiers
   }, [currentTenant?.plan_tier, tenantMemberships])
 
-  const highestTier = useMemo(() => pickHighestTier(tierCandidates), [tierCandidates])
+  const currentTier = useMemo(
+    () => resolveServiceTier({ tenant_type: currentTenant?.tenant_type, plan_tier: currentTenant?.plan_tier }),
+    [currentTenant?.tenant_type, currentTenant?.plan_tier]
+  )
 
   const tiersToDisplay = useMemo(() => {
     const set = new Set<PlanTier>()
@@ -1541,7 +1539,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                               }}
                               className={cn(
                                 "size-10 rounded-lg flex items-center justify-center overflow-hidden transition",
-                                PLAN_TIER_STYLES[highestTier].avatar,
+                                PLAN_TIER_STYLES[currentTier]?.avatar ?? PLAN_TIER_STYLES.free.avatar,
                                 profileImageLoading ? "cursor-wait opacity-70" : "cursor-pointer hover:brightness-95"
                               )}
                               aria-label="프로필 이미지 변경"
@@ -1553,7 +1551,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                                   className="size-10 object-cover"
                                 />
                               ) : (
-                                <span className="text-white font-semibold text-lg">{userInitial}</span>
+                                <span className="!text-white font-semibold text-lg">{userInitial}</span>
                               )}
                             </div>
                           </TooltipTrigger>

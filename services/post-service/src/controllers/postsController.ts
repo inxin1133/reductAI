@@ -1353,7 +1353,35 @@ export async function listTenantMembers(req: Request, res: Response) {
         u.full_name AS user_name,
         u.metadata->>'profile_image_asset_id' AS profile_image_asset_id,
         r.slug AS role_slug,
-        r.name AS role_name
+        r.name AS role_name,
+        COALESCE(
+          NULLIF((
+            SELECT TRIM(COALESCE(
+              NULLIF(t.metadata->>'plan_tier',''),
+              NULLIF(t.metadata->>'service_tier',''),
+              NULLIF(t.metadata->>'tier','')
+            ))
+            FROM tenants t
+            WHERE t.owner_id = u.id AND t.deleted_at IS NULL
+              AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+            LIMIT 1
+          ), ''),
+          NULLIF((
+            SELECT TRIM(COALESCE(
+              NULLIF(t2.metadata->>'plan_tier',''),
+              NULLIF(t2.metadata->>'service_tier',''),
+              NULLIF(t2.metadata->>'tier','')
+            ))
+            FROM user_tenant_roles utr2
+            JOIN tenants t2 ON t2.id = utr2.tenant_id AND t2.deleted_at IS NULL
+            WHERE utr2.user_id = u.id
+              AND (utr2.membership_status IS NULL OR utr2.membership_status = 'active')
+              AND COALESCE((t2.metadata->>'system')::boolean, FALSE) = FALSE
+            ORDER BY COALESCE(utr2.is_primary_tenant, FALSE) DESC, utr2.joined_at ASC NULLS LAST
+            LIMIT 1
+          ), ''),
+          'free'
+        ) AS user_plan_tier
       FROM user_tenant_roles utr
       JOIN users u ON u.id = utr.user_id
       LEFT JOIN roles r ON r.id = utr.role_id
