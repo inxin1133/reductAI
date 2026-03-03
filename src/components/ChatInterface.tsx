@@ -50,7 +50,7 @@ import {
 } from "@/components/ui/drawer"
 import { ProviderLogo } from "@/components/icons/providerLogoRegistry"
 import { ModelOptionsPanel } from "@/components/ModelOptionsPanel"
-import { getCreditTabStyles, PLAN_TIER_LABELS, normalizePlanTier, type PlanTier } from "@/lib/planTier"
+import { getCreditTabStyles, PLAN_TIER_LABELS, PLAN_TIER_STYLES, normalizePlanTier, type PlanTier } from "@/lib/planTier"
 
 type GrantedCredit = {
   tenant_id: string
@@ -71,6 +71,7 @@ type GrantedCredit = {
 type PaidTokenProps = {
   className?: string
   authHeaders: () => HeadersInit
+  variant?: "full" | "compact"
 }
 
 function formatCredits(value: number): string {
@@ -78,7 +79,7 @@ function formatCredits(value: number): string {
   return Math.floor(value).toLocaleString("ko-KR")
 }
 
-function PaidToken({ className, authHeaders }: PaidTokenProps) {
+function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps) {
   const [grants, setGrants] = React.useState<GrantedCredit[]>([])
   const [selectedAccountId, setSelectedAccountId] = React.useState<string | null>(null)
   const [loading, setLoading] = React.useState(true)
@@ -158,6 +159,14 @@ function PaidToken({ className, authHeaders }: PaidTokenProps) {
   )
 
   if (loading) {
+    if (variant === "compact") {
+      return (
+        <div className={cn("flex items-center gap-2 shrink-0", className)}>
+          <div className="h-4 w-12 animate-pulse rounded bg-muted" />
+          <div className="h-5 w-10 animate-pulse rounded-full bg-muted" />
+        </div>
+      )
+    }
     return (
       <div className={cn("flex items-center gap-2", className)}>
         <div className="flex gap-2 h-8 items-center rounded-full px-3 py-1.5 animate-pulse bg-muted">
@@ -171,6 +180,30 @@ function PaidToken({ className, authHeaders }: PaidTokenProps) {
   const displayableGrants = grants.filter((g) => g.account_id != null && (g.service?.remaining_credits ?? 0) >= 0)
   if (displayableGrants.length === 0) {
     return null
+  }
+
+  if (variant === "compact") {
+    const selectedGrant =
+      displayableGrants.find((g) => g.account_id === selectedAccountId) ?? displayableGrants[0]
+    const tier = normalizePlanTier(selectedGrant.plan_tier) ?? "free"
+    const label =
+      (selectedGrant.tenant_type === "personal" ? "개인" : selectedGrant.tenant_name || "개인") +
+      ":" +
+      (PLAN_TIER_LABELS[tier as PlanTier] || selectedGrant.plan_tier || "Free")
+    const remaining = selectedGrant.service?.remaining_credits ?? 0
+    return (
+      <div className={cn("flex items-center gap-2 shrink-0", className)}>
+        <p className="font-medium text-sm text-foreground leading-5 whitespace-nowrap">{label}</p>
+        <div
+          className={cn(
+            "flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 py-0.5 font-mono text-xs font-medium text-primary-foreground",
+            PLAN_TIER_STYLES[tier as PlanTier]?.avatar ?? "bg-muted-foreground"
+          )}
+        >
+          {formatCredits(remaining)}
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -190,7 +223,7 @@ function PaidToken({ className, authHeaders }: PaidTokenProps) {
             type="button"
             onClick={() => grant.account_id && handleTabClick(grant.account_id)}
             className={cn(
-              "flex gap-[10px] items-center justify-center px-[12px] py-[6px] rounded-full shadow-sm shrink-0 transition-colors",
+              "flex gap-1 items-center justify-center px-3 py-1 rounded-full shadow-sm shrink-0 transition-colors",
               isSelected ? styles.outerSelected : styles.outerUnselected
             )}
           >
@@ -2813,7 +2846,7 @@ export function ChatInterface({
 
   return (
     <div className="flex flex-row gap-4 items-center justify-center w-full">
-      <div className={`flex flex-col gap-[16px] items-center relative shrink-0 w-full max-w-[800px] ${className || ""}`}>
+      <div className={`flex flex-col gap-4 items-center relative shrink-0 w-full max-w-[800px] ${className || ""}`}>
         {!isCompact && (
           <div className="w-full flex items-center gap-4">
             <PaidToken authHeaders={authHeaders} />
@@ -2833,24 +2866,25 @@ export function ChatInterface({
                 <div ref={compactPanelTriggerRef} className="w-full">
                   <button
                     type="button"
-                    className="flex items-center gap-2 px-4 cursor-pointer select-none w-full text-left"
+                    className="flex items-center gap-2 sm:gap-3 px-4 py-1 cursor-pointer select-none w-full text-left"
                     onClick={() => setIsCompactPanelOpen(true)}
                   >
-                    <ChevronRight className={cn("size-5 transition-transform", isCompactPanelOpen ? "rotate-90" : "")} />
-                    <div className="flex items-center gap-3 flex-wrap">
-                      <div className="flex items-center gap-1">
+                    <ChevronRight className={cn("size-5 shrink-0 transition-transform", isCompactPanelOpen ? "rotate-90" : "")} />
+                    <div className="flex flex-1 gap-3 sm:gap-4 items-center min-w-0">
+                      <div className="flex items-center gap-1 shrink-0">
                         <MessageSquare className="size-4" />
                         <span className="text-sm">{tabLabel(uiSelectedType)}</span>
                       </div>
                       {uiProviderGroup && (
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1 shrink-0">
                           <div className={cn("size-4 rounded-full bg-primary flex items-center justify-center")}>
                             <ProviderLogo logoKey={uiProviderGroup.provider.logo_key || undefined} className="size-3 text-primary-foreground" />
                           </div>
-                          <span className="text-sm">{uiProviderGroup.provider.product_name}</span>
+                          <span className="text-sm truncate">{uiProviderGroup.provider.product_name}</span>
                         </div>
                       )}
                     </div>
+                    <PaidToken authHeaders={authHeaders} variant="compact" className="shrink-0" />
                   </button>
                 </div>
               )}
