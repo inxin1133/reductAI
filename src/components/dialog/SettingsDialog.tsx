@@ -1467,9 +1467,9 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
         }
         const rows: Array<[string, string, string, string, string]> = json.rows.map((r) => [
           formatDateTime(r.created_at),
+          r.tenant_label ?? "-",
           r.model,
           r.usage_desc,
-          r.tenant_label ?? "-",
           formatCredits(r.credits),
         ])
         setUsageRows(rows)
@@ -2292,9 +2292,9 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                         <TableHeader>
                           <TableRow>
                             <TableHead className="text-xs">날짜</TableHead>
+                            <TableHead className="text-xs">사용 테넌트</TableHead>
                             <TableHead className="text-xs">모델</TableHead>
                             <TableHead className="text-xs">사용량</TableHead>
-                            <TableHead className="text-xs">사용 테넌트</TableHead>
                             <TableHead className="text-right text-xs">크레딧</TableHead>
                           </TableRow>
                         </TableHeader>

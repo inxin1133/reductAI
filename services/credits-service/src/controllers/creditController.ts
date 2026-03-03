@@ -1935,6 +1935,166 @@ function formatUsageNumber(n: number): string {
   return v % 1 === 0 ? String(Math.round(v)) : v.toFixed(2)
 }
 
+export async function getTenantUsageHistory(req: Request, res: Response) {
+  try {
+    const authed = req as AuthedRequest
+    const userId = toStr(authed.userId)
+    if (!userId) return res.status(401).json({ message: "user_id is required" })
+
+    const tenantId = await resolveTenantId(authed)
+    if (!tenantId) return res.status(400).json({ message: "tenant_id is required (select a tenant via x-tenant-id)" })
+
+    const limit = Math.min(Math.max(1, toInt(req.query.limit, 20) ?? 20), 100)
+    const offset = Math.max(0, toInt(req.query.offset, 0) ?? 0)
+    const from = toStr(req.query.from)
+    const to = toStr(req.query.to)
+
+    const where: string[] = ["(ca.owner_tenant_id = $1 OR ca.source_tenant_id = $1)"]
+    const params: unknown[] = [tenantId]
+    if (from) {
+      params.push(from)
+      where.push(`cua.created_at >= $${params.length}::timestamptz`)
+    }
+    if (to) {
+      params.push(to)
+      where.push(`cua.created_at <= $${params.length}::timestamptz`)
+    }
+    const whereSql = where.join(" AND ")
+
+    const countRes = await query(
+      `
+      SELECT COUNT(*)::int AS total
+      FROM credit_usage_allocations cua
+      JOIN credit_accounts ca ON ca.id = cua.account_id
+      WHERE ${whereSql}
+      `,
+      params
+    )
+    const total = countRes.rows[0]?.total ?? 0
+
+    const listRes = await query(
+      `
+      SELECT
+        cua.created_at,
+        cua.amount_credits,
+        cua.user_id,
+        l.resolved_model,
+        l.modality,
+        l.input_tokens,
+        l.output_tokens,
+        l.total_tokens,
+        m.display_name AS model_display_name,
+        COALESCE(iu.image_count, 0)::int AS image_count,
+        COALESCE(vu.video_seconds, 0)::numeric AS video_seconds,
+        COALESCE(mu.music_seconds, 0)::numeric AS music_seconds,
+        COALESCE(au.audio_seconds, 0)::numeric AS audio_seconds
+      FROM credit_usage_allocations cua
+      JOIN credit_accounts ca ON ca.id = cua.account_id
+      JOIN llm_usage_logs l ON l.id = cua.usage_log_id
+      LEFT JOIN ai_models m ON m.id = l.model_id
+      LEFT JOIN (
+        SELECT usage_log_id, SUM(image_count)::int AS image_count
+        FROM llm_image_usages
+        GROUP BY usage_log_id
+      ) iu ON iu.usage_log_id = l.id
+      LEFT JOIN (
+        SELECT usage_log_id, SUM(seconds) AS video_seconds
+        FROM llm_video_usages
+        GROUP BY usage_log_id
+      ) vu ON vu.usage_log_id = l.id
+      LEFT JOIN (
+        SELECT usage_log_id, SUM(seconds) AS music_seconds
+        FROM llm_music_usages
+        GROUP BY usage_log_id
+      ) mu ON mu.usage_log_id = l.id
+      LEFT JOIN (
+        SELECT usage_log_id, SUM(seconds) AS audio_seconds
+        FROM llm_audio_usages
+        GROUP BY usage_log_id
+      ) au ON au.usage_log_id = l.id
+      WHERE ${whereSql}
+      ORDER BY cua.created_at DESC
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `,
+      [...params, limit, offset]
+    )
+
+    const userIds = uniqIds(listRes.rows.map((r: Record<string, unknown>) => r.user_id))
+    const authHeader = String(req.headers.authorization || "")
+    const userMap = userIds.length > 0 ? await lookupUsers(userIds, authHeader) : new Map()
+
+    const rows = listRes.rows.map((row: Record<string, unknown>) => {
+      const modality = String(row.modality || "text")
+      const inputT = Number(row.input_tokens ?? 0)
+      const outputT = Number(row.output_tokens ?? 0)
+      const imageCount = Number(row.image_count ?? 0)
+      const videoSec = Number(row.video_seconds ?? 0)
+      const musicSec = Number(row.music_seconds ?? 0)
+      const audioSec = Number(row.audio_seconds ?? 0)
+
+      let usageDesc = ""
+      if (modality === "image_create" && imageCount > 0) {
+        usageDesc = `이미지 ${formatUsageNumber(imageCount)}장`
+      } else if (modality === "video" && videoSec > 0) {
+        usageDesc = `영상 ${Math.round(videoSec)}초`
+      } else if (modality === "music" && musicSec > 0) {
+        usageDesc = `음악 ${Math.round(musicSec)}초`
+      } else if (modality === "audio" && audioSec > 0) {
+        usageDesc = `음성 ${Math.round(audioSec)}초`
+      } else {
+        usageDesc = `입력 ${formatUsageNumber(inputT)} / 출력 ${formatUsageNumber(outputT)}`
+      }
+
+      const model =
+        row.model_display_name && String(row.model_display_name).trim()
+          ? String(row.model_display_name)
+          : String(row.resolved_model || "-")
+      const credits = normalizeUsageAmount(Number(row.amount_credits ?? 0))
+      const uid = row.user_id ? String(row.user_id) : ""
+      const u = uid ? userMap.get(uid) : undefined
+      const userName = u?.full_name?.trim() || u?.email?.trim() || (uid ? uid.slice(0, 8) + "…" : "-")
+
+      return {
+        created_at: toIsoString(row.created_at),
+        model,
+        user_name: userName,
+        usage_desc: usageDesc,
+        credits,
+      }
+    })
+
+    const topModelsRes = await query(
+      `
+      SELECT
+        COALESCE(m.display_name, l.resolved_model, 'unknown') AS model_name,
+        SUM(cua.amount_credits)::numeric AS total_credits
+      FROM credit_usage_allocations cua
+      JOIN credit_accounts ca ON ca.id = cua.account_id
+      JOIN llm_usage_logs l ON l.id = cua.usage_log_id
+      LEFT JOIN ai_models m ON m.id = l.model_id
+      WHERE ${whereSql}
+      GROUP BY COALESCE(m.display_name, l.resolved_model, 'unknown')
+      ORDER BY total_credits DESC
+      LIMIT 5
+      `,
+      params
+    )
+    const topTotal = topModelsRes.rows.reduce((sum: number, r: Record<string, unknown>) => sum + Number(r.total_credits ?? 0), 0)
+    const top_models = topModelsRes.rows.map((r: Record<string, unknown>) => {
+      const cred = Number(r.total_credits ?? 0)
+      const pct = topTotal > 0 ? Math.round((cred / topTotal) * 100) : 0
+      return { model_name: String(r.model_name ?? "unknown"), total_credits: cred, percent: pct }
+    })
+
+    return res.json({ ok: true, rows, total, top_models })
+  } catch (e: unknown) {
+    console.error("getTenantUsageHistory error:", e)
+    return res
+      .status(500)
+      .json({ message: "Failed to load tenant usage history", details: String((e as Error)?.message ?? e) })
+  }
+}
+
 export async function getMyUsageHistory(req: Request, res: Response) {
   try {
     const authed = req as AuthedRequest

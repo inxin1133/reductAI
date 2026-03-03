@@ -29,6 +29,14 @@ import { toast } from "sonner"
 import { appendVisited } from "@/lib/billingFlow"
 import { fetchBillingPlansWithPrices, fetchTopupProducts, type BillingPlanWithPrices, type TopupProduct } from "@/services/billingService"
 import { TopupOptionsDialog } from "@/components/dialog/TopupOptionsDialog"
+import { formatDateTime } from "@/components/files/fileAssetUtils"
+
+function formatCredits(value?: number | null) {
+  if (value === null || value === undefined) return "-"
+  if (!Number.isFinite(value)) return "-"
+  const n = Math.round(value * 100) / 100
+  return n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+}
 
 type TenantSettingsDialogProps = {
   open: boolean
@@ -494,33 +502,27 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
   const [topupMemberAccessSaving, setTopupMemberAccessSaving] = useState<string | null>(null)
   const [topupProducts, setTopupProducts] = useState<TopupProduct[]>([])
   const [topupProductsLoading, setTopupProductsLoading] = useState(false)
+  const [usageRows, setUsageRows] = useState<Array<{ date: string; user: string; model: string; usage: string; credits: string }>>([])
+  const [usageLoading, setUsageLoading] = useState(false)
+  const [usageError, setUsageError] = useState<string | null>(null)
+  const [usageTotal, setUsageTotal] = useState(0)
+  const [topModels, setTopModels] = useState<Array<{ model_name: string; total_credits: number; percent: number }>>([])
 
   const activeLabel = useMemo(
     () => MENU_ITEMS.find((item) => item.id === activeMenu)?.label ?? "테넌트 정보",
     [activeMenu]
   )
-  const usageRows = useMemo(
-    () => [
-      { date: "2026-02-10", model: "GPT-5.2", user: "홍길동", usage: "15,400 tokens", credits: "2,120" },
-      { date: "2026-02-10", model: "Gemini 3 Pro", user: "김하늘", usage: "8,120 tokens", credits: "1,040" },
-      { date: "2026-02-09", model: "Sora 2", user: "박지민", usage: "영상 20초", credits: "980" },
-      { date: "2026-02-08", model: "GPT-5.2", user: "이수진", usage: "12,350 tokens", credits: "1,840" },
-      { date: "2026-02-07", model: "Gemini 3 Pro", user: "최민호", usage: "입력 5K / 출력 2K", credits: "920" },
-      { date: "2026-02-07", model: "GPT-5.2", user: "김하늘", usage: "입력 9K / 출력 3K", credits: "1,420" },
-      { date: "2026-02-06", model: "Sora 2", user: "홍길동", usage: "영상 12초", credits: "650" },
-      { date: "2026-02-06", model: "Gemini 3 Pro", user: "박지민", usage: "입력 7K / 출력 2K", credits: "980" },
-      { date: "2026-02-05", model: "GPT-5.2", user: "이수진", usage: "입력 10K / 출력 4K", credits: "1,760" },
-      { date: "2026-02-05", model: "Sora 2", user: "최민호", usage: "영상 18초", credits: "780" },
-    ],
-    []
-  )
   const usagePageSize = 10
-  const usageTotalPages = Math.max(1, Math.ceil(usageRows.length / usagePageSize))
-  const usagePageSafe = Math.min(usagePage, usageTotalPages)
-  const usagePageRows = useMemo(() => {
-    const start = (usagePageSafe - 1) * usagePageSize
-    return usageRows.slice(start, start + usagePageSize)
-  }, [usagePageSafe, usagePageSize, usageRows])
+  const usageTotalPages = Math.max(1, Math.ceil(usageTotal / usagePageSize))
+  const usagePageSafe = Math.min(Math.max(1, usagePage), usageTotalPages)
+
+  const TOP_MODEL_STYLES = [
+    { accent: "text-violet-600", bg: "bg-violet-50 dark:bg-violet-950/40", ring: "ring-1 ring-violet-200 dark:ring-violet-800", dot: "bg-violet-500" },
+    { accent: "text-sky-600", bg: "bg-sky-50 dark:bg-sky-950/40", ring: "ring-1 ring-sky-200 dark:ring-sky-800", dot: "bg-sky-500" },
+    { accent: "text-amber-600", bg: "bg-amber-50 dark:bg-amber-950/40", ring: "ring-1 ring-amber-200 dark:ring-amber-800", dot: "bg-amber-500" },
+    { accent: "text-emerald-600", bg: "bg-emerald-50 dark:bg-emerald-950/40", ring: "ring-1 ring-emerald-200 dark:ring-emerald-800", dot: "bg-emerald-500" },
+    { accent: "text-rose-600", bg: "bg-rose-50 dark:bg-rose-950/40", ring: "ring-1 ring-rose-200 dark:ring-rose-800", dot: "bg-rose-500" },
+  ]
   const authHeaders = useCallback(() => {
     if (typeof window === "undefined") return {}
     const token = window.localStorage.getItem("token")
@@ -724,6 +726,60 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
       setBillingPlanLoading(false)
     }
   }, [authHeaders])
+
+  const loadTenantUsageHistory = useCallback(
+    async (page: number) => {
+      const headers = authHeaders()
+      if (!headers.Authorization || !currentTenant?.id) {
+        setUsageRows([])
+        setUsageTotal(0)
+        setTopModels([])
+        return
+      }
+      setUsageLoading(true)
+      setUsageError(null)
+      const limit = 10
+      const offset = (Math.max(1, page) - 1) * limit
+      try {
+        const res = await fetch(
+          `/api/ai/credits/my/tenant-usage-history?limit=${limit}&offset=${offset}`,
+          { headers }
+        )
+        const json = (await res.json().catch(() => null)) as {
+          ok?: boolean
+          rows?: Array<{ created_at: string; model: string; user_name: string; usage_desc: string; credits: number }>
+          total?: number
+          top_models?: Array<{ model_name: string; total_credits: number; percent: number }>
+        } | null
+        if (!res.ok || !json?.ok) {
+          setUsageRows([])
+          setUsageTotal(0)
+          setTopModels([])
+          setUsageError("사용 내역을 불러올 수 없습니다.")
+          return
+        }
+        const rows = (json.rows ?? []).map((r) => ({
+          date: formatDateTime(r.created_at) ?? "-",
+          user: r.user_name ?? "-",
+          model: r.model ?? "-",
+          usage: r.usage_desc ?? "-",
+          credits: formatCredits(r.credits),
+        }))
+        setUsageRows(rows)
+        setUsageTotal(json.total ?? 0)
+        setTopModels(json.top_models ?? [])
+      } catch (error) {
+        console.error(error)
+        setUsageRows([])
+        setUsageTotal(0)
+        setTopModels([])
+        setUsageError("사용 내역을 불러오는 중 오류가 발생했습니다.")
+      } finally {
+        setUsageLoading(false)
+      }
+    },
+    [authHeaders, currentTenant?.id]
+  )
 
   const loadTopupUsage = useCallback(
     async (periodEnd?: string) => {
@@ -1301,8 +1357,12 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
       void loadServiceUsage(selectedServicePeriodEnd || undefined)
       return
     }
-    if (activeMenu === "topupCredits" || activeMenu === "usage") {
+    if (activeMenu === "topupCredits") {
       void loadCreditSummary()
+    }
+    if (activeMenu === "usage") {
+      void loadCreditSummary()
+      void loadTenantUsageHistory(usagePage)
     }
   }, [
     activeMenu,
@@ -1312,8 +1372,10 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     loadTenantInfo,
     loadTenantInvitations,
     loadTenantMembers,
+    loadTenantUsageHistory,
     open,
     selectedServicePeriodEnd,
+    usagePage,
   ])
 
   const openCreditAccessDialog = useCallback((member: ServiceUsageMember) => {
@@ -1530,6 +1592,11 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     if (activeMenu !== "invitations") return
     void loadTenantInvitations()
   }, [activeMenu, loadTenantInvitations, open])
+  useEffect(() => {
+    if (!open) return
+    if (activeMenu !== "usage") return
+    void loadTenantUsageHistory(usagePage)
+  }, [activeMenu, loadTenantUsageHistory, open, usagePage])
   useEffect(() => {
     if (memberDialogOpen) return
     setMemberDialogTarget(null)
@@ -2564,42 +2631,28 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
               {activeMenu === "usage" ? (
                 // 사용내역
                 <div className="flex h-full flex-col min-h-0 gap-4">
-                  {/* <div className="rounded-lg border border-border p-4">
-                    <div className="text-sm font-semibold text-foreground">최근 사용 내역</div>
-                    <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
-                      {[
-                        ["2026-02-10", "GPT-5.2", "15,400 tokens", "홍길동"],
-                        ["2026-02-10", "Gemini 3 Pro", "8,120 tokens", "김하늘"],
-                        ["2026-02-09", "Sora 2", "영상 20초", "박지민"],
-                      ].map((row) => (
-                        <div key={`${row[0]}-${row[1]}`} className="flex items-center justify-between rounded-md border border-border px-3 py-2">
-                          <span>{row[0]}</span>
-                          <span>{row[1]}</span>
-                          <span>{row[2]}</span>
-                          <span className="text-foreground">{row[3]}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div> */}
-
                   <div className="px-4 pb-4">
                     <div className="text-sm font-semibold text-foreground">상위 사용 모델</div>
                     <div className="mt-3 grid grid-cols-3 gap-3">
-                      {[
-                        { name: "GPT-5.2", percent: "42%", accent: "text-violet-600", bg: "bg-violet-50 dark:bg-violet-950/40", ring: "ring-1 ring-violet-200 dark:ring-violet-800", dot: "bg-violet-500" },
-                        { name: "Gemini 3 Pro", percent: "33%", accent: "text-sky-600", bg: "bg-sky-50 dark:bg-sky-950/40", ring: "ring-1 ring-sky-200 dark:ring-sky-800", dot: "bg-sky-500" },
-                        { name: "Sora 2", percent: "25%", accent: "text-amber-600", bg: "bg-amber-50 dark:bg-amber-950/40", ring: "ring-1 ring-amber-200 dark:ring-amber-800", dot: "bg-amber-500" },
-                      ].map((item) => (
-                        <div key={item.name} className={cn("rounded-xl px-4 py-3 transition-shadow hover:shadow-sm", item.bg, item.ring)}>
-                          <div className="flex items-center gap-1.5">
-                            <span className={cn("size-2 shrink-0 rounded-full", item.dot)} />
-                            <span className="text-xs font-medium text-muted-foreground truncate">{item.name}</span>
+                      {topModels.slice(0, 6).map((item, idx) => {
+                        const style = TOP_MODEL_STYLES[idx % TOP_MODEL_STYLES.length]
+                        return (
+                          <div key={item.model_name} className={cn("rounded-xl px-4 py-3 transition-shadow hover:shadow-sm", style.bg, style.ring)}>
+                            <div className="flex items-center gap-1.5">
+                              <span className={cn("size-2 shrink-0 rounded-full", style.dot)} />
+                              <span className="text-xs font-medium text-muted-foreground truncate">{item.model_name}</span>
+                            </div>
+                            <div className="mt-2">
+                              <span className={cn("text-2xl font-bold tracking-tight", style.accent)}>{item.percent}%</span>
+                            </div>
                           </div>
-                          <div className="mt-2">
-                            <span className={cn("text-2xl font-bold tracking-tight", item.accent)}>{item.percent}</span>
-                          </div>
+                        )
+                      })}
+                      {topModels.length === 0 && !usageLoading && (
+                        <div className="col-span-3 rounded-xl border border-dashed border-border px-4 py-6 text-center text-xs text-muted-foreground">
+                          사용 내역이 없습니다.
                         </div>
-                      ))}
+                      )}
                     </div>
                   </div>
 
@@ -2619,15 +2672,35 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {usagePageRows.map((row) => (
-                              <TableRow key={`${row.date}-${row.model}-${row.user}`}>
-                                <TableCell className="text-muted-foreground text-xs">{row.date}</TableCell>
-                                <TableCell className="text-foreground text-xs">{row.user}</TableCell>
-                                <TableCell className="text-muted-foreground text-xs">{row.model}</TableCell>
-                                <TableCell className="text-muted-foreground text-xs whitespace-normal break-words break-all">{row.usage}</TableCell>
-                                <TableCell className="text-right text-foreground text-xs">{row.credits}</TableCell>
+                            {usageLoading ? (
+                              <TableRow>
+                                <TableCell colSpan={5} className="py-8 text-center text-xs text-muted-foreground">
+                                  로딩 중…
+                                </TableCell>
                               </TableRow>
-                            ))}
+                            ) : usageError ? (
+                              <TableRow>
+                                <TableCell colSpan={5} className="py-8 text-center text-xs text-destructive">
+                                  {usageError}
+                                </TableCell>
+                              </TableRow>
+                            ) : usageRows.length === 0 ? (
+                              <TableRow>
+                                <TableCell colSpan={5} className="py-8 text-center text-xs text-muted-foreground">
+                                  표시할 사용 내역이 없습니다.
+                                </TableCell>
+                              </TableRow>
+                            ) : (
+                              usageRows.map((row) => (
+                                <TableRow key={`${row.date}-${row.model}-${row.user}`}>
+                                  <TableCell className="text-muted-foreground text-xs">{row.date}</TableCell>
+                                  <TableCell className="text-foreground text-xs">{row.user}</TableCell>
+                                  <TableCell className="text-muted-foreground text-xs">{row.model}</TableCell>
+                                  <TableCell className="text-muted-foreground text-xs whitespace-normal break-words break-all">{row.usage}</TableCell>
+                                  <TableCell className="text-right text-foreground text-xs">{row.credits}</TableCell>
+                                </TableRow>
+                              ))
+                            )}
                           </TableBody>
                         </Table>
                       </div>
@@ -2636,7 +2709,7 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                   <div className="sticky bottom-0 mt-3 border-t border-border bg-background pt-3">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
                       <span>
-                        총 {usageRows.length}개 · {usagePageSafe}/{usageTotalPages}
+                        총 {usageTotal}개 · {usagePageSafe}/{usageTotalPages}
                       </span>
                       <div className="flex items-center gap-2">
                         <Button
@@ -2644,7 +2717,7 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                           size="sm"
                           className="h-7 px-2 text-xs"
                           onClick={() => setUsagePage((prev) => Math.max(1, prev - 1))}
-                          disabled={usagePageSafe <= 1}
+                          disabled={usagePageSafe <= 1 || usageLoading}
                         >
                           이전
                         </Button>
@@ -2653,7 +2726,7 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                           size="sm"
                           className="h-7 px-2 text-xs"
                           onClick={() => setUsagePage((prev) => Math.min(usageTotalPages, prev + 1))}
-                          disabled={usagePageSafe >= usageTotalPages}
+                          disabled={usagePageSafe >= usageTotalPages || usageLoading}
                         >
                           다음
                         </Button>
