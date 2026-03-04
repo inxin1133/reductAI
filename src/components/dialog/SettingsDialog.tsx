@@ -543,7 +543,9 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
         ? Math.max(grantTotalRaw, totalFromBalance)
         : totalFromBalance
     const remaining = Math.max(0, total - used)
-    const percent = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0
+    const percent = total > 0 ? Math.min(100, (used / total) * 100) : 0
+    const percentDisplay = total > 0 ? ((used / total) * 100).toFixed(2) : "0.00"
+    const remainingPercent = total > 0 ? Math.min(100, (remaining / total) * 100) : 100
     return {
       subscription,
       planTier,
@@ -553,6 +555,8 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
       used,
       remaining,
       percent,
+      percentDisplay,
+      remainingPercent,
       nextChargeAt: subscription?.next_charge_at || subscription?.period_end || null,
       userUsed: subscription?.user_used_credits ?? null,
     }
@@ -569,13 +573,17 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
     const total = Number.isFinite(totalRaw) ? totalRaw : 0
     const used = Number.isFinite(usedRaw) ? Math.max(0, usedRaw) : 0
     const remaining = Number.isFinite(remainingRaw) ? Math.max(0, remainingRaw) : 0
-    const percent = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0
+    const percent = total > 0 ? Math.min(100, (used / total) * 100) : 0
+    const percentDisplay = total > 0 ? ((used / total) * 100).toFixed(2) : "0.00"
+    const remainingPercent = total > 0 ? Math.min(100, (remaining / total) * 100) : 100
     return {
       topup,
       total,
       used,
       remaining,
       percent,
+      percentDisplay,
+      remainingPercent,
       lastTopupAt: topup?.last_topup_at ?? null,
       autoUse: topup?.allow_when_empty ?? false,
       available: Boolean(topup?.account_id),
@@ -803,6 +811,12 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
       setGrantedCreditsLoading(false)
     }
   }, [authHeaders])
+
+  const grantedCreditsFiltered = useMemo(() => {
+    const currentId = currentTenant?.id
+    if (!currentId) return grantedCredits
+    return grantedCredits.filter((g) => g.tenant_id !== currentId)
+  }, [grantedCredits, currentTenant?.id])
 
   const handleTopupPurchase = useCallback(
     async (product: TopupProduct) => {
@@ -2097,13 +2111,17 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                         <div className="mt-3 h-2 w-full rounded-full bg-muted">
                           <div
                             className={cn("h-full rounded-full", creditCard.planStyle.avatar)}
-                            style={{ width: `${creditCard.percent}%` }}
+                            style={{
+                              width: creditCard.subscription
+                                ? `${creditCard.remainingPercent}%`
+                                : `${creditCard.percent}%`,
+                            }}
                           />
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
                           <div>
                             {creditCard.subscription
-                              ? `이번달 ${creditCard.percent}% 사용 (${formatCredits(creditCard.used)} 사용 / ${formatCredits(creditCard.remaining)} 남음 / 전체 ${formatCredits(creditCard.total)} 크레딧)`
+                              ? `이번달 ${creditCard.percentDisplay}% 사용 (${formatCredits(creditCard.used)} 사용 / ${formatCredits(creditCard.remaining)} 남음 / 전체 ${formatCredits(creditCard.total)} 크레딧)`
                               : "구독 크레딧 정보가 없습니다."}
                           </div>
                           <div>
@@ -2137,13 +2155,13 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                         <div className="mt-3 h-2 w-full rounded-full bg-muted">
                           <div
                             className="h-full rounded-full bg-primary"
-                            style={{ width: `${topupCard.percent}%` }}
+                            style={{ width: `${topupCard.remainingPercent}%` }}
                           />
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
                           <div>
                             {topupCard.available
-                              ? `이번달 ${topupCard.percent}% 사용 (${formatCredits(topupCard.used)} 사용 / ${formatCredits(topupCard.remaining)} 남음 / 전체 ${formatCredits(topupCard.total)} 크레딧)`
+                              ? `이번달 ${topupCard.percentDisplay}% 사용 (${formatCredits(topupCard.used)} 사용 / ${formatCredits(topupCard.remaining)} 남음 / 전체 ${formatCredits(topupCard.total)} 크레딧)`
                               : "충전 크레딧 정보가 없습니다."}
                           </div>
                           <div>
@@ -2215,10 +2233,10 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                       <div className="mt-3 flex items-center justify-center py-8 text-sm text-muted-foreground">
                         <RotateCw className="mr-2 h-4 w-4 animate-spin" /> 크레딧 정보를 불러오는 중...
                       </div>
-                    ) : grantedCredits.length === 0 ? (
+                    ) : grantedCreditsFiltered.length === 0 ? (
                       <div className="mt-3 py-6 text-center text-sm text-muted-foreground">소속 테넌트에서 제공 받은 크레딧이 없습니다.</div>
                     ) : (
-                      grantedCredits.map((grant) => {
+                      grantedCreditsFiltered.map((grant) => {
                         const svc = grant.service
                         const tier = normalizePlanTier(grant.plan_tier) ?? "free"
                         const tierLabel = PLAN_TIER_LABELS[tier]
@@ -2264,7 +2282,7 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                               </div>
                               <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
                                 <div>
-                                  이번달 {Math.round(usagePercent)}% 사용 ({formatCredits(svc.used_credits)} 사용 / {formatCredits(svc.remaining_credits)} 남음 / 테넌트 전체 {formatCredits(svc.total_credits)} 크레딧)
+                                  이번달 {Number(usagePercent).toFixed(2)}% 사용 ({formatCredits(svc.used_credits)} 사용 / {formatCredits(svc.remaining_credits)} 남음 / 테넌트 전체 {formatCredits(svc.total_credits)} 크레딧)
                                 </div>
                                 {nextRenewal ? (
                                   <div>다음 갱신일: <span className="text-foreground">{nextRenewal}</span></div>

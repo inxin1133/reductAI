@@ -37,14 +37,14 @@ export function TopupOptionsDialog({ open, onOpenChange, onPurchase }: TopupOpti
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[min(800px,calc(100%-48px))]">
+      <DialogContent className="max-w-[min(800px,calc(100vw-48px))] w-full">
         <DialogHeader>
-          <DialogTitle>충전 옵션</DialogTitle>
+          <DialogTitle>충전 옵션<span className="text-xs text-muted-foreground">(부가세 별도)</span></DialogTitle>
         </DialogHeader>
         <div className="p-4">
-          <div className="text-sm font-semibold text-foreground">
+          {/* <div className="text-sm font-semibold text-foreground">
             충전 옵션 <span className="text-xs text-muted-foreground">(부가세 별도)</span>
-          </div>
+          </div> */}
           {topupProductsLoading ? (
             <div className="mt-3 flex items-center justify-center py-8 text-sm text-muted-foreground">
               <RotateCw className="mr-2 h-4 w-4 animate-spin" /> 충전 상품을 불러오는 중...
@@ -52,7 +52,7 @@ export function TopupOptionsDialog({ open, onOpenChange, onPurchase }: TopupOpti
           ) : topupProducts.length === 0 ? (
             <div className="mt-3 py-6 text-center text-sm text-muted-foreground">현재 구매 가능한 충전 상품이 없습니다.</div>
           ) : (
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+            <div className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-3">
               {topupProducts.map((product) => {
                 const totalCredits = Number(product.credits)
                 const unitPrice = totalCredits > 0 ? product.price_usd / totalCredits : 0

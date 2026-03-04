@@ -384,9 +384,8 @@ function formatPeriodLabel(periodStart?: string | null, isCurrent?: boolean) {
 }
 
 function formatPercent(value: number) {
-  if (!Number.isFinite(value)) return "0"
-  const rounded = Math.round(value * 10) / 10
-  return rounded % 1 === 0 ? String(Math.trunc(rounded)) : rounded.toFixed(1)
+  if (!Number.isFinite(value)) return "0.00"
+  return Math.min(100, Math.max(0, value)).toFixed(2)
 }
 
 function readTenantMenuFromStorage(): MenuId | null {
@@ -2366,7 +2365,7 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                       <div className="mt-2 h-3 w-full overflow-hidden rounded-full bg-muted">
                         <div
                           className={cn("h-full rounded-full transition-all", planAvatarClass)}
-                          style={{ width: `100-${serviceUsageProgress}%` }}
+                          style={{ width: `${100 - serviceUsageProgress}%` }}
                         />
                       </div>
                       <div className="mt-1 text-right text-xs text-muted-foreground">{serviceUsagePercentLabel}</div>
@@ -2509,6 +2508,7 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
 
 
               {activeMenu === "topupCredits" ? (
+                // 충전 크레딧 운영
                 <div className="grid gap-4">
                   {!topupUsageLoading && !hasTopupCredits ? (
                     <div className="px-4 pb-4">
@@ -2636,7 +2636,7 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                           <div className="mt-2 h-3 w-full overflow-hidden rounded-full bg-muted">
                             <div
                               className="h-full rounded-full bg-primary transition-all"
-                              style={{ width: `100-${topupTotals ? Math.min(topupTotals.percent, 100) : 0}%` }}
+                              style={{ width: `${100 - (topupTotals ? Math.min(topupTotals.percent, 100) : 0)}%` }}
                             />
                           </div>
                           <div className="mt-1 text-right text-xs text-muted-foreground">
