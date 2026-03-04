@@ -215,7 +215,9 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
     type: "subscription" | "topup"
     accountId: string
     grant: GrantedCredit
-    label: string
+    tenantLabel: string
+    tenantLabelFull: string
+    planLabel: string
     remaining: number
   }> = []
   for (const g of grants) {
@@ -224,17 +226,17 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
     const hasTopupAccess = g.topup_auto_use || g.role_slug === "owner" || g.role_slug === "tenant_owner"
     const tier = normalizePlanTier(g.plan_tier) ?? "free"
     const planLabel = PLAN_TIER_LABELS[tier as PlanTier] || g.plan_tier || "Free"
-    const tenantLabel = g.tenant_type === "personal" ? "개인" : g.tenant_name || "개인"
-    const label = `${tenantLabel}:${planLabel}`
+    const tenantLabelFull = g.tenant_type === "personal" ? "개인" : g.tenant_name || "개인"
+    const tenantLabel = tenantLabelFull.length > 6 ? `${tenantLabelFull.slice(0, 6)}…` : tenantLabelFull
 
     if (serviceRemaining > 0 && g.account_id) {
-      creditTabs.push({ type: "subscription", accountId: g.account_id, grant: g, label, remaining: serviceRemaining })
+      creditTabs.push({ type: "subscription", accountId: g.account_id, grant: g, tenantLabel, tenantLabelFull, planLabel, remaining: serviceRemaining })
     } else if (topupRemaining > 0 && hasTopupAccess && g.topup_account_id) {
-      creditTabs.push({ type: "topup", accountId: g.topup_account_id, grant: g, label, remaining: topupRemaining })
+      creditTabs.push({ type: "topup", accountId: g.topup_account_id, grant: g, tenantLabel, tenantLabelFull, planLabel, remaining: topupRemaining })
     } else if (g.account_id != null) {
-      creditTabs.push({ type: "subscription", accountId: g.account_id, grant: g, label, remaining: serviceRemaining })
+      creditTabs.push({ type: "subscription", accountId: g.account_id, grant: g, tenantLabel, tenantLabelFull, planLabel, remaining: serviceRemaining })
     } else if (hasTopupAccess && g.topup_account_id != null) {
-      creditTabs.push({ type: "topup", accountId: g.topup_account_id, grant: g, label, remaining: topupRemaining })
+      creditTabs.push({ type: "topup", accountId: g.topup_account_id, grant: g, tenantLabel, tenantLabelFull, planLabel, remaining: topupRemaining })
     }
   }
 
@@ -248,7 +250,10 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
     const tier = selectedTab.type === "subscription" ? normalizePlanTier(selectedTab.grant.plan_tier) ?? "free" : "premium"
     return (
       <div className={cn("flex items-center gap-2 shrink-0", className)}>
-        <p className="font-medium text-sm text-foreground leading-5 whitespace-nowrap">{selectedTab.label}</p>
+        <p className="flex min-w-0 max-w-[140px] items-baseline gap-0 font-medium text-sm text-foreground leading-5">
+          <span className="min-w-0 max-w-[5rem] truncate" title={selectedTab.tenantLabelFull}>{selectedTab.tenantLabel}</span>
+          <span className="shrink-0">:{selectedTab.planLabel}</span>
+        </p>
         <div
           className={cn(
             "flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 py-0.5 font-mono text-xs font-medium",
@@ -295,11 +300,13 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
           >
             <p
               className={cn(
-                "font-medium leading-[20px] text-[14px] whitespace-nowrap",
+                "flex min-w-0 items-baseline gap-0 font-medium leading-[20px] text-[14px]",
                 isTopup ? (isSelected ? "text-white" : "text-indigo-600") : isSelected ? styles.labelSelected : styles.labelUnselected
               )}
+              title={`${tab.tenantLabelFull}:${tab.planLabel}`}
             >
-              {tab.label}
+              <span className="min-w-0 max-w-[5rem] truncate">{tab.tenantLabel}</span>
+              <span className="shrink-0">:{tab.planLabel}</span>
             </p>
             <div
               className={cn(

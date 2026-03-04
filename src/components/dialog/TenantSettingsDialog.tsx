@@ -20,7 +20,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { Box, CirclePause, Coins, Database, Gauge, HardDrive, Menu, PackageOpen, UserPlus, UserRoundCheck, Users, UsersRound, X, ChevronsUp, Settings2, HandCoins, EvCharger, RotateCw, Armchair } from "lucide-react"
+import { Box, CirclePause, Coins, Database, Gauge, HardDrive, Menu, PackageOpen, SquarePen, UserPlus, UserRoundCheck, Users, UsersRound, X, ChevronsUp, Settings2, HandCoins, EvCharger, RotateCw, Armchair } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { type PlanTier, PLAN_TIER_LABELS, PLAN_TIER_ORDER, PLAN_TIER_STYLES } from "@/lib/planTier"
 import { withActiveTenantHeader } from "@/lib/tenantContext"
@@ -73,6 +73,7 @@ const MENU_ITEMS: Array<{ id: MenuId; label: string; icon: typeof Box }> = [
 
 const TENANT_MENU_STORAGE_KEY = "reductai:tenantSettings:activeMenu"
 const TENANT_MENU_IDS = new Set<MenuId>(MENU_ITEMS.map((item) => item.id))
+const TENANT_NAME_MAX_LEN = 10
 
 type CurrentTenantProfile = {
   id: string
@@ -502,6 +503,10 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
   const [topupMemberAccessSaving, setTopupMemberAccessSaving] = useState<string | null>(null)
   const [topupProducts, setTopupProducts] = useState<TopupProduct[]>([])
   const [topupProductsLoading, setTopupProductsLoading] = useState(false)
+  const [isEditingTenantName, setIsEditingTenantName] = useState(false)
+  const [tenantNameDraft, setTenantNameDraft] = useState("")
+  const [isSavingTenantName, setIsSavingTenantName] = useState(false)
+  const tenantNameInputRef = useRef<HTMLInputElement | null>(null)
   const [usageRows, setUsageRows] = useState<Array<{ date: string; user: string; model: string; usage: string; credits: string }>>([])
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState<string | null>(null)
@@ -700,6 +705,104 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
       setInviteLoading(false)
     }
   }, [authHeaders])
+
+  const ownerNameForTenant = useMemo(() => {
+    const ownerRow = tenantMembers.find((r) => {
+      const slug = String(r.role_slug || "").toLowerCase()
+      return slug === "owner" || slug === "tenant_owner"
+    })
+    const name = String(ownerRow?.user_name || "").trim()
+    if (name) return name
+    if (typeof window !== "undefined") return String(localStorage.getItem("user_name") || "").trim()
+    return "사용자"
+  }, [tenantMembers])
+
+  const startEditTenantName = useCallback(() => {
+    setIsEditingTenantName(true)
+    setTenantNameDraft(String(currentTenant?.name || ""))
+  }, [currentTenant?.name])
+  const cancelEditTenantName = useCallback(() => {
+    if (isSavingTenantName) return
+    setIsEditingTenantName(false)
+    setTenantNameDraft(String(currentTenant?.name || ""))
+  }, [currentTenant?.name, isSavingTenantName])
+
+  const commitTenantName = useCallback(async () => {
+    if (isSavingTenantName) return
+    let nextName = tenantNameDraft.trim()
+    if (!currentTenant?.id) {
+      setIsEditingTenantName(false)
+      setTenantNameDraft(String(currentTenant?.name || ""))
+      return
+    }
+    if (!nextName) {
+      nextName = (ownerNameForTenant || "사용자").slice(0, TENANT_NAME_MAX_LEN) || "사용자"
+    } else {
+      nextName = nextName.slice(0, TENANT_NAME_MAX_LEN)
+    }
+    if (nextName === String(currentTenant?.name || "")) {
+      setIsEditingTenantName(false)
+      setTenantNameDraft(String(currentTenant?.name || ""))
+      return
+    }
+    const headers = authHeaders()
+    if (!headers.Authorization) {
+      alert("로그인이 필요합니다.")
+      return
+    }
+    setIsSavingTenantName(true)
+    try {
+      const res = await fetch(`/api/posts/tenant/${encodeURIComponent(currentTenant.id)}`, {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: nextName }),
+      })
+      if (!res.ok) {
+        const msg = await res.text().catch(() => "")
+        alert(msg || "테넌트 이름 변경에 실패했습니다.")
+        return
+      }
+      const updated = (await res.json().catch(() => null)) as CurrentTenantProfile | null
+      if (updated?.id) {
+        setCurrentTenant((prev) => (prev ? { ...prev, name: updated.name ?? null } : null))
+        setTenantNameDraft(String(updated.name || ""))
+        setTenantMemberships((prev) =>
+          prev.map((item) => (String(item.id) === String(updated.id) ? { ...item, name: updated.name } : item))
+        )
+        if (typeof window !== "undefined") {
+          try {
+            const cachedRaw = window.localStorage.getItem("reductai:sidebar:tenantInfo:v1")
+            const cached = cachedRaw ? JSON.parse(cachedRaw) : null
+            if (cached && String(cached.id) === String(updated.id)) {
+              window.localStorage.setItem(
+                "reductai:sidebar:tenantInfo:v1",
+                JSON.stringify({
+                  ...cached,
+                  name: updated.name || "",
+                })
+              )
+            }
+            const membershipsRaw = window.localStorage.getItem("reductai:sidebar:tenantMemberships:v1")
+            const memberships = membershipsRaw ? JSON.parse(membershipsRaw) : null
+            if (Array.isArray(memberships)) {
+              const next = memberships.map((m: { id?: string; name?: string }) =>
+                String(m.id) === String(updated.id) ? { ...m, name: updated.name } : m
+              )
+              window.localStorage.setItem("reductai:sidebar:tenantMemberships:v1", JSON.stringify(next))
+            }
+          } catch {
+            // ignore
+          }
+        }
+        window.dispatchEvent(
+          new CustomEvent("reductai:tenantInfoUpdated", { detail: { tenantId: String(updated.id), name: updated.name || "" } })
+        )
+      }
+      setIsEditingTenantName(false)
+    } finally {
+      setIsSavingTenantName(false)
+    }
+  }, [authHeaders, currentTenant, isSavingTenantName, ownerNameForTenant, tenantNameDraft])
 
   const loadBillingPlan = useCallback(async () => {
     const headers = authHeaders()
@@ -1621,6 +1724,9 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
     setInviteActionError(null)
   }, [inviteDialogOpen])
   useEffect(() => {
+    if (isEditingTenantName) tenantNameInputRef.current?.focus()
+  }, [isEditingTenantName])
+  useEffect(() => {
     if (open) return
     if (!pendingPlanDialogOpen) return
     onOpenPlanDialog?.()
@@ -1683,8 +1789,52 @@ export function TenantSettingsDialog({ open, onOpenChange, onOpenPlanDialog }: T
                     <div className="text-sm font-semibold text-foreground border-b border-border pb-2">테넌트 개요</div>
                     <div className="mt-3 grid gap-3 text-sm text-muted-foreground">
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">테넌트 이름</div>
-                        <div className="flex items-center gap-2 text-foreground">{tenantNameValue}</div>
+                        <div className="flex items-center gap-2">테넌트 이름 {isOwner ? <span className="text-xs text-muted-foreground">(최대 10자)</span> : null}</div>
+                        {isOwner ? (
+                          <div className="flex items-center gap-2 text-foreground min-w-0">
+                            {isEditingTenantName ? (
+                              <Input
+                                ref={tenantNameInputRef}
+                                value={tenantNameDraft}
+                                onChange={(e) => setTenantNameDraft(e.target.value.slice(0, TENANT_NAME_MAX_LEN))}
+                                placeholder="최대 10자"
+                                maxLength={TENANT_NAME_MAX_LEN}
+                                onBlur={() => void commitTenantName()}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault()
+                                    void commitTenantName()
+                                  } else if (e.key === "Escape") {
+                                    e.preventDefault()
+                                    cancelEditTenantName()
+                                  }
+                                }}
+                                className="h-7 text-sm"
+                                disabled={isSavingTenantName}
+                              />
+                            ) : (
+                              <span className="truncate">{tenantNameValue}</span>
+                            )}
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  className="shrink-0"
+                                  onClick={startEditTenantName}
+                                  disabled={isSavingTenantName}
+                                  aria-label="테넌트 이름 변경"
+                                >
+                                  <SquarePen className="size-3 text-blue-500" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <p>이름 변경</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 text-foreground">{tenantNameValue}</div>
+                        )}
                       </div>
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">테넌트 유형</div>

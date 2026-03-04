@@ -70,6 +70,7 @@ const PERSONAL_MENUS = [
 
 const SETTINGS_MENU_STORAGE_KEY = "reductai:settings:activeMenu"
 const SETTINGS_DIALOG_OPEN_KEY = "reductai:settings:isOpen"
+const TENANT_NAME_MAX_LEN = 10
 const SETTINGS_MENU_IDS = new Set<SettingsMenuId>([...PERSONAL_MENUS].map((item) => item.id))
 const AUTH_API_BASE = "http://localhost:3001/auth"
 const PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
@@ -1077,6 +1078,9 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
         setUserNameDraft(String(updated.full_name || ""))
         if (typeof window !== "undefined") {
           if (updated.full_name) window.localStorage.setItem("user_name", String(updated.full_name))
+          window.dispatchEvent(
+            new CustomEvent("reductai:userProfileUpdated", { detail: { full_name: updated.full_name ?? "" } })
+          )
         }
       }
       setIsEditingUserName(false)
@@ -1099,8 +1103,22 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
 
   const commitTenantName = useCallback(async () => {
     if (isSavingTenantName) return
-    const nextName = tenantNameDraft.trim()
-    if (!currentTenant?.id || !nextName || nextName === String(currentTenant?.name || "")) {
+    let nextName = tenantNameDraft.trim()
+    if (!currentTenant?.id) {
+      setIsEditingTenantName(false)
+      setTenantNameDraft(String(currentTenant?.name || ""))
+      return
+    }
+    if (!nextName) {
+      const ownerName =
+        String(currentUser?.full_name || "").trim() ||
+        (typeof window !== "undefined" ? String(localStorage.getItem("user_name") || "").trim() : "") ||
+        "사용자"
+      nextName = ownerName.slice(0, TENANT_NAME_MAX_LEN) || "사용자"
+    } else {
+      nextName = nextName.slice(0, TENANT_NAME_MAX_LEN)
+    }
+    if (nextName === String(currentTenant?.name || "")) {
       setIsEditingTenantName(false)
       setTenantNameDraft(String(currentTenant?.name || ""))
       return
@@ -1160,12 +1178,17 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
             // ignore
           }
         }
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("reductai:tenantInfoUpdated", { detail: { tenantId: String(updated.id), name: updated.name || "" } })
+          )
+        }
       }
       setIsEditingTenantName(false)
     } finally {
       setIsSavingTenantName(false)
     }
-  }, [authHeaders, currentTenant, isSavingTenantName, tenantNameDraft])
+  }, [authHeaders, currentTenant, currentUser?.full_name, isSavingTenantName, tenantNameDraft])
 
   const openProfileImagePicker = useCallback(() => {
     if (profileImageLoading) return
@@ -1254,6 +1277,11 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
             headers,
           }).catch(() => null)
         }
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("reductai:userProfileUpdated", { detail: { profile_image_url: url } })
+          )
+        }
       } finally {
         setProfileImageLoading(false)
       }
@@ -1298,6 +1326,11 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
             method: "DELETE",
             headers,
           }).catch(() => null)
+        }
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("reductai:userProfileUpdated", { detail: { profile_image_url: null } })
+          )
         }
       } finally {
         setProfileImageLoading(false)
@@ -1672,13 +1705,15 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                       </div>
                       {isTeamTenant ? (
                         <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">테넌트 이름</div>
+                          <div className="flex items-center gap-2">테넌트 이름 <span className="text-xs text-muted-foreground">(최대 10자)</span></div>
                           <div className="flex items-center gap-2 text-foreground min-w-0">
                             {isEditingTenantName ? (
                               <Input
                                 ref={tenantNameInputRef}
                                 value={tenantNameDraft}
-                                onChange={(e) => setTenantNameDraft(e.target.value)}
+                                onChange={(e) => setTenantNameDraft(e.target.value.slice(0, TENANT_NAME_MAX_LEN))}
+                                placeholder="최대 10자"
+                                maxLength={TENANT_NAME_MAX_LEN}
                                 onBlur={() => void commitTenantName()}
                                 onKeyDown={(e) => {
                                   if (e.key === "Enter") {

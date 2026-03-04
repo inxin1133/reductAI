@@ -844,6 +844,7 @@ const profileBadges = useMemo(() => {
   const [suspendedActionError, setSuspendedActionError] = useState<string | null>(null)
 
   const { theme, themeMode, setThemeMode } = useTheme()
+  const [userProfileVersion, setUserProfileVersion] = useState(0)
   const userProfile = useMemo(() => {
     if (typeof window === "undefined") {
       return { name: "사용자", email: "", initial: "U" }
@@ -854,7 +855,8 @@ const profileBadges = useMemo(() => {
     const name = rawName || nameFromEmail || "사용자"
     const initial = Array.from(name.trim() || "U")[0] || "U"
     return { name, email: rawEmail, initial }
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- userProfileVersion triggers re-read from localStorage
+  }, [userProfileVersion])
 
   const currentTier = useMemo(
     () => resolveServiceTier({ tenant_type: tenantType, plan_tier: tenantPlanTier }),
@@ -1289,6 +1291,68 @@ const profileBadges = useMemo(() => {
     if (tenantType) return
     void loadTenantName()
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ tenantId?: string; name?: string }>).detail
+      const tenantId = detail?.tenantId
+      const name = detail?.name ?? ""
+      if (!tenantId) return
+      setTenantMemberships((prev) =>
+        prev.map((item) => (String(item.id) === String(tenantId) ? { ...item, name } : item))
+      )
+      try {
+        const cachedRaw = window.localStorage.getItem(TENANT_INFO_CACHE_KEY)
+        const cached = cachedRaw ? JSON.parse(cachedRaw) : null
+        if (cached && String(cached.id) === String(tenantId)) {
+          setTenantName(name)
+          window.localStorage.setItem(
+            TENANT_INFO_CACHE_KEY,
+            JSON.stringify({ ...cached, name: name || "" })
+          )
+        }
+        const membershipsRaw = window.localStorage.getItem(TENANT_MEMBERSHIPS_CACHE_KEY)
+        const memberships = membershipsRaw ? JSON.parse(membershipsRaw) : null
+        if (Array.isArray(memberships)) {
+          const next = memberships.map((m: { id?: string; name?: string }) =>
+            String(m.id) === String(tenantId) ? { ...m, name } : m
+          )
+          window.localStorage.setItem(TENANT_MEMBERSHIPS_CACHE_KEY, JSON.stringify(next))
+        }
+      } catch {
+        // ignore
+      }
+    }
+    window.addEventListener("reductai:tenantInfoUpdated", handler as EventListener)
+    return () => window.removeEventListener("reductai:tenantInfoUpdated", handler as EventListener)
+  }, [])
+
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ full_name?: string; profile_image_url?: string | null }>).detail
+      if (detail?.full_name !== undefined) {
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem("user_name", String(detail.full_name || ""))
+        }
+        setUserProfileVersion((v) => v + 1)
+      }
+      if (detail?.profile_image_url !== undefined) {
+        const url = detail.profile_image_url || null
+        setProfileImageUrl(url)
+        try {
+          if (url) {
+            window.localStorage.setItem(PROFILE_IMAGE_CACHE_KEY, url)
+          } else {
+            window.localStorage.removeItem(PROFILE_IMAGE_CACHE_KEY)
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+    window.addEventListener("reductai:userProfileUpdated", handler as EventListener)
+    return () => window.removeEventListener("reductai:userProfileUpdated", handler as EventListener)
   }, [])
 
   const loadTenantMemberships = async () => {
@@ -2239,11 +2303,11 @@ const profileBadges = useMemo(() => {
                             }))
                           }
                         >
-                          <div className="flex items-center gap-1">
+                          <div className="flex min-w-0 flex-1 items-center gap-1">
                             {/* <ChevronRight
                               className={cn("size-4 transition-transform", isSectionOpen ? "rotate-90" : "")}
                             /> */}
-                            <span className="text-sm text-foreground">{tenantLabel}</span>
+                            <span className="truncate text-sm text-foreground">{tenantLabel}</span>
                           </div>
                           <div className="flex items-center gap-1">
                             {showManage ? (
@@ -2958,7 +3022,7 @@ const profileBadges = useMemo(() => {
                           {/* <ChevronRight
                             className={cn("size-4 transition-transform", isSectionOpen ? "rotate-90" : "")}
                           /> */}
-                          <span className="flex-1 text-left text-xs text-sidebar-foreground">{tenantLabel}</span>
+                          <span className="min-w-0 flex-1 truncate text-left text-xs text-sidebar-foreground">{tenantLabel}</span>
                           {showManage ? (
                             <div
                               className="size-4 relative shrink-0 flex items-center justify-center text-sidebar-foreground opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto"
@@ -3534,8 +3598,8 @@ const profileBadges = useMemo(() => {
                 </div>
               </HoverCardTrigger>
               <HoverCardContent side="right" align="start" className="w-[280px] p-2">
-                <div className="flex items-center justify-between px-1 pb-2">
-                  <div className="text-sm font-semibold">{teamPageLabel}</div>
+                <div className="flex min-w-0 items-center justify-between gap-2 px-1 pb-2">
+                  <div className="min-w-0 flex-1 truncate text-sm font-semibold">{teamPageLabel}</div>
                   <div className="flex items-center gap-1">
                     {showTeamManageButton ? (
                       <button

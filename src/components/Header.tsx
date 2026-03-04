@@ -22,6 +22,7 @@ export function Header({ className }: HeaderProps) {
   const navigate = useNavigate()
   const { toggleTheme } = useTheme()
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false)
+  const [profileRefreshKey, setProfileRefreshKey] = useState(0)
   const profileImageUrl = useMemo(() => {
     if (typeof window === "undefined") return null
     try {
@@ -30,7 +31,8 @@ export function Header({ className }: HeaderProps) {
     } catch {
       return null
     }
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- profileRefreshKey triggers re-read
+  }, [profileRefreshKey])
 
   const profile = useMemo(() => {
     if (typeof window === "undefined") {
@@ -42,6 +44,13 @@ export function Header({ className }: HeaderProps) {
     const name = rawName || nameFromEmail || "사용자"
     const initial = Array.from(name.trim() || "U")[0] || "U"
     return { name, email: rawEmail, initial }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- profileRefreshKey triggers re-read
+  }, [profileRefreshKey])
+
+  useEffect(() => {
+    const handler = () => setProfileRefreshKey((k) => k + 1)
+    window.addEventListener("reductai:userProfileUpdated", handler)
+    return () => window.removeEventListener("reductai:userProfileUpdated", handler)
   }, [])
 
 
