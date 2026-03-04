@@ -835,7 +835,7 @@ const profileBadges = useMemo(() => {
   const [isMobileProfileOpen, setIsMobileProfileOpen] = useState(false)
   const [isSettingsDialogOpen, setIsSettingsDialogOpen] = useState(false)
   const [isBillingSettingsDialogOpen, setIsBillingSettingsDialogOpen] = useState(false)
-  const [settingsDialogInitialMenu, setSettingsDialogInitialMenu] = useState<SettingsMenuId>("profile")
+  const [settingsDialogInitialMenu, setSettingsDialogInitialMenu] = useState<SettingsMenuId | undefined>(undefined)
   const [isPlanDialogOpen, setIsPlanDialogOpen] = useState(false)
   const [isTenantSettingsDialogOpen, setIsTenantSettingsDialogOpen] = useState(false)
   const [isContactDialogOpen, setIsContactDialogOpen] = useState(false)
@@ -1932,7 +1932,10 @@ const profileBadges = useMemo(() => {
   }
 
   const openSettingsDialog = () => {
-    openSettingsDialogAt("profile")
+    setSettingsDialogInitialMenu(undefined)
+    setIsSettingsDialogOpen(true)
+    setIsProfileOpen(false)
+    setIsMobileProfileOpen(false)
   }
 
   function openPlanDialog() {
@@ -1958,6 +1961,12 @@ const profileBadges = useMemo(() => {
     if (canManageTeamTenant) return
     if (isTenantSettingsDialogOpen) setIsTenantSettingsDialogOpen(false)
   }, [canManageTeamTenant, isTenantSettingsDialogOpen])
+
+  useEffect(() => {
+    const handler = () => openSettingsDialogAt("credits")
+    window.addEventListener("reductai:open-settings-credits", handler)
+    return () => window.removeEventListener("reductai:open-settings-credits", handler)
+  }, [])
 
   // 모바일 헤더 (축소 상태)
   if (isMobile && !isMobileMenuOpen) {

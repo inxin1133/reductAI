@@ -28,7 +28,7 @@ export const PLAN_TIER_STYLES: Record<
     avatar: "bg-muted-foreground",
     creditTab: {
       outerSelected: "bg-muted-foreground",
-      outerUnselected: "bg-background border border-border ring-1 ring-muted-foreground/50",
+      outerUnselected: "bg-background border border-border ring-1 ring-border",
       labelSelected: "text-primary-foreground",
       labelUnselected: "text-muted-foreground",
       badgeSelected: "bg-primary-foreground text-muted-foreground",
@@ -40,7 +40,7 @@ export const PLAN_TIER_STYLES: Record<
     avatar: "bg-teal-500",
     creditTab: {
       outerSelected: "bg-teal-500",
-      outerUnselected: "bg-background border border-border ring-1 ring-teal-500",
+      outerUnselected: "bg-background border border-border ring-1 ring-border",
       labelSelected: "text-primary-foreground",
       labelUnselected: "text-teal-600",
       badgeSelected: "bg-primary-foreground text-teal-500",
@@ -52,7 +52,7 @@ export const PLAN_TIER_STYLES: Record<
     avatar: "bg-indigo-500",
     creditTab: {
       outerSelected: "bg-indigo-500",
-      outerUnselected: "bg-background border border-border ring-1 ring-indigo-500",
+      outerUnselected: "bg-background border border-border ring-1 ring-border",
       labelSelected: "text-primary-foreground",
       labelUnselected: "text-indigo-600",
       badgeSelected: "bg-primary-foreground text-indigo-500",
@@ -64,7 +64,7 @@ export const PLAN_TIER_STYLES: Record<
     avatar: "bg-amber-500",
     creditTab: {
       outerSelected: "bg-amber-500",
-      outerUnselected: "bg-background border border-border ring-1 ring-amber-500",
+      outerUnselected: "bg-background border border-border ring-1 ring-border",
       labelSelected: "text-primary-foreground",
       labelUnselected: "text-amber-600",
       badgeSelected: "bg-primary-foreground text-amber-500",
@@ -76,7 +76,7 @@ export const PLAN_TIER_STYLES: Record<
     avatar: "bg-rose-500",
     creditTab: {
       outerSelected: "bg-rose-500",
-      outerUnselected: "bg-background border border-border ring-1 ring-rose-500",
+      outerUnselected: "bg-background border border-border ring-1 ring-muted-foreground/50",
       labelSelected: "text-primary-foreground",
       labelUnselected: "text-rose-600",
       badgeSelected: "bg-primary-foreground text-rose-500",

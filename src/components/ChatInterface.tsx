@@ -274,7 +274,14 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
           <button
             key={tab.accountId}
             type="button"
-            onClick={() => handleTabClick(tab.accountId)}
+            onClick={() => {
+              const isOwner = tab.grant.role_slug === "owner" || tab.grant.role_slug === "tenant_owner"
+              if (isSelected && isOwner) {
+                window.dispatchEvent(new CustomEvent("reductai:open-settings-credits"))
+                return
+              }
+              handleTabClick(tab.accountId)
+            }}
             className={cn(
               "flex gap-1 items-center justify-center px-3 py-1 rounded-full shadow-sm shrink-0 transition-colors",
               isTopup
