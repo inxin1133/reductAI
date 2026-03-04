@@ -1383,4 +1383,18 @@ export async function ensureProviderAuthProfilesSchema() {
   `)
 }
 
+export async function ensurePlanModelAccessSchema() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS plan_model_access (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      plan_tier VARCHAR(50) NOT NULL,
+      model_id UUID NOT NULL REFERENCES ai_models(id) ON DELETE CASCADE,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(plan_tier, model_id)
+    )
+  `)
+  await query(`CREATE INDEX IF NOT EXISTS idx_plan_model_access_plan_tier ON plan_model_access(plan_tier)`)
+  await query(`CREATE INDEX IF NOT EXISTS idx_plan_model_access_model_id ON plan_model_access(model_id)`)
+}
+
 

@@ -269,6 +269,29 @@ COMMENT ON COLUMN tenant_model_access.updated_at IS '접근 권한 최종 수정
 
 
 -- ============================================
+-- 4.1 PLAN MODEL ACCESS (서비스 플랜별 모델 사용 권한)
+-- ============================================
+-- 플랜 티어(free, pro, premium 등)별로 사용 가능한 모델을 정의합니다.
+-- - plan_tier에 행이 없으면: 해당 플랜은 모든 모델 사용 가능 (pro 이상)
+-- - plan_tier에 행이 있으면: 해당 행의 model_id만 사용 가능
+
+CREATE TABLE plan_model_access (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    plan_tier VARCHAR(50) NOT NULL,
+    model_id UUID NOT NULL REFERENCES ai_models(id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(plan_tier, model_id)
+);
+
+CREATE INDEX idx_plan_model_access_plan_tier ON plan_model_access(plan_tier);
+CREATE INDEX idx_plan_model_access_model_id ON plan_model_access(model_id);
+
+COMMENT ON TABLE plan_model_access IS '서비스 플랜별 LLM 모델 사용 권한. plan_tier에 행이 없으면 해당 플랜은 모든 모델 사용 가능.';
+COMMENT ON COLUMN plan_model_access.plan_tier IS '플랜 티어: free, pro, premium, business, enterprise';
+COMMENT ON COLUMN plan_model_access.model_id IS '허용된 모델 ID (ai_models 참조)';
+
+
+-- ============================================
 -- 6. MODEL PERFORMANCE METRICS (모델 성능 메트릭)
 -- ============================================
 

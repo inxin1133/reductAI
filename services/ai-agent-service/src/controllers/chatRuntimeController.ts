@@ -12,6 +12,7 @@ import {
   anthropicSimulateChat,
   googleSimulateChat,
 } from "../services/providerClients"
+import { isModelAllowedForPlan } from "../services/planModelAccessService"
 import { resolveAuthForModelApiProfile } from "../services/authProfilesService"
 import { newAssetId, storeImageDataUrlAsAsset } from "../services/fileServiceClient"
 import { normalizeAiContent } from "../utils/normalizeAiContent"
@@ -1753,6 +1754,7 @@ export async function chatRun(req: Request, res: Response) {
       userPrompt?: string
       max_tokens?: number
       session_language?: string
+      plan_tier?: string | null
       model_api_id?: string | null
       provider_id?: string | null
       provider_slug?: string | null
@@ -1832,6 +1834,18 @@ export async function chatRun(req: Request, res: Response) {
       chosenModelDbId = await pickDefaultModel(mt)
     }
     if (!chosenModelDbId) return res.status(404).json({ message: `No available model for model_type=${mt}` })
+
+    // plan_tier: 서비스 플랜별 모델 사용 제한 검증
+    const planTierRaw = typeof plan_tier === "string" ? plan_tier.trim() : ""
+    if (planTierRaw && chosenModelDbId) {
+      const allowed = await isModelAllowedForPlan(planTierRaw, chosenModelDbId)
+      if (!allowed) {
+        return res.status(403).json({
+          message: "선택한 플랜에서는 해당 모델을 사용할 수 없습니다. 크레딧 탭에서 상위 플랜을 선택하세요.",
+          code: "PLAN_MODEL_ACCESS_DENIED",
+        })
+      }
+    }
 
     // load chosen model + provider
     const chosen = await query(

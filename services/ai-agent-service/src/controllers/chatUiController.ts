@@ -2,6 +2,7 @@ import { Request, Response } from "express"
 import { query } from "../config/db"
 import { ensureSystemTenantId } from "../services/systemTenantService"
 import { getWebSearchPolicy } from "../services/webSearchSettingsService"
+import { getAllowedModelApiIdsForPlan } from "../services/planModelAccessService"
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 
@@ -105,6 +106,26 @@ export async function getChatUiConfig(_req: Request, res: Response) {
   } catch (e: any) {
     console.error("getChatUiConfig error:", e)
     return res.status(500).json({ message: "Failed to get chat UI config", details: String(e?.message || e) })
+  }
+}
+
+export async function getAllowedModelsForPlan(req: Request, res: Response) {
+  try {
+    const planTier = typeof req.query.plan_tier === "string" ? req.query.plan_tier.trim() : ""
+    if (!planTier) {
+      return res.json({ ok: true, model_api_ids: null, restricted: false })
+    }
+
+    const modelApiIds = await getAllowedModelApiIdsForPlan(planTier)
+
+    return res.json({
+      ok: true,
+      model_api_ids: modelApiIds,
+      restricted: modelApiIds !== null,
+    })
+  } catch (e: any) {
+    console.error("getAllowedModelsForPlan error:", e)
+    return res.status(500).json({ message: "Failed to get allowed models", details: String(e?.message || e) })
   }
 }
 

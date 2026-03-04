@@ -16,6 +16,7 @@ import {
   ensureResponseSchemasSchema,
   ensureTimelineSchema,
   ensureWebSearchSettingsSchema,
+  ensurePlanModelAccessSchema,
 } from "./services/schemaBootstrap"
 import chatRoutes from "./routes/chatRoutes"
 import chatUiRoutes from "./routes/chatUiRoutes"
@@ -76,6 +77,7 @@ app.listen(PORT, async () => {
     await ensureModelApiProfilesSchema()
     await ensureProviderAuthProfilesSchema()
     await ensureWebSearchSettingsSchema()
+    await ensurePlanModelAccessSchema()
     // Best-effort: seed default Sora video model_api_profile for OpenAI Sora providers.
     // Users can edit/override in Admin (Model API Profiles).
     const { ensureDefaultSoraVideoProfiles } = await import("./services/schemaBootstrap")

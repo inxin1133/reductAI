@@ -12,6 +12,7 @@ import {
   ChevronsUp,
   Image as ImageIcon,
   Link2,
+  Lock,
   MessageSquare,
   Paperclip,
   Settings2,
@@ -52,6 +53,7 @@ import { ProviderLogo } from "@/components/icons/providerLogoRegistry"
 import { ModelOptionsPanel } from "@/components/ModelOptionsPanel"
 import { getCreditTabStyles, PLAN_TIER_LABELS, PLAN_TIER_STYLES, normalizePlanTier, type PlanTier } from "@/lib/planTier"
 import { withActiveTenantHeader } from "@/lib/tenantContext"
+import { CreditSelectionProvider, useCreditSelection } from "@/contexts/CreditSelectionContext"
 
 type GrantedCredit = {
   tenant_id: string
@@ -77,6 +79,8 @@ type PaidTokenProps = {
   variant?: "full" | "compact"
 }
 
+const CHAT_UI_ALLOWED_MODELS_API = "/api/ai/chat-ui/allowed-models"
+
 function formatCredits(value: number): string {
   if (!Number.isFinite(value) || value < 0) return "0"
   const n = Math.round(value * 100) / 100
@@ -87,6 +91,7 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
   const [grants, setGrants] = React.useState<GrantedCredit[]>([])
   const [selectedAccountId, setSelectedAccountId] = React.useState<string | null>(null)
   const [loading, setLoading] = React.useState(true)
+  const creditSelection = useCreditSelection()
 
   const fetchData = React.useCallback(async () => {
     const headers = authHeaders()
@@ -172,7 +177,8 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
   }, [fetchData])
 
   const handleTabClick = React.useCallback(
-    async (accountId: string) => {
+    async (accountId: string, planTier: string) => {
+      creditSelection?.setSelection(accountId, planTier)
       const headers = authHeaders()
       if (!(headers as Record<string, string>)?.["Authorization"]) return
       try {
@@ -189,8 +195,47 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
         console.error("PaidToken update preferences error:", e)
       }
     },
-    [authHeaders]
+    [authHeaders, creditSelection]
   )
+
+  const creditTabs = React.useMemo(() => {
+    const tabs: Array<{
+      type: "subscription" | "topup"
+      accountId: string
+      grant: GrantedCredit
+      tenantLabel: string
+      tenantLabelFull: string
+      planLabel: string
+      remaining: number
+    }> = []
+    for (const g of grants) {
+      const serviceRemaining = g.service?.remaining_credits ?? 0
+      const topupRemaining = g.topup_remaining_credits ?? 0
+      const hasTopupAccess = g.topup_auto_use || g.role_slug === "owner" || g.role_slug === "tenant_owner"
+      const tier = normalizePlanTier(g.plan_tier) ?? "free"
+      const planLabel = PLAN_TIER_LABELS[tier as PlanTier] || g.plan_tier || "Free"
+      const tenantLabelFull = g.tenant_type === "personal" ? "개인" : g.tenant_name || "개인"
+      const tenantLabel = tenantLabelFull.length > 6 ? `${tenantLabelFull.slice(0, 6)}…` : tenantLabelFull
+
+      if (serviceRemaining > 0 && g.account_id) {
+        tabs.push({ type: "subscription", accountId: g.account_id, grant: g, tenantLabel, tenantLabelFull, planLabel, remaining: serviceRemaining })
+      } else if (topupRemaining > 0 && hasTopupAccess && g.topup_account_id) {
+        tabs.push({ type: "topup", accountId: g.topup_account_id, grant: g, tenantLabel, tenantLabelFull, planLabel, remaining: topupRemaining })
+      } else if (g.account_id != null) {
+        tabs.push({ type: "subscription", accountId: g.account_id, grant: g, tenantLabel, tenantLabelFull, planLabel, remaining: serviceRemaining })
+      } else if (hasTopupAccess && g.topup_account_id != null) {
+        tabs.push({ type: "topup", accountId: g.topup_account_id, grant: g, tenantLabel, tenantLabelFull, planLabel, remaining: topupRemaining })
+      }
+    }
+    return tabs
+  }, [grants])
+
+  React.useEffect(() => {
+    if (creditTabs.length === 0) return
+    const selectedTab = creditTabs.find((t) => t.accountId === selectedAccountId) ?? creditTabs[0]
+    const tier = selectedTab.type === "subscription" ? normalizePlanTier(selectedTab.grant.plan_tier) ?? "free" : "premium"
+    creditSelection?.setSelection(selectedAccountId, tier)
+  }, [selectedAccountId, creditTabs, creditSelection])
 
   if (loading) {
     if (variant === "compact") {
@@ -209,35 +254,6 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
         </div>
       </div>
     )
-  }
-
-  const creditTabs: Array<{
-    type: "subscription" | "topup"
-    accountId: string
-    grant: GrantedCredit
-    tenantLabel: string
-    tenantLabelFull: string
-    planLabel: string
-    remaining: number
-  }> = []
-  for (const g of grants) {
-    const serviceRemaining = g.service?.remaining_credits ?? 0
-    const topupRemaining = g.topup_remaining_credits ?? 0
-    const hasTopupAccess = g.topup_auto_use || g.role_slug === "owner" || g.role_slug === "tenant_owner"
-    const tier = normalizePlanTier(g.plan_tier) ?? "free"
-    const planLabel = PLAN_TIER_LABELS[tier as PlanTier] || g.plan_tier || "Free"
-    const tenantLabelFull = g.tenant_type === "personal" ? "개인" : g.tenant_name || "개인"
-    const tenantLabel = tenantLabelFull.length > 6 ? `${tenantLabelFull.slice(0, 6)}…` : tenantLabelFull
-
-    if (serviceRemaining > 0 && g.account_id) {
-      creditTabs.push({ type: "subscription", accountId: g.account_id, grant: g, tenantLabel, tenantLabelFull, planLabel, remaining: serviceRemaining })
-    } else if (topupRemaining > 0 && hasTopupAccess && g.topup_account_id) {
-      creditTabs.push({ type: "topup", accountId: g.topup_account_id, grant: g, tenantLabel, tenantLabelFull, planLabel, remaining: topupRemaining })
-    } else if (g.account_id != null) {
-      creditTabs.push({ type: "subscription", accountId: g.account_id, grant: g, tenantLabel, tenantLabelFull, planLabel, remaining: serviceRemaining })
-    } else if (hasTopupAccess && g.topup_account_id != null) {
-      creditTabs.push({ type: "topup", accountId: g.topup_account_id, grant: g, tenantLabel, tenantLabelFull, planLabel, remaining: topupRemaining })
-    }
   }
 
   if (creditTabs.length === 0) {
@@ -285,7 +301,8 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
                 window.dispatchEvent(new CustomEvent("reductai:open-settings-credits"))
                 return
               }
-              handleTabClick(tab.accountId)
+              const tier = isTopup ? "premium" : (normalizePlanTier(tab.grant.plan_tier) ?? "free")
+              handleTabClick(tab.accountId, tier)
             }}
             className={cn(
               "flex gap-1 items-center justify-center px-3 py-1 rounded-full shadow-sm shrink-0 transition-colors",
@@ -906,7 +923,7 @@ function normalizeBlockJson(content: Record<string, unknown>): Record<string, un
   return { ...content, blocks: normalized }
 }
 
-export function ChatInterface({
+function ChatInterfaceInner({
   className,
   variant = "default",
   onMessage,
@@ -929,6 +946,7 @@ export function ChatInterface({
   notifyOnAssistantComplete,
 }: ChatInterfaceProps) {
   const isCompact = variant === "compact"
+  const creditSelection = useCreditSelection()
 
   const authHeaders = React.useCallback((): HeadersInit => {
     const token = localStorage.getItem("token")
@@ -1093,30 +1111,30 @@ export function ChatInterface({
 
   type ChatAttachment =
     | {
-        id: string
-        kind: "file"
-        name: string
-        size: number
-        mime: string
-        file?: File
-        url?: string
-        assetId?: string
-        dataUrl?: string
-        uploading?: boolean
-      }
+      id: string
+      kind: "file"
+      name: string
+      size: number
+      mime: string
+      file?: File
+      url?: string
+      assetId?: string
+      dataUrl?: string
+      uploading?: boolean
+    }
     | {
-        id: string
-        kind: "image"
-        name: string
-        size: number
-        mime: string
-        file?: File
-        previewUrl: string
-        url?: string
-        assetId?: string
-        dataUrl?: string
-        uploading?: boolean
-      }
+      id: string
+      kind: "image"
+      name: string
+      size: number
+      mime: string
+      file?: File
+      previewUrl: string
+      url?: string
+      assetId?: string
+      dataUrl?: string
+      uploading?: boolean
+    }
     | { id: string; kind: "link"; url: string; title?: string }
 
   const [attachments, setAttachments] = React.useState<ChatAttachment[]>([])
@@ -1694,11 +1712,35 @@ export function ChatInterface({
     return byId || currentProviderGroups[0]
   }, [currentProviderGroups, selectedProviderId])
 
+  const [allowedModelApiIds, setAllowedModelApiIds] = React.useState<Set<string> | null>(null)
+  React.useEffect(() => {
+    const tier = creditSelection?.planTier?.trim().toLowerCase()
+    if (!tier) {
+      setAllowedModelApiIds(null)
+      return
+    }
+    const ac = new AbortController()
+    fetch(`${CHAT_UI_ALLOWED_MODELS_API}?plan_tier=${encodeURIComponent(tier)}`, { signal: ac.signal })
+      .then((r) => r.json())
+      .then((j: { ok?: boolean; model_api_ids?: string[] | null; restricted?: boolean }) => {
+        if (j?.ok && j?.restricted && Array.isArray(j.model_api_ids)) {
+          setAllowedModelApiIds(new Set(j.model_api_ids.map((id) => String(id).trim().toLowerCase())))
+        } else {
+          setAllowedModelApiIds(null)
+        }
+      })
+      .catch(() => setAllowedModelApiIds(null))
+    return () => ac.abort()
+  }, [creditSelection?.planTier])
 
   const selectableModels = React.useMemo(() => {
     const list = currentProviderGroup?.models || []
-    return list.filter((m) => m.is_available && String(m.model_api_id || "").trim())
-  }, [currentProviderGroup])
+    let filtered = list.filter((m) => m.is_available && String(m.model_api_id || "").trim())
+    if (allowedModelApiIds && allowedModelApiIds.size > 0) {
+      filtered = filtered.filter((m) => allowedModelApiIds.has(String(m.model_api_id || "").trim().toLowerCase()))
+    }
+    return filtered
+  }, [currentProviderGroup, allowedModelApiIds])
 
   const selectedModel = React.useMemo(() => {
     if (!selectableModels.length) return null
@@ -1797,10 +1839,10 @@ export function ChatInterface({
 
   const uiSelectedModelApiId = useSelectionOverride
     ? (() => {
-        const wanted = String(selectionOverride?.modelApiId || "").trim()
-        if (wanted && uiSelectableModels.some((m) => m.model_api_id === wanted)) return wanted
-        return uiSelectableModels[0]?.model_api_id || ""
-      })()
+      const wanted = String(selectionOverride?.modelApiId || "").trim()
+      if (wanted && uiSelectableModels.some((m) => m.model_api_id === wanted)) return wanted
+      return uiSelectableModels[0]?.model_api_id || ""
+    })()
     : effectiveModelApiId
 
   const uiSelectedModel = useSelectionOverride
@@ -1813,12 +1855,12 @@ export function ChatInterface({
 
   const uiSelectedModelLabel = useSelectionOverride
     ? (() => {
-        if (!uiSelectedModel) return "모델이 선택되지 않았습니다."
-        const name = String(uiSelectedModel.display_name || "").trim()
-        const desc = String(uiSelectedModel.description || "").trim()
-        if (!name) return "모델이 선택되지 않았습니다."
-        return desc ? `${name} - ${desc}` : name
-      })()
+      if (!uiSelectedModel) return "모델이 선택되지 않았습니다."
+      const name = String(uiSelectedModel.display_name || "").trim()
+      const desc = String(uiSelectedModel.description || "").trim()
+      if (!name) return "모델이 선택되지 않았습니다."
+      return desc ? `${name} - ${desc}` : name
+    })()
     : selectedModelLabel
 
   React.useEffect(() => {
@@ -2370,6 +2412,14 @@ export function ChatInterface({
 
   const hasOptions = ["image", "video", "audio", "music"].includes(uiSelectedType)
 
+  // 현재 선택된 모델이 플랜에서 !allowed(잠금)인지
+  const isCurrentModelLocked = React.useMemo(() => {
+    if (!allowedModelApiIds || allowedModelApiIds.size === 0) return false
+    if (!uiProviderGroup) return false
+    const models = (uiProviderGroup.models || []).filter((m) => m.is_available)
+    return !models.some((m) => allowedModelApiIds.has(String(m.model_api_id || "").trim().toLowerCase()))
+  }, [allowedModelApiIds, uiProviderGroup])
+
   // Web search toggle (text/chat only)
   const [webAllowedHasStorage, setWebAllowedHasStorage] = React.useState<boolean>(() => {
     try {
@@ -2558,14 +2608,14 @@ export function ChatInterface({
               ? { kind: "link", url: a.url, title: a.title || "" }
               : a.kind === "image"
                 ? {
-                    kind: "image",
-                    name: a.name,
-                    mime: a.mime,
-                    size: a.size,
-                    preview_url: a.previewUrl,
-                    url: a.url,
-                    asset_id: a.assetId,
-                  }
+                  kind: "image",
+                  name: a.name,
+                  mime: a.mime,
+                  size: a.size,
+                  preview_url: a.previewUrl,
+                  url: a.url,
+                  asset_id: a.assetId,
+                }
                 : { kind: a.kind, name: a.name, mime: a.mime, size: a.size, url: a.url, asset_id: a.assetId }
           ),
         },
@@ -2614,8 +2664,8 @@ export function ChatInterface({
         const maxTokens =
           sendModelType === "text"
             ? (pickedModel?.max_output_tokens != null && pickedModel.max_output_tokens > 0
-                ? pickedModel.max_output_tokens
-                : DEFAULT_MAX_TOKENS_TEXT)
+              ? pickedModel.max_output_tokens
+              : DEFAULT_MAX_TOKENS_TEXT)
             : DEFAULT_MAX_TOKENS_OTHER
 
         const webAllowedForRequest = Boolean(effectiveWebAllowed) && sendModelType === "text"
@@ -2638,6 +2688,7 @@ export function ChatInterface({
             userPrompt: input,
             max_tokens: maxTokens,
             session_language: sessionLanguage || null,
+            plan_tier: creditSelection?.planTier ?? null,
             provider_id: providerId,
             provider_slug: providerSlug,
             model_api_id: modelApiId,
@@ -2880,79 +2931,106 @@ export function ChatInterface({
     </div>
   )
 
-  const ModelGrid = () => (
-    <div className="relative w-full group">
-      {showLeftArrow && (
-        <div className="absolute left-0 top-1/2 -translate-y-1/2 z-10 -ml-4 hidden sm:block">
-          <Button variant="ghost" size="icon" className="rounded-full bg-background shadow-md border hover:bg-accent h-8 w-8" onClick={scrollLeft}>
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-        </div>
-      )}
-      {/* 모델 그리드 선택 영역 */}
-      <div ref={scrollContainerRef} onScroll={updateScrollButtons} className="flex flex-row gap-3 items-start justify-start relative w-full overflow-x-auto scrollbar-hide px-2 py-2">
-        {uiProviderGroups.map((g) => (
-          <div
-            key={g.provider.id}
-            className={cn(
-              "bg-card border border-border flex flex-col items-start p-2 lg:p-4 rounded-md shrink-0 min-w-[100px] w-[120px] lg:w-[160px] cursor-pointer transition-all hover:shadow-md",
-              uiProviderGroup?.provider.id === g.provider.id ? "border-1 border-primary bg-accent" : ""
-            )}
-            onClick={() => {
-              selectionDirtyRef.current = true
-              setSelectedProviderId(g.provider.id)
-              const availableModels = (g.models || []).filter((m) => m.is_available)
-              const savedModelId = lastModelByTypeProviderRef.current[selectionKeyForTypeProvider(uiSelectedType, String(g.provider.id))]
-              const nextModelId =
-                (savedModelId && availableModels.find((m) => m.model_api_id === savedModelId)?.model_api_id) ||
-                availableModels.find((m) => m.is_default)?.model_api_id ||
-                availableModels[0]?.model_api_id ||
-                ""
-              setSelectedSubModel(String(nextModelId || ""))
-              if (g.provider.slug && nextModelId) {
-                persistFrontAiSelection(g.provider.slug, String(nextModelId), uiSelectedType)
-              }
-            }}
-          >
-            <div className="flex w-full justify-between items-center">
-              <div
-                className={cn(
-                  "size-[40px] flex items-center justify-center rounded-full",
-                  uiProviderGroup?.provider.id === g.provider.id ? "bg-primary" : "bg-muted border border-border"
-                )}
-              >
-                <ProviderLogo
-                  logoKey={g.provider.logo_key || undefined}
-                  className={cn("size-[24px]", uiProviderGroup?.provider.id === g.provider.id ? "text-primary-foreground" : "text-foreground")}
-                />
-              </div>
-              <div className="flex flex-col items-center justify-center relative shrink-0">
-                {uiProviderGroup?.provider.id === g.provider.id ? (
-                  <div className="border border-ring rounded-full shadow-sm shrink-0 size-[16px] relative flex items-center justify-center">
-                    <div className="size-[8px] rounded-full bg-primary" />
-                  </div>
-                ) : (
-                  <div className="bg-background border border-border rounded-full shadow-sm shrink-0 size-[16px]" />
-                )}
-              </div>
-            </div>
-            <div className="flex w-full flex-col items-start relative shrink-0 mt-2">              
-              <p className="font-medium text-card-foreground text-[14px] truncate">{g.provider.product_name}</p>                            
-              <p className="text-xs text-muted-foreground truncate hidden lg:block">{g.provider.name}</p>              
-            </div>
+  const ModelGrid = () => {
+    const isProviderAllowed = React.useCallback(
+      (g: (typeof uiProviderGroups)[0]) => {
+        if (!allowedModelApiIds) return true
+        const models = (g.models || []).filter((m) => m.is_available)
+        return models.some((m) => allowedModelApiIds.has(String(m.model_api_id || "").trim().toLowerCase()))
+      },
+      [allowedModelApiIds]
+    )
+    return (
+      <div className="relative w-full group">
+        {showLeftArrow && (
+          <div className="absolute left-0 top-1/2 -translate-y-1/2 z-10 -ml-4 hidden sm:block">
+            <Button variant="ghost" size="icon" className="rounded-full bg-background shadow-md border hover:bg-accent h-8 w-8" onClick={scrollLeft}>
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
           </div>
-        ))}
-      </div>
+        )}
+        {/* 모델 그리드 선택 영역 */}
+        <div ref={scrollContainerRef} onScroll={updateScrollButtons} className="flex flex-row gap-3 items-start justify-start relative w-full overflow-x-auto scrollbar-hide px-2 py-2">
+          {uiProviderGroups.map((g) => {
+            const allowed = isProviderAllowed(g)
+            return (
+              <div
+                key={g.provider.id}
+                className={cn(
+                  "relative bg-card border border-border flex flex-col items-start p-2 lg:p-4 rounded-md shrink-0 min-w-[100px] w-[120px] lg:w-[160px] transition-all",
+                  allowed ? "cursor-pointer hover:shadow-md" : "cursor-not-allowed opacity-60",
+                  uiProviderGroup?.provider.id === g.provider.id ? "border-1 border-primary bg-accent" : ""
+                )}
+                onClick={() => {
+                  if (!allowed) return
+                  selectionDirtyRef.current = true
+                  setSelectedProviderId(g.provider.id)
+                  const allAvailable = (g.models || []).filter((m) => m.is_available)
+                  const filtered = allowedModelApiIds
+                    ? allAvailable.filter((m) => allowedModelApiIds!.has(String(m.model_api_id || "").trim().toLowerCase()))
+                    : allAvailable
+                  const modelsToPick = filtered.length > 0 ? filtered : allAvailable
+                  const savedModelId = lastModelByTypeProviderRef.current[selectionKeyForTypeProvider(uiSelectedType, String(g.provider.id))]
+                  const nextModelId =
+                    (savedModelId && modelsToPick.find((m: { model_api_id: string }) => m.model_api_id === savedModelId)?.model_api_id) ||
+                    modelsToPick.find((m: { is_default?: boolean }) => m.is_default)?.model_api_id ||
+                    modelsToPick[0]?.model_api_id ||
+                    ""
+                  setSelectedSubModel(String(nextModelId || ""))
+                  if (g.provider.slug && nextModelId) {
+                    persistFrontAiSelection(g.provider.slug, String(nextModelId), uiSelectedType)
+                  }
+                }}
+              >
 
-      {showRightArrow && (
-        <div className="absolute right-0 top-1/2 -translate-y-1/2 z-10 -mr-4 hidden sm:block">
-          <Button variant="ghost" size="icon" className="rounded-full bg-background shadow-md border hover:bg-accent h-8 w-8" onClick={scrollRight}>
-            <ChevronRight className="h-4 w-4" />
-          </Button>
+                <div className="flex w-full justify-between items-center">
+                  <div
+                    className={cn(
+                      "size-[40px] flex items-center justify-center rounded-full",
+                      uiProviderGroup?.provider.id === g.provider.id ? "bg-primary" : "bg-muted border border-border"
+                    )}
+                  >
+                    <ProviderLogo
+                      logoKey={g.provider.logo_key || undefined}
+                      className={cn("size-[24px]", uiProviderGroup?.provider.id === g.provider.id ? "text-primary-foreground" : "text-foreground")}
+                    />
+                  </div>
+                  <div className="flex flex-col items-center justify-center relative shrink-0">
+                    {uiProviderGroup?.provider.id === g.provider.id ? (
+                      <div className="border border-ring rounded-full shadow-sm shrink-0 size-[16px] relative flex items-center justify-center">
+                        <div className="size-[8px] rounded-full bg-primary" />
+                      </div>
+                    ) : (
+                      <div className="bg-background border border-border rounded-full shadow-sm shrink-0 size-[16px]" />
+                    )}
+                  </div>
+                </div>
+                <div className="flex justify-between w-full flex-col items-start relative shrink-0 mt-2">
+                  <div>
+                  <p className="font-medium text-card-foreground text-[14px] truncate">{g.provider.product_name}</p>
+                  <p className="text-xs text-muted-foreground truncate hidden lg:block">{g.provider.name}</p>
+                  </div>
+                  {!allowed && (
+                    <div className="absolute right-2 top-2 z-10 rounded-full bg-muted-foreground/80 p-1" title="선택한 플랜에서는 이 모델을 사용할 수 없습니다">
+                      <Lock className="size-3 text-primary-foreground" />
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
         </div>
-      )}
-    </div>
-  )
+
+        {showRightArrow && (
+          <div className="absolute right-0 top-1/2 -translate-y-1/2 z-10 -mr-4 hidden sm:block">
+            <Button variant="ghost" size="icon" className="rounded-full bg-background shadow-md border hover:bg-accent h-8 w-8" onClick={scrollRight}>
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
+      </div>
+    )
+  }
 
   const providerTitle = uiProviderGroup?.provider.product_name || ""
   const providerDesc = uiProviderGroup?.provider.description || ""
@@ -3128,15 +3206,15 @@ export function ChatInterface({
                             // Switch back to compact single input when it becomes single-line again.
                             const v = String(e.target.value || "")
                             if (!v.includes("\n")) {
-                                // Prevent flicker: once upgraded to multi, keep it for a short cooldown,
-                                // and only downgrade when the content is clearly short enough.
-                                const cooldownMs = 500
-                                const sinceUpgraded = Date.now() - (compactUpgradedAtRef.current || 0)
-                                if (sinceUpgraded < cooldownMs) return
-                                if (v.trim().length > 40) return
-                                // use scrollHeight as a cheap line-count proxy (best-effort)
-                                const oneLine = el.scrollHeight <= 24 * 1.6
-                                if (oneLine) setCompactPromptMode("single")
+                              // Prevent flicker: once upgraded to multi, keep it for a short cooldown,
+                              // and only downgrade when the content is clearly short enough.
+                              const cooldownMs = 500
+                              const sinceUpgraded = Date.now() - (compactUpgradedAtRef.current || 0)
+                              if (sinceUpgraded < cooldownMs) return
+                              if (v.trim().length > 40) return
+                              // use scrollHeight as a cheap line-count proxy (best-effort)
+                              const oneLine = el.scrollHeight <= 24 * 1.6
+                              if (oneLine) setCompactPromptMode("single")
                             }
                           }
                         }}
@@ -3167,7 +3245,7 @@ export function ChatInterface({
                     )}
                   </div>
 
-                 
+
                   {/* 채팅창 안 하단 옵션 부분 - +버튼, 웹검색, 모델선택 드롭다운  */}
                   <div className="flex gap-0 items-center relative shrink-0 w-full flex-between mt-auto">
 
@@ -3317,68 +3395,68 @@ export function ChatInterface({
 
                     <div className="flex gap-[10px] items-center relative shrink-0" >
                       {/* 모델 선택 드롭다운 */}
-                    <DropdownMenu>
-                      <DropdownMenuTrigger
-                        className={cn(
-                          "inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
-                          isCompact
-                            ? "h-[36px] rounded-lg gap-2 px-3 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground"
-                            : "h-[36px] rounded-[8px] gap-2 px-4 hover:bg-accent hover:text-accent-foreground"
-                        )}
-                      >
-                        {String(uiSelectedModel?.display_name || "").trim() || "-"}
-                        <ChevronDown className="size-4" />
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent className="w-[160px]" align="start">
-                        <DropdownMenuLabel>모델 선택</DropdownMenuLabel>
-                        <DropdownMenuGroup>
-                          {uiSelectableModels.map((m) => (
-                            <DropdownMenuItem
-                              key={m.model_api_id}
-                              onClick={() => {
-                                selectionDirtyRef.current = true
-                                setSelectedSubModel(m.model_api_id)
-                                if (uiProviderGroup?.provider?.slug && m.model_api_id) {
-                                  persistFrontAiSelection(String(uiProviderGroup.provider.slug), String(m.model_api_id), uiSelectedType)
-                                }
-                              }}
-                            >
-                              {m.display_name}
-                            </DropdownMenuItem>
-                          ))}
-                        </DropdownMenuGroup>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger
+                          className={cn(
+                            "inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
+                            isCompact
+                              ? "h-[36px] rounded-lg gap-2 px-3 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground"
+                              : "h-[36px] rounded-[8px] gap-2 px-4 hover:bg-accent hover:text-accent-foreground"
+                          )}
+                        >
+                          {String(uiSelectedModel?.display_name || "").trim() || "-"}
+                          <ChevronDown className="size-4" />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent className="w-[160px]" align="start">
+                          <DropdownMenuLabel>모델 선택</DropdownMenuLabel>
+                          <DropdownMenuGroup>
+                            {uiSelectableModels.map((m) => (
+                              <DropdownMenuItem
+                                key={m.model_api_id}
+                                onClick={() => {
+                                  selectionDirtyRef.current = true
+                                  setSelectedSubModel(m.model_api_id)
+                                  if (uiProviderGroup?.provider?.slug && m.model_api_id) {
+                                    persistFrontAiSelection(String(uiProviderGroup.provider.slug), String(m.model_api_id), uiSelectedType)
+                                  }
+                                }}
+                              >
+                                {m.display_name}
+                              </DropdownMenuItem>
+                            ))}
+                          </DropdownMenuGroup>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
 
-                    <Button
-                      className="rounded-full h-[36px] w-[36px] p-0"
-                      onClick={() => {
-                        if (isWaitingForResponse) {
-                          handleStop()
-                          return
-                        }
-                        void handleSend()
-                      }}
-                      onMouseEnter={() => {
-                        if (isWaitingForResponse) setIsStopHovered(true)
-                      }}
-                      onMouseLeave={() => {
-                        if (isWaitingForResponse) setIsStopHovered(false)
-                      }}
-                      disabled={isWaitingForResponse ? false : !prompt.trim() || !canSend || isPreparingAttachments || hasPendingAttachments}
-                    >
-                      {isWaitingForResponse ? (
-                        isStopHovered ? (
-                          <Square className="size-4" />
-                        ) : (
+                      <Button
+                        className="rounded-full h-[36px] w-[36px] p-0"
+                        onClick={() => {
+                          if (isWaitingForResponse) {
+                            handleStop()
+                            return
+                          }
+                          void handleSend()
+                        }}
+                        onMouseEnter={() => {
+                          if (isWaitingForResponse) setIsStopHovered(true)
+                        }}
+                        onMouseLeave={() => {
+                          if (isWaitingForResponse) setIsStopHovered(false)
+                        }}
+                        disabled={isWaitingForResponse ? false : !prompt.trim() || !canSend || isPreparingAttachments || hasPendingAttachments}
+                      >
+                        {isWaitingForResponse ? (
+                          isStopHovered ? (
+                            <Square className="size-4" />
+                          ) : (
+                            <Loader2 className="size-4 animate-spin" />
+                          )
+                        ) : isPreparingAttachments ? (
                           <Loader2 className="size-4 animate-spin" />
-                        )
-                      ) : isPreparingAttachments ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <ArrowUp className="size-4" />
-                      )}
-                    </Button>   
+                        ) : (
+                          <ArrowUp className="size-4" />
+                        )}
+                      </Button>
                     </div>
 
                   </div>
@@ -3499,18 +3577,18 @@ export function ChatInterface({
                       </DialogFooter>
                     </DialogContent>
                   </Dialog>
- 
-                  
-                
 
-                 
+
+
+
+
                 </div>
 
               )}
             </div>
 
 
-            
+
           </div>
         </div>
         {/* 모드탭, 모델그리드, 채팅창 종료 */}
@@ -3518,109 +3596,110 @@ export function ChatInterface({
 
 
 
-         {/* 아래 내용 예시 프롬프트 제안 및  줄어들었을 때 옵션 표시 - 좁은 화면에서 나타남 */}
-         <div className="flex gap-[16px] items-start relative shrink-0 w-full">
-          
+        {/* 아래 내용 예시 프롬프트 제안 및  줄어들었을 때 옵션 표시 - 좁은 화면에서 나타남 */}
+        <div className="flex gap-[16px] items-start relative shrink-0 w-full">
+
+          <div className="flex flex-wrap gap-2 w-full">
+            {/* 예시 프롬프트 제안 표시 */}
+            {visiblePromptSuggestions.length > 0 && (
               <div className="flex flex-wrap gap-2 w-full">
-              {/* 예시 프롬프트 제안 표시 */}
-              {visiblePromptSuggestions.length > 0 && (
-                <div className="flex flex-wrap gap-2 w-full">
-                  {visiblePromptSuggestions.map((s) => {
-                    const label = s.title || clampText(s.text, 24)
-                    return (
-                      <button
-                        key={s.id}
-                        type="button"
-                        className="text-xs px-2 py-1 rounded-full bg-muted hover:bg-accent transition-colors"
-                        onClick={() => {
-                          const text = s.text
-                          setPrompt(text)
+                {visiblePromptSuggestions.map((s) => {
+                  const label = s.title || clampText(s.text, 24)
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      className="text-xs px-2 py-1 rounded-full bg-muted hover:bg-accent transition-colors"
+                      onClick={() => {
+                        const text = s.text
+                        setPrompt(text)
 
-                          // Timeline compact: 긴 텍스트일 경우 multi-line 모드로 전환 (채팅창 확장)
-                          if (isCompact && (text.includes("\n") || text.trim().length > 40)) {
-                            upgradeCompactToMulti(compactSingleTextareaRef.current, text)
-                          }
+                        // Timeline compact: 긴 텍스트일 경우 multi-line 모드로 전환 (채팅창 확장)
+                        if (isCompact && (text.includes("\n") || text.trim().length > 40)) {
+                          upgradeCompactToMulti(compactSingleTextareaRef.current, text)
+                        }
 
-                          // 리렌더 후 포커스 (multi 전환 시 promptInputRef, 아니면 compactSingleTextareaRef)
-                          window.setTimeout(() => {
-                            (promptInputRef.current ?? compactSingleTextareaRef.current)?.focus()
-                          }, 0)
-                        }}
-                      >
-                        {label}
-                      </button>
-                    )
-                  })}
-                </div>
-              )}
+                        // 리렌더 후 포커스 (multi 전환 시 promptInputRef, 아니면 compactSingleTextareaRef)
+                        window.setTimeout(() => {
+                          (promptInputRef.current ?? compactSingleTextareaRef.current)?.focus()
+                        }, 0)
+                      }}
+                    >
+                      {label}
+                    </button>
+                  )
+                })}
               </div>
+            )}
+          </div>
 
-              {/* 옵션창 - 아래 있는 옵션 */}
-              {/* - compact(Timeline 하단)에서는 화면 크기와 무관하게 항상 노출(드로어) */}
-              {/* - default(FrontAI)에서는 좁은 화면에서만 노출(xl:hidden) */}
-                {hasOptions && (
-                  <div className={cn("w-full lg:w-[420px] block", isCompact ? "" : "xl:hidden")}>
-                    <Drawer>
-                      <DrawerTrigger asChild>
-                        <div className="bg-card border border-border flex gap-2 items-center p-2 rounded-md w-full cursor-pointer hover:bg-accent/50 transition-colors">
-                          <Settings2 className="size-4" />
-                          <p className="text-sm font-medium text-card-foreground truncate text-ellipsis line-clamp-1 w-full">옵션</p>
-                          <div className="size-[16px] flex items-center justify-center relative shrink-0">
-                            <ChevronsUp className="size-4" />
-                          </div>
-                        </div>
-                      </DrawerTrigger>
-                      <DrawerContent>
-                        <DrawerHeader>
-                          <DrawerTitle>옵션</DrawerTitle>
-                          {/* <DrawerDescription>ai_models.capabilities.options/defaults 기반</DrawerDescription> */}
-                        </DrawerHeader>        
-                        <div className="flex flex-1 flex-row">
-                          <div className="flex flex-1"></div>                
-                          <div className="flex p-0 min-w-[360px] max-w-[360px] pb-0 flex justify-center">
-                            <ModelOptionsPanel
-                              key={selectedModelDbId || "no-model"}
-                              capabilities={selectedCapabilities}
-                              value={runtimeOptions}
-                              onApply={applyRuntimeOptions}
-                            />
-                          </div>                      
-                          <div className="flex flex-1"></div>
-                        </div>
-                        <DrawerFooter>
-                          <DrawerClose className="w-full flex items-center justify-center">
-                            <span className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2 w-full min-w-[360px] max-w-[360px]">
-                              닫기
-                            </span>
-                          </DrawerClose>
-                        </DrawerFooter>
-                      </DrawerContent>
-                    </Drawer>
-                  </div>
-                )}
-
-              {!isCompact && hasOptions && !isOptionExpanded && (
-                <div className="hidden xl:flex bg-card border border-border flex-col gap-2 items-center p-2 rounded-md max-w-[200px] w-full min-w-[120px] cursor-pointer hover:bg-accent/50 transition-colors" onClick={() => setIsOptionExpanded(true)}>
-                  <div className="flex items-center w-full gap-[10px]">
-                    <Settings2 className="size-6" />
-                    <p className="text-[14px] font-medium text-card-foreground truncate w-full">옵션</p>
+          {/* 옵션창 - 아래 있는 옵션 */}
+          {/* - compact(Timeline 하단)에서는 화면 크기와 무관하게 항상 노출(드로어) */}
+          {/* - default(FrontAI)에서는 좁은 화면에서만 노출(xl:hidden) */}
+          {/* - !allowed(잠금) 모델일 때는 옵션창 숨김 */}
+          {hasOptions && !isCurrentModelLocked && (
+            <div className={cn("w-full lg:w-[420px] block", isCompact ? "" : "xl:hidden")}>
+              <Drawer>
+                <DrawerTrigger asChild>
+                  <div className="bg-card border border-border flex gap-2 items-center p-2 rounded-md w-full cursor-pointer hover:bg-accent/50 transition-colors">
+                    <Settings2 className="size-4" />
+                    <p className="text-sm font-medium text-card-foreground truncate text-ellipsis line-clamp-1 w-full">옵션</p>
                     <div className="size-[16px] flex items-center justify-center relative shrink-0">
-                      <ChevronsRight className="size-4" />
+                      <ChevronsUp className="size-4" />
                     </div>
                   </div>
-                </div>
-              )}  
+                </DrawerTrigger>
+                <DrawerContent>
+                  <DrawerHeader>
+                    <DrawerTitle>옵션</DrawerTitle>
+                    {/* <DrawerDescription>ai_models.capabilities.options/defaults 기반</DrawerDescription> */}
+                  </DrawerHeader>
+                  <div className="flex flex-1 flex-row">
+                    <div className="flex flex-1"></div>
+                    <div className="flex p-0 min-w-[360px] max-w-[360px] pb-0 flex justify-center">
+                      <ModelOptionsPanel
+                        key={selectedModelDbId || "no-model"}
+                        capabilities={selectedCapabilities}
+                        value={runtimeOptions}
+                        onApply={applyRuntimeOptions}
+                      />
+                    </div>
+                    <div className="flex flex-1"></div>
+                  </div>
+                  <DrawerFooter>
+                    <DrawerClose className="w-full flex items-center justify-center">
+                      <span className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2 w-full min-w-[360px] max-w-[360px]">
+                        닫기
+                      </span>
+                    </DrawerClose>
+                  </DrawerFooter>
+                </DrawerContent>
+              </Drawer>
+            </div>
+          )}
 
-          </div>    
-          {/* 아래 영역 종료 */}
+          {!isCompact && hasOptions && !isCurrentModelLocked && !isOptionExpanded && (
+            <div className="hidden xl:flex bg-card border border-border flex-col gap-2 items-center p-2 rounded-md max-w-[200px] w-full min-w-[120px] cursor-pointer hover:bg-accent/50 transition-colors" onClick={() => setIsOptionExpanded(true)}>
+              <div className="flex items-center w-full gap-[10px]">
+                <Settings2 className="size-6" />
+                <p className="text-[14px] font-medium text-card-foreground truncate w-full">옵션</p>
+                <div className="size-[16px] flex items-center justify-center relative shrink-0">
+                  <ChevronsRight className="size-4" />
+                </div>
+              </div>
+            </div>
+          )}
+
+        </div>
+        {/* 아래 영역 종료 */}
 
 
       </div>
-       {/* 메인 컨테이너 종료 */}
+      {/* 메인 컨테이너 종료 */}
 
 
       {/* 옵션창 - 밖에 있는 옵션 - 넓은 화면에서 나타남 */}
-      {!isCompact && hasOptions && isOptionExpanded && (
+      {!isCompact && hasOptions && !isCurrentModelLocked && isOptionExpanded && (
         <div className="hidden xl:flex bg-card border border-border flex-col gap-[16px] items-start p-3 rounded-md relative shrink-0 w-[260px] animate-in fade-in slide-in-from-left-4 duration-300">
           <div className="flex items-center gap-[10px] w-full cursor-pointer" onClick={() => setIsOptionExpanded(false)}>
             <div className="size-[16px] flex items-center justify-center relative shrink-0">
@@ -3640,9 +3719,16 @@ export function ChatInterface({
         </div>
       )}
 
-      
-    </div> 
-    // 전체 레이아웃 컴포넌트 종료
+
+    </div>
+  )
+}
+
+export function ChatInterface(props: ChatInterfaceProps) {
+  return (
+    <CreditSelectionProvider>
+      <ChatInterfaceInner {...props} />
+    </CreditSelectionProvider>
   )
 }
 
