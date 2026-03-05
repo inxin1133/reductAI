@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import { useEffect, useMemo, useState } from "react"
 import { adminFetch } from "@/lib/adminFetch"
 import {
@@ -26,6 +27,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Badge } from "@/components/ui/badge"
 import { Copy, Loader2, Pencil, Plus, RefreshCcw, Wand2 } from "lucide-react"
 import { AdminPage } from "@/components/layout/AdminPage"
 
@@ -56,6 +58,7 @@ type RateRow = {
   token_category?: string | null
   unit: string
   unit_size: number
+  metadata?: Record<string, unknown> | null
   rate_value: string | number
   tier_unit?: string | null
   tier_min?: number | null
@@ -91,6 +94,10 @@ type MissingSku = {
 }
 
 const RATE_CARDS_API = "/api/ai/pricing/rate-cards"
+
+type ModalityFilter = "all" | "text" | "code" | "image" | "audio" | "video" | "web_search"
+type UsageKindFilter = "all" | "input_tokens" | "cached_input_tokens" | "output_tokens" | "image_generation" | "seconds" | "requests"
+type TokenCategoryFilter = "all" | "text" | "image"
 const RATES_API = "/api/ai/pricing/rates"
 const BULK_UPDATE_API = "/api/ai/pricing/rates/bulk-update"
 
@@ -130,6 +137,23 @@ function fmtTier(row: RateRow) {
   return row.tier_unit
 }
 
+/** metadata JSON을 읽기 쉬운 형태로 포맷 (quality, size, resolution, task 등) */
+function formatMetadata(meta: Record<string, unknown> | null | undefined): ReactNode {
+  if (!meta || typeof meta !== "object") return null
+  const entries = Object.entries(meta).filter(([, v]) => v != null && v !== "")
+  if (entries.length === 0) return null
+
+  return (
+    <div className="flex flex-wrap gap-1">
+      {entries.map(([k, v]) => (
+        <Badge key={k} variant="outline" className="font-normal text-xs">
+          {k}: {String(v)}
+        </Badge>
+      ))}
+    </div>
+  )
+}
+
 function toDateTimeLocal(iso?: string | null) {
   if (!iso) return ""
   const d = new Date(iso)
@@ -152,11 +176,9 @@ export default function Rates() {
 
   const [q, setQ] = useState("")
   const [providerSlug, setProviderSlug] = useState("")
-  const [modality, setModality] = useState<"all" | "text" | "code" | "image" | "audio" | "video" | "web_search">("all")
-  const [usageKind, setUsageKind] = useState<
-    "all" | "input_tokens" | "cached_input_tokens" | "output_tokens" | "image_generation" | "seconds" | "requests"
-  >("all")
-  const [tokenCategory, setTokenCategory] = useState<"all" | "text" | "image">("all")
+  const [modality, setModality] = useState<ModalityFilter>("all")
+  const [usageKind, setUsageKind] = useState<UsageKindFilter>("all")
+  const [tokenCategory, setTokenCategory] = useState<TokenCategoryFilter>("all")
 
   const [page, setPage] = useState(0)
   const limit = 50
@@ -576,7 +598,7 @@ export default function Rates() {
             ))}
           </SelectContent>
         </Select>
-        <Select value={modality} onValueChange={(v) => setModality(v as any)}>
+        <Select value={modality} onValueChange={(v) => setModality(v as ModalityFilter)}>
           <SelectTrigger className="w-[140px]">
             <SelectValue placeholder="모달리티" />
           </SelectTrigger>
@@ -590,7 +612,7 @@ export default function Rates() {
             <SelectItem value="web_search">web_search</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={usageKind} onValueChange={(v) => setUsageKind(v as any)}>
+        <Select value={usageKind} onValueChange={(v) => setUsageKind(v as UsageKindFilter)}>
           <SelectTrigger className="w-[170px]">
             <SelectValue placeholder="사용 종류" />
           </SelectTrigger>
@@ -604,7 +626,7 @@ export default function Rates() {
             <SelectItem value="requests">requests</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={tokenCategory} onValueChange={(v) => setTokenCategory(v as any)}>
+        <Select value={tokenCategory} onValueChange={(v) => setTokenCategory(v as TokenCategoryFilter)}>
           <SelectTrigger className="w-[140px]">
             <SelectValue placeholder="토큰 카테고리" />
           </SelectTrigger>
@@ -627,6 +649,7 @@ export default function Rates() {
               <TableHead>Usage</TableHead>
               <TableHead>Token</TableHead>
               <TableHead>Unit</TableHead>
+              <TableHead>Metadata</TableHead>
               <TableHead>Tier</TableHead>
               <TableHead className="text-right">Rate</TableHead>
               <TableHead className="text-right">수정</TableHead>
@@ -635,14 +658,14 @@ export default function Rates() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={11} className="py-8 text-center text-muted-foreground">
                   <Loader2 className="h-4 w-4 inline-block animate-spin mr-2" />
                   로딩 중...
                 </TableCell>
               </TableRow>
             ) : rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={11} className="py-8 text-center text-muted-foreground">
                   결과가 없습니다.
                 </TableCell>
               </TableRow>
@@ -664,6 +687,11 @@ export default function Rates() {
                   <TableCell className="font-mono">{r.token_category || "-"}</TableCell>
                   <TableCell className="font-mono text-xs">
                     {r.unit_size} {r.unit}
+                  </TableCell>
+                  <TableCell className="max-w-[260px]">
+                    {formatMetadata(r.metadata as Record<string, unknown>) || (
+                      <span className="text-muted-foreground text-xs">-</span>
+                    )}
                   </TableCell>
                   <TableCell className="font-mono text-xs">{fmtTier(r)}</TableCell>
                   <TableCell className="text-right font-mono">{fmtRate(r.rate_value)}</TableCell>
@@ -914,6 +942,7 @@ export default function Rates() {
                     <TableHead>Usage</TableHead>
                     <TableHead>Token</TableHead>
                     <TableHead>Unit</TableHead>
+                    <TableHead>Metadata</TableHead>
                     <TableHead className="w-[140px]">요율 (rate_value)</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -938,6 +967,11 @@ export default function Rates() {
                       <TableCell className="font-mono">{s.token_category || "-"}</TableCell>
                       <TableCell className="font-mono text-xs">
                         {s.unit_size.toLocaleString()} {s.unit}
+                      </TableCell>
+                      <TableCell className="max-w-[220px]">
+                        {formatMetadata(s.metadata) || (
+                          <span className="text-muted-foreground text-xs">-</span>
+                        )}
                       </TableCell>
                       <TableCell>
                         <Input

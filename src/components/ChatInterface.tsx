@@ -376,6 +376,10 @@ export interface ChatInterfaceProps {
   forceSelectionSync?: boolean
   selectionOverride?: { modelType?: ModelType; providerSlug?: string; modelApiId?: string }
   notifyOnAssistantComplete?: boolean
+  /** 인트로(데모) 페이지 모드. true면 Send 클릭 시 AI 호출 대신 onIntroSendClick 호출 */
+  introMode?: boolean
+  /** introMode일 때 Send/Enter 클릭 시 호출 (예: 로그인 모달 열기) */
+  onIntroSendClick?: () => void
 }
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
@@ -944,6 +948,8 @@ function ChatInterfaceInner({
   forceSelectionSync = false,
   selectionOverride,
   notifyOnAssistantComplete,
+  introMode = false,
+  onIntroSendClick,
 }: ChatInterfaceProps) {
   const isCompact = variant === "compact"
   const creditSelection = useCreditSelection()
@@ -1837,6 +1843,12 @@ function ChatInterfaceInner({
     ? (uiProviderGroup?.models || []).filter((m) => m.is_available && String(m.model_api_id || "").trim())
     : selectableModels
 
+  // 드롭다운 표시용: 플랜 제한 시에도 모든 모델 노출, 허용/비허용 구분
+  const uiDropdownModels = React.useMemo(() => {
+    const group = useSelectionOverride ? uiProviderGroup : currentProviderGroup
+    return (group?.models || []).filter((m) => m.is_available && String(m.model_api_id || "").trim())
+  }, [useSelectionOverride, uiProviderGroup, currentProviderGroup])
+
   const uiSelectedModelApiId = useSelectionOverride
     ? (() => {
       const wanted = String(selectionOverride?.modelApiId || "").trim()
@@ -2420,6 +2432,23 @@ function ChatInterfaceInner({
     return !models.some((m) => allowedModelApiIds.has(String(m.model_api_id || "").trim().toLowerCase()))
   }, [allowedModelApiIds, uiProviderGroup])
 
+  // 모델 선택됨 + 잠금 아님 + 크레딧 있음 시에만 전송 가능
+  const effectiveModelForSend = useSelectionOverride ? uiSelectedModelApiId : effectiveModelApiId
+  const canSendWithModel =
+    canSend && Boolean(String(effectiveModelForSend || "").trim()) && !isCurrentModelLocked
+
+  // 프롬프트 입력 가능 여부 (모델 미선택/잠금 시 입력 차단)
+  const canTypePrompt = introMode || canSendWithModel
+
+  // placeholder 우선순위
+  const promptPlaceholder = React.useMemo(() => {
+    if (introMode) return "로그인 후 AI와 대화를 시작해 보세요"
+    if (!String(effectiveModelForSend || "").trim()) return "모델을 선택해 주세요"
+    if (isCurrentModelLocked) return "선택한 플랜에서 이 모델을 사용할 수 없습니다."
+    if (!canSend) return creditsSystemReady ? "크레딧이 모두 소진 되었습니다." : "크레딧 시스템 설정 중입니다."
+    return uiSelectedModelLabel || "프롬프트를 입력해 주세요"
+  }, [introMode, effectiveModelForSend, isCurrentModelLocked, canSend, creditsSystemReady, uiSelectedModelLabel])
+
   // Web search toggle (text/chat only)
   const [webAllowedHasStorage, setWebAllowedHasStorage] = React.useState<boolean>(() => {
     try {
@@ -2483,7 +2512,12 @@ function ChatInterfaceInner({
       overrideApiAttachments?: Array<Record<string, unknown>>,
       overrideOptions?: Record<string, unknown>
     ) => {
+      if (introMode && onIntroSendClick) {
+        onIntroSendClick()
+        return
+      }
       if (isWaitingForResponse) return
+      if (!canSendWithModel) return
       if (!creditsSystemReady) {
         alert("크레딧 시스템이 설정되지 않았습니다. 채팅을 사용할 수 없습니다. 관리자에게 문의해 주세요.")
         return
@@ -2814,9 +2848,12 @@ function ChatInterfaceInner({
       hasCredits,
       creditsSystemReady,
       canSend,
+      canSendWithModel,
+      introMode,
       isPreparingAttachments,
       hasPendingAttachments,
       isWaitingForResponse,
+      onIntroSendClick,
     ]
   )
 
@@ -3191,8 +3228,12 @@ function ChatInterfaceInner({
                     {!isCompact || compactPromptMode === "multi" ? (
                       <textarea
                         ref={promptInputRef}
-                        placeholder={canSend ? uiSelectedModelLabel : creditsSystemReady ? "크레딧이 모두 소진 되었습니다." : "크레딧 시스템 설정 중입니다."}
-                        className="w-full border-none outline-none text-[16px] placeholder:text-muted-foreground bg-transparent resize-none overflow-y-auto leading-6"
+                        readOnly={!canTypePrompt}
+                        placeholder={promptPlaceholder}
+                        className={cn(
+                          "w-full border-none outline-none text-[16px] placeholder:text-muted-foreground bg-transparent resize-none overflow-y-auto leading-6",
+                          !canTypePrompt && "cursor-not-allowed opacity-80"
+                        )}
                         value={prompt}
                         rows={1}
                         style={{ maxHeight: 24 * 12 }}
@@ -3232,7 +3273,7 @@ function ChatInterfaceInner({
                           // Shift+Enter: newline
                           if (e.shiftKey) return
 
-                          // Enter: send
+                          // Enter: send (introMode면 handleSend 내부에서 onIntroSendClick 호출)
                           e.preventDefault()
                           void handleSend(e.currentTarget.value)
                         }}
@@ -3333,8 +3374,12 @@ function ChatInterfaceInner({
                           value={prompt}
                           rows={1}
                           wrap="off"
-                          placeholder={canSend ? "프롬프트를 입력해주세요" : creditsSystemReady ? "크레딧이 모두 소진 되었습니다." : "크레딧 시스템 설정 중입니다."}
-                          className="w-full border-none outline-none leading-6 px-0 py-2 bg-transparent text-4 placeholder:text-muted-foreground resize-none overflow-hidden"
+                          readOnly={!canTypePrompt}
+                          placeholder={promptPlaceholder}
+                          className={cn(
+                            "w-full border-none outline-none leading-6 px-0 py-2 bg-transparent text-4 placeholder:text-muted-foreground resize-none overflow-hidden",
+                            !canTypePrompt && "cursor-not-allowed opacity-80"
+                          )}
                           onChange={(e) => {
                             const v = e.currentTarget.value
                             setPrompt(v)
@@ -3384,7 +3429,7 @@ function ChatInterfaceInner({
                               return
                             }
 
-                            // Enter: send
+                            // Enter: send (introMode면 handleSend 내부에서 onIntroSendClick 호출)
                             e.preventDefault()
                             void handleSend(e.currentTarget.value)
                           }}
@@ -3407,23 +3452,36 @@ function ChatInterfaceInner({
                           {String(uiSelectedModel?.display_name || "").trim() || "-"}
                           <ChevronDown className="size-4" />
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent className="w-[160px]" align="start">
+                        <DropdownMenuContent className="w-[220px]" align="start">
                           <DropdownMenuLabel>모델 선택</DropdownMenuLabel>
                           <DropdownMenuGroup>
-                            {uiSelectableModels.map((m) => (
-                              <DropdownMenuItem
-                                key={m.model_api_id}
-                                onClick={() => {
-                                  selectionDirtyRef.current = true
-                                  setSelectedSubModel(m.model_api_id)
-                                  if (uiProviderGroup?.provider?.slug && m.model_api_id) {
-                                    persistFrontAiSelection(String(uiProviderGroup.provider.slug), String(m.model_api_id), uiSelectedType)
-                                  }
-                                }}
-                              >
-                                {m.display_name}
-                              </DropdownMenuItem>
-                            ))}
+                            {uiDropdownModels.map((m) => {
+                              const providerForPersist = useSelectionOverride ? uiProviderGroup : currentProviderGroup
+                              const isAllowedForPlan =
+                                !allowedModelApiIds ||
+                                allowedModelApiIds.size === 0 ||
+                                allowedModelApiIds.has(String(m.model_api_id || "").trim().toLowerCase())
+                              return (
+                                <DropdownMenuItem
+                                  key={m.model_api_id}
+                                  disabled={!isAllowedForPlan}
+                                  onClick={() => {
+                                    if (!isAllowedForPlan) return
+                                    selectionDirtyRef.current = true
+                                    setSelectedSubModel(m.model_api_id)
+                                    if (providerForPersist?.provider?.slug && m.model_api_id) {
+                                      persistFrontAiSelection(
+                                        String(providerForPersist.provider.slug),
+                                        String(m.model_api_id),
+                                        useSelectionOverride ? uiSelectedType : selectedType
+                                      )
+                                    }
+                                  }}
+                                >
+                                  {isAllowedForPlan ? m.display_name : `(사용제한)${m.display_name || ""}`}
+                                </DropdownMenuItem>
+                              )
+                            })}
                           </DropdownMenuGroup>
                         </DropdownMenuContent>
                       </DropdownMenu>
@@ -3443,7 +3501,14 @@ function ChatInterfaceInner({
                         onMouseLeave={() => {
                           if (isWaitingForResponse) setIsStopHovered(false)
                         }}
-                        disabled={isWaitingForResponse ? false : !prompt.trim() || !canSend || isPreparingAttachments || hasPendingAttachments}
+                        disabled={
+                          isWaitingForResponse
+                            ? false
+                            : !prompt.trim() ||
+                              (!introMode && !canSendWithModel) ||
+                              isPreparingAttachments ||
+                              hasPendingAttachments
+                        }
                       >
                         {isWaitingForResponse ? (
                           isStopHovered ? (

@@ -1562,6 +1562,7 @@ async function chatRun(req, res) {
     let webResponseBytesTotal = 0;
     let webBudgetCount = null;
     let imageUsage = null;
+    let videoUsage = null;
     let musicUsage = null;
     try {
         if (!CREDITS_SERVICE_KEY || !CREDITS_SERVICE_KEY.trim()) {
@@ -2581,6 +2582,21 @@ async function chatRun(req, res) {
             const quality = typeof mergedOptions?.quality === "string" ? mergedOptions.quality : undefined;
             imageUsage = { count, size, quality };
         }
+        // model_api_profile 경로로 비디오 생성 시 videoUsage 설정 (추가 video 모델 확장 가능)
+        if (mt === "video" && out && !videoUsage) {
+            const seconds = typeof mergedOptions?.seconds === "number"
+                ? Math.max(0, Number(mergedOptions.seconds))
+                : typeof out.content?.seconds === "number"
+                    ? Math.max(0, Number(out.content.seconds))
+                    : 0;
+            const size = typeof mergedOptions?.size === "string"
+                ? String(mergedOptions.size).trim()
+                : typeof out.content?.size === "string"
+                    ? String(out.content.size).trim()
+                    : undefined;
+            if (seconds > 0)
+                videoUsage = { seconds, size };
+        }
         if (!optionsForAssistant && mergedOptions && Object.keys(mergedOptions).length > 0) {
             optionsForAssistant = mergedOptions;
         }
@@ -2680,7 +2696,9 @@ async function chatRun(req, res) {
                 const imageCost = modality === "image_create" && imageUsage && imageUsage.count > 0
                     ? (await (0, pricingService_1.lookupImagePricing)(usedProviderSlug, usedModelApiId, imageUsage.size ?? null, imageUsage.quality ?? null, usedModelDbId)) * imageUsage.count
                     : 0;
-                const videoCost = 0;
+                const videoCost = modality === "video" && videoUsage && videoUsage.seconds > 0
+                    ? (await (0, pricingService_1.lookupVideoPricing)(usedProviderSlug, usedModelApiId, videoUsage.size ?? null, usedModelDbId)) * videoUsage.seconds
+                    : 0;
                 const audioCost = 0;
                 const musicCost = 0;
                 const totalCost = tokenTotalCost + webSearchCost + imageCost + videoCost + audioCost + musicCost;
@@ -2856,6 +2874,17 @@ async function chatRun(req, res) {
                 SELECT 1 FROM llm_image_usages WHERE usage_log_id = $1
               )
               `, [usageLogId, imageUsage.count, imageUsage.size || null, imageUsage.quality || null]);
+                    }
+                    if (videoUsage) {
+                        await (0, db_1.query)(`
+              INSERT INTO llm_video_usages (
+                usage_log_id, seconds, size, unit
+              )
+              SELECT $1, $2, $3, 'second'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM llm_video_usages WHERE usage_log_id = $1
+              )
+              `, [usageLogId, videoUsage.seconds, videoUsage.size || null]);
                     }
                     if (musicUsage) {
                         await (0, db_1.query)(`

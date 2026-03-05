@@ -34,6 +34,7 @@ import Providers from "./pages/admin/ai/Providers";
 import ProviderCredentials from "./pages/admin/ai/ProviderCredentials";
 import ModelManager from "./pages/admin/ai/ModelManager";
 import TenantTypeModelAccess from "./pages/admin/ai/TenantTypeModelAccess";
+import PlanModelAccess from "./pages/admin/ai/PlanModelAccess";
 import ModelUsageLogs from "./pages/admin/ai/ModelUsageLogs";
 import ModelRoutingRules from "./pages/admin/ai/ModelRoutingRules";
 import PromptTemplates from "./pages/admin/ai/PromptTemplates";
@@ -272,6 +273,10 @@ const router = createBrowserRouter([
           {
             path: "ai/model-access",
             element: <TenantTypeModelAccess />,
+          },
+          {
+            path: "ai/plan-model-access",
+            element: <PlanModelAccess />,
           },
           {
             path: "ai/model-usage-logs",

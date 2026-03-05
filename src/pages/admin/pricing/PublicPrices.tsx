@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import { useEffect, useMemo, useState } from "react"
 import { adminFetch } from "@/lib/adminFetch"
 import {
@@ -17,6 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Badge } from "@/components/ui/badge"
 import { Loader2, RefreshCcw } from "lucide-react"
 import { AdminPage } from "@/components/layout/AdminPage"
 
@@ -38,6 +40,7 @@ type PriceRow = {
   margin_percent?: string | number | null
   avg_cost_per_1k_with_margin?: string | number | null
   cost_per_unit_with_margin?: string | number | null
+  metadata?: Record<string, unknown> | null
 }
 
 type ListResponse = {
@@ -49,6 +52,8 @@ type ListResponse = {
 }
 
 const API_URL = "/api/ai/pricing/public-prices"
+
+type ModalityFilter = "all" | "text" | "code" | "image" | "audio" | "video" | "web_search"
 
 function toNumber(v: unknown) {
   if (typeof v === "number") return Number.isFinite(v) ? v : 0
@@ -90,13 +95,30 @@ function formatUnitType(row: PriceRow) {
   return u || "-"
 }
 
+/** metadata JSON을 읽기 쉬운 형태로 포맷 (quality, size, resolution, task 등) */
+function formatMetadata(meta: Record<string, unknown> | null | undefined): ReactNode {
+  if (!meta || typeof meta !== "object") return null
+  const entries = Object.entries(meta).filter(([, v]) => v != null && v !== "")
+  if (entries.length === 0) return null
+
+  return (
+    <div className="flex flex-wrap gap-1">
+      {entries.map(([k, v]) => (
+        <Badge key={k} variant="outline" className="font-normal text-xs">
+          {k}: {String(v)}
+        </Badge>
+      ))}
+    </div>
+  )
+}
+
 export default function PublicPrices() {
   const [loading, setLoading] = useState(false)
   const [rows, setRows] = useState<PriceRow[]>([])
   const [total, setTotal] = useState(0)
   const [q, setQ] = useState("")
   const [providerSlug, setProviderSlug] = useState("")
-  const [modality, setModality] = useState<"all" | "text" | "code" | "image" | "audio" | "video" | "web_search">("all")
+  const [modality, setModality] = useState<ModalityFilter>("all")
 
   const [page, setPage] = useState(0)
   const limit = 50
@@ -165,7 +187,7 @@ export default function PublicPrices() {
           placeholder="provider_slug (예: openai, google)"
           className="w-[220px]"
         />
-        <Select value={modality} onValueChange={(v) => setModality(v as any)}>
+        <Select value={modality} onValueChange={(v) => setModality(v as ModalityFilter)}>
           <SelectTrigger className="w-[160px]">
             <SelectValue placeholder="모달리티" />
           </SelectTrigger>
@@ -189,6 +211,7 @@ export default function PublicPrices() {
               <TableHead>Model</TableHead>
               <TableHead>Modality</TableHead>
               <TableHead>Unit</TableHead>
+              <TableHead>Metadata</TableHead>
               <TableHead>Tier</TableHead>
               <TableHead className="text-right">Input cr/credit</TableHead>
               <TableHead className="text-right">Output cr/credit</TableHead>
@@ -201,14 +224,14 @@ export default function PublicPrices() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={12} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={13} className="py-8 text-center text-muted-foreground">
                   <Loader2 className="h-4 w-4 inline-block animate-spin mr-2" />
                   로딩 중...
                 </TableCell>
               </TableRow>
             ) : rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={12} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={13} className="py-8 text-center text-muted-foreground">
                   결과가 없습니다.
                 </TableCell>
               </TableRow>
@@ -226,6 +249,11 @@ export default function PublicPrices() {
                   </TableCell>
                   <TableCell className="font-mono">{r.modality || "-"}</TableCell>
                   <TableCell className="font-mono text-xs">{formatUnitType(r)}</TableCell>
+                  <TableCell className="max-w-[280px]">
+                    {formatMetadata(r.metadata as Record<string, unknown>) || (
+                      <span className="text-muted-foreground text-xs">-</span>
+                    )}
+                  </TableCell>
                   <TableCell className="font-mono text-xs">{formatTier(r)}</TableCell>
                   <TableCell className="text-right font-mono">{fmtMoney(r.input_cost_per_1k)}</TableCell>
                   <TableCell className="text-right font-mono">{fmtMoney(r.output_cost_per_1k)}</TableCell>

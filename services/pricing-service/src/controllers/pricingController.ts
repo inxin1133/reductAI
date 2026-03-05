@@ -75,7 +75,8 @@ export async function listPublicPrices(req: Request, res: Response) {
         cost_per_unit,
         margin_percent,
         avg_cost_per_1k_with_margin,
-        cost_per_unit_with_margin
+        cost_per_unit_with_margin,
+        metadata
       FROM pricing_model_cost_summaries
       ${whereSql}
       ORDER BY provider_slug ASC, model_name ASC, modality ASC, usage_kind ASC, tier_unit NULLS FIRST, tier_min NULLS FIRST
@@ -409,6 +410,7 @@ export async function listRates(req: Request, res: Response) {
         s.token_category,
         s.unit,
         s.unit_size,
+        s.metadata,
         r.rate_value,
         r.tier_unit,
         r.tier_min,

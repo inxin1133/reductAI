@@ -159,7 +159,7 @@ export default function Intro() {
       <section className="border-t border-border/40 bg-muted/20 py-12">
         <div className="mx-auto max-w-[1000px] px-6">
           <div className="mx-auto max-w-[800px]">
-            <ChatInterface />
+            <ChatInterface introMode onIntroSendClick={() => setIsLoginModalOpen(true)} />
           </div>
         </div>
       </section>

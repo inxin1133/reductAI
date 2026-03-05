@@ -5,6 +5,7 @@ import providersRoutes from "./routes/providersRoutes"
 import credentialsRoutes from "./routes/credentialsRoutes"
 import modelsRoutes from "./routes/modelsRoutes"
 import tenantTypeModelAccessRoutes from "./routes/tenantTypeModelAccessRoutes"
+import planModelAccessRoutes from "./routes/planModelAccessRoutes"
 import {
   ensureAiAccessSchema,
   ensureModelApiProfilesSchema,
@@ -47,6 +48,7 @@ app.use("/api/ai/providers", providersRoutes)
 app.use("/api/ai/credentials", credentialsRoutes)
 app.use("/api/ai/models", modelsRoutes)
 app.use("/api/ai/model-access-by-type", tenantTypeModelAccessRoutes)
+app.use("/api/ai/plan-model-access", planModelAccessRoutes)
 app.use("/api/ai/chat", chatRoutes)
 app.use("/api/ai/chat-ui", chatUiRoutes)
 app.use("/api/ai/timeline", timelineRoutes)

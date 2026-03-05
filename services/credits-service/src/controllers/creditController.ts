@@ -3452,7 +3452,17 @@ export async function updateMyCreditPreferences(req: Request, res: Response) {
         return res.status(400).json({ message: "selected_account_id must be a valid UUID" })
       }
       const accessRes = await query(
-        `SELECT 1 FROM credit_account_access WHERE user_id = $1 AND account_id = $2 AND is_active = TRUE LIMIT 1`,
+        `
+        SELECT 1 FROM credit_accounts ca
+        WHERE ca.id = $2 AND ca.status = 'active'
+          AND (
+            EXISTS (SELECT 1 FROM credit_account_access caa
+                    WHERE caa.user_id = $1 AND caa.account_id = ca.id AND caa.is_active = TRUE)
+            OR EXISTS (SELECT 1 FROM tenants t
+                       WHERE t.id = ca.owner_tenant_id AND t.owner_id = $1 AND t.deleted_at IS NULL)
+          )
+        LIMIT 1
+        `,
         [userId, selectedAccountId]
       )
       if (accessRes.rows.length === 0) {

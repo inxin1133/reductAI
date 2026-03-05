@@ -225,7 +225,8 @@ SELECT
     NULL::numeric AS cost_per_unit,
     margin_percent,
     avg_cost_per_1k_with_margin,
-    NULL::numeric AS cost_per_unit_with_margin
+    NULL::numeric AS cost_per_unit_with_margin,
+    metadata
 FROM (
     SELECT
         s_in.provider_slug,
@@ -244,7 +245,8 @@ FROM (
         ROUND(
             (((r_in.rate_value + r_out.rate_value) / 2.0) * (1000.0 / s_in.unit_size)) * (1 + COALESCE(mr.margin_percent, 0) / 100.0) * 1000.0,
             6
-        ) AS avg_cost_per_1k_with_margin
+        ) AS avg_cost_per_1k_with_margin,
+        COALESCE(s_in.metadata, '{}'::jsonb) AS metadata
     FROM pricing_skus s_in
     JOIN pricing_skus s_out
       ON s_out.provider_slug = s_in.provider_slug
@@ -301,7 +303,8 @@ SELECT
     ROUND(r.rate_value * 1000.0, 6) AS cost_per_unit,
     COALESCE(mr.margin_percent, 0) AS margin_percent,
     NULL::numeric AS avg_cost_per_1k_with_margin,
-    ROUND(r.rate_value * (1 + COALESCE(mr.margin_percent, 0) / 100.0) * 1000.0, 6) AS cost_per_unit_with_margin
+    ROUND(r.rate_value * (1 + COALESCE(mr.margin_percent, 0) / 100.0) * 1000.0, 6) AS cost_per_unit_with_margin,
+    COALESCE(s.metadata, '{}'::jsonb) AS metadata
 FROM pricing_skus s
 JOIN active_rate_card arc ON TRUE
 JOIN pricing_rates r ON r.rate_card_id = arc.id AND r.sku_id = s.id
@@ -325,7 +328,7 @@ LEFT JOIN LATERAL (
 WHERE s.usage_kind IN ('image_generation', 'seconds', 'requests')
   AND s.is_active = TRUE;
 
-COMMENT ON VIEW pricing_model_cost_summaries IS 'User-facing price summary (all modalities) in credits. USD 1 = 1000 credits. Token-based: input/output/avg per 1k. Single-rate: cost per unit (image/second/request).';
+COMMENT ON VIEW pricing_model_cost_summaries IS 'User-facing price summary (all modalities) in credits. USD 1 = 1000 credits. Includes SKU metadata (quality, size, resolution, task).';
 
 -- ============================================
 -- 7. SEED DATA: DEFAULT RATE CARD, SKUS, RATES, MARKUPS

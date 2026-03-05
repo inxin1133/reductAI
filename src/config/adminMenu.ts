@@ -55,6 +55,7 @@ export const adminMenuGroups: MenuGroup[] = [
           { title: "AI API Key(Credentials)", href: "/admin/ai/credentials" },
           { title: "AI 모델 관리", href: "/admin/ai/models" },
           { title: "모델 접근 권한", href: "/admin/ai/model-access" },
+          { title: "플랜별 모델 접근", href: "/admin/ai/plan-model-access" },
           { title: "프롬프트 템플릿", href: "/admin/ai/prompt-templates" },
           { title: "예시 프롬프트(Prompt Suggestions)", href: "/admin/ai/prompt-suggestions" },
           { title: "출력 계약(Response Schemas)", href: "/admin/ai/response-schemas" },
