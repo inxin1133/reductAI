@@ -1,10 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getChatUiConfig = getChatUiConfig;
+exports.getAllowedModelsForPlan = getAllowedModelsForPlan;
 exports.getChatPromptSuggestions = getChatPromptSuggestions;
 const db_1 = require("../config/db");
 const systemTenantService_1 = require("../services/systemTenantService");
 const webSearchSettingsService_1 = require("../services/webSearchSettingsService");
+const planModelAccessService_1 = require("../services/planModelAccessService");
 const MODEL_TYPES = ["text", "image", "audio", "music", "video", "multimodal", "embedding", "code"];
 async function getChatUiConfig(_req, res) {
     try {
@@ -101,6 +103,24 @@ async function getChatUiConfig(_req, res) {
     catch (e) {
         console.error("getChatUiConfig error:", e);
         return res.status(500).json({ message: "Failed to get chat UI config", details: String(e?.message || e) });
+    }
+}
+async function getAllowedModelsForPlan(req, res) {
+    try {
+        const planTier = typeof req.query.plan_tier === "string" ? req.query.plan_tier.trim() : "";
+        if (!planTier) {
+            return res.json({ ok: true, model_api_ids: null, restricted: false });
+        }
+        const modelApiIds = await (0, planModelAccessService_1.getAllowedModelApiIdsForPlan)(planTier);
+        return res.json({
+            ok: true,
+            model_api_ids: modelApiIds,
+            restricted: modelApiIds !== null,
+        });
+    }
+    catch (e) {
+        console.error("getAllowedModelsForPlan error:", e);
+        return res.status(500).json({ message: "Failed to get allowed models", details: String(e?.message || e) });
     }
 }
 async function getChatPromptSuggestions(req, res) {

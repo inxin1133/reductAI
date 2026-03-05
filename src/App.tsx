@@ -82,6 +82,17 @@ function TitleLayout() {
     document.title = isAdmin ? "Reduct Admin" : "Reduct AI Agent";
   }, [location.pathname]);
 
+  // Safari bfcache 복원 시 강제 새로고침 (로그아웃 후 다른 계정 로그인 시 이전 계정 정보 잔상 방지)
+  useEffect(() => {
+    const handlePageshow = (ev: PageTransitionEvent) => {
+      if (ev.persisted) {
+        window.location.reload();
+      }
+    };
+    window.addEventListener("pageshow", handlePageshow);
+    return () => window.removeEventListener("pageshow", handlePageshow);
+  }, []);
+
   useEffect(() => {
     const handler = (event: Event) => {
       if (location.pathname.startsWith("/timeline")) return;

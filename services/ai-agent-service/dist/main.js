@@ -97,6 +97,7 @@ app.listen(PORT, async () => {
         await (0, schemaBootstrap_1.ensureModelApiProfilesSchema)();
         await (0, schemaBootstrap_1.ensureProviderAuthProfilesSchema)();
         await (0, schemaBootstrap_1.ensureWebSearchSettingsSchema)();
+        await (0, schemaBootstrap_1.ensurePlanModelAccessSchema)();
         // Best-effort: seed default Sora video model_api_profile for OpenAI Sora providers.
         // Users can edit/override in Admin (Model API Profiles).
         const { ensureDefaultSoraVideoProfiles } = await Promise.resolve().then(() => __importStar(require("./services/schemaBootstrap")));

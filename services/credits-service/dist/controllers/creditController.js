@@ -2828,7 +2828,7 @@ async function getMyGrantedCredits(req, res) {
             if (topupAccountId) {
                 const topupAccessRes = await (0, db_1.query)(`SELECT allow_when_empty FROM credit_account_access WHERE user_id = $1 AND account_id = $2 LIMIT 1`, [userId, topupAccountId]);
                 topupAutoUse = topupAccessRes.rows[0]?.allow_when_empty === true;
-                if (topupAutoUse) {
+                if (topupAutoUse && topupAccountRow) {
                     topupRemaining = Math.max(0, Number(topupAccountRow.balance_credits ?? 0) - Number(topupAccountRow.reserved_credits ?? 0));
                 }
             }

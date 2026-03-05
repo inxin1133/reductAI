@@ -17,7 +17,7 @@ import { resolveAuthForModelApiProfile } from "../services/authProfilesService"
 import { newAssetId, storeImageDataUrlAsAsset } from "../services/fileServiceClient"
 import { normalizeAiContent } from "../utils/normalizeAiContent"
 import { getWebSearchPolicy } from "../services/webSearchSettingsService"
-import { lookupModelPricing, lookupWebSearchPricing, calculateCost } from "../services/pricingService"
+import { lookupModelPricing, lookupWebSearchPricing, lookupImagePricing, calculateCost } from "../services/pricingService"
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 
@@ -1737,6 +1737,7 @@ export async function chatRun(req: Request, res: Response) {
       max_tokens,
       session_language,
       // optional: client-selected model override
+      plan_tier,
       model_api_id,
       provider_id,
       provider_slug,
@@ -2812,6 +2813,15 @@ export async function chatRun(req: Request, res: Response) {
       }
     }
 
+    // model_api_profile 경로로 이미지 생성 시 imageUsage가 설정되지 않음 → 여기서 보완
+    if (mt === "image" && out && !imageUsage && isRecord(out.content)) {
+      const imgs = Array.isArray(out.content.images) ? (out.content.images as unknown[]) : []
+      const count = imgs.length || (typeof mergedOptions?.n === "number" ? clampInt(mergedOptions.n, 1, 10) : 1)
+      const size = typeof mergedOptions?.size === "string" ? mergedOptions.size : undefined
+      const quality = typeof mergedOptions?.quality === "string" ? mergedOptions.quality : undefined
+      imageUsage = { count, size, quality }
+    }
+
     if (!optionsForAssistant && mergedOptions && Object.keys(mergedOptions).length > 0) {
       optionsForAssistant = mergedOptions
     }
@@ -2929,7 +2939,16 @@ export async function chatRun(req: Request, res: Response) {
           webSearchCount > 0
             ? (await lookupWebSearchPricing(webProvider || "serper")) * webSearchCount
             : 0
-        const imageCost = 0
+        const imageCost =
+          modality === "image_create" && imageUsage && imageUsage.count > 0
+            ? (await lookupImagePricing(
+                usedProviderSlug,
+                usedModelApiId,
+                imageUsage.size ?? null,
+                imageUsage.quality ?? null,
+                usedModelDbId,
+              )) * imageUsage.count
+            : 0
         const videoCost = 0
         const audioCost = 0
         const musicCost = 0

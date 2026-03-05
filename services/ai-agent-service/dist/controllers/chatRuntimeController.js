@@ -43,6 +43,7 @@ const db_1 = require("../config/db");
 const systemTenantService_1 = require("../services/systemTenantService");
 const crypto_1 = __importDefault(require("crypto"));
 const providerClients_1 = require("../services/providerClients");
+const planModelAccessService_1 = require("../services/planModelAccessService");
 const authProfilesService_1 = require("../services/authProfilesService");
 const fileServiceClient_1 = require("../services/fileServiceClient");
 const normalizeAiContent_1 = require("../utils/normalizeAiContent");
@@ -1586,7 +1587,7 @@ async function chatRun(req, res) {
         const webSearchPolicy = await (0, webSearchSettingsService_1.getWebSearchPolicy)(tenantId);
         const { model_type, conversation_id, userPrompt, max_tokens, session_language, 
         // optional: client-selected model override
-        model_api_id, provider_id, provider_slug, options, attachments, 
+        plan_tier, model_api_id, provider_id, provider_slug, options, attachments, 
         // web search toggle (text/chat only)
         web_allowed, 
         // browser-derived hints (best-effort)
@@ -1647,6 +1648,17 @@ async function chatRun(req, res) {
         }
         if (!chosenModelDbId)
             return res.status(404).json({ message: `No available model for model_type=${mt}` });
+        // plan_tier: 서비스 플랜별 모델 사용 제한 검증
+        const planTierRaw = typeof plan_tier === "string" ? plan_tier.trim() : "";
+        if (planTierRaw && chosenModelDbId) {
+            const allowed = await (0, planModelAccessService_1.isModelAllowedForPlan)(planTierRaw, chosenModelDbId);
+            if (!allowed) {
+                return res.status(403).json({
+                    message: "선택한 플랜에서는 해당 모델을 사용할 수 없습니다. 크레딧 탭에서 상위 플랜을 선택하세요.",
+                    code: "PLAN_MODEL_ACCESS_DENIED",
+                });
+            }
+        }
         // load chosen model + provider
         const chosen = await (0, db_1.query)(`
       SELECT
@@ -2561,6 +2573,14 @@ async function chatRun(req, res) {
                 return await failAndRespond(400, { message: `Unsupported model_type=${mt}` });
             }
         }
+        // model_api_profile 경로로 이미지 생성 시 imageUsage가 설정되지 않음 → 여기서 보완
+        if (mt === "image" && out && !imageUsage && isRecord(out.content)) {
+            const imgs = Array.isArray(out.content.images) ? out.content.images : [];
+            const count = imgs.length || (typeof mergedOptions?.n === "number" ? clampInt(mergedOptions.n, 1, 10) : 1);
+            const size = typeof mergedOptions?.size === "string" ? mergedOptions.size : undefined;
+            const quality = typeof mergedOptions?.quality === "string" ? mergedOptions.quality : undefined;
+            imageUsage = { count, size, quality };
+        }
         if (!optionsForAssistant && mergedOptions && Object.keys(mergedOptions).length > 0) {
             optionsForAssistant = mergedOptions;
         }
@@ -2657,7 +2677,9 @@ async function chatRun(req, res) {
                 const webSearchCost = webSearchCount > 0
                     ? (await (0, pricingService_1.lookupWebSearchPricing)(webProvider || "serper")) * webSearchCount
                     : 0;
-                const imageCost = 0;
+                const imageCost = modality === "image_create" && imageUsage && imageUsage.count > 0
+                    ? (await (0, pricingService_1.lookupImagePricing)(usedProviderSlug, usedModelApiId, imageUsage.size ?? null, imageUsage.quality ?? null, usedModelDbId)) * imageUsage.count
+                    : 0;
                 const videoCost = 0;
                 const audioCost = 0;
                 const musicCost = 0;

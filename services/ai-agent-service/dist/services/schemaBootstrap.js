@@ -11,6 +11,7 @@ exports.ensureWebSearchSettingsSchema = ensureWebSearchSettingsSchema;
 exports.ensureModelApiProfilesSchema = ensureModelApiProfilesSchema;
 exports.ensureDefaultSoraVideoProfiles = ensureDefaultSoraVideoProfiles;
 exports.ensureProviderAuthProfilesSchema = ensureProviderAuthProfilesSchema;
+exports.ensurePlanModelAccessSchema = ensurePlanModelAccessSchema;
 const db_1 = require("../config/db");
 const systemTenantService_1 = require("./systemTenantService");
 // ⚠️ 운영에서는 별도의 마이그레이션 도구를 사용하는 것을 권장합니다.
@@ -1294,4 +1295,17 @@ async function ensureProviderAuthProfilesSchema() {
       END IF;
     END $$;
   `);
+}
+async function ensurePlanModelAccessSchema() {
+    await (0, db_1.query)(`
+    CREATE TABLE IF NOT EXISTS plan_model_access (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      plan_tier VARCHAR(50) NOT NULL,
+      model_id UUID NOT NULL REFERENCES ai_models(id) ON DELETE CASCADE,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(plan_tier, model_id)
+    )
+  `);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_plan_model_access_plan_tier ON plan_model_access(plan_tier)`);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_plan_model_access_model_id ON plan_model_access(model_id)`);
 }

@@ -949,6 +949,14 @@ const profileBadges = useMemo(() => {
     localStorage.removeItem('user_email')
     localStorage.removeItem('user_id')
     localStorage.removeItem('user_name')
+    // Sidebar 캐시 정리 (다음 로그인 시 이전 계정 정보가 보이지 않도록)
+    try {
+      localStorage.removeItem(TENANT_INFO_CACHE_KEY)
+      localStorage.removeItem(PROFILE_IMAGE_CACHE_KEY)
+      localStorage.removeItem(TENANT_MEMBERSHIPS_CACHE_KEY)
+    } catch {
+      // ignore
+    }
     // 로그인 페이지(인트로)로 이동
     navigate('/')
   }

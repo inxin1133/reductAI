@@ -2020,7 +2020,7 @@ export async function getTenantUsageHistory(req: Request, res: Response) {
       [...params, limit, offset]
     )
 
-    const userIds = uniqIds(listRes.rows.map((r: Record<string, unknown>) => r.user_id))
+    const userIds = uniqIds(listRes.rows.map((r: Record<string, unknown>) => r.user_id as string | null | undefined))
     const authHeader = String(req.headers.authorization || "")
     const userMap = userIds.length > 0 ? await lookupUsers(userIds, authHeader) : new Map()
 
@@ -3378,7 +3378,7 @@ export async function getMyGrantedCredits(req: Request, res: Response) {
           [userId, topupAccountId]
         )
         topupAutoUse = topupAccessRes.rows[0]?.allow_when_empty === true
-        if (topupAutoUse) {
+        if (topupAutoUse && topupAccountRow) {
           topupRemaining = Math.max(0, Number(topupAccountRow.balance_credits ?? 0) - Number(topupAccountRow.reserved_credits ?? 0))
         }
       }

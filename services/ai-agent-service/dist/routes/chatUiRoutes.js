@@ -8,5 +8,6 @@ const chatUiController_1 = require("../controllers/chatUiController");
 const requireAuth_1 = require("../middleware/requireAuth");
 const router = express_1.default.Router();
 router.get("/config", chatUiController_1.getChatUiConfig);
+router.get("/allowed-models", chatUiController_1.getAllowedModelsForPlan);
 router.get("/prompt-suggestions", requireAuth_1.requireAuth, chatUiController_1.getChatPromptSuggestions);
 exports.default = router;
