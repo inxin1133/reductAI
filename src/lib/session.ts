@@ -9,12 +9,21 @@ export function isSessionExpired() {
   return !token || !expiresAt || Date.now() > expiresAt
 }
 
+const TENANT_INFO_CACHE_KEY = "reductai:sidebar:tenantInfo:v1"
+const PROFILE_IMAGE_CACHE_KEY = "reductai.user.profile_image_url.v1"
+
 export function clearAuthStorage() {
   localStorage.removeItem("token")
   localStorage.removeItem("token_expires_at")
   localStorage.removeItem("user_email")
   localStorage.removeItem("user_id")
   localStorage.removeItem("user_name")
+  try {
+    localStorage.removeItem(TENANT_INFO_CACHE_KEY)
+    localStorage.removeItem(PROFILE_IMAGE_CACHE_KEY)
+  } catch {
+    // ignore
+  }
 }
 
 export function handleSessionExpired(

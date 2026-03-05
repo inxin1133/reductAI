@@ -4,13 +4,10 @@ import { Eclipse } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/useTheme"
 import { isSessionExpired } from "@/lib/session"
-import { withActiveTenantHeader } from "@/lib/tenantContext"
 import { type PlanTier, resolveServiceTier } from "@/lib/planTier"
 import { Button } from "@/components/ui/button"
 import { LoginModal } from "@/components/LoginModal"
 import { ProfileAvatar } from "@/lib/ProfileAvatar"
-
-const TENANT_INFO_CACHE_KEY = "reductai:sidebar:tenantInfo:v1"
 
 type HeaderProps = {
   className?: string
@@ -73,13 +70,24 @@ export function Header({ className }: HeaderProps) {
   }, [])
 
   const [currentTier, setCurrentTier] = useState<PlanTier>("free")
+
+  // 로그아웃 시 티어를 free로 초기화 (Safari bfcache 등으로 이전 세션 색상 잔상 방지)
+  useEffect(() => {
+    if (!authState.isLoggedIn) {
+      setCurrentTier("free")
+      return
+    }
+  }, [authState.isLoggedIn])
+
   const loadTenantTier = useCallback(() => {
     if (typeof window === "undefined" || !authState.isLoggedIn) return
     const token = localStorage.getItem("token")
     if (!token) return
-    const headers = withActiveTenantHeader({ Authorization: `Bearer ${token}` })
-    fetch("/api/posts/tenant/current", { headers })
-      .then((res) => res.json().catch(() => null) as Promise<{ tenant_type?: string; plan_tier?: string } | null>)
+    setCurrentTier("free") // API 응답 전까지 기본값으로 표시 (이전 세션 캐시 혼선 방지)
+    const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
+    // 소유한 테넌트(owner_id=user)의 티어만 사용 (소속 테넌트 중 최고 티어 X)
+    fetch("/api/posts/tenant/owner-tier", { headers })
+      .then((res) => res.json().catch(() => null) as Promise<{ tenant_type?: string | null; plan_tier?: string | null } | null>)
       .then((data) => {
         if (data?.tenant_type != null || data?.plan_tier != null) {
           setCurrentTier(resolveServiceTier({ tenant_type: data.tenant_type, plan_tier: data.plan_tier }))
@@ -90,15 +98,6 @@ export function Header({ className }: HeaderProps) {
 
   useEffect(() => {
     if (!authState.isLoggedIn) return
-    try {
-      const raw = localStorage.getItem(TENANT_INFO_CACHE_KEY)
-      const j = raw ? JSON.parse(raw) : null
-      if (j && (j.tenant_type != null || j.plan_tier != null)) {
-        setCurrentTier(resolveServiceTier({ tenant_type: j.tenant_type, plan_tier: j.plan_tier }))
-      }
-    } catch {
-      // ignore
-    }
     loadTenantTier()
   }, [authState.isLoggedIn, loadTenantTier])
 

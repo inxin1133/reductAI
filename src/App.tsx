@@ -80,7 +80,7 @@ function TitleLayout() {
 
   useEffect(() => {
     const isAdmin = location.pathname.startsWith("/admin");
-    document.title = isAdmin ? "Reduct Admin" : "Reduct AI Agent";
+    document.title = isAdmin ? "reductAI Admin" : "reductAI";
   }, [location.pathname]);
 
   // Safari bfcache 복원 시 강제 새로고침 (로그아웃 후 다른 계정 로그인 시 이전 계정 정보 잔상 방지)

@@ -1191,6 +1191,44 @@ export async function reorderCategories(req: Request, res: Response) {
   }
 }
 
+/** 사용자가 소유한 테넌트(owner_id = user_id)의 plan_tier 반환. personal 우선 */
+export async function getOwnerTenantTier(req: Request, res: Response) {
+  try {
+    const userId = (req as AuthedRequest).userId
+    if (!userId) return res.status(401).json({ message: "Unauthorized" })
+
+    const r = await query(
+      `
+      SELECT
+        COALESCE(
+          NULLIF(t.metadata->>'plan_tier',''),
+          NULLIF(t.metadata->>'service_tier',''),
+          NULLIF(t.metadata->>'tier','')
+        ) AS plan_tier,
+        t.tenant_type
+      FROM tenants t
+      WHERE t.owner_id = $1
+        AND t.deleted_at IS NULL
+        AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+      ORDER BY CASE WHEN t.tenant_type = 'personal' THEN 0 ELSE 1 END, t.created_at ASC
+      LIMIT 1
+      `,
+      [userId]
+    )
+    if (r.rows.length === 0) {
+      return res.json({ tenant_type: null, plan_tier: null })
+    }
+    const row = r.rows[0] as { plan_tier: string | null; tenant_type: string }
+    return res.json({
+      tenant_type: row.tenant_type,
+      plan_tier: row.plan_tier,
+    })
+  } catch (e) {
+    console.error("post-service getOwnerTenantTier error:", e)
+    res.status(500).json({ message: "Failed to get owner tenant tier" })
+  }
+}
+
 export async function getCurrentTenant(req: Request, res: Response) {
   try {
     const tenantId = await resolveTenantId(req as AuthedRequest)

@@ -2124,10 +2124,12 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                               ? `이번달 ${creditCard.percentDisplay}% 사용 (${formatCredits(creditCard.used)} 사용 / ${formatCredits(creditCard.remaining)} 남음 / 전체 ${formatCredits(creditCard.total)} 크레딧)`
                               : "구독 크레딧 정보가 없습니다."}
                           </div>
-                          <div>
-                            다음 충전일:{" "}
-                            <span className="text-foreground">{formatDateTime(creditCard.nextChargeAt)}</span>
-                          </div>
+                          {creditCard.planTier !== "free" && creditCard.nextChargeAt ? (
+                            <div>
+                              다음 충전일:{" "}
+                              <span className="text-foreground">{formatDateTime(creditCard.nextChargeAt)}</span>
+                            </div>
+                          ) : null}
                         </div>
                         <div className="mt-2 flex text-sm text-foreground flex-1 items-center gap-2">
                           <span className="font-bold">나의 사용</span>
@@ -2142,33 +2144,41 @@ export function SettingsDialog({ open, onOpenChange, initialMenu, onOpenPlanDial
                       <div className="px-4 py-6">
                         <div className="flex items-center justify-between">
                           <div className="text-sm font-semibold text-foreground">충전 크레딧</div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-muted-foreground">서비스 크레딧 소진시 자동 사용</span>
-                            <Switch
-                              id="topup-auto-use"
-                              checked={topupCard.available ? topupAutoUse : false}
-                              onCheckedChange={handleToggleTopupAutoUse}
-                              disabled={!topupCard.available || topupAutoUseSaving}
-                            />
-                          </div>
+                          {topupCard.available ? (
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-muted-foreground">서비스 크레딧 소진시 자동 사용</span>
+                              <Switch
+                                id="topup-auto-use"
+                                checked={topupAutoUse}
+                                onCheckedChange={handleToggleTopupAutoUse}
+                                disabled={topupAutoUseSaving}
+                              />
+                            </div>
+                          ) : null}
                         </div>
-                        <div className="mt-3 h-2 w-full rounded-full bg-muted">
-                          <div
-                            className="h-full rounded-full bg-primary"
-                            style={{ width: `${topupCard.remainingPercent}%` }}
-                          />
-                        </div>
-                        <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
-                          <div>
-                            {topupCard.available
-                              ? `이번달 ${topupCard.percentDisplay}% 사용 (${formatCredits(topupCard.used)} 사용 / ${formatCredits(topupCard.remaining)} 남음 / 전체 ${formatCredits(topupCard.total)} 크레딧)`
-                              : "충전 크레딧 정보가 없습니다."}
-                          </div>
-                          <div>
-                            마지막 충전일:{" "}
-                            <span className="text-foreground">{formatDateTime(topupCard.lastTopupAt)}</span>
-                          </div>
-                        </div>                        
+                        {topupCard.available ? (
+                          <>
+                            <div className="mt-3 h-2 w-full rounded-full bg-muted">
+                              <div
+                                className="h-full rounded-full bg-primary"
+                                style={{ width: `${topupCard.remainingPercent}%` }}
+                              />
+                            </div>
+                            <div className="mt-2 text-xs text-muted-foreground flex flex-1 justify-between">
+                              <div>
+                                이번달 {topupCard.percentDisplay}% 사용 (
+                                {formatCredits(topupCard.used)} 사용 / {formatCredits(topupCard.remaining)} 남음 /
+                                전체 {formatCredits(topupCard.total)} 크레딧)
+                              </div>
+                              <div>
+                                마지막 충전일:{" "}
+                                <span className="text-foreground">{formatDateTime(topupCard.lastTopupAt)}</span>
+                              </div>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="mt-2 text-xs text-muted-foreground">충전 크레딧 정보가 없습니다.</div>
+                        )}
                       </div>
                     </div>
                   </div>

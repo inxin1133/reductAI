@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import { clearAuthStorage } from './lib/session'
 
 function installSessionExpiryGuard() {
   if (typeof window === 'undefined') return
@@ -39,14 +40,7 @@ function installSessionExpiryGuard() {
         if (message.includes('Session expired')) {
           if (!win.__reductaiHandlingSessionExpired) {
             win.__reductaiHandlingSessionExpired = true
-            try {
-              window.localStorage.removeItem('token')
-              window.localStorage.removeItem('user_email')
-              window.localStorage.removeItem('user_name')
-              window.localStorage.removeItem('user_id')
-            } catch {
-              // ignore
-            }
+            clearAuthStorage()
             if (window.location.pathname !== '/') {
               window.location.replace('/')
             } else {

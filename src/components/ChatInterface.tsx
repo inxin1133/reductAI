@@ -3086,7 +3086,7 @@ function ChatInterfaceInner({
   return (
     <div className="flex flex-row gap-4 items-center justify-center w-full">
       <div className={`flex flex-col gap-4 items-center relative shrink-0 w-full max-w-[800px] ${className || ""}`}>
-        {!isCompact && (
+        {!isCompact && !introMode && (
           <div className="w-full flex items-center gap-4">
             <PaidToken authHeaders={authHeaders} />
           </div>
@@ -3123,7 +3123,7 @@ function ChatInterfaceInner({
                         </div>
                       )}
                     </div>
-                    <PaidToken authHeaders={authHeaders} variant="compact" className="shrink-0" />
+                    {!introMode && <PaidToken authHeaders={authHeaders} variant="compact" className="shrink-0" />}
                   </button>
                 </div>
               )}
@@ -3173,7 +3173,7 @@ function ChatInterfaceInner({
                           >
                             <ChevronDown className="size-5" />
                           </button>
-                          <PaidToken authHeaders={authHeaders} />
+                          {!introMode && <PaidToken authHeaders={authHeaders} />}
                         </div>
                         <ModeTabs />
                         <div className="max-h-[320px] overflow-y-auto mt-3">

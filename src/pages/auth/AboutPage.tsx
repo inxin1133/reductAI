@@ -12,7 +12,7 @@ export default function AboutPage() {
             About Us
           </span>
           <h1 className="text-4xl font-black text-foreground lg:text-5xl">
-            Reduct<span className="text-primary">AI</span>
+            reduct<span className="text-primary">AI</span>
           </h1>
           <p className="mx-auto mt-6 max-w-2xl text-lg text-muted-foreground leading-relaxed">
             "Reduct"는 <strong className="text-foreground">Reduce(줄이다)</strong>와 <strong className="text-foreground">Conduct(이끌다)</strong>의 합성어입니다.

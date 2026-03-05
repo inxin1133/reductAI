@@ -8,6 +8,7 @@ import {
   getPostContent,
   getPostPreview,
   getCurrentTenant,
+  getOwnerTenantTier,
   getCurrentUser,
   listCurrentUserProviders,
   listCurrentUserSessions,
@@ -54,6 +55,7 @@ router.get("/user/sessions", requireAuth, listCurrentUserSessions)
 router.delete("/user/sessions", requireAuth, revokeOtherUserSessions)
 router.delete("/user/sessions/:id", requireAuth, revokeCurrentUserSession)
 router.get("/tenant/current", requireAuth, getCurrentTenant)
+router.get("/tenant/owner-tier", requireAuth, getOwnerTenantTier)
 router.get("/tenant/memberships", requireAuth, listTenantMemberships)
 router.get("/tenant/members", requireAuth, listTenantMembers)
 router.get("/tenant/invitations", requireAuth, listTenantInvitations)
