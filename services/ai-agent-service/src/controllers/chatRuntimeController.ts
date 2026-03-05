@@ -17,7 +17,7 @@ import { resolveAuthForModelApiProfile } from "../services/authProfilesService"
 import { newAssetId, storeImageDataUrlAsAsset } from "../services/fileServiceClient"
 import { normalizeAiContent } from "../utils/normalizeAiContent"
 import { getWebSearchPolicy } from "../services/webSearchSettingsService"
-import { lookupModelPricing, lookupWebSearchPricing, lookupImagePricing, calculateCost } from "../services/pricingService"
+import { lookupModelPricing, lookupWebSearchPricing, lookupImagePricing, lookupVideoPricing, calculateCost } from "../services/pricingService"
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 
@@ -1707,6 +1707,7 @@ export async function chatRun(req: Request, res: Response) {
   let webResponseBytesTotal = 0
   let webBudgetCount: number | null = null
   let imageUsage: { count: number; size?: string; quality?: string } | null = null
+  let videoUsage: { seconds: number; size?: string } | null = null
   let musicUsage: { seconds: number; sample_rate?: number; channels?: string; bit_depth?: number } | null = null
   try {
     if (!CREDITS_SERVICE_KEY || !CREDITS_SERVICE_KEY.trim()) {
@@ -2822,6 +2823,23 @@ export async function chatRun(req: Request, res: Response) {
       imageUsage = { count, size, quality }
     }
 
+    // model_api_profile 경로로 비디오 생성 시 videoUsage 설정 (추가 video 모델 확장 가능)
+    if (mt === "video" && out && !videoUsage) {
+      const seconds =
+        typeof mergedOptions?.seconds === "number"
+          ? Math.max(0, Number(mergedOptions.seconds))
+          : typeof (out.content as Record<string, unknown>)?.seconds === "number"
+            ? Math.max(0, Number((out.content as Record<string, unknown>).seconds))
+            : 0
+      const size =
+        typeof mergedOptions?.size === "string"
+          ? String(mergedOptions.size).trim()
+          : typeof (out.content as Record<string, unknown>)?.size === "string"
+            ? String((out.content as Record<string, unknown>).size).trim()
+            : undefined
+      if (seconds > 0) videoUsage = { seconds, size }
+    }
+
     if (!optionsForAssistant && mergedOptions && Object.keys(mergedOptions).length > 0) {
       optionsForAssistant = mergedOptions
     }
@@ -2949,7 +2967,15 @@ export async function chatRun(req: Request, res: Response) {
                 usedModelDbId,
               )) * imageUsage.count
             : 0
-        const videoCost = 0
+        const videoCost =
+          modality === "video" && videoUsage && videoUsage.seconds > 0
+            ? (await lookupVideoPricing(
+                usedProviderSlug,
+                usedModelApiId,
+                videoUsage.size ?? null,
+                usedModelDbId,
+              )) * videoUsage.seconds
+            : 0
         const audioCost = 0
         const musicCost = 0
         const totalCost = tokenTotalCost + webSearchCost + imageCost + videoCost + audioCost + musicCost
@@ -3134,6 +3160,21 @@ export async function chatRun(req: Request, res: Response) {
               )
               `,
               [usageLogId, imageUsage.count, imageUsage.size || null, imageUsage.quality || null]
+            )
+          }
+
+          if (videoUsage) {
+            await query(
+              `
+              INSERT INTO llm_video_usages (
+                usage_log_id, seconds, size, unit
+              )
+              SELECT $1, $2, $3, 'second'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM llm_video_usages WHERE usage_log_id = $1
+              )
+              `,
+              [usageLogId, videoUsage.seconds, videoUsage.size || null]
             )
           }
 

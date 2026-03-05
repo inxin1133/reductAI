@@ -310,6 +310,147 @@ export async function lookupImagePricing(
 }
 
 /**
+ * 비디오 생성(video, seconds) 단가를 조회한다.
+ * pricing_skus: modality=video, usage_kind=seconds, unit=second
+ * metadata에는 모델별 옵션(resolution 등)이 있으며, 추가 모델 시 확장 가능.
+ *
+ * 매칭 우선순위 (lookupModelPricing/lookupImagePricing과 동일):
+ * 1. modelId(ai_models.id)로 매칭 — pricing_skus.model_id FK로 강한 연결
+ * 2. providerSlug + modelKey — model_id가 없거나 매칭 실패 시 폴백
+ * 3. provider만 매칭 — model_key 무관
+ *
+ * @param resolution 요청 해상도(720x1280, 1024x1792 등). SKU metadata.resolution과 매칭 시 정규화 적용
+ * @returns USD per second. 조회 실패 시 0
+ */
+export async function lookupVideoPricing(
+  providerSlug: string,
+  modelKey: string,
+  resolution?: string | null,
+  modelId?: string | null,
+): Promise<number> {
+  const slug = providerSlug && String(providerSlug).trim() ? String(providerSlug).trim().toLowerCase() : ""
+  const model = modelKey && String(modelKey).trim() ? String(modelKey).trim() : ""
+  if (!slug || !model) return 0
+
+  // resolution 정규화: SKU metadata 형식으로 매핑 (추가 모델 시 metadata 스키마에 맞게 확장)
+  let queryResolution: string | null = null
+  if (resolution && String(resolution).trim()) {
+    const r = String(resolution).trim().replace(/[×*]/g, "x").toLowerCase()
+    if (r === "720x1280" || r === "1280x720" || r === "720x1280_or_1280x720") queryResolution = "720x1280_or_1280x720"
+    else if (r === "1024x1792" || r === "1792x1024" || r === "1024x1792_or_1792x1024") queryResolution = "1024x1792_or_1792x1024"
+    else queryResolution = r
+  }
+
+  try {
+    type Row = { rate_value?: number; unit_size?: number }
+    let r: { rows: Row[] } | null = null
+
+    // 1순위: model_id(ai_models.id)로 강한 연결
+    if (modelId && String(modelId).trim()) {
+      r = await query(
+        `
+        WITH active_rc AS (
+          SELECT id FROM pricing_rate_cards
+          WHERE status = 'active' AND effective_at <= NOW()
+          ORDER BY effective_at DESC, version DESC
+          LIMIT 1
+        ),
+        candidates AS (
+          SELECT s.id, s.unit_size, r.rate_value, s.metadata
+          FROM pricing_skus s
+          JOIN pricing_rates r ON r.sku_id = s.id
+          JOIN active_rc arc ON r.rate_card_id = arc.id
+          WHERE s.model_id = $1
+            AND s.modality = 'video'
+            AND s.usage_kind = 'seconds'
+            AND s.unit = 'second'
+            AND s.is_active = TRUE
+        )
+        SELECT rate_value, unit_size, metadata
+        FROM candidates
+        WHERE ($2::text IS NULL OR (metadata->>'resolution') IS NULL OR metadata->>'resolution' = $2)
+        ORDER BY CASE WHEN $2 IS NOT NULL AND metadata->>'resolution' = $2 THEN 0 ELSE 1 END
+        LIMIT 1
+        `,
+        [modelId, queryResolution],
+      )
+    }
+
+    // 2순위: provider_slug + model_key 폴백
+    if (!r || r.rows.length === 0) {
+      r = await query(
+        `
+        WITH active_rc AS (
+          SELECT id FROM pricing_rate_cards
+          WHERE status = 'active' AND effective_at <= NOW()
+          ORDER BY effective_at DESC, version DESC
+          LIMIT 1
+        ),
+        candidates AS (
+          SELECT s.id, s.unit_size, r.rate_value, s.metadata
+          FROM pricing_skus s
+          JOIN pricing_rates r ON r.sku_id = s.id
+          JOIN active_rc arc ON r.rate_card_id = arc.id
+          WHERE s.provider_slug = $1
+            AND (s.model_key = $2 OR $2 LIKE s.model_key || '-%')
+            AND s.modality = 'video'
+            AND s.usage_kind = 'seconds'
+            AND s.unit = 'second'
+            AND s.is_active = TRUE
+        )
+        SELECT rate_value, unit_size, metadata
+        FROM candidates
+        WHERE ($3::text IS NULL OR (metadata->>'resolution') IS NULL OR metadata->>'resolution' = $3)
+        ORDER BY CASE WHEN $3 IS NOT NULL AND metadata->>'resolution' = $3 THEN 0 ELSE 1 END
+        LIMIT 1
+        `,
+        [slug, model, queryResolution],
+      )
+    }
+
+    // 3순위: provider만 매칭 (model_key 무관)
+    if (!r || r.rows.length === 0) {
+      r = await query(
+        `
+        WITH active_rc AS (
+          SELECT id FROM pricing_rate_cards
+          WHERE status = 'active' AND effective_at <= NOW()
+          ORDER BY effective_at DESC, version DESC
+          LIMIT 1
+        ),
+        candidates AS (
+          SELECT s.id, s.unit_size, r.rate_value, s.metadata
+          FROM pricing_skus s
+          JOIN pricing_rates r ON r.sku_id = s.id
+          JOIN active_rc arc ON r.rate_card_id = arc.id
+          WHERE s.provider_slug = $1
+            AND s.modality = 'video'
+            AND s.usage_kind = 'seconds'
+            AND s.unit = 'second'
+            AND s.is_active = TRUE
+        )
+        SELECT rate_value, unit_size, metadata
+        FROM candidates
+        WHERE ($2::text IS NULL OR (metadata->>'resolution') IS NULL OR metadata->>'resolution' = $2)
+        ORDER BY CASE WHEN $2 IS NOT NULL AND metadata->>'resolution' = $2 THEN 0 ELSE 1 END, metadata->>'resolution'
+        LIMIT 1
+        `,
+        [slug, queryResolution],
+      )
+    }
+
+    if (!r || !r.rows.length) return 0
+    const row = r.rows[0]
+    const rateValue = Number(row?.rate_value ?? 0)
+    const unitSize = Math.max(1, Number(row?.unit_size ?? 1))
+    return rateValue / unitSize
+  } catch (e) {
+    console.warn("[pricingService] lookupVideoPricing failed:", e)
+    return 0
+  }
+}
+
+/**
  * 웹 검색(serper 등) request 단가를 조회한다.
  * pricing_skus: modality=web_search, usage_kind=requests, unit=request
  * providerSlug 예: "serper"
