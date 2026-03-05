@@ -228,31 +228,34 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
     setSingleDeleteOpen(true)
   }
 
-  const openImageViewer = React.useCallback(
+  const openMediaViewer = React.useCallback(
     (asset: FileAsset) => {
-      if (getAssetCategory(asset) !== "image") return
-      const images = filtered.filter((item) => getAssetCategory(item) === "image")
-      if (!images.length) return
-      const idx = images.findIndex((item) => item.id === asset.id)
-      setViewerItems(images)
+      const cat = getAssetCategory(asset)
+      if (cat !== "image" && cat !== "video" && cat !== "audio") return
+      const mediaItems = filtered.filter((item) =>
+        ["image", "video", "audio"].includes(getAssetCategory(item))
+      )
+      if (!mediaItems.length) return
+      const idx = mediaItems.findIndex((item) => item.id === asset.id)
+      setViewerItems(mediaItems)
       setViewerIndex(idx >= 0 ? idx : 0)
       setViewerOpen(true)
     },
     [filtered]
   )
 
-  const closeImageViewer = React.useCallback(() => {
+  const closeMediaViewer = React.useCallback(() => {
     setViewerOpen(false)
   }, [])
 
-  const showPrevImage = React.useCallback(() => {
+  const showPrevMedia = React.useCallback(() => {
     setViewerIndex((prev) => {
       if (viewerItems.length <= 1) return prev
       return (prev - 1 + viewerItems.length) % viewerItems.length
     })
   }, [viewerItems.length])
 
-  const showNextImage = React.useCallback(() => {
+  const showNextMedia = React.useCallback(() => {
     setViewerIndex((prev) => {
       if (viewerItems.length <= 1) return prev
       return (prev + 1) % viewerItems.length
@@ -272,22 +275,22 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault()
-        closeImageViewer()
+        closeMediaViewer()
         return
       }
       if (e.key === "ArrowLeft") {
         e.preventDefault()
-        showPrevImage()
+        showPrevMedia()
         return
       }
       if (e.key === "ArrowRight") {
         e.preventDefault()
-        showNextImage()
+        showNextMedia()
       }
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [closeImageViewer, showNextImage, showPrevImage, viewerOpen])
+  }, [closeMediaViewer, showNextMedia, showPrevMedia, viewerOpen])
 
   React.useEffect(() => {
     if (!viewerOpen) return
@@ -475,7 +478,7 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
                       onDownload={downloadAsset}
                       onRequestDelete={requestSingleDelete}
                       onToggleFavorite={updateFavorite}
-                      onPreviewImage={openImageViewer}
+                      onPreviewImage={openMediaViewer}
                       favoriteMode="favorite"
                       detailMode="none"
                       originContext="page"
@@ -507,26 +510,48 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
 
       {viewerOpen && viewerAsset ? (
         <div className="fixed inset-0 z-50">
-          <div className="absolute inset-0 bg-black/70" onClick={closeImageViewer} />
+          <div className="absolute inset-0 bg-black/70" onClick={closeMediaViewer} />
           <div className="absolute inset-0 flex items-center justify-center p-6 pointer-events-none">
             {Boolean(viewerAsset.is_missing) || viewerError ? (
               <div className="pointer-events-auto w-[85vw] max-w-[85vh] aspect-square rounded-lg bg-muted flex flex-col items-center justify-center gap-3 text-muted-foreground shadow-2xl">
                 <Link2Off className="size-10" />
-                <span className="text-sm">{viewerAsset.is_missing ? "원본 삭제됨" : "이미지를 불러올 수 없습니다."}</span>
+                <span className="text-sm">{viewerAsset.is_missing ? "원본 삭제됨" : "미디어를 불러올 수 없습니다."}</span>
               </div>
-            ) : (
+            ) : getAssetCategory(viewerAsset) === "image" ? (
               <img
+                key={viewerAsset.id}
                 src={withAuthToken(viewerAsset.url, scopeParams)}
                 alt={getFileName(viewerAsset)}
                 className="max-h-[85vh] max-w-[85vw] object-contain rounded-lg shadow-2xl pointer-events-auto"
                 onError={() => setViewerError(true)}
               />
-            )}
+            ) : getAssetCategory(viewerAsset) === "video" ? (
+              <video
+                key={viewerAsset.id}
+                src={withAuthToken(viewerAsset.url, scopeParams)}
+                controls
+                autoPlay
+                playsInline
+                className="max-h-[85vh] max-w-[85vw] rounded-lg shadow-2xl pointer-events-auto"
+                onError={() => setViewerError(true)}
+              />
+            ) : getAssetCategory(viewerAsset) === "audio" ? (
+              <div key={viewerAsset.id} className="pointer-events-auto w-full max-w-md rounded-lg bg-muted/90 p-6 shadow-2xl flex flex-col items-center gap-4">
+                <span className="text-sm text-muted-foreground truncate w-full text-center">{getFileName(viewerAsset)}</span>
+                <audio
+                  src={withAuthToken(viewerAsset.url, scopeParams)}
+                  controls
+                  autoPlay
+                  className="w-full"
+                  onError={() => setViewerError(true)}
+                />
+              </div>
+            ) : null}
           </div>
           <button
             type="button"
             className="absolute top-6 right-6 size-10 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80 pointer-events-auto"
-            onClick={closeImageViewer}
+            onClick={closeMediaViewer}
             aria-label="닫기"
           >
             <X className="size-5" />
@@ -535,8 +560,8 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
             <button
               type="button"
               className="absolute left-6 top-1/2 -translate-y-1/2 size-11 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80 pointer-events-auto"
-              onClick={showPrevImage}
-              aria-label="이전 이미지"
+              onClick={showPrevMedia}
+              aria-label="이전"
             >
               <ChevronLeft className="size-6" />
             </button>
@@ -545,8 +570,8 @@ function PageAttachmentsPage({ scope, title, emptyLabel }: PageAttachmentsPagePr
             <button
               type="button"
               className="absolute right-6 top-1/2 -translate-y-1/2 size-11 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80 pointer-events-auto"
-              onClick={showNextImage}
-              aria-label="다음 이미지"
+              onClick={showNextMedia}
+              aria-label="다음"
             >
               <ChevronRight className="size-6" />
             </button>

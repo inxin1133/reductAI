@@ -88,8 +88,34 @@ export function FileAssetCard({
       )
     }
     const iconClass = "size-8 text-muted-foreground"
-    if (category === "video") return <Video className={iconClass} />
-    if (category === "audio") return <Music className={iconClass} />
+    if (category === "video") {
+      return (
+        <div
+          className="absolute inset-0 flex items-center justify-center cursor-zoom-in rounded-md border border-border/50 hover:bg-muted/80"
+          onClick={() => onPreviewImage?.(asset)}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === "Enter" && onPreviewImage?.(asset)}
+          aria-label="비디오 미리보기"
+        >
+          <Video className={iconClass} />
+        </div>
+      )
+    }
+    if (category === "audio") {
+      return (
+        <div
+          className="absolute inset-0 flex items-center justify-center cursor-zoom-in rounded-md border border-border/50 hover:bg-muted/80"
+          onClick={() => onPreviewImage?.(asset)}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === "Enter" && onPreviewImage?.(asset)}
+          aria-label="오디오 미리보기"
+        >
+          <Music className={iconClass} />
+        </div>
+      )
+    }
     return <FileText className={iconClass} />
   }
 
