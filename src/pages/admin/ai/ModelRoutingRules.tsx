@@ -323,7 +323,7 @@ export default function ModelRoutingRules() {
         <div>
           <div className="text-xl font-semibold">AI 서비스 - 모델 라우팅 규칙</div>
           <div className="text-sm text-muted-foreground">
-            조건(conditions)에 따라 사용할 모델(target/fallback)을 결정하는 규칙을 관리합니다.
+            model_routing_rules / 조건(conditions)에 따라 사용할 모델(target/fallback)을 결정하는 규칙을 관리합니다.
           </div>
         </div>
         <div className="flex gap-2" />
@@ -483,8 +483,8 @@ export default function ModelRoutingRules() {
       </div>
 
       <Dialog open={open} onOpenChange={(v) => setOpen(v)}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
+        <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
+          <DialogHeader className="flex-shrink-0">
             <DialogTitle>{editing ? "라우팅 규칙 수정" : "라우팅 규칙 추가"}</DialogTitle>
             <DialogDescription>
               <div className="text-xs text-muted-foreground space-y-1">
@@ -500,7 +500,8 @@ export default function ModelRoutingRules() {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="overflow-y-auto flex-1 min-h-0 -mx-6 px-6">
+            <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>규칙 이름(rule_name)</Label>
               <Input value={ruleName} onChange={(e) => setRuleName(e.target.value)} placeholder="예: ko_chat_small" />
@@ -590,9 +591,10 @@ export default function ModelRoutingRules() {
               <Label>metadata (JSON)</Label>
               <Textarea value={metadataText} onChange={(e) => setMetadataText(e.target.value)} className="min-h-[120px]" />
             </div>
+            </div>
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="flex-shrink-0">
             <Button variant="outline" onClick={() => setOpen(false)}>
               취소
             </Button>

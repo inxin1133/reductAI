@@ -200,7 +200,7 @@ export default function ModelUsageLogs() {
         <div>
           <div className="text-xl font-semibold">AI 서비스 - 모델 사용 로그</div>
           <div className="text-sm text-muted-foreground">
-            모델 호출 기록(토큰/지연/상태)을 조회합니다.
+            model_usage_logs / 모델 호출 기록(토큰/지연/상태)을 조회합니다.
           </div>
         </div>
         <div className="flex items-center gap-2" />

@@ -244,7 +244,7 @@ export default function PromptTemplates() {
         <div>
           <div className="text-xl font-semibold">AI 서비스 - 프롬프트 템플릿</div>
           <div className="text-sm text-muted-foreground">
-            목적(purpose)별로 Responses API 요청 바디(JSON)를 템플릿으로 관리합니다.
+            prompt_templates / 목적(purpose)별로 Responses API 요청 바디(JSON)를 템플릿으로 관리합니다.
           </div>
         </div>
         <div className="flex gap-2" />

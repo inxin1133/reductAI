@@ -315,7 +315,7 @@ export default function PromptSuggestions() {
         <div>
           <div className="text-xl font-semibold">AI 서비스 - 예시 프롬프트(Prompt Suggestions)</div>
           <div className="text-sm text-muted-foreground">
-            채팅 입력창 하단 등에서 클릭하면 입력창에 채워지는 예시 프롬프트를 관리합니다. (model_type 기준 필터링 가능)
+            prompt_suggestions / 채팅 입력창 하단 등에서 클릭하면 입력창에 채워지는 예시 프롬프트를 관리합니다. (model_type 기준 필터링 가능)
           </div>
         </div>
         <div className="flex gap-2" />

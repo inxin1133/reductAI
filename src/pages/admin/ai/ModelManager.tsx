@@ -634,9 +634,10 @@ export default function ModelManager() {
     <AdminPage headerContent={headerContent}>
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-muted-foreground">
-            AI 모델 카탈로그를 관리하고, 선택한 모델로 테스트(시뮬레이터)를 실행할 수 있습니다.
-          </p>
+          <div className="text-xl font-semibold">AI 서비스 - 모델 관리</div>
+          <div className="text-muted-foreground">
+            ai_models / AI 모델 카탈로그를 관리하고, 선택한 모델로 테스트(시뮬레이터)를 실행할 수 있습니다.
+          </div>
         </div>
       </div>
 

@@ -295,7 +295,7 @@ export default function ProviderAuthProfiles() {
         <div>
           <div className="text-xl font-semibold">AI 서비스 - Provider Auth Profiles</div>
           <div className="text-sm text-muted-foreground">
-            provider_api_credentials 위에 인증 방식을 프로필로 관리합니다. (v1: api_key / oauth2_service_account)
+            provider_auth_profiles / provider_api_credentials 위에 인증 방식을 프로필로 관리합니다. (v1: api_key / oauth2_service_account)
           </div>
         </div>
         <div className="flex gap-2" />

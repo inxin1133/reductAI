@@ -349,9 +349,10 @@ export default function TenantTypeModelAccess() {
     <AdminPage headerContent={headerContent}>
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-muted-foreground">
-            테넌트 개별이 아니라, <b>테넌트 유형(personal/team/group)</b> 별로 제공할 AI 모델 접근 권한을 관리합니다.
-          </p>
+          <div className="text-xl font-semibold">AI 서비스 - 테넌트 유형 모델 접근 관리</div>
+          <div className="text-muted-foreground">
+            tenant_model_access / 테넌트 개별이 아니라, <b>테넌트 유형(personal/team/group)</b> 별로 제공할 AI 모델 접근 권한을 관리합니다.
+          </div>
         </div>
       </div>
 

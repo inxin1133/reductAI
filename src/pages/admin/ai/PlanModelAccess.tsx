@@ -206,6 +206,14 @@ export default function PlanModelAccess() {
 
   return (
     <AdminPage headerContent={headerContent}>
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-xl font-semibold">AI 서비스 - 플랜 모델 접근 관리</div>
+          <div className="text-muted-foreground">
+            plan_model_access / 플랜 별로 사용 가능한 AI 모델을 관리합니다.
+          </div>
+        </div>
+      </div>
       <Alert className="border-blue-200 bg-blue-50/50 dark:bg-blue-950/20">
         <Info className="h-4 w-4" />
         <AlertDescription>

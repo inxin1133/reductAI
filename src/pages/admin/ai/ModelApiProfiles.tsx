@@ -404,7 +404,7 @@ export default function ModelApiProfiles() {
         <div>
           <div className="text-xl font-semibold">AI 서비스 - Model API Profiles</div>
           <div className="text-sm text-muted-foreground">
-            Provider/모달리티별 호출(transport)과 응답 매핑(response_mapping)을 DB로 관리합니다. (표준안: <span className="font-mono">document/model_api_profiles_standard.md</span>)
+            model_api_profiles / Provider/모달리티별 호출(transport)과 응답 매핑(response_mapping)을 DB로 관리합니다. (표준안: <span className="font-mono">document/model_api_profiles_standard.md</span>)
           </div>
         </div>
         <div className="flex gap-2" />

@@ -108,7 +108,12 @@ export default function WebSearchSettings() {
       }
     >
       <div className="flex items-center justify-between">
-        <div className="text-xl font-semibold">AI 서비스 - 웹검색 정책</div>
+        <div>
+          <div className="text-xl font-semibold">AI 서비스 - 웹검색 정책</div>
+          <div className="text-muted-foreground">
+            ai_web_search_settings / 웹검색 기능 활성화/비활성화 및 정책을 관리합니다.
+          </div>
+        </div>
         <div className="flex gap-2" />
       </div>
 

@@ -244,7 +244,7 @@ export default function ResponseSchemas() {
       <div className="flex items-center justify-between gap-2">
         <div>
           <div className="text-xl font-semibold">AI 서비스 - 출력 계약(Response Schemas)</div>
-          <div className="text-sm text-muted-foreground">모델이 사용하는 JSON Schema 기반 출력 계약을 관리합니다.</div>
+          <div className="text-sm text-muted-foreground">response_schemas / 모델이 사용하는 JSON Schema 기반 출력 계약을 관리합니다.</div>
         </div>
         <div className="flex gap-2" />
       </div>

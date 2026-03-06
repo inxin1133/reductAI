@@ -339,10 +339,10 @@ export default function Providers() {
           const next = providers.map((p) =>
             p.id === editingProvider.id
               ? {
-                  ...p,
-                  ...payload,
-                  updated_at: nowIso(),
-                }
+                ...p,
+                ...payload,
+                updated_at: nowIso(),
+              }
               : p
           )
           setProviders(next)
@@ -422,9 +422,10 @@ export default function Providers() {
     >
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-muted-foreground">
-            AI 제공업체(OpenAI/Anthropic 등) 정보를 관리합니다. (현재는 백엔드 미연동 시 localStorage로도 동작합니다.)
-          </p>
+          <div className="text-xl font-semibold">AI 서비스 - 제공업체 관리</div>
+          <div className="text-muted-foreground">
+            ai_providers / AI 제공업체(OpenAI/Anthropic 등) 정보를 관리합니다.
+          </div>
         </div>
       </div>
 

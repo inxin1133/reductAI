@@ -540,9 +540,10 @@ export default function ProviderCredentials() {
     >
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-muted-foreground">
-            서비스 전체에서 공용으로 사용할 AI 제공업체 API Key(credential)를 관리합니다.
-          </p>
+          <div className="text-xl font-semibold">AI 서비스 - API Key 관리</div>
+          <div className="text-muted-foreground">
+            provider_api_credentials / 서비스 전체에서 공용으로 사용할 AI 제공업체 API Key(credential)를 관리합니다.
+          </div>
         </div>
       </div>
 
