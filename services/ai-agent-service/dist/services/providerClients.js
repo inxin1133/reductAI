@@ -536,7 +536,7 @@ function normalizeGoogleBaseUrl(input) {
 async function getProviderAuth(providerId) {
     // 공용 credential(system tenant) 중 default 우선으로 선택
     const systemTenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
-    const res = await (0, db_1.query)(`SELECT id, api_key_encrypted, endpoint_url, organization_id
+    const res = await (0, db_1.query)(`SELECT id, api_key_encrypted, endpoint_url, organization_id, rate_limit_per_minute, rate_limit_per_day
      FROM provider_api_credentials
      WHERE tenant_id = $1 AND provider_id = $2 AND is_active = TRUE
      ORDER BY is_default DESC, created_at DESC
@@ -550,6 +550,8 @@ async function getProviderAuth(providerId) {
         apiKey,
         endpointUrl: row.endpoint_url,
         organizationId: row.organization_id,
+        rateLimitPerMinute: row.rate_limit_per_minute,
+        rateLimitPerDay: row.rate_limit_per_day,
     };
 }
 async function getProviderBase(providerId) {

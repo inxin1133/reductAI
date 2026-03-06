@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.chatCompletion = chatCompletion;
 const db_1 = require("../config/db");
 const providerClients_1 = require("../services/providerClients");
+const credentialRateLimitService_1 = require("../services/credentialRateLimitService");
 const systemTenantService_1 = require("../services/systemTenantService");
 const pricingService_1 = require("../services/pricingService");
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
@@ -125,6 +126,7 @@ async function chatCompletion(req, res) {
         }
         const providerId = provider.rows[0].id;
         const auth = await (0, providerClients_1.getProviderAuth)(providerId);
+        (0, credentialRateLimitService_1.checkAndRecord)(auth.credentialId, auth.rateLimitPerMinute, auth.rateLimitPerDay);
         const base = await (0, providerClients_1.getProviderBase)(providerId);
         const started = Date.now();
         const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
@@ -378,6 +380,13 @@ async function chatCompletion(req, res) {
         return res.status(400).json({ message: `Unsupported provider: ${provider_slug}` });
     }
     catch (e) {
+        if (e instanceof credentialRateLimitService_1.CredentialRateLimitExceededError) {
+            return res.status(429).json({
+                message: e.message,
+                code: "CREDENTIAL_RATE_LIMIT_EXCEEDED",
+                details: { limit_type: e.limitType, limit: e.limit, current: e.current },
+            });
+        }
         console.error("chatCompletion error:", e);
         // 실패도 best-effort로 기록(가능한 경우)
         try {

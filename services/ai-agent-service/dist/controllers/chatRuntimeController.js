@@ -45,6 +45,7 @@ const crypto_1 = __importDefault(require("crypto"));
 const providerClients_1 = require("../services/providerClients");
 const planModelAccessService_1 = require("../services/planModelAccessService");
 const authProfilesService_1 = require("../services/authProfilesService");
+const credentialRateLimitService_1 = require("../services/credentialRateLimitService");
 const fileServiceClient_1 = require("../services/fileServiceClient");
 const normalizeAiContent_1 = require("../utils/normalizeAiContent");
 const webSearchSettingsService_1 = require("../services/webSearchSettingsService");
@@ -2071,6 +2072,7 @@ async function chatRun(req, res) {
                         profileAttempted = true;
                         const auth = await (0, authProfilesService_1.resolveAuthForModelApiProfile)({ providerId, authProfileId: profile.auth_profile_id });
                         usedCredentialId = auth.credentialId;
+                        (0, credentialRateLimitService_1.checkAndRecord)(auth.credentialId, auth.rateLimitPerMinute, auth.rateLimitPerDay);
                         out = await executeHttpJsonProfile({
                             apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
                             apiKey: auth.apiKey,
@@ -2128,6 +2130,7 @@ async function chatRun(req, res) {
         if (out == null) {
             const auth = await (0, authProfilesService_1.resolveAuthForModelApiProfile)({ providerId, authProfileId: null });
             usedCredentialId = auth.credentialId;
+            (0, credentialRateLimitService_1.checkAndRecord)(auth.credentialId, auth.rateLimitPerMinute, auth.rateLimitPerDay);
             // Fallback: 기존 provider별 하드코딩 실행기
             if (mt === "text") {
                 if (providerKey === "openai") {
@@ -2969,6 +2972,15 @@ async function chatRun(req, res) {
     }
     catch (e) {
         console.error("chatRun error:", e);
+        if (e instanceof credentialRateLimitService_1.CredentialRateLimitExceededError) {
+            cleanupActiveRun();
+            responseFinalized = true;
+            return res.status(429).json({
+                message: e.message,
+                code: "CREDENTIAL_RATE_LIMIT_EXCEEDED",
+                details: { limit_type: e.limitType, limit: e.limit, current: e.current },
+            });
+        }
         const msg = e instanceof Error ? e.message : String(e);
         if (assistantMessageId && !isAborted()) {
             const failText = `요청 처리 중 오류가 발생했습니다.\n\n${msg}`;

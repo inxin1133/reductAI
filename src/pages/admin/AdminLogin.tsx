@@ -34,7 +34,7 @@ export default function AdminLogin() {
   // 관리자 여부를 확인하는 헬퍼 (platformRole slug 기준)
   const isAdminRole = (roleSlug?: string | null) => {
     const slug = (roleSlug || "").toLowerCase()
-    return slug === "admin" || slug === "super-admin" || slug === "owner"
+    return slug === "super-admin" || slug === "admin" || slug === "manager"
   }
 
   const handleLogin = async () => {

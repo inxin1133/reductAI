@@ -8,9 +8,10 @@ import {
   createMarkup,
   createRateCard,
   createSku,
+  deactivateSku,
   deleteMarkup,
-  deleteSku,
   generateSkusForModel,
+  hardDeleteSku,
   listMarkups,
   listMissingSkus,
   listPublicPrices,
@@ -40,7 +41,8 @@ router.get("/skus/check-availability", checkSkuCodeAvailability)
 router.get("/skus/needs-generation", checkModelNeedsSkuGeneration)
 router.post("/skus", createSku)
 router.put("/skus/:id", updateSku)
-router.delete("/skus/:id", deleteSku)
+router.post("/skus/:id/permanent-delete", hardDeleteSku)
+router.delete("/skus/:id", deactivateSku)
 router.post("/skus/generate-for-model", generateSkusForModel)
 router.get("/markups", listMarkups)
 router.post("/markups", createMarkup)

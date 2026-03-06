@@ -14,6 +14,7 @@ exports.purgeThread = purgeThread;
 exports.reorderThreads = reorderThreads;
 const db_1 = require("../config/db");
 const providerClients_1 = require("../services/providerClients");
+const credentialRateLimitService_1 = require("../services/credentialRateLimitService");
 const systemTenantService_1 = require("../services/systemTenantService");
 const normalizeAiContent_1 = require("../utils/normalizeAiContent");
 let ensuredConversationReads = false;
@@ -136,6 +137,7 @@ async function generateTitleByOpenAi(firstMessage) {
             throw new Error("OPENAI_PROVIDER_NOT_FOUND");
         const providerId = provider.rows[0].id;
         const auth = await (0, providerClients_1.getProviderAuth)(providerId);
+        (0, credentialRateLimitService_1.checkAndRecord)(auth.credentialId, auth.rateLimitPerMinute, auth.rateLimitPerDay);
         const base = await (0, providerClients_1.getProviderBase)(providerId);
         const prompt = [
             "다음 사용자 질문을 보고 '대화 타임라인'에 표시할 제목을 만들어줘.",

@@ -66,7 +66,7 @@ async function loadAuthProfileById(args) {
     };
 }
 async function loadCredentialById(args) {
-    const r = await (0, db_1.query)(`SELECT id, api_key_encrypted, endpoint_url, organization_id, metadata
+    const r = await (0, db_1.query)(`SELECT id, api_key_encrypted, endpoint_url, organization_id, metadata, rate_limit_per_minute, rate_limit_per_day
      FROM provider_api_credentials
      WHERE tenant_id = $1 AND id = $2 AND is_active = TRUE
      LIMIT 1`, [args.tenantId, args.credentialId]);
@@ -80,6 +80,8 @@ async function loadCredentialById(args) {
         endpointUrl: row.endpoint_url ? String(row.endpoint_url) : null,
         organizationId: row.organization_id ? String(row.organization_id) : null,
         metadata: safeObj(row.metadata),
+        rateLimitPerMinute: row.rate_limit_per_minute ?? null,
+        rateLimitPerDay: row.rate_limit_per_day ?? null,
     };
 }
 async function fetchGoogleAccessTokenFromServiceAccount(args) {
@@ -119,7 +121,7 @@ async function resolveAuthForModelApiProfile(args) {
     const tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
     // default behavior: existing api_key credential selection (no auth profile)
     if (!args.authProfileId) {
-        const res = await (0, db_1.query)(`SELECT id, api_key_encrypted, endpoint_url, organization_id
+        const res = await (0, db_1.query)(`SELECT id, api_key_encrypted, endpoint_url, organization_id, rate_limit_per_minute, rate_limit_per_day
        FROM provider_api_credentials
        WHERE tenant_id = $1 AND provider_id = $2 AND is_active = TRUE
        ORDER BY is_default DESC, created_at DESC
@@ -135,6 +137,8 @@ async function resolveAuthForModelApiProfile(args) {
             endpointUrl: row.endpoint_url || null,
             organizationId: row.organization_id || null,
             configVars: {},
+            rateLimitPerMinute: row.rate_limit_per_minute ?? null,
+            rateLimitPerDay: row.rate_limit_per_day ?? null,
         };
     }
     const profile = await loadAuthProfileById({ tenantId, authProfileId: args.authProfileId });
@@ -161,6 +165,8 @@ async function resolveAuthForModelApiProfile(args) {
             endpointUrl: cred.endpointUrl,
             organizationId: cred.organizationId,
             configVars,
+            rateLimitPerMinute: cred.rateLimitPerMinute ?? null,
+            rateLimitPerDay: cred.rateLimitPerDay ?? null,
         };
     }
     if (profile.auth_type === "oauth2_service_account") {
@@ -187,6 +193,8 @@ async function resolveAuthForModelApiProfile(args) {
                 endpointUrl: cred.endpointUrl,
                 organizationId: cred.organizationId,
                 configVars,
+                rateLimitPerMinute: cred.rateLimitPerMinute ?? null,
+                rateLimitPerDay: cred.rateLimitPerDay ?? null,
             };
         }
         const t = await fetchGoogleAccessTokenFromServiceAccount({ saJson: sa, scopes, tokenUrl, audience });
@@ -199,6 +207,8 @@ async function resolveAuthForModelApiProfile(args) {
             endpointUrl: cred.endpointUrl,
             organizationId: cred.organizationId,
             configVars,
+            rateLimitPerMinute: cred.rateLimitPerMinute ?? null,
+            rateLimitPerDay: cred.rateLimitPerDay ?? null,
         };
     }
     throw new Error(`AUTH_TYPE_NOT_IMPLEMENTED:${profile.auth_type}`);

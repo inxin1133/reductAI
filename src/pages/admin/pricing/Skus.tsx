@@ -33,12 +33,14 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { ChevronsUpDown, Loader2, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react"
+import { ChevronsUpDown, Loader2, Pencil, Plus, Power, RefreshCcw, Trash2 } from "lucide-react"
 import { AdminPage } from "@/components/layout/AdminPage"
 
 type SkuRow = {
@@ -58,6 +60,7 @@ type SkuRow = {
   metadata?: Record<string, unknown> | null
   created_at: string
   updated_at: string
+  rates_count?: number
 }
 
 type ListResponse = {
@@ -92,6 +95,7 @@ type FormState = {
 
 const API_URL = "/api/ai/pricing/skus"
 const MODELS_API_URL = "/api/ai/models"
+const USERS_API_URL = "/api/users"
 const SELECT_ALL = "__all__"
 const SELECT_NONE = "__none__"
 const MODEL_NONE = "__none__"
@@ -149,6 +153,7 @@ export default function Skus() {
   const [rows, setRows] = useState<SkuRow[]>([])
   const [loading, setLoading] = useState(false)
   const [total, setTotal] = useState(0)
+  const [listError, setListError] = useState<string | null>(null)
   const [page, setPage] = useState(0)
   const limit = 50
 
@@ -169,6 +174,13 @@ export default function Skus() {
   const [selectedModelId, setSelectedModelId] = useState<string>("")
   const [skuCheckLoading, setSkuCheckLoading] = useState(false)
 
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<SkuRow | null>(null)
+  const [deletePassword, setDeletePassword] = useState("")
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [deleteLoading, setDeleteLoading] = useState(false)
+
   const queryString = useMemo(() => {
     const params = new URLSearchParams()
     params.set("limit", String(limit))
@@ -184,14 +196,37 @@ export default function Skus() {
 
   async function fetchList() {
     setLoading(true)
+    setListError(null)
     try {
       const res = await adminFetch(`${API_URL}?${queryString}`)
-      const json = (await res.json()) as ListResponse
-      if (!res.ok || !json.ok) throw new Error("FAILED")
+      let json: ListResponse
+      try {
+        json = (await res.json()) as ListResponse
+      } catch {
+        setListError(res.ok ? "응답 형식 오류" : `요청 실패 (${res.status})`)
+        setRows([])
+        setTotal(0)
+        return
+      }
+      if (!res.ok) {
+        const err = json as unknown as { message?: string; details?: string }
+        const msg = err.details ? `${err.message || "요청 실패"} — ${err.details}` : (err.message || `요청 실패 (${res.status})`)
+        setListError(msg)
+        setRows([])
+        setTotal(0)
+        return
+      }
+      if (!json.ok) {
+        setListError((json as unknown as { message?: string }).message || "목록 조회 실패")
+        setRows([])
+        setTotal(0)
+        return
+      }
       setRows(json.rows || [])
-      setTotal(json.total || 0)
+      setTotal(json.total ?? 0)
     } catch (e) {
       console.error(e)
+      setListError(e instanceof Error ? e.message : "목록 조회 중 오류가 발생했습니다.")
       setRows([])
       setTotal(0)
     } finally {
@@ -203,6 +238,19 @@ export default function Skus() {
     fetchList()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryString])
+
+  useEffect(() => {
+    const id = String(localStorage.getItem("user_id") || "").trim()
+    if (!id) return
+    adminFetch(`${USERS_API_URL}/${encodeURIComponent(id)}`)
+      .then(async (res) => {
+        if (!res.ok) return
+        const data = await res.json().catch(() => null)
+        const slug = String(data?.role_slug || "").toLowerCase()
+        setIsSuperAdmin(slug === "super-admin")
+      })
+      .catch(() => setIsSuperAdmin(false))
+  }, [])
 
   async function fetchModels() {
     setModelsLoading(true)
@@ -228,10 +276,12 @@ export default function Skus() {
     }
   }
 
-  async function checkSkuCodeExists(skuCode: string): Promise<boolean> {
+  async function checkSkuCodeExists(skuCode: string, excludeId?: string): Promise<boolean> {
     if (!skuCode.trim()) return false
     try {
-      const res = await adminFetch(`${API_URL}/check-availability?sku_code=${encodeURIComponent(skuCode.trim())}`)
+      const params = new URLSearchParams({ sku_code: skuCode.trim() })
+      if (excludeId) params.set("exclude_id", excludeId)
+      const res = await adminFetch(`${API_URL}/check-availability?${params}`)
       const json = (await res.json().catch(() => ({}))) as { ok?: boolean; exists?: boolean }
       return Boolean(json.ok && json.exists)
     } catch {
@@ -240,14 +290,14 @@ export default function Skus() {
   }
 
   async function handleSkuCodeBlur() {
-    const effectiveCode = form.sku_code.trim() || autoCode
+    const effectiveCode = form.sku_code.trim() || (editing ? "" : autoCode)
     if (!effectiveCode) return
     setSkuCheckLoading(true)
     try {
-      const exists = await checkSkuCodeExists(effectiveCode)
+      const exists = await checkSkuCodeExists(effectiveCode, editing?.id)
       if (exists) {
         alert("이미 존재하는 SKU 코드입니다. 다른 코드를 입력해주세요.")
-        setForm((p) => ({ ...p, sku_code: "" }))
+        if (!editing) setForm((p) => ({ ...p, sku_code: "" }))
       }
     } finally {
       setSkuCheckLoading(false)
@@ -299,6 +349,7 @@ export default function Skus() {
         currency: form.currency.trim() || "USD",
         metadata,
       }
+      if (form.sku_code.trim()) payload.sku_code = form.sku_code.trim()
       if (selectedModelId === MODEL_NONE) {
         payload.model_id = null
         payload.provider_slug = form.provider_slug.trim()
@@ -356,14 +407,12 @@ export default function Skus() {
     }
 
     const payload = buildPayload()
-    if (!editing) {
-      const effectiveCode = (payload as { sku_code?: string }).sku_code ?? (form.sku_code.trim() || autoCode)
-      if (effectiveCode) {
-        const exists = await checkSkuCodeExists(effectiveCode)
-        if (exists) {
-          alert("이미 존재하는 SKU 코드입니다. 다른 코드를 입력해주세요.")
-          return
-        }
+    const effectiveCode = (payload as { sku_code?: string }).sku_code ?? (form.sku_code.trim() || autoCode)
+    if (effectiveCode) {
+      const exists = await checkSkuCodeExists(effectiveCode, editing?.id)
+      if (exists) {
+        alert("이미 존재하는 SKU 코드입니다. 다른 코드를 입력해주세요.")
+        return
       }
     }
     try {
@@ -400,6 +449,45 @@ export default function Skus() {
     } catch (e) {
       console.error(e)
       alert("비활성화에 실패했습니다.")
+    }
+  }
+
+  function openDeleteDialog(row: SkuRow) {
+    setDeleteTarget(row)
+    setDeletePassword("")
+    setDeleteError(null)
+    setDeleteDialogOpen(true)
+  }
+
+  async function handleDeleteConfirm() {
+    if (!deleteTarget) return
+    if (!deletePassword.trim()) {
+      setDeleteError("비밀번호를 입력해주세요.")
+      return
+    }
+    setDeleteLoading(true)
+    setDeleteError(null)
+    try {
+      const res = await adminFetch(`${API_URL}/${deleteTarget.id}/permanent-delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ admin_password: deletePassword }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json.ok) {
+        const msg = (json as { message?: string }).message || "삭제 실패"
+        setDeleteError(msg)
+        return
+      }
+      setDeleteDialogOpen(false)
+      setDeleteTarget(null)
+      setDeletePassword("")
+      await fetchList()
+    } catch (e) {
+      console.error(e)
+      setDeleteError(e instanceof Error ? e.message : "삭제에 실패했습니다.")
+    } finally {
+      setDeleteLoading(false)
     }
   }
 
@@ -531,6 +619,18 @@ export default function Skus() {
                   로딩 중...
                 </TableCell>
               </TableRow>
+            ) : listError ? (
+              <TableRow>
+                <TableCell colSpan={10} className="py-8 text-center">
+                  <div className="text-destructive font-medium">{listError}</div>
+                  <div className="text-sm text-muted-foreground mt-1">
+                    네트워크, 인증(로그인), 또는 pricing 서비스 연결을 확인해주세요.
+                  </div>
+                  <Button variant="outline" size="sm" className="mt-2" onClick={() => fetchList()}>
+                    다시 시도
+                  </Button>
+                </TableCell>
+              </TableRow>
             ) : rows.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">
@@ -564,7 +664,7 @@ export default function Skus() {
                   <TableCell className="font-mono">{r.usage_kind}</TableCell>
                   <TableCell className="font-mono">{r.token_category || "-"}</TableCell>
                   <TableCell className="font-mono text-xs">
-                    {r.unit_size.toLocaleString()} {r.unit}
+                    {(r.unit_size ?? 1).toLocaleString()} {r.unit}
                   </TableCell>
                   <TableCell>
                     <Badge
@@ -582,12 +682,24 @@ export default function Skus() {
                       </Button>
                       {r.is_active ? (
                         <Button variant="outline" size="sm" onClick={() => deactivateSku(r)}>
-                          <Trash2 className="size-3 mr-1" />
-                          비활성
+                          <Power className="size-3 mr-1" />
+                          비활성화
                         </Button>
                       ) : (
                         <Button variant="outline" size="sm" onClick={() => reactivateSku(r)}>
                           활성화
+                        </Button>
+                      )}
+                      {isSuperAdmin && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => openDeleteDialog(r)}
+                          title="SKU를 완전히 삭제합니다 (최고관리자 전용, 비밀번호 확인 필요)"
+                        >
+                          <Trash2 className="size-3 mr-1" />
+                          삭제
                         </Button>
                       )}
                     </div>
@@ -818,35 +930,29 @@ export default function Skus() {
               />
             </div>
 
-            {!editing && (
-              <div className="space-y-1">
-                <div className="text-sm font-medium">SKU Code (자동 생성, override 가능)</div>
-                <Input
-                  value={form.sku_code}
-                  onChange={(e) => setForm((p) => ({ ...p, sku_code: e.target.value }))}
-                  onBlur={handleSkuCodeBlur}
-                  placeholder={autoCode || "provider.model.modality.usage_kind"}
-                  disabled={skuCheckLoading}
-                />
-                {skuCheckLoading && (
-                  <div className="text-xs text-muted-foreground flex items-center gap-1">
-                    <Loader2 className="size-3 animate-spin" />
-                    중복 확인 중...
-                  </div>
-                )}
-                {autoCode && !form.sku_code && !skuCheckLoading && (
-                  <div className="text-xs text-muted-foreground">
-                    자동 생성: <span className="font-mono">{autoCode}</span>
-                  </div>
-                )}
+            <div className="space-y-1">
+              <div className="text-sm font-medium">
+                SKU Code {editing ? "(수정 가능)" : "(자동 생성, override 가능)"}
               </div>
-            )}
-
-            {editing && (
-              <div className="text-xs text-muted-foreground">
-                SKU Code: <span className="font-mono">{editing.sku_code}</span> (변경 불가)
-              </div>
-            )}
+              <Input
+                value={form.sku_code}
+                onChange={(e) => setForm((p) => ({ ...p, sku_code: e.target.value }))}
+                onBlur={handleSkuCodeBlur}
+                placeholder={editing ? editing.sku_code : autoCode || "provider.model.modality.usage_kind"}
+                disabled={skuCheckLoading}
+              />
+              {skuCheckLoading && (
+                <div className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Loader2 className="size-3 animate-spin" />
+                  중복 확인 중...
+                </div>
+              )}
+              {!editing && autoCode && !form.sku_code && !skuCheckLoading && (
+                <div className="text-xs text-muted-foreground">
+                  자동 생성: <span className="font-mono">{autoCode}</span>
+                </div>
+              )}
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={saving}>
@@ -855,6 +961,57 @@ export default function Skus() {
             <Button onClick={saveSku} disabled={saving}>
               {saving ? <Loader2 className="size-4 mr-2 animate-spin" /> : null}
               {editing ? "저장" : "생성"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={deleteDialogOpen}
+        onOpenChange={(open) => {
+          setDeleteDialogOpen(open)
+          if (!open) {
+            setDeleteTarget(null)
+            setDeletePassword("")
+            setDeleteError(null)
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>SKU 삭제</DialogTitle>
+            <DialogDescription>
+              삭제하려면 본인 계정의 비밀번호를 입력해주세요. 이 작업은 되돌릴 수 없으며, 연결된 pricing_rates(요금 정보)도 함께 삭제됩니다.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-2">
+            <div className="text-sm">
+              삭제 대상: <span className="font-mono font-medium">{deleteTarget?.sku_code || "-"}</span>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="sku-delete-password">비밀번호</Label>
+              <Input
+                id="sku-delete-password"
+                type="password"
+                value={deletePassword}
+                onChange={(e) => setDeletePassword(e.target.value)}
+                disabled={deleteLoading}
+                placeholder="본인 계정 비밀번호"
+              />
+            </div>
+            {deleteError ? <div className="text-sm text-destructive">{deleteError}</div> : null}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDeleteDialogOpen(false)}
+              disabled={deleteLoading}
+            >
+              취소
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteConfirm} disabled={deleteLoading}>
+              {deleteLoading ? <Loader2 className="size-4 mr-2 animate-spin" /> : null}
+              {deleteLoading ? "삭제 중..." : "삭제"}
             </Button>
           </DialogFooter>
         </DialogContent>

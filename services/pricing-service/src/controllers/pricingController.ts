@@ -1,5 +1,7 @@
+import bcrypt from "bcrypt"
 import { Request, Response } from "express"
 import pool, { query } from "../config/db"
+import type { AuthedRequest } from "../middleware/requireAuth"
 
 function toInt(v: unknown, fallback: number) {
   const n = Number(v)
@@ -671,6 +673,7 @@ export async function listSkus(req: Request, res: Response) {
     const countRes = await query(`SELECT COUNT(*)::int AS total FROM pricing_skus ${whereSql}`, params)
 
     const includeRate = !!modelId
+    const ratesCountSubquery = "(SELECT COUNT(*)::int FROM pricing_rates WHERE sku_id = s.id) AS rates_count"
     const listRes = await query(
       includeRate
         ? `
@@ -684,7 +687,8 @@ export async function listSkus(req: Request, res: Response) {
          WHERE rc.status = 'active' AND rc.effective_at <= NOW()
            AND r.sku_id = s.id
          ORDER BY rc.effective_at DESC, r.tier_min NULLS FIRST
-         LIMIT 1) AS rate_value
+         LIMIT 1) AS rate_value,
+        ${ratesCountSubquery}
       FROM pricing_skus s
       ${whereSql}
       ORDER BY s.sku_code ASC, s.model_key ASC, s.modality ASC
@@ -692,12 +696,13 @@ export async function listSkus(req: Request, res: Response) {
       `
         : `
       SELECT
-        id, sku_code, provider_slug, model_id, model_key, model_name,
-        modality, usage_kind, token_category, unit, unit_size, currency,
-        is_active, metadata, created_at, updated_at
-      FROM pricing_skus
+        s.id, s.sku_code, s.provider_slug, s.model_id, s.model_key, s.model_name,
+        s.modality, s.usage_kind, s.token_category, s.unit, s.unit_size, s.currency,
+        s.is_active, s.metadata, s.created_at, s.updated_at,
+        ${ratesCountSubquery}
+      FROM pricing_skus s
       ${whereSql}
-      ORDER BY sku_code ASC, model_key ASC, modality ASC
+      ORDER BY s.sku_code ASC, s.model_key ASC, s.modality ASC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
       [...params, limit, offset]
@@ -735,9 +740,13 @@ export async function checkSkuCodeAvailability(req: Request, res: Response) {
     const skuCode = toStr(req.query.sku_code)
     if (!skuCode) return res.status(400).json({ message: "sku_code query is required" })
 
+    const excludeId = toStr(req.query.exclude_id)
+    const excludeClause = excludeId ? " AND id != $2" : ""
+    const params = excludeId ? [skuCode, excludeId] : [skuCode]
+
     const result = await query(
-      `SELECT 1 FROM pricing_skus WHERE sku_code = $1 LIMIT 1`,
-      [skuCode]
+      `SELECT 1 FROM pricing_skus WHERE sku_code = $1${excludeClause} LIMIT 1`,
+      params
     )
     const exists = result.rows.length > 0
 
@@ -871,6 +880,11 @@ export async function updateSku(req: Request, res: Response) {
     if (input.metadata !== undefined) {
       setField("metadata", input.metadata && typeof input.metadata === "object" ? input.metadata : {})
     }
+    if (input.sku_code !== undefined) {
+      const v = toStr(input.sku_code)
+      if (!v) return res.status(400).json({ message: "sku_code must be non-empty when provided" })
+      setField("sku_code", v)
+    }
 
     if (fields.length === 0) return res.status(400).json({ message: "No fields to update" })
 
@@ -892,7 +906,7 @@ export async function updateSku(req: Request, res: Response) {
   }
 }
 
-export async function deleteSku(req: Request, res: Response) {
+export async function deactivateSku(req: Request, res: Response) {
   try {
     const id = String(req.params.id || "")
     if (!id) return res.status(400).json({ message: "id is required" })
@@ -905,8 +919,52 @@ export async function deleteSku(req: Request, res: Response) {
     if (result.rows.length === 0) return res.status(404).json({ message: "SKU not found" })
     return res.json({ ok: true, row: result.rows[0] })
   } catch (e: any) {
-    console.error("deleteSku error:", e)
+    console.error("deactivateSku error:", e)
     return res.status(500).json({ message: "Failed to deactivate SKU", details: String(e?.message || e) })
+  }
+}
+
+export async function hardDeleteSku(req: Request, res: Response) {
+  try {
+    const authedReq = req as AuthedRequest
+    const platformRole = String(authedReq.platformRole || "").toLowerCase()
+
+    if (platformRole !== "super-admin") {
+      return res.status(403).json({ message: "최고관리자(super-admin)만 SKU를 삭제할 수 있습니다." })
+    }
+
+    const adminPassword = typeof req.body?.admin_password === "string" ? req.body.admin_password.trim() : ""
+    if (!adminPassword) {
+      return res.status(400).json({ message: "비밀번호를 입력해주세요." })
+    }
+
+    const adminRes = await query(
+      `SELECT password_hash FROM users WHERE id = $1 AND deleted_at IS NULL`,
+      [authedReq.userId]
+    )
+    const adminHash = adminRes.rows[0]?.password_hash
+    if (!adminHash) {
+      return res.status(400).json({ message: "비밀번호가 설정되지 않은 계정입니다." })
+    }
+
+    const passwordOk = await bcrypt.compare(adminPassword, adminHash)
+    if (!passwordOk) {
+      return res.status(401).json({ message: "비밀번호가 올바르지 않습니다." })
+    }
+
+    const id = String(req.params.id || "")
+    if (!id) return res.status(400).json({ message: "id is required" })
+
+    const result = await query(
+      `DELETE FROM pricing_skus WHERE id = $1 RETURNING id, sku_code`,
+      [id]
+    )
+
+    if (result.rows.length === 0) return res.status(404).json({ message: "SKU not found" })
+    return res.json({ ok: true, row: result.rows[0] })
+  } catch (e: any) {
+    console.error("hardDeleteSku error:", e)
+    return res.status(500).json({ message: "Failed to delete SKU", details: String(e?.message || e) })
   }
 }
 

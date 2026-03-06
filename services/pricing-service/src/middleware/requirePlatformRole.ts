@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from "express"
 import type { AuthedRequest } from "./requireAuth"
 
-const PLATFORM_ADMIN_SLUGS = new Set(["owner", "admin", "super-admin"])
+const PLATFORM_ADMIN_SLUGS = new Set(["super-admin", "admin", "manager"])
 
 export function requirePlatformAdmin(req: Request, res: Response, next: NextFunction) {
   const roleSlug = (req as AuthedRequest).platformRole

@@ -1,6 +1,10 @@
 import { Request, Response } from "express"
 import { query } from "../config/db"
 import { getProviderAuth, getProviderBase, openaiSimulateChat, anthropicSimulateChat } from "../services/providerClients"
+import {
+  checkAndRecord as checkCredentialRateLimit,
+  CredentialRateLimitExceededError,
+} from "../services/credentialRateLimitService"
 import { ensureSystemTenantId } from "../services/systemTenantService"
 import { lookupModelPricing, calculateCost } from "../services/pricingService"
 import jwt from "jsonwebtoken"
@@ -152,6 +156,7 @@ export async function chatCompletion(req: Request, res: Response) {
 
     const providerId = provider.rows[0].id as string
     const auth = await getProviderAuth(providerId)
+    checkCredentialRateLimit(auth.credentialId, auth.rateLimitPerMinute, auth.rateLimitPerDay)
     const base = await getProviderBase(providerId)
     const started = Date.now()
     const tenantId = await ensureSystemTenantId()
@@ -436,6 +441,13 @@ export async function chatCompletion(req: Request, res: Response) {
 
     return res.status(400).json({ message: `Unsupported provider: ${provider_slug}` })
   } catch (e: any) {
+    if (e instanceof CredentialRateLimitExceededError) {
+      return res.status(429).json({
+        message: e.message,
+        code: "CREDENTIAL_RATE_LIMIT_EXCEEDED",
+        details: { limit_type: e.limitType, limit: e.limit, current: e.current },
+      })
+    }
     console.error("chatCompletion error:", e)
     // 실패도 best-effort로 기록(가능한 경우)
     try {

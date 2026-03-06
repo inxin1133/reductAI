@@ -32,6 +32,9 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.listPublicPrices = listPublicPrices;
 exports.listRateCards = listRateCards;
@@ -45,7 +48,8 @@ exports.listSkus = listSkus;
 exports.checkSkuCodeAvailability = checkSkuCodeAvailability;
 exports.createSku = createSku;
 exports.updateSku = updateSku;
-exports.deleteSku = deleteSku;
+exports.deactivateSku = deactivateSku;
+exports.hardDeleteSku = hardDeleteSku;
 exports.listMissingSkus = listMissingSkus;
 exports.addRatesToCard = addRatesToCard;
 exports.checkModelNeedsSkuGeneration = checkModelNeedsSkuGeneration;
@@ -54,6 +58,7 @@ exports.listMarkups = listMarkups;
 exports.createMarkup = createMarkup;
 exports.updateMarkup = updateMarkup;
 exports.deleteMarkup = deleteMarkup;
+const bcrypt_1 = __importDefault(require("bcrypt"));
 const db_1 = __importStar(require("../config/db"));
 function toInt(v, fallback) {
     const n = Number(v);
@@ -116,7 +121,8 @@ async function listPublicPrices(req, res) {
         cost_per_unit,
         margin_percent,
         avg_cost_per_1k_with_margin,
-        cost_per_unit_with_margin
+        cost_per_unit_with_margin,
+        metadata
       FROM pricing_model_cost_summaries
       ${whereSql}
       ORDER BY provider_slug ASC, model_name ASC, modality ASC, usage_kind ASC, tier_unit NULLS FIRST, tier_min NULLS FIRST
@@ -405,6 +411,7 @@ async function listRates(req, res) {
         s.token_category,
         s.unit,
         s.unit_size,
+        s.metadata,
         r.rate_value,
         r.tier_unit,
         r.tier_min,
@@ -633,6 +640,7 @@ async function listSkus(req, res) {
         const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
         const countRes = await (0, db_1.query)(`SELECT COUNT(*)::int AS total FROM pricing_skus ${whereSql}`, params);
         const includeRate = !!modelId;
+        const ratesCountSubquery = "(SELECT COUNT(*)::int FROM pricing_rates WHERE sku_id = s.id) AS rates_count";
         const listRes = await (0, db_1.query)(includeRate
             ? `
       SELECT
@@ -645,7 +653,8 @@ async function listSkus(req, res) {
          WHERE rc.status = 'active' AND rc.effective_at <= NOW()
            AND r.sku_id = s.id
          ORDER BY rc.effective_at DESC, r.tier_min NULLS FIRST
-         LIMIT 1) AS rate_value
+         LIMIT 1) AS rate_value,
+        ${ratesCountSubquery}
       FROM pricing_skus s
       ${whereSql}
       ORDER BY s.sku_code ASC, s.model_key ASC, s.modality ASC
@@ -653,12 +662,13 @@ async function listSkus(req, res) {
       `
             : `
       SELECT
-        id, sku_code, provider_slug, model_id, model_key, model_name,
-        modality, usage_kind, token_category, unit, unit_size, currency,
-        is_active, metadata, created_at, updated_at
-      FROM pricing_skus
+        s.id, s.sku_code, s.provider_slug, s.model_id, s.model_key, s.model_name,
+        s.modality, s.usage_kind, s.token_category, s.unit, s.unit_size, s.currency,
+        s.is_active, s.metadata, s.created_at, s.updated_at,
+        ${ratesCountSubquery}
+      FROM pricing_skus s
       ${whereSql}
-      ORDER BY sku_code ASC, model_key ASC, modality ASC
+      ORDER BY s.sku_code ASC, s.model_key ASC, s.modality ASC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `, [...params, limit, offset]);
         return res.json({
@@ -698,7 +708,10 @@ async function checkSkuCodeAvailability(req, res) {
         const skuCode = toStr(req.query.sku_code);
         if (!skuCode)
             return res.status(400).json({ message: "sku_code query is required" });
-        const result = await (0, db_1.query)(`SELECT 1 FROM pricing_skus WHERE sku_code = $1 LIMIT 1`, [skuCode]);
+        const excludeId = toStr(req.query.exclude_id);
+        const excludeClause = excludeId ? " AND id != $2" : "";
+        const params = excludeId ? [skuCode, excludeId] : [skuCode];
+        const result = await (0, db_1.query)(`SELECT 1 FROM pricing_skus WHERE sku_code = $1${excludeClause} LIMIT 1`, params);
         const exists = result.rows.length > 0;
         return res.json({ ok: true, exists });
     }
@@ -834,6 +847,12 @@ async function updateSku(req, res) {
         if (input.metadata !== undefined) {
             setField("metadata", input.metadata && typeof input.metadata === "object" ? input.metadata : {});
         }
+        if (input.sku_code !== undefined) {
+            const v = toStr(input.sku_code);
+            if (!v)
+                return res.status(400).json({ message: "sku_code must be non-empty when provided" });
+            setField("sku_code", v);
+        }
         if (fields.length === 0)
             return res.status(400).json({ message: "No fields to update" });
         const result = await (0, db_1.query)(`
@@ -851,7 +870,7 @@ async function updateSku(req, res) {
         return res.status(500).json({ message: "Failed to update SKU", details: String(e?.message || e) });
     }
 }
-async function deleteSku(req, res) {
+async function deactivateSku(req, res) {
     try {
         const id = String(req.params.id || "");
         if (!id)
@@ -862,8 +881,41 @@ async function deleteSku(req, res) {
         return res.json({ ok: true, row: result.rows[0] });
     }
     catch (e) {
-        console.error("deleteSku error:", e);
+        console.error("deactivateSku error:", e);
         return res.status(500).json({ message: "Failed to deactivate SKU", details: String(e?.message || e) });
+    }
+}
+async function hardDeleteSku(req, res) {
+    try {
+        const authedReq = req;
+        const platformRole = String(authedReq.platformRole || "").toLowerCase();
+        if (platformRole !== "super-admin") {
+            return res.status(403).json({ message: "최고관리자(super-admin)만 SKU를 삭제할 수 있습니다." });
+        }
+        const adminPassword = typeof req.body?.admin_password === "string" ? req.body.admin_password.trim() : "";
+        if (!adminPassword) {
+            return res.status(400).json({ message: "비밀번호를 입력해주세요." });
+        }
+        const adminRes = await (0, db_1.query)(`SELECT password_hash FROM users WHERE id = $1 AND deleted_at IS NULL`, [authedReq.userId]);
+        const adminHash = adminRes.rows[0]?.password_hash;
+        if (!adminHash) {
+            return res.status(400).json({ message: "비밀번호가 설정되지 않은 계정입니다." });
+        }
+        const passwordOk = await bcrypt_1.default.compare(adminPassword, adminHash);
+        if (!passwordOk) {
+            return res.status(401).json({ message: "비밀번호가 올바르지 않습니다." });
+        }
+        const id = String(req.params.id || "");
+        if (!id)
+            return res.status(400).json({ message: "id is required" });
+        const result = await (0, db_1.query)(`DELETE FROM pricing_skus WHERE id = $1 RETURNING id, sku_code`, [id]);
+        if (result.rows.length === 0)
+            return res.status(404).json({ message: "SKU not found" });
+        return res.json({ ok: true, row: result.rows[0] });
+    }
+    catch (e) {
+        console.error("hardDeleteSku error:", e);
+        return res.status(500).json({ message: "Failed to delete SKU", details: String(e?.message || e) });
     }
 }
 // ========================================

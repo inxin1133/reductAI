@@ -231,8 +231,6 @@ export async function updateCredential(req: Request, res: Response) {
       organization_id = null,
       is_active,
       is_default,
-      rate_limit_per_minute = null,
-      rate_limit_per_day = null,
       metadata,
       expires_at = null,
     }: {
@@ -243,20 +241,33 @@ export async function updateCredential(req: Request, res: Response) {
       organization_id?: string | null
       is_active?: boolean
       is_default?: boolean
-      rate_limit_per_minute?: number | null
-      rate_limit_per_day?: number | null
       metadata?: Record<string, unknown>
       expires_at?: string | null
     } = req.body
 
     // 기존 row 조회(tenant_id/provider_id를 모를 경우 default 처리에 필요)
     const current = await client.query(
-      `SELECT id, tenant_id, provider_id, metadata
+      `SELECT id, tenant_id, provider_id, metadata, rate_limit_per_minute, rate_limit_per_day
        FROM provider_api_credentials
        WHERE id = $1`,
       [id]
     )
     if (current.rows.length === 0) return res.status(404).json({ message: "Credential not found" })
+
+    // rate_limit: 요청에 포함되면 해당 값으로 저장(null=제한없음), 미포함이면 기존 유지
+    const cur = current.rows[0] as { rate_limit_per_minute?: number | null; rate_limit_per_day?: number | null }
+    const rate_limit_per_minute =
+      req.body && "rate_limit_per_minute" in req.body
+        ? req.body.rate_limit_per_minute != null && req.body.rate_limit_per_minute !== ""
+          ? Number(req.body.rate_limit_per_minute)
+          : null
+        : cur.rate_limit_per_minute
+    const rate_limit_per_day =
+      req.body && "rate_limit_per_day" in req.body
+        ? req.body.rate_limit_per_day != null && req.body.rate_limit_per_day !== ""
+          ? Number(req.body.rate_limit_per_day)
+          : null
+        : cur.rate_limit_per_day
 
     // 공용 키는 항상 system tenant에 귀속(tenant_id 변경 불가)
     const curTenantId = await ensureSystemTenantId()
@@ -302,8 +313,8 @@ export async function updateCredential(req: Request, res: Response) {
         organization_id = COALESCE($8, organization_id),
         is_active = COALESCE($9, is_active),
         is_default = COALESCE($10, is_default),
-        rate_limit_per_minute = COALESCE($11, rate_limit_per_minute),
-        rate_limit_per_day = COALESCE($12, rate_limit_per_day),
+        rate_limit_per_minute = $11,
+        rate_limit_per_day = $12,
         metadata = COALESCE($13::jsonb, metadata),
         expires_at = COALESCE($14, expires_at),
         updated_at = CURRENT_TIMESTAMP

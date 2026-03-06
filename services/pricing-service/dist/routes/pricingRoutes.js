@@ -21,7 +21,8 @@ router.get("/skus/check-availability", pricingController_1.checkSkuCodeAvailabil
 router.get("/skus/needs-generation", pricingController_1.checkModelNeedsSkuGeneration);
 router.post("/skus", pricingController_1.createSku);
 router.put("/skus/:id", pricingController_1.updateSku);
-router.delete("/skus/:id", pricingController_1.deleteSku);
+router.post("/skus/:id/permanent-delete", pricingController_1.hardDeleteSku);
+router.delete("/skus/:id", pricingController_1.deactivateSku);
 router.post("/skus/generate-for-model", pricingController_1.generateSkusForModel);
 router.get("/markups", pricingController_1.listMarkups);
 router.post("/markups", pricingController_1.createMarkup);

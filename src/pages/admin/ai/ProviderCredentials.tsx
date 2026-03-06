@@ -759,28 +759,36 @@ export default function ProviderCredentials() {
               <Label htmlFor="rate_limit_per_minute" className="text-right">
                 분당 제한
               </Label>
-              <Input
-                id="rate_limit_per_minute"
-                type="number"
-                value={formData.rate_limit_per_minute}
-                onChange={(e) => setFormData({ ...formData, rate_limit_per_minute: e.target.value })}
-                className="col-span-3"
-                placeholder="예: 60 (선택)"
-              />
+              <div className="col-span-3 space-y-1">
+                <Input
+                  id="rate_limit_per_minute"
+                  type="number"
+                  value={formData.rate_limit_per_minute}
+                  onChange={(e) => setFormData({ ...formData, rate_limit_per_minute: e.target.value })}
+                  placeholder={formData.rate_limit_per_minute ? "예: 60" : "비우면 제한없음"}
+                />
+                {!formData.rate_limit_per_minute && (
+                  <span className="text-xs text-muted-foreground">현재: 제한없음</span>
+                )}
+              </div>
             </div>
 
             <div className="grid grid-cols-4 items-center gap-4">
               <Label htmlFor="rate_limit_per_day" className="text-right">
                 일일 제한
               </Label>
-              <Input
-                id="rate_limit_per_day"
-                type="number"
-                value={formData.rate_limit_per_day}
-                onChange={(e) => setFormData({ ...formData, rate_limit_per_day: e.target.value })}
-                className="col-span-3"
-                placeholder="예: 10000 (선택)"
-              />
+              <div className="col-span-3 space-y-1">
+                <Input
+                  id="rate_limit_per_day"
+                  type="number"
+                  value={formData.rate_limit_per_day}
+                  onChange={(e) => setFormData({ ...formData, rate_limit_per_day: e.target.value })}
+                  placeholder={formData.rate_limit_per_day ? "예: 10000" : "비우면 제한없음"}
+                />
+                {!formData.rate_limit_per_day && (
+                  <span className="text-xs text-muted-foreground">현재: 제한없음</span>
+                )}
+              </div>
             </div>
 
             <div className="grid grid-cols-4 items-center gap-4">

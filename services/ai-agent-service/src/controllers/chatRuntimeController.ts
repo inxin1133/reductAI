@@ -14,6 +14,10 @@ import {
 } from "../services/providerClients"
 import { isModelAllowedForPlan } from "../services/planModelAccessService"
 import { resolveAuthForModelApiProfile } from "../services/authProfilesService"
+import {
+  checkAndRecord as checkCredentialRateLimit,
+  CredentialRateLimitExceededError,
+} from "../services/credentialRateLimitService"
 import { newAssetId, storeImageDataUrlAsAsset } from "../services/fileServiceClient"
 import { normalizeAiContent } from "../utils/normalizeAiContent"
 import { getWebSearchPolicy } from "../services/webSearchSettingsService"
@@ -2285,6 +2289,7 @@ export async function chatRun(req: Request, res: Response) {
             profileAttempted = true
             const auth = await resolveAuthForModelApiProfile({ providerId, authProfileId: profile.auth_profile_id })
             usedCredentialId = auth.credentialId
+            checkCredentialRateLimit(auth.credentialId, auth.rateLimitPerMinute, auth.rateLimitPerDay)
             out = await executeHttpJsonProfile({
               apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
               apiKey: auth.apiKey,
@@ -2344,6 +2349,7 @@ export async function chatRun(req: Request, res: Response) {
     if (out == null) {
       const auth = await resolveAuthForModelApiProfile({ providerId, authProfileId: null })
       usedCredentialId = auth.credentialId
+      checkCredentialRateLimit(auth.credentialId, auth.rateLimitPerMinute, auth.rateLimitPerDay)
       // Fallback: 기존 provider별 하드코딩 실행기
       if (mt === "text") {
         if (providerKey === "openai") {
@@ -3266,6 +3272,15 @@ export async function chatRun(req: Request, res: Response) {
     })
   } catch (e: unknown) {
     console.error("chatRun error:", e)
+    if (e instanceof CredentialRateLimitExceededError) {
+      cleanupActiveRun()
+      responseFinalized = true
+      return res.status(429).json({
+        message: e.message,
+        code: "CREDENTIAL_RATE_LIMIT_EXCEEDED",
+        details: { limit_type: e.limitType, limit: e.limit, current: e.current },
+      })
+    }
     const msg = e instanceof Error ? e.message : String(e)
     if (assistantMessageId && !isAborted()) {
       const failText = `요청 처리 중 오류가 발생했습니다.\n\n${msg}`

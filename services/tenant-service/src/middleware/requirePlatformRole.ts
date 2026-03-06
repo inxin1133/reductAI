@@ -2,7 +2,7 @@ import type { NextFunction, Request, Response } from "express"
 import pool from "../config/db"
 import type { AuthedRequest } from "./requireAuth"
 
-const PLATFORM_ADMIN_SLUGS = new Set(["owner", "admin", "super-admin"])
+const PLATFORM_ADMIN_SLUGS = new Set(["super-admin", "admin", "manager"])
 
 export async function requirePlatformAdmin(req: Request, res: Response, next: NextFunction) {
   try {

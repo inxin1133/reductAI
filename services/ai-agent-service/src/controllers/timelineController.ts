@@ -2,6 +2,7 @@ import { Request, Response } from "express"
 import { query } from "../config/db"
 import { AuthedRequest } from "../middleware/requireAuth"
 import { getProviderAuth, getProviderBase, openaiSimulateChat } from "../services/providerClients"
+import { checkAndRecord as checkCredentialRateLimit } from "../services/credentialRateLimitService"
 import { ensureSystemTenantId } from "../services/systemTenantService"
 import { normalizeAiContent } from "../utils/normalizeAiContent"
 
@@ -126,6 +127,7 @@ async function generateTitleByOpenAi(firstMessage: string) {
     const providerId = provider.rows[0].id as string
 
     const auth = await getProviderAuth(providerId)
+    checkCredentialRateLimit(auth.credentialId, auth.rateLimitPerMinute, auth.rateLimitPerDay)
     const base = await getProviderBase(providerId)
 
     const prompt = [

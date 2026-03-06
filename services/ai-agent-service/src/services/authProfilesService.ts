@@ -82,7 +82,7 @@ async function loadAuthProfileById(args: { tenantId: string; authProfileId: stri
 
 async function loadCredentialById(args: { tenantId: string; credentialId: string }) {
   const r = await query(
-    `SELECT id, api_key_encrypted, endpoint_url, organization_id, metadata
+    `SELECT id, api_key_encrypted, endpoint_url, organization_id, metadata, rate_limit_per_minute, rate_limit_per_day
      FROM provider_api_credentials
      WHERE tenant_id = $1 AND id = $2 AND is_active = TRUE
      LIMIT 1`,
@@ -97,6 +97,8 @@ async function loadCredentialById(args: { tenantId: string; credentialId: string
     endpointUrl: row.endpoint_url ? String(row.endpoint_url) : null,
     organizationId: row.organization_id ? String(row.organization_id) : null,
     metadata: safeObj(row.metadata),
+    rateLimitPerMinute: (row.rate_limit_per_minute as number | null) ?? null,
+    rateLimitPerDay: (row.rate_limit_per_day as number | null) ?? null,
   }
 }
 
@@ -152,13 +154,15 @@ export async function resolveAuthForModelApiProfile(args: {
   endpointUrl: string | null
   organizationId: string | null
   configVars: Record<string, string>
+  rateLimitPerMinute: number | null
+  rateLimitPerDay: number | null
 }> {
   const tenantId = await ensureSystemTenantId()
 
   // default behavior: existing api_key credential selection (no auth profile)
   if (!args.authProfileId) {
     const res = await query(
-      `SELECT id, api_key_encrypted, endpoint_url, organization_id
+      `SELECT id, api_key_encrypted, endpoint_url, organization_id, rate_limit_per_minute, rate_limit_per_day
        FROM provider_api_credentials
        WHERE tenant_id = $1 AND provider_id = $2 AND is_active = TRUE
        ORDER BY is_default DESC, created_at DESC
@@ -175,6 +179,8 @@ export async function resolveAuthForModelApiProfile(args: {
       endpointUrl: (row.endpoint_url as string | null) || null,
       organizationId: (row.organization_id as string | null) || null,
       configVars: {},
+      rateLimitPerMinute: (row.rate_limit_per_minute as number | null) ?? null,
+      rateLimitPerDay: (row.rate_limit_per_day as number | null) ?? null,
     }
   }
 
@@ -201,6 +207,8 @@ export async function resolveAuthForModelApiProfile(args: {
       endpointUrl: cred.endpointUrl,
       organizationId: cred.organizationId,
       configVars,
+      rateLimitPerMinute: cred.rateLimitPerMinute ?? null,
+      rateLimitPerDay: cred.rateLimitPerDay ?? null,
     }
   }
 
@@ -229,6 +237,8 @@ export async function resolveAuthForModelApiProfile(args: {
         endpointUrl: cred.endpointUrl,
         organizationId: cred.organizationId,
         configVars,
+        rateLimitPerMinute: cred.rateLimitPerMinute ?? null,
+        rateLimitPerDay: cred.rateLimitPerDay ?? null,
       }
     }
 
@@ -243,6 +253,8 @@ export async function resolveAuthForModelApiProfile(args: {
       endpointUrl: cred.endpointUrl,
       organizationId: cred.organizationId,
       configVars,
+      rateLimitPerMinute: cred.rateLimitPerMinute ?? null,
+      rateLimitPerDay: cred.rateLimitPerDay ?? null,
     }
   }
 
