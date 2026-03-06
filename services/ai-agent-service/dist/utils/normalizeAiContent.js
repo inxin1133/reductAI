@@ -336,6 +336,29 @@ function normalizeAiContent(content) {
     if (replyText) {
         return finalizeNormalizedContent(content, [{ type: "markdown", markdown: replyText }]);
     }
+    // Gemini and some models return {"response": [{ "markdown": "..." }]} instead of {"blocks": [...]}
+    const responseArr = Array.isArray(content.response) ? content.response : null;
+    if (responseArr && responseArr.length > 0) {
+        const responseBlocks = responseArr
+            .map((item) => {
+            if (!item || typeof item !== "object")
+                return null;
+            const obj = item;
+            const md = typeof obj.markdown === "string" ? obj.markdown.trim() : typeof obj.content === "string" ? obj.content.trim() : "";
+            if (md)
+                return { type: "markdown", markdown: md };
+            const code = typeof obj.code === "string" ? obj.code.trim() : typeof obj.content === "string" ? obj.content.trim() : "";
+            if (code)
+                return { type: "code", code, language: typeof obj.language === "string" ? obj.language : "plain" };
+            const table = coerceTableFromObject(isRecord(obj) ? obj : null);
+            if (table)
+                return table;
+            return null;
+        })
+            .filter(Boolean);
+        if (responseBlocks.length > 0)
+            return finalizeNormalizedContent(content, responseBlocks);
+    }
     const blocks = Array.isArray(content.blocks) ? content.blocks : null;
     if (!blocks || blocks.length === 0) {
         if (outputText) {

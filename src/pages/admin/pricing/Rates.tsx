@@ -29,6 +29,16 @@ import {
 import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
 import { Copy, Loader2, Pencil, Plus, RefreshCcw, Wand2 } from "lucide-react"
+
+const TIER_UNIT_OPTIONS = [
+  { value: "", label: "(없음)" },
+  { value: "context_tokens", label: "context_tokens" },
+  { value: "input_tokens", label: "input_tokens" },
+  { value: "output_tokens", label: "output_tokens" },
+  { value: "image_tokens", label: "image_tokens" },
+  { value: "seconds", label: "seconds" },
+  { value: "requests", label: "requests" },
+] as const
 import { AdminPage } from "@/components/layout/AdminPage"
 
 type RateCardStatus = "draft" | "active" | "retired"
@@ -98,6 +108,14 @@ const RATE_CARDS_API = "/api/ai/pricing/rate-cards"
 type ModalityFilter = "all" | "text" | "code" | "image" | "audio" | "video" | "web_search"
 type UsageKindFilter = "all" | "input_tokens" | "cached_input_tokens" | "output_tokens" | "image_generation" | "seconds" | "requests"
 type TokenCategoryFilter = "all" | "text" | "image"
+type TierUnitFilter =
+  | "all"
+  | "context_tokens"
+  | "input_tokens"
+  | "output_tokens"
+  | "image_tokens"
+  | "seconds"
+  | "requests"
 const RATES_API = "/api/ai/pricing/rates"
 const BULK_UPDATE_API = "/api/ai/pricing/rates/bulk-update"
 
@@ -179,6 +197,7 @@ export default function Rates() {
   const [modality, setModality] = useState<ModalityFilter>("all")
   const [usageKind, setUsageKind] = useState<UsageKindFilter>("all")
   const [tokenCategory, setTokenCategory] = useState<TokenCategoryFilter>("all")
+  const [tierUnitFilter, setTierUnitFilter] = useState<TierUnitFilter>("all")
 
   const [page, setPage] = useState(0)
   const limit = 50
@@ -186,6 +205,9 @@ export default function Rates() {
   const [editOpen, setEditOpen] = useState(false)
   const [editing, setEditing] = useState<RateRow | null>(null)
   const [editValue, setEditValue] = useState("")
+  const [editTierUnit, setEditTierUnit] = useState("")
+  const [editTierMin, setEditTierMin] = useState("")
+  const [editTierMax, setEditTierMax] = useState("")
   const [saving, setSaving] = useState(false)
 
   const [cloneOpen, setCloneOpen] = useState(false)
@@ -210,8 +232,21 @@ export default function Rates() {
   const [missingSkus, setMissingSkus] = useState<MissingSku[]>([])
   const [missingLoading, setMissingLoading] = useState(false)
   const [missingRateValues, setMissingRateValues] = useState<Record<string, string>>({})
+  const [missingUseTiers, setMissingUseTiers] = useState<Record<string, boolean>>({})
+  type TierEntry = { tier_unit: string; tier_min: string; tier_max: string; rate_value: string }
+  const [missingTierEntries, setMissingTierEntries] = useState<Record<string, TierEntry[]>>({})
   const [missingSelected, setMissingSelected] = useState<Set<string>>(new Set())
   const [missingSaving, setMissingSaving] = useState(false)
+
+  const [addTierOpen, setAddTierOpen] = useState(false)
+  const [addTierRow, setAddTierRow] = useState<RateRow | null>(null)
+  const [addTierForm, setAddTierForm] = useState({
+    tier_unit: "context_tokens",
+    tier_min: "",
+    tier_max: "",
+    rate_value: "",
+  })
+  const [addTierSaving, setAddTierSaving] = useState(false)
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams()
@@ -222,9 +257,10 @@ export default function Rates() {
     if (modality !== "all") params.set("modality", modality)
     if (usageKind !== "all") params.set("usage_kind", usageKind)
     if (tokenCategory !== "all") params.set("token_category", tokenCategory)
+    if (tierUnitFilter !== "all") params.set("tier_unit", tierUnitFilter)
     if (rateCardId) params.set("rate_card_id", rateCardId)
     return params.toString()
-  }, [limit, modality, page, providerSlug, q, rateCardId, tokenCategory, usageKind])
+  }, [limit, modality, page, providerSlug, q, rateCardId, tierUnitFilter, tokenCategory, usageKind])
 
   async function fetchRateCards() {
     try {
@@ -272,9 +308,83 @@ export default function Rates() {
 
   const selectedRateCard = useMemo(() => rateCards.find((c) => c.id === rateCardId) || null, [rateCardId, rateCards])
 
+  function openAddTier(row: RateRow) {
+    setAddTierRow(row)
+    setAddTierForm({
+      tier_unit: "context_tokens",
+      tier_min: "",
+      tier_max: "",
+      rate_value: "",
+    })
+    setAddTierOpen(true)
+  }
+
+  async function saveAddTier() {
+    if (!addTierRow || !rateCardId) return
+    const raw = addTierForm.rate_value.trim()
+    if (!raw) {
+      alert("요율 값을 입력해주세요.")
+      return
+    }
+    const rateVal = Number(raw)
+    if (!Number.isFinite(rateVal) || rateVal < 0) {
+      alert("요율 값은 0 이상의 숫자여야 합니다.")
+      return
+    }
+    if (!addTierForm.tier_unit.trim()) {
+      alert("티어 단위를 선택해주세요.")
+      return
+    }
+    const tierMin = addTierForm.tier_min.trim() ? Number(addTierForm.tier_min) : null
+    const tierMax = addTierForm.tier_max.trim() ? Number(addTierForm.tier_max) : null
+    if (tierMin != null && (!Number.isFinite(tierMin) || tierMin < 0)) {
+      alert("tier_min은 0 이상의 숫자여야 합니다.")
+      return
+    }
+    if (tierMax != null && (!Number.isFinite(tierMax) || tierMax < 0)) {
+      alert("tier_max는 0 이상의 숫자여야 합니다.")
+      return
+    }
+    if (tierMin != null && tierMax != null && tierMin > tierMax) {
+      alert("tier_min은 tier_max보다 작거나 같아야 합니다.")
+      return
+    }
+    try {
+      setAddTierSaving(true)
+      const res = await adminFetch(`${RATE_CARDS_API}/${rateCardId}/add-rates`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rates: [
+            {
+              sku_id: addTierRow.sku_id,
+              rate_value: rateVal,
+              tier_unit: addTierForm.tier_unit.trim(),
+              tier_min: tierMin,
+              tier_max: tierMax,
+            },
+          ],
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json.ok) throw new Error("FAILED")
+      setAddTierOpen(false)
+      setAddTierRow(null)
+      await fetchRates()
+    } catch (e) {
+      console.error(e)
+      alert("티어 추가에 실패했습니다.")
+    } finally {
+      setAddTierSaving(false)
+    }
+  }
+
   function openEdit(row: RateRow) {
     setEditing(row)
     setEditValue(String(row.rate_value ?? ""))
+    setEditTierUnit(row.tier_unit ?? "")
+    setEditTierMin(row.tier_min != null ? String(row.tier_min) : "")
+    setEditTierMax(row.tier_max != null ? String(row.tier_max) : "")
     setEditOpen(true)
   }
 
@@ -362,6 +472,8 @@ export default function Rates() {
     setMissingLoading(true)
     setMissingSelected(new Set())
     setMissingRateValues({})
+    setMissingUseTiers({})
+    setMissingTierEntries({})
     try {
       const res = await adminFetch(`${RATE_CARDS_API}/${rateCardId}/missing-skus`)
       const json = await res.json().catch(() => ({ rows: [] }))
@@ -392,18 +504,101 @@ export default function Rates() {
     }
   }
 
+  function setMissingUseTiersFor(skuId: string, use: boolean) {
+    setMissingUseTiers((p) => ({ ...p, [skuId]: use }))
+    if (use && !missingTierEntries[skuId]?.length) {
+      setMissingTierEntries((p) => ({
+        ...p,
+        [skuId]: [{ tier_unit: "context_tokens", tier_min: "", tier_max: "", rate_value: "" }],
+      }))
+    } else if (!use) {
+      setMissingTierEntries((p) => {
+        const next = { ...p }
+        delete next[skuId]
+        return next
+      })
+    }
+  }
+
+  function addMissingTierEntry(skuId: string) {
+    setMissingTierEntries((p) => ({
+      ...p,
+      [skuId]: [...(p[skuId] || []), { tier_unit: "context_tokens", tier_min: "", tier_max: "", rate_value: "" }],
+    }))
+  }
+
+  function removeMissingTierEntry(skuId: string, idx: number) {
+    setMissingTierEntries((p) => {
+      const arr = (p[skuId] || []).filter((_, i) => i !== idx)
+      if (arr.length === 0) return { ...p, [skuId]: [] }
+      return { ...p, [skuId]: arr }
+    })
+  }
+
+  function updateMissingTierEntry(skuId: string, idx: number, field: keyof TierEntry, value: string) {
+    setMissingTierEntries((p) => {
+      const arr = [...(p[skuId] || [])]
+      if (!arr[idx]) return p
+      arr[idx] = { ...arr[idx], [field]: value }
+      return { ...p, [skuId]: arr }
+    })
+  }
+
   async function saveMissingRates() {
     if (missingSelected.size === 0) {
       alert("추가할 SKU를 선택해주세요.")
       return
     }
-    const rates = Array.from(missingSelected).map((skuId) => ({
-      sku_id: skuId,
-      rate_value: Number(missingRateValues[skuId] || "0"),
-    }))
-    const invalid = rates.find((r) => !Number.isFinite(r.rate_value) || r.rate_value < 0)
-    if (invalid) {
-      alert("요율 값은 0 이상의 숫자여야 합니다.")
+    const rates: Array<{
+      sku_id: string
+      rate_value: number
+      tier_unit?: string | null
+      tier_min?: number | null
+      tier_max?: number | null
+    }> = []
+    for (const skuId of missingSelected) {
+      if (missingUseTiers[skuId]) {
+        const entries = missingTierEntries[skuId] || []
+        if (entries.length === 0) {
+          alert("티어 구간별 설정을 사용할 경우 최소 1개 구간을 입력해주세요.")
+          return
+        }
+      }
+    }
+    for (const skuId of missingSelected) {
+      if (missingUseTiers[skuId] && (missingTierEntries[skuId]?.length ?? 0) > 0) {
+        const entries = missingTierEntries[skuId] || []
+        for (const e of entries) {
+          const rv = Number(e.rate_value)
+          if (!Number.isFinite(rv) || rv < 0) {
+            alert(`SKU ${skuId}의 요율 값이 올바르지 않습니다.`)
+            return
+          }
+          if (!e.tier_unit?.trim()) {
+            alert("티어 구간별 설정 시 tier_unit을 선택해주세요.")
+            return
+          }
+          const tierMin = e.tier_min.trim() ? Number(e.tier_min) : null
+          const tierMax = e.tier_max.trim() ? Number(e.tier_max) : null
+          rates.push({
+            sku_id: skuId,
+            rate_value: rv,
+            tier_unit: e.tier_unit.trim(),
+            tier_min: tierMin,
+            tier_max: tierMax,
+          })
+        }
+      } else {
+        const rv = Number(missingRateValues[skuId] || "0")
+        if (!Number.isFinite(rv) || rv < 0) {
+          alert("요율 값은 0 이상의 숫자여야 합니다.")
+          return
+        }
+        rates.push({ sku_id: skuId, rate_value: rv })
+      }
+    }
+    if (rates.length === 0) {
+      alert("추가할 요율이 없습니다.")
       return
     }
 
@@ -468,7 +663,7 @@ export default function Rates() {
 
     try {
       setBulkSaving(true)
-      const payload: Record<string, any> = {
+      const payload: Record<string, unknown> = {
         rate_card_id: rateCardId,
         operation: bulkForm.operation,
         value: valueNum,
@@ -478,6 +673,7 @@ export default function Rates() {
       if (modality !== "all") payload.modality = modality
       if (usageKind !== "all") payload.usage_kind = usageKind
       if (tokenCategory !== "all") payload.token_category = tokenCategory
+      if (tierUnitFilter !== "all") payload.tier_unit = tierUnitFilter
 
       const res = await adminFetch(BULK_UPDATE_API, {
         method: "POST",
@@ -508,12 +704,36 @@ export default function Rates() {
       alert("숫자 형식으로 입력해주세요.")
       return
     }
+    const tierMinNum = editTierMin.trim() ? Number(editTierMin) : null
+    const tierMaxNum = editTierMax.trim() ? Number(editTierMax) : null
+    if (tierMinNum != null && (!Number.isFinite(tierMinNum) || tierMinNum < 0)) {
+      alert("tier_min은 0 이상의 숫자여야 합니다.")
+      return
+    }
+    if (tierMaxNum != null && (!Number.isFinite(tierMaxNum) || tierMaxNum < 0)) {
+      alert("tier_max는 0 이상의 숫자여야 합니다.")
+      return
+    }
+    if (tierMinNum != null && tierMaxNum != null && tierMinNum > tierMaxNum) {
+      alert("tier_min은 tier_max보다 작거나 같아야 합니다.")
+      return
+    }
     try {
       setSaving(true)
+      const payload: Record<string, unknown> = { rate_value: raw }
+      if (editTierUnit.trim()) {
+        payload.tier_unit = editTierUnit.trim()
+        payload.tier_min = tierMinNum
+        payload.tier_max = tierMaxNum
+      } else {
+        payload.tier_unit = null
+        payload.tier_min = null
+        payload.tier_max = null
+      }
       const res = await adminFetch(`${RATES_API}/${editing.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rate_value: raw }),
+        body: JSON.stringify(payload),
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok || !json.ok) throw new Error("FAILED_UPDATE")
@@ -537,10 +757,11 @@ export default function Rates() {
       modality !== "all" ? `modality=${modality}` : null,
       usageKind !== "all" ? `usage_kind=${usageKind}` : null,
       tokenCategory !== "all" ? `token_category=${tokenCategory}` : null,
+      tierUnitFilter !== "all" ? `tier_unit=${tierUnitFilter}` : null,
       q.trim() ? `q=${q.trim()}` : null,
     ].filter(Boolean)
     return parts.length ? parts.join(" · ") : "필터 없음"
-  }, [modality, providerSlug, q, selectedRateCard, tokenCategory, usageKind])
+  }, [modality, providerSlug, q, selectedRateCard, tierUnitFilter, tokenCategory, usageKind])
 
   return (
     <AdminPage
@@ -636,6 +857,20 @@ export default function Rates() {
             <SelectItem value="image">image</SelectItem>
           </SelectContent>
         </Select>
+        <Select value={tierUnitFilter} onValueChange={(v) => setTierUnitFilter(v as TierUnitFilter)}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="티어 단위" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">티어 전체</SelectItem>
+            <SelectItem value="context_tokens">context_tokens</SelectItem>
+            <SelectItem value="input_tokens">input_tokens</SelectItem>
+            <SelectItem value="output_tokens">output_tokens</SelectItem>
+            <SelectItem value="image_tokens">image_tokens</SelectItem>
+            <SelectItem value="seconds">seconds</SelectItem>
+            <SelectItem value="requests">requests</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       <div className="border rounded-lg overflow-hidden">
@@ -696,10 +931,16 @@ export default function Rates() {
                   <TableCell className="font-mono text-xs">{fmtTier(r)}</TableCell>
                   <TableCell className="text-right font-mono">{fmtRate(r.rate_value)}</TableCell>
                   <TableCell className="text-right">
-                    <Button variant="outline" size="sm" onClick={() => openEdit(r)}>
-                      <Pencil className="size-3 mr-1" />
-                      수정
-                    </Button>
+                    <div className="flex justify-end gap-1">
+                      <Button variant="outline" size="sm" onClick={() => openEdit(r)}>
+                        <Pencil className="size-3 mr-1" />
+                        수정
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => openAddTier(r)}>
+                        <Plus className="size-3 mr-1" />
+                        티어
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))
@@ -740,13 +981,53 @@ export default function Rates() {
               <div className="text-sm text-muted-foreground">
                 {editing.provider_slug} · {editing.model_name} · {editing.usage_kind}
               </div>
-              <Input
-                value={editValue}
-                onChange={(e) => setEditValue(e.target.value)}
-                placeholder="rate_value (숫자)"
-              />
-              <div className="text-xs text-muted-foreground">
-                단위: {editing.unit_size} {editing.unit} 기준
+              <div className="space-y-1">
+                <div className="text-sm font-medium">요율 값 (rate_value)</div>
+                <Input
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  placeholder="숫자 (예: 2.0)"
+                />
+                <div className="text-xs text-muted-foreground">
+                  단위: {editing.unit_size} {editing.unit} 기준
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div className="text-sm font-medium">티어 (선택)</div>
+                <div className="grid grid-cols-3 gap-2">
+                  <Select
+                    value={editTierUnit || "__none__"}
+                    onValueChange={(v) => setEditTierUnit(v === "__none__" ? "" : v)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="단위" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TIER_UNIT_OPTIONS.map((o) => (
+                        <SelectItem key={o.value || "none"} value={o.value || "__none__"}>
+                          {o.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Input
+                    value={editTierMin}
+                    onChange={(e) => setEditTierMin(e.target.value)}
+                    placeholder="tier_min"
+                    type="number"
+                    min={0}
+                  />
+                  <Input
+                    value={editTierMax}
+                    onChange={(e) => setEditTierMax(e.target.value)}
+                    placeholder="tier_max"
+                    type="number"
+                    min={0}
+                  />
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  context_tokens 예: 0–200000, 200001–(비움) = 200K 초과
+                </div>
               </div>
             </div>
           ) : null}
@@ -757,6 +1038,88 @@ export default function Rates() {
             <Button onClick={saveEdit} disabled={saving}>
               {saving ? <Loader2 className="size-4 mr-2 animate-spin" /> : null}
               저장
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={addTierOpen} onOpenChange={setAddTierOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>티어 구간 추가</DialogTitle>
+            <div className="text-sm font-normal text-muted-foreground">
+              {addTierRow
+                ? `${addTierRow.provider_slug} · ${addTierRow.model_name} · ${addTierRow.usage_kind} — 동일 SKU에 새 구간 추가`
+                : ""}
+            </div>
+          </DialogHeader>
+          {addTierRow ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <div className="text-sm font-medium">티어 단위</div>
+                  <Select
+                    value={addTierForm.tier_unit}
+                    onValueChange={(v) => setAddTierForm((p) => ({ ...p, tier_unit: v }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TIER_UNIT_OPTIONS.filter((o) => o.value).map((o) => (
+                        <SelectItem key={o.value} value={o.value}>
+                          {o.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-sm font-medium">요율 값</div>
+                  <Input
+                    value={addTierForm.rate_value}
+                    onChange={(e) => setAddTierForm((p) => ({ ...p, rate_value: e.target.value }))}
+                    placeholder="숫자 (예: 2.0)"
+                    type="number"
+                    step="any"
+                    min={0}
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <div className="text-sm font-medium">tier_min</div>
+                  <Input
+                    value={addTierForm.tier_min}
+                    onChange={(e) => setAddTierForm((p) => ({ ...p, tier_min: e.target.value }))}
+                    placeholder="0 또는 빈칭"
+                    type="number"
+                    min={0}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="text-sm font-medium">tier_max</div>
+                  <Input
+                    value={addTierForm.tier_max}
+                    onChange={(e) => setAddTierForm((p) => ({ ...p, tier_max: e.target.value }))}
+                    placeholder="200000 또는 빈칭"
+                    type="number"
+                    min={0}
+                  />
+                </div>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                예: context_tokens 0–200000 ($2/1M), 200001–(빈칭) ($4/1M)
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddTierOpen(false)} disabled={addTierSaving}>
+              취소
+            </Button>
+            <Button onClick={saveAddTier} disabled={addTierSaving}>
+              {addTierSaving ? <Loader2 className="size-4 mr-2 animate-spin" /> : null}
+              추가
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -943,56 +1306,140 @@ export default function Rates() {
                     <TableHead>Token</TableHead>
                     <TableHead>Unit</TableHead>
                     <TableHead>Metadata</TableHead>
-                    <TableHead className="w-[140px]">요율 (rate_value)</TableHead>
+                    <TableHead className="w-[50px]">티어</TableHead>
+                    <TableHead className="min-w-[200px]">요율 / 티어 구간</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {missingSkus.map((s) => (
-                    <TableRow key={s.id}>
-                      <TableCell>
-                        <Checkbox
-                          checked={missingSelected.has(s.id)}
-                          onCheckedChange={() => toggleMissingSelect(s.id)}
-                        />
-                      </TableCell>
-                      <TableCell className="font-mono">{s.provider_slug}</TableCell>
-                      <TableCell>
-                        <div className="flex flex-col">
-                          <span className="font-medium text-sm">{s.model_name}</span>
-                          <span className="text-xs text-muted-foreground font-mono">{s.model_key}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell className="font-mono">{s.modality}</TableCell>
-                      <TableCell className="font-mono">{s.usage_kind}</TableCell>
-                      <TableCell className="font-mono">{s.token_category || "-"}</TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {s.unit_size.toLocaleString()} {s.unit}
-                      </TableCell>
-                      <TableCell className="max-w-[220px]">
-                        {formatMetadata(s.metadata) || (
-                          <span className="text-muted-foreground text-xs">-</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <Input
-                          type="number"
-                          step="any"
-                          min={0}
-                          className="h-8 text-sm font-mono"
-                          value={missingRateValues[s.id] ?? ""}
-                          placeholder="0"
-                          onChange={(e) =>
-                            setMissingRateValues((prev) => ({ ...prev, [s.id]: e.target.value }))
-                          }
-                          onFocus={() => {
-                            if (!missingSelected.has(s.id)) {
-                              setMissingSelected((prev) => new Set(prev).add(s.id))
-                            }
-                          }}
-                        />
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {missingSkus.map((s) => {
+                    const useTiers = missingUseTiers[s.id]
+                    const entries = missingTierEntries[s.id] || []
+                    return (
+                      <TableRow key={s.id}>
+                        <TableCell>
+                          <Checkbox
+                            checked={missingSelected.has(s.id)}
+                            onCheckedChange={() => toggleMissingSelect(s.id)}
+                          />
+                        </TableCell>
+                        <TableCell className="font-mono">{s.provider_slug}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-col">
+                            <span className="font-medium text-sm">{s.model_name}</span>
+                            <span className="text-xs text-muted-foreground font-mono">{s.model_key}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="font-mono">{s.modality}</TableCell>
+                        <TableCell className="font-mono">{s.usage_kind}</TableCell>
+                        <TableCell className="font-mono">{s.token_category || "-"}</TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {s.unit_size.toLocaleString()} {s.unit}
+                        </TableCell>
+                        <TableCell className="max-w-[220px]">
+                          {formatMetadata(s.metadata) || (
+                            <span className="text-muted-foreground text-xs">-</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <Checkbox
+                            checked={!!useTiers}
+                            onCheckedChange={(c) => {
+                              setMissingUseTiersFor(s.id, !!c)
+                              if (!missingSelected.has(s.id)) setMissingSelected((p) => new Set(p).add(s.id))
+                            }}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          {useTiers ? (
+                            <div className="space-y-2">
+                              {entries.map((e, idx) => (
+                                <div key={idx} className="flex flex-wrap items-center gap-1">
+                                  <Select
+                                    value={e.tier_unit}
+                                    onValueChange={(v) => updateMissingTierEntry(s.id, idx, "tier_unit", v)}
+                                  >
+                                    <SelectTrigger className="h-8 w-[130px]">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {TIER_UNIT_OPTIONS.filter((o) => o.value).map((o) => (
+                                        <SelectItem key={o.value} value={o.value}>
+                                          {o.label}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    className="h-8 w-[80px] text-xs"
+                                    placeholder="min"
+                                    value={e.tier_min}
+                                    onChange={(ev) => updateMissingTierEntry(s.id, idx, "tier_min", ev.target.value)}
+                                  />
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    className="h-8 w-[80px] text-xs"
+                                    placeholder="max"
+                                    value={e.tier_max}
+                                    onChange={(ev) => updateMissingTierEntry(s.id, idx, "tier_max", ev.target.value)}
+                                  />
+                                  <Input
+                                    type="number"
+                                    step="any"
+                                    min={0}
+                                    className="h-8 w-[90px] text-xs font-mono"
+                                    placeholder="rate"
+                                    value={e.rate_value}
+                                    onChange={(ev) =>
+                                      updateMissingTierEntry(s.id, idx, "rate_value", ev.target.value)
+                                    }
+                                  />
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8"
+                                    onClick={() => removeMissingTierEntry(s.id, idx)}
+                                  >
+                                    ×
+                                  </Button>
+                                </div>
+                              ))}
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={() => {
+                                  addMissingTierEntry(s.id)
+                                  if (!missingSelected.has(s.id)) setMissingSelected((p) => new Set(p).add(s.id))
+                                }}
+                              >
+                                + 구간 추가
+                              </Button>
+                            </div>
+                          ) : (
+                            <Input
+                              type="number"
+                              step="any"
+                              min={0}
+                              className="h-8 text-sm font-mono w-[100px]"
+                              value={missingRateValues[s.id] ?? ""}
+                              placeholder="0"
+                              onChange={(e) =>
+                                setMissingRateValues((prev) => ({ ...prev, [s.id]: e.target.value }))
+                              }
+                              onFocus={() => {
+                                if (!missingSelected.has(s.id)) {
+                                  setMissingSelected((prev) => new Set(prev).add(s.id))
+                                }
+                              }}
+                            />
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
                 </TableBody>
               </Table>
             </div>
