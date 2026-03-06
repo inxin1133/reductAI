@@ -33,6 +33,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { AdminPage } from "@/components/layout/AdminPage"
@@ -175,6 +176,8 @@ export default function ModelManager() {
   }, [skuMenuModel])
   const [skuList, setSkuList] = useState<Array<{ sku_code: string; usage_kind: string; rate_value?: string | null }>>([])
   const [skuLoading, setSkuLoading] = useState(false)
+  const [skuGenerating, setSkuGenerating] = useState(false)
+  const [skuNeedsGeneration, setSkuNeedsGeneration] = useState(false)
 
   // 시뮬레이터
   const [isSimOpen, setIsSimOpen] = useState(false)
@@ -480,23 +483,78 @@ export default function ModelManager() {
     }
   }
 
+  const NEEDS_GENERATION_API = "/api/ai/pricing/skus/needs-generation"
+
   const loadSkuMenu = async (m: AIModel) => {
     const modelId = m.id
     setSkuLoading(true)
     setSkuList([])
+    setSkuNeedsGeneration(false)
     try {
-      const skusRes = await fetch(`${PRICING_SKUS_API_URL}?model_id=${encodeURIComponent(m.id)}&limit=50`, { headers: authHeaders() })
+      const [skusRes, needsRes] = await Promise.all([
+        fetch(`${PRICING_SKUS_API_URL}?model_id=${encodeURIComponent(m.id)}&limit=50`, { headers: authHeaders() }),
+        fetch(`${NEEDS_GENERATION_API}?model_id=${encodeURIComponent(m.id)}`, { headers: authHeaders() }),
+      ])
       const skusData = (await skusRes.json().catch(() => ({}))) as {
         ok?: boolean
         rows?: Array<{ sku_code: string; usage_kind: string; rate_value?: string | null }>
       }
+      const needsData = (await needsRes.json().catch(() => ({}))) as { ok?: boolean; needsGeneration?: boolean }
       if (skuMenuModelRef.current?.id !== modelId) return
       setSkuList(skusData.rows ?? [])
+      // needs-generation API가 200 OK이고 needsGeneration: true일 때만 버튼 노출
+      const showBtn = needsRes.ok && needsData.ok === true && needsData.needsGeneration === true
+      setSkuNeedsGeneration(showBtn)
     } catch (e) {
       console.error(e)
-      if (skuMenuModelRef.current?.id === modelId) setSkuList([{ sku_code: "조회 실패", usage_kind: "" }])
+      if (skuMenuModelRef.current?.id === modelId) {
+        setSkuList([{ sku_code: "조회 실패", usage_kind: "" }])
+        setSkuNeedsGeneration(false) // 오류 시 버튼 숨김 (확실할 때만 표시)
+      }
     } finally {
       if (skuMenuModelRef.current?.id === modelId) setSkuLoading(false)
+    }
+  }
+
+  const GENERATE_SKUS_API = "/api/ai/pricing/skus/generate-for-model"
+
+  const handleGenerateSkus = async (m: AIModel) => {
+    const modelId = m.id
+    setSkuGenerating(true)
+    try {
+      const res = await fetch(GENERATE_SKUS_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ model_id: modelId, modality: m.model_type || undefined }),
+      })
+      const json = (await res.json().catch(() => ({}))) as { ok?: boolean; created?: unknown[]; skipped?: string[]; message?: string; details?: string }
+      if (!res.ok) {
+        const msg = json.details ? `${json.message || "SKU 생성 실패"}: ${json.details}` : (json.message || `요청 실패 (${res.status})`)
+        alert(msg)
+        return
+      }
+      if (!json.ok) {
+        alert(json.message || "SKU 생성에 실패했습니다.")
+        return
+      }
+      const created = (json.created ?? []) as unknown[]
+      const skipped = (json.skipped ?? []) as string[]
+      if (skuMenuModelRef.current?.id === modelId) {
+        await loadSkuMenu(m)
+      }
+      const createdCount = created.length
+      const skippedCount = skipped.length
+      if (createdCount > 0 || skippedCount > 0) {
+        const parts: string[] = []
+        if (createdCount > 0) parts.push(`${createdCount}개 생성`)
+        if (skippedCount > 0) parts.push(`${skippedCount}개 중복 건너뜀`)
+        alert(parts.join(", "))
+      }
+    } catch (e) {
+      console.error(e)
+      alert(`SKU 생성 중 오류가 발생했습니다.\n${errorMessage(e) || ""}`.trim())
+    } finally {
+      setSkuGenerating(false)
     }
   }
 
@@ -884,6 +942,32 @@ export default function ModelManager() {
                               </DropdownMenuItem>
                             ))
                           )}
+                          {skuNeedsGeneration ? (
+                            <>
+                              <DropdownMenuSeparator />
+                              <div className="p-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="w-full justify-center"
+                                  disabled={skuLoading || skuGenerating}
+                                  onClick={() => skuMenuModel && handleGenerateSkus(skuMenuModel)}
+                                >
+                                  {skuGenerating ? (
+                                    <>
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
+                                      생성 중...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Plus className="h-3.5 w-3.5 mr-1.5" />
+                                      SKU 생성
+                                    </>
+                                  )}
+                                </Button>
+                              </div>
+                            </>
+                          ) : null}
                         </DropdownMenuContent>
                       </DropdownMenu>
                       <Button variant="ghost" size="icon" onClick={() => openEdit(m)} title="수정">

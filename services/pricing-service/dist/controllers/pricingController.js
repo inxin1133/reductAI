@@ -1056,18 +1056,35 @@ const SKU_TEMPLATES = {
         { usage_kind: "input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
     ],
 };
-// GET /skus/needs-generation?model_id=xxx → { needsGeneration: boolean }
-// Uses pricing_skus.model_id (FK to ai_models.id) as primary linkage.
+// GET /skus/needs-generation?model_id=xxx → { ok, needsGeneration }
+// 모달리티별 필수 SKU 템플릿을 검토해, 누락된 SKU가 있으면 needsGeneration: true
 async function checkModelNeedsSkuGeneration(req, res) {
     try {
         const modelId = toStr(req.query?.model_id);
         if (!modelId)
             return res.status(400).json({ message: "model_id query is required" });
-        const existRes = await (0, db_1.query)(`SELECT 1 FROM pricing_skus WHERE model_id = $1 AND is_active = TRUE LIMIT 1`, [modelId]);
-        if (existRes.rows.length > 0) {
-            return res.json({ ok: true, needsGeneration: false });
+        const modelRes = await (0, db_1.query)(`
+      SELECT m.id, m.model_id AS model_key, m.model_type, p.slug AS provider_slug
+      FROM ai_models m
+      LEFT JOIN ai_providers p ON p.id = m.provider_id
+      WHERE m.id = $1
+      `, [modelId]);
+        if (modelRes.rows.length === 0)
+            return res.status(404).json({ message: "Model not found" });
+        const model = modelRes.rows[0];
+        const modality = String(model.model_type || "text");
+        const templates = SKU_TEMPLATES[modality] || SKU_TEMPLATES.text;
+        const providerSlug = model.provider_slug || "unknown";
+        const modelKey = model.model_key || "";
+        const existRes = await (0, db_1.query)(`SELECT sku_code FROM pricing_skus WHERE model_id = $1 AND is_active = TRUE`, [modelId]);
+        const existingCodes = new Set(existRes.rows.map((r) => r.sku_code));
+        for (const tpl of templates) {
+            const expectedCode = buildSkuCode(providerSlug, modelKey, modality, tpl.usage_kind, tpl.token_category, tpl.metadata);
+            if (!existingCodes.has(expectedCode)) {
+                return res.json({ ok: true, needsGeneration: true });
+            }
         }
-        return res.json({ ok: true, needsGeneration: true });
+        return res.json({ ok: true, needsGeneration: false });
     }
     catch (e) {
         console.error("checkModelNeedsSkuGeneration error:", e);

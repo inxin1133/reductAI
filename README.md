@@ -95,6 +95,7 @@ docker compose restart ai-agent-service
 docker compose restart file-service
 docker compose restart billing-service
 docker compose restart credits-service
+docker compose restart pricing-service
 
 
 ## 내리고 재빌드
