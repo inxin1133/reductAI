@@ -56,7 +56,7 @@ AI 모델 (필수 필드 포함)
 ### capabilities
 ```json
 {
-  "model": "gemini-3-flash",
+  "model": "gemini-3-flash-preview",
   "options": {
     "top_k": {
       "max": 100,

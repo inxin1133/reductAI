@@ -111,6 +111,26 @@ function asDateInputValue(value: unknown): string {
   return s.length >= 10 ? s.slice(0, 10) : s
 }
 
+function getResponseSchemaDisplay(
+  schemaId: string | null | undefined,
+  schemas: Array<{ id: string; name: string; version: number; strict: boolean }>
+): string {
+  if (!schemaId) return "(없음)"
+  const s = schemas.find((x) => x.id === schemaId)
+  if (!s) return "(알 수 없음)"
+  return `${s.name} (v${s.version})${s.strict ? " · strict" : ""}`
+}
+
+function getPromptTemplateDisplay(
+  templateId: string | null | undefined,
+  templates: Array<{ id: string; name: string; purpose: string; version: number }>
+): string {
+  if (!templateId) return "(없음)"
+  const t = templates.find((x) => x.id === templateId)
+  if (!t) return "(알 수 없음)"
+  return `${t.purpose} · ${t.name} (v${t.version})`
+}
+
 export default function ModelManager() {
 
   const [providers, setProviders] = useState<Provider[]>([])
@@ -119,7 +139,6 @@ export default function ModelManager() {
   const [responseSchemas, setResponseSchemas] = useState<Array<{ id: string; name: string; version: number; strict: boolean; is_active: boolean }>>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
-  const [rowSaving, setRowSaving] = useState<Record<string, boolean>>({})
   const [isReordering, setIsReordering] = useState(false)
   const [draggingId, setDraggingId] = useState<string | null>(null)
 
@@ -558,22 +577,6 @@ export default function ModelManager() {
     }
   }
 
-  const patchModelRow = async (id: string, patch: Partial<Pick<AIModel, "status" | "is_available" | "response_schema_id">>) => {
-    setRowSaving((p) => ({ ...p, [id]: true }))
-    try {
-      await tryFetchJson(`${MODELS_API_URL}/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify(patch),
-      })
-      // 로컬 반영(즉시 UI 반영) + 서버값 재조회(정합성)
-      setModels((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)))
-      await fetchModels()
-    } finally {
-      setRowSaving((p) => ({ ...p, [id]: false }))
-    }
-  }
-
   const openSim = (m: AIModel) => {
     setSimModel(m)
     setSimOutput("")
@@ -787,7 +790,7 @@ export default function ModelManager() {
               <TableHead>모델</TableHead>
               <TableHead>Provider</TableHead>
               <TableHead>Type</TableHead>
-              <TableHead>Response Schema</TableHead>
+              <TableHead>Response Schema/Prompt Template</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Available</TableHead>
               <TableHead>Default</TableHead>
@@ -849,53 +852,20 @@ export default function ModelManager() {
                     <Badge variant="secondary">{m.model_type}</Badge>
                   </TableCell>
                   <TableCell>
-                    <Select
-                      value={m.response_schema_id || "__none__"}
-                      onValueChange={(v) => void patchModelRow(m.id, { response_schema_id: v === "__none__" ? null : v })}
-                      disabled={!!rowSaving[m.id]}
-                    >
-                      <SelectTrigger className="h-8 w-[220px]">
-                        <SelectValue placeholder="(없음)" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__none__">(없음)</SelectItem>
-                        {responseSchemas
-                          .filter((s) => s.is_active)
-                          .map((s) => (
-                            <SelectItem key={s.id} value={s.id}>
-                              {`${s.name} (v${s.version})${s.strict ? " · strict" : ""}`}
-                            </SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
-                  </TableCell>
-                  <TableCell>
-                    <Select
-                      value={m.status}
-                      onValueChange={(v: ModelStatus) => void patchModelRow(m.id, { status: v })}
-                      disabled={!!rowSaving[m.id]}
-                    >
-                      <SelectTrigger className="h-8 w-[140px]">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(["active", "inactive", "deprecated", "beta"] as ModelStatus[]).map((s) => (
-                          <SelectItem key={s} value={s}>
-                            {s}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <Switch
-                        checked={!!m.is_available}
-                        onCheckedChange={(checked) => void patchModelRow(m.id, { is_available: checked })}
-                        disabled={!!rowSaving[m.id]}
-                      />
-                      <span className="text-xs text-muted-foreground">{m.is_available ? "Yes" : "No"}</span>
+                    <div className="flex flex-col gap-0.5">
+                      <div className="font-medium text-sm">
+                        {getResponseSchemaDisplay(m.response_schema_id, responseSchemas)}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {getPromptTemplateDisplay(m.prompt_template_id, promptTemplates)}
+                      </div>
                     </div>
+                  </TableCell>
+                  <TableCell>
+                    <span className="text-sm">{m.status}</span>
+                  </TableCell>
+                  <TableCell>
+                    <span className="text-sm text-muted-foreground">{m.is_available ? "Yes" : "No"}</span>
                   </TableCell>
                   <TableCell>{m.is_default ? <Badge>Yes</Badge> : <span className="text-xs text-muted-foreground">-</span>}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{asDateInputValue(m.released_at) || "-"}</TableCell>

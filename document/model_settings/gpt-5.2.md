@@ -296,6 +296,9 @@ Headers: Authorization: Bearer {apiKey}
 ```json
 {
   "feature": "chat",
+  "max_tokens": {
+    "$gt": 16384
+  },
   "model_type": "text"
 }
 ```
