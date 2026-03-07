@@ -96,6 +96,20 @@ function isUuid(v) {
         return false;
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 }
+/** OpenAI Images, Gemini Imagen 등: input/output_tokens_details에서 text_tokens, image_tokens 추출 */
+function extractTokenBreakdown(u) {
+    if (!u || typeof u !== "object")
+        return null;
+    const inDetails = u.input_tokens_details || u.inputTokenDetails || u.prompt_token_details;
+    const outDetails = u.output_tokens_details || u.outputTokenDetails || u.candidates_token_details || u.completion_token_details;
+    const inText = Number(inDetails?.text_tokens ?? inDetails?.textTokens ?? 0);
+    const inImage = Number(inDetails?.image_tokens ?? inDetails?.imageTokens ?? 0);
+    const outText = Number(outDetails?.text_tokens ?? outDetails?.textTokens ?? 0);
+    const outImage = Number(outDetails?.image_tokens ?? outDetails?.imageTokens ?? 0);
+    if (inText === 0 && inImage === 0 && outText === 0 && outImage === 0)
+        return null;
+    return { input_text_tokens: inText, input_image_tokens: inImage, output_text_tokens: outText, output_image_tokens: outImage };
+}
 function extractUsageFromProviderRaw(raw) {
     const au = raw?.usage;
     if (au &&
@@ -107,7 +121,14 @@ function extractUsageFromProviderRaw(raw) {
         const totalInput = input + cacheRead + cacheCreate;
         const output = Number(au.output_tokens || 0);
         const total = totalInput + output;
-        return { input_tokens: totalInput, cached_input_tokens: cacheRead, output_tokens: output, total_tokens: total };
+        const breakdown = extractTokenBreakdown(au);
+        return {
+            input_tokens: totalInput,
+            cached_input_tokens: cacheRead,
+            output_tokens: output,
+            total_tokens: total,
+            ...(breakdown ? { token_breakdown: breakdown } : {}),
+        };
     }
     const u = raw?.usage;
     if (u && (typeof u.input_tokens === "number" || typeof u.output_tokens === "number")) {
@@ -115,7 +136,14 @@ function extractUsageFromProviderRaw(raw) {
         const output = Number(u.output_tokens || 0);
         const cached = Number(u?.input_tokens_details?.cached_tokens || 0);
         const total = typeof u.total_tokens === "number" ? Number(u.total_tokens) : input + output;
-        return { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: total };
+        const breakdown = extractTokenBreakdown(u);
+        return {
+            input_tokens: input,
+            cached_input_tokens: cached,
+            output_tokens: output,
+            total_tokens: total,
+            ...(breakdown ? { token_breakdown: breakdown } : {}),
+        };
     }
     const cu = raw?.usage;
     if (cu && (typeof cu.prompt_tokens === "number" || typeof cu.completion_tokens === "number")) {
@@ -2489,10 +2517,12 @@ async function chatRun(req, res) {
                 // Prefer data URLs when available; otherwise download URLs to keep assets permanent.
                 const sourceUrls = (r.data_urls && r.data_urls.length ? r.data_urls : r.urls) || [];
                 const resolvedUrls = await materializeImageUrlsToDataUrls(sourceUrls, abortSignal);
+                const resolution = typeof mergedOptions?.resolution === "string" ? mergedOptions.resolution : undefined;
                 imageUsage = {
                     count: resolvedUrls.length || n,
                     size: typeof size === "string" ? size : undefined,
                     quality: typeof quality === "string" ? quality : undefined,
+                    resolution,
                 };
                 const blocks = resolvedUrls.length
                     ? resolvedUrls.map((u) => ({ type: "markdown", markdown: `![image](${u})` }))
@@ -2583,7 +2613,8 @@ async function chatRun(req, res) {
             const count = imgs.length || (typeof mergedOptions?.n === "number" ? clampInt(mergedOptions.n, 1, 10) : 1);
             const size = typeof mergedOptions?.size === "string" ? mergedOptions.size : undefined;
             const quality = typeof mergedOptions?.quality === "string" ? mergedOptions.quality : undefined;
-            imageUsage = { count, size, quality };
+            const resolution = typeof mergedOptions?.resolution === "string" ? mergedOptions.resolution : undefined;
+            imageUsage = { count, size, quality, resolution };
         }
         // model_api_profile 경로로 비디오 생성 시 videoUsage 설정 (추가 video 모델 확장 가능)
         if (mt === "video" && out && !videoUsage) {
@@ -2690,14 +2721,24 @@ async function chatRun(req, res) {
                 const outputTokens = usage.output_tokens;
                 const totalTokens = usage.total_tokens || inputTokens + outputTokens;
                 const modality = toLlmModality(mt, incomingImageDataUrls.length > 0 || incomingImageUrls.length > 0);
-                const pricing = await (0, pricingService_1.lookupModelPricing)(usedProviderSlug, usedModelApiId, modality, usedModelDbId);
-                const costs = (0, pricingService_1.calculateCost)(pricing, inputTokens, cachedInputTokens, outputTokens);
+                const isImageModality = modality === "image_read" || modality === "image_create";
+                const hasTokenBreakdown = isImageModality && usage.token_breakdown;
+                let costs;
+                if (hasTokenBreakdown && usage.token_breakdown) {
+                    const imagePricing = await (0, pricingService_1.lookupImageTokenPricing)(usedProviderSlug, usedModelApiId, usedModelDbId);
+                    costs = (0, pricingService_1.calculateImageTokenCost)(imagePricing, usage.token_breakdown);
+                }
+                else {
+                    const pricing = await (0, pricingService_1.lookupModelPricing)(usedProviderSlug, usedModelApiId, modality, usedModelDbId);
+                    costs = (0, pricingService_1.calculateCost)(pricing, inputTokens, cachedInputTokens, outputTokens);
+                }
                 const tokenTotalCost = costs.totalCost;
                 const webSearchCost = webSearchCount > 0
                     ? (await (0, pricingService_1.lookupWebSearchPricing)(webProvider || "serper")) * webSearchCount
                     : 0;
-                const imageCost = modality === "image_create" && imageUsage && imageUsage.count > 0
-                    ? (await (0, pricingService_1.lookupImagePricing)(usedProviderSlug, usedModelApiId, imageUsage.size ?? null, imageUsage.quality ?? null, usedModelDbId)) * imageUsage.count
+                // token_breakdown이 있으면 토큰 기반 과금만 사용 (imageCost 별도 적용 안 함)
+                const imageCost = !hasTokenBreakdown && modality === "image_create" && imageUsage && imageUsage.count > 0
+                    ? (await (0, pricingService_1.lookupImagePricing)(usedProviderSlug, usedModelApiId, imageUsage.size ?? null, imageUsage.quality ?? null, usedModelDbId, imageUsage.resolution ?? null)) * imageUsage.count
                     : 0;
                 const videoCost = modality === "video" && videoUsage && videoUsage.seconds > 0
                     ? (await (0, pricingService_1.lookupVideoPricing)(usedProviderSlug, usedModelApiId, videoUsage.size ?? null, usedModelDbId)) * videoUsage.seconds
@@ -2857,15 +2898,29 @@ async function chatRun(req, res) {
                 const usageLogId = logRes.rows[0]?.id;
                 if (usageLogId) {
                     if (inputTokens > 0 || cachedInputTokens > 0 || outputTokens > 0) {
-                        await (0, db_1.query)(`
-              INSERT INTO llm_token_usages (
-                usage_log_id, input_tokens, cached_input_tokens, output_tokens, unit
-              )
-              SELECT $1, $2, $3, $4, 'tokens'
-              WHERE NOT EXISTS (
-                SELECT 1 FROM llm_token_usages WHERE usage_log_id = $1
-              )
-              `, [usageLogId, inputTokens, cachedInputTokens, outputTokens]);
+                        if (hasTokenBreakdown && usage.token_breakdown) {
+                            await (0, db_1.query)(`DELETE FROM llm_token_usages WHERE usage_log_id = $1`, [usageLogId]);
+                            const b = usage.token_breakdown;
+                            if (b.input_text_tokens > 0 || b.output_text_tokens > 0) {
+                                await (0, db_1.query)(`INSERT INTO llm_token_usages (usage_log_id, input_tokens, cached_input_tokens, output_tokens, unit, token_category)
+                   VALUES ($1, $2, 0, $3, 'tokens', 'text')`, [usageLogId, b.input_text_tokens, b.output_text_tokens]);
+                            }
+                            if (b.input_image_tokens > 0 || b.output_image_tokens > 0) {
+                                await (0, db_1.query)(`INSERT INTO llm_token_usages (usage_log_id, input_tokens, cached_input_tokens, output_tokens, unit, token_category)
+                   VALUES ($1, $2, 0, $3, 'tokens', 'image')`, [usageLogId, b.input_image_tokens, b.output_image_tokens]);
+                            }
+                        }
+                        else {
+                            await (0, db_1.query)(`
+                INSERT INTO llm_token_usages (
+                  usage_log_id, input_tokens, cached_input_tokens, output_tokens, unit
+                )
+                SELECT $1, $2, $3, $4, 'tokens'
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM llm_token_usages WHERE usage_log_id = $1
+                )
+                `, [usageLogId, inputTokens, cachedInputTokens, outputTokens]);
+                        }
                     }
                     if (imageUsage) {
                         await (0, db_1.query)(`

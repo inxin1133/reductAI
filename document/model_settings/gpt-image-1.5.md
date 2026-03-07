@@ -3,7 +3,7 @@
 > 이 문서는 reductai 시스템에 GPT Image 1.5를 등록할 때 참조하는 설정 스펙입니다.
 > models_prompt_image.md 및 schema_models.sql 스키마를 기준으로 검토·조정되었습니다.
 >
-> **공식 문서**: [Platform 문서](https://platform.openai.com/docs) · [모델 목록](https://platform.openai.com/api/docs/models) · [Image generation](https://platform.openai.com/api/docs/guides/image-generation) · [GPT Image 1.5](https://platform.openai.com/api/docs/models/gpt-image-1.5)
+> **공식 문서**: [Platform 문서](https://developers.openai.com/api/docs) · [모델 목록](https://platform.openai.com/api/docs/models) · [Image generation](https://platform.openai.com/api/docs/guides/image-generation) · [GPT Image 1.5](https://platform.openai.com/api/docs/models/gpt-image-1.5)
 
 ---
 
@@ -18,7 +18,7 @@ AI 제공업체 (GPT 텍스트 모델과 동일 OpenAI 공유)
 | slug | `openai` | 기존 코드가 `openai`로 하드코딩 |
 | api_base_url | `https://api.openai.com/v1` | **base만** 저장 |
 | website_url | `https://openai.com` | |
-| documentation_url | `https://platform.openai.com/docs` | |
+| documentation_url | `https://developers.openai.com/api/docs` | |
 | logo_key | `chatgpt` | UI 로고 매핑 (선택) |
 
 ---
@@ -200,7 +200,8 @@ AI 모델 (이미지 타입)
 ---
 
 ## API 엔드포인트
-> 이미지 모델은 Responses API가 아니라 **Images API**를 사용합니다.
+> 이미지 모델은 Responses API가 아니라 **Images API**를 사용합니다. 
+> 프로그램 소스에 코딩된 내용을 사용합니다.
 
 ### 이미지 생성 (텍스트 → 이미지)
 ```

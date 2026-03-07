@@ -640,7 +640,7 @@ export default function Skus() {
             ) : (
               rows.map((r) => (
                 <TableRow key={r.id} className={r.is_active ? "" : "opacity-50"}>
-                  <TableCell className="font-mono text-xs max-w-[240px] truncate" title={r.sku_code}>
+                  <TableCell className="font-mono text-xs min-w-[260px] max-w-[360px] break-all !whitespace-normal align-top" title={r.sku_code}>
                     {r.sku_code}
                   </TableCell>
                   <TableCell

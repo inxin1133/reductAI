@@ -749,11 +749,22 @@ export async function ensureLlmUsageLogsSchema() {
       cached_input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       unit VARCHAR(20) NOT NULL DEFAULT 'tokens' CHECK (unit IN ('tokens')),
+      token_category VARCHAR(20) CHECK (token_category IN ('text', 'image')),
       metadata JSONB DEFAULT '{}',
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
   `)
   await query(`CREATE INDEX IF NOT EXISTS idx_llm_token_usages_usage_log_id ON llm_token_usages(usage_log_id);`)
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'llm_token_usages')
+        AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'llm_token_usages' AND column_name = 'token_category')
+      THEN
+        ALTER TABLE llm_token_usages ADD COLUMN token_category VARCHAR(20) CHECK (token_category IN ('text', 'image'));
+      END IF;
+    END $$;
+  `)
 }
 
 /**

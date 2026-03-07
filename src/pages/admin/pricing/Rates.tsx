@@ -589,7 +589,13 @@ export default function Rates() {
           })
         }
       } else {
-        const rv = Number(missingRateValues[skuId] || "0")
+        const raw = String(missingRateValues[skuId] ?? "").trim()
+        if (!raw) {
+          const sku = missingSkus.find((s) => s.id === skuId)
+          alert(`요율을 입력해주세요. (SKU: ${sku?.sku_code ?? skuId})`)
+          return
+        }
+        const rv = Number(raw)
         if (!Number.isFinite(rv) || rv < 0) {
           alert("요율 값은 0 이상의 숫자여야 합니다.")
           return

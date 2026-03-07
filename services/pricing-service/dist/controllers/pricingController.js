@@ -696,6 +696,8 @@ function buildSkuCode(providerSlug, modelKey, modality, usageKind, tokenCategory
             parts.push(metadata.size);
         if (metadata.resolution)
             parts.push(metadata.resolution);
+        if (metadata.aspect_ratio)
+            parts.push(String(metadata.aspect_ratio).replace(/:/g, "_"));
         if (metadata.task)
             parts.push(metadata.task);
         if (parts.length)
@@ -1056,6 +1058,97 @@ const SKU_TEMPLATES = {
         { usage_kind: "input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
     ],
 };
+/** image 모달리티용 기본 토큰 템플릿 (모든 이미지 모델 공통) */
+const IMAGE_BASE_TEMPLATES = [
+    { usage_kind: "input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "cached_input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "output_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "input_tokens", token_category: "image", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "cached_input_tokens", token_category: "image", unit: "tokens", unit_size: 1000000 },
+    { usage_kind: "output_tokens", token_category: "image", unit: "tokens", unit_size: 1000000 },
+];
+/**
+ * capabilities.options를 검토해 image_generation SKU 템플릿을 동적으로 생성.
+ * Provider별 가격 정책에 맞게 조합 수를 관리:
+ * - OpenAI: size × quality (1536x1024+1024x1536 → 1024x1536_or_1536x1024로 통합)
+ * - Google: resolution만 (aspect_ratio는 가격에 영향 없음)
+ */
+function expandImageTemplatesFromCapabilities(capabilities, providerSlug) {
+    const base = [...IMAGE_BASE_TEMPLATES];
+    const cap = capabilities && typeof capabilities === "object" ? capabilities : {};
+    const options = cap.options && typeof cap.options === "object" ? cap.options : {};
+    const slug = String(providerSlug || "").toLowerCase();
+    const isOpenai = slug === "openai" || slug.startsWith("openai-");
+    const isGoogle = slug === "google" || slug.startsWith("google-");
+    const excludeAuto = (arr) => arr.filter((v) => v && String(v).toLowerCase() !== "auto");
+    if (isOpenai) {
+        const sizeOpt = options.size && typeof options.size === "object" ? options.size : null;
+        const qualityOpt = options.quality && typeof options.quality === "object" ? options.quality : null;
+        const rawSizes = Array.isArray(sizeOpt?.values) ? sizeOpt.values.map(String) : [];
+        const rawQualities = Array.isArray(qualityOpt?.values) ? qualityOpt.values.map(String) : [];
+        const sizes = excludeAuto(rawSizes);
+        const qualities = excludeAuto(rawQualities);
+        // GPT Image 1.5 기본: capabilities 없어도 1024x1024 + 1024x1536_or_1536x1024 생성
+        if (sizes.length === 0) {
+            sizes.push("1024x1024", "1536x1024", "1024x1536");
+        }
+        if (qualities.length === 0)
+            qualities.push("low", "medium", "high");
+        const normalizedSizes = new Set();
+        for (const s of sizes) {
+            const x = s.replace(/[×*]/g, "x").toLowerCase();
+            if (x === "1024x1024")
+                normalizedSizes.add("1024x1024");
+            else if (x === "1536x1024" || x === "1024x1536")
+                normalizedSizes.add("1024x1536_or_1536x1024");
+            else if (x === "1024x1792" || x === "1792x1024")
+                normalizedSizes.add("1024x1792_or_1792x1024");
+            else
+                normalizedSizes.add(x);
+        }
+        for (const size of normalizedSizes) {
+            for (const quality of qualities) {
+                base.push({
+                    usage_kind: "image_generation",
+                    token_category: null,
+                    unit: "image",
+                    unit_size: 1,
+                    metadata: { quality, size },
+                });
+            }
+        }
+    }
+    else if (isGoogle) {
+        const resOpt = options.resolution && typeof options.resolution === "object" ? options.resolution : null;
+        const rawRes = Array.isArray(resOpt?.values) ? resOpt.values.map(String) : [];
+        const resolutions = excludeAuto(rawRes);
+        if (resolutions.length === 0)
+            resolutions.push("512", "1024", "2048", "4096");
+        for (const resolution of resolutions) {
+            base.push({
+                usage_kind: "image_generation",
+                token_category: null,
+                unit: "image",
+                unit_size: 1,
+                metadata: { resolution },
+            });
+        }
+    }
+    else {
+        base.push({ usage_kind: "image_generation", token_category: null, unit: "image", unit_size: 1, metadata: { quality: "low", size: "1024x1024" } }, { usage_kind: "image_generation", token_category: null, unit: "image", unit_size: 1, metadata: { quality: "medium", size: "1024x1024" } }, { usage_kind: "image_generation", token_category: null, unit: "image", unit_size: 1, metadata: { quality: "high", size: "1024x1024" } });
+    }
+    return base;
+}
+function getImageTemplates(capabilities, providerSlug) {
+    const slug = String(providerSlug || "").toLowerCase();
+    const isOpenai = slug === "openai" || slug.startsWith("openai-");
+    const isGoogle = slug === "google" || slug.startsWith("google-");
+    // OpenAI/Google image 모델은 capabilities 유무와 관계없이 동적 템플릿 사용 (fallback 내장)
+    if (isOpenai || isGoogle) {
+        return expandImageTemplatesFromCapabilities(capabilities, providerSlug);
+    }
+    return SKU_TEMPLATES.image;
+}
 // GET /skus/needs-generation?model_id=xxx → { ok, needsGeneration }
 // 모달리티별 필수 SKU 템플릿을 검토해, 누락된 SKU가 있으면 needsGeneration: true
 async function checkModelNeedsSkuGeneration(req, res) {
@@ -1064,7 +1157,7 @@ async function checkModelNeedsSkuGeneration(req, res) {
         if (!modelId)
             return res.status(400).json({ message: "model_id query is required" });
         const modelRes = await (0, db_1.query)(`
-      SELECT m.id, m.model_id AS model_key, m.model_type, p.slug AS provider_slug
+      SELECT m.id, m.model_id AS model_key, m.model_type, m.capabilities, p.slug AS provider_slug
       FROM ai_models m
       LEFT JOIN ai_providers p ON p.id = m.provider_id
       WHERE m.id = $1
@@ -1073,7 +1166,9 @@ async function checkModelNeedsSkuGeneration(req, res) {
             return res.status(404).json({ message: "Model not found" });
         const model = modelRes.rows[0];
         const modality = String(model.model_type || "text");
-        const templates = SKU_TEMPLATES[modality] || SKU_TEMPLATES.text;
+        const templates = modality === "image"
+            ? getImageTemplates(model.capabilities, model.provider_slug || "unknown")
+            : (SKU_TEMPLATES[modality] || SKU_TEMPLATES.text);
         const providerSlug = model.provider_slug || "unknown";
         const modelKey = model.model_key || "";
         const existRes = await (0, db_1.query)(`SELECT sku_code FROM pricing_skus WHERE model_id = $1 AND is_active = TRUE`, [modelId]);
@@ -1098,7 +1193,7 @@ async function generateSkusForModel(req, res) {
         if (!modelId)
             return res.status(400).json({ message: "model_id (UUID) is required" });
         const modelRes = await (0, db_1.query)(`
-      SELECT m.id, m.model_id AS model_key, m.display_name, m.model_type,
+      SELECT m.id, m.model_id AS model_key, m.display_name, m.model_type, m.capabilities,
              p.slug AS provider_slug
       FROM ai_models m
       LEFT JOIN ai_providers p ON p.id = m.provider_id
@@ -1108,7 +1203,9 @@ async function generateSkusForModel(req, res) {
             return res.status(404).json({ message: "Model not found" });
         const model = modelRes.rows[0];
         const modality = modalityOverride || model.model_type || "text";
-        const templates = SKU_TEMPLATES[modality] || SKU_TEMPLATES.text;
+        const templates = modality === "image"
+            ? getImageTemplates(model.capabilities, model.provider_slug || "unknown")
+            : (SKU_TEMPLATES[modality] || SKU_TEMPLATES.text);
         const created = [];
         const skipped = [];
         for (const tpl of templates) {

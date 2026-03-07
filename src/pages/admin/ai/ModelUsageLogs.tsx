@@ -458,6 +458,9 @@ export default function ModelUsageLogs() {
                             {toNumber((u as any).input_tokens)}+
                             {toNumber((u as any).cached_input_tokens)}/
                             {toNumber((u as any).output_tokens)} tokens
+                            {(u as any).token_category ? (
+                              <span className="text-muted-foreground ml-1">({(u as any).token_category})</span>
+                            ) : null}
                           </div>
                         ))}
                       </div>

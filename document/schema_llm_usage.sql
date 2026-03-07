@@ -240,6 +240,7 @@ CREATE TABLE llm_token_usages (
     cached_input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
     unit VARCHAR(20) NOT NULL DEFAULT 'tokens' CHECK (unit IN ('tokens')),
+    token_category VARCHAR(20) CHECK (token_category IN ('text', 'image')),
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -252,6 +253,7 @@ COMMENT ON COLUMN llm_token_usages.input_tokens IS '입력 토큰 수';
 COMMENT ON COLUMN llm_token_usages.cached_input_tokens IS '캐시된 입력 토큰 수';
 COMMENT ON COLUMN llm_token_usages.output_tokens IS '출력 토큰 수';
 COMMENT ON COLUMN llm_token_usages.unit IS '과금 단위(tokens)';
+COMMENT ON COLUMN llm_token_usages.token_category IS '토큰 카테고리(text/image). GPT Image 1.5, Gemini 3.1 Flash Image 등에서 text/image 분리 저장';
 
 -- ============================================
 -- 3. LLM AUDIO USAGES (STT/TTS 사용량)

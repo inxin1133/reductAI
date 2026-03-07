@@ -3,7 +3,7 @@
 > 이 문서는 reductai 시스템에 GPT-5.2를 등록할 때 참조하는 설정 스펙입니다.
 > models_prompt_text(chat).md 상단 권장값과 schema_models.sql 스키마를 기준으로 검토·조정되었습니다.
 >
-> **공식 문서**: [Platform 문서](https://platform.openai.com/docs) · [모델 목록](https://platform.openai.com/api/docs/models) · [Responses API](https://platform.openai.com/api/docs/guides/migrate-to-responses) · [Structured outputs](https://platform.openai.com/api/docs/guides/structured-outputs) · [Prompt caching](https://platform.openai.com/api/docs/guides/prompt-caching)
+> **공식 문서**: [Platform 문서](https://developers.openai.com/api/docs) · [모델 목록](https://platform.openai.com/api/docs/models) · [Responses API](https://platform.openai.com/api/docs/guides/migrate-to-responses) · [Structured outputs](https://platform.openai.com/api/docs/guides/structured-outputs) · [Prompt caching](https://platform.openai.com/api/docs/guides/prompt-caching)
 
 ---
 
@@ -18,7 +18,7 @@ AI 제공업체
 | slug | `openai` | **권장**: 기존 코드(timelineController, chatController 등)가 `openai`로 하드코딩. `openai-chatgpt`도 동작(provider_family 자동 추론) |
 | api_base_url | `https://api.openai.com/v1` | **base만** 저장. `/chat/completions`, `/responses` 등 path는 제외 |
 | website_url | `https://openai.com` | |
-| documentation_url | `https://platform.openai.com/docs` | |
+| documentation_url | `https://developers.openai.com/api/docs` | |
 | logo_key | `chatgpt` | UI 로고 매핑 (선택) |
 
 
