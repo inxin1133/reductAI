@@ -1351,20 +1351,107 @@ export async function ensureDefaultSoraVideoProfiles() {
 }
 
 /**
+ * Seed Veo video profile for a specific provider (used when video request fails and we have the exact provider).
+ * Call this before ensureDefaultVeoVideoProfiles in lazy seed to ensure the selected provider gets a profile.
+ */
+export async function ensureDefaultVeoVideoProfileForProvider(targetTenantId: string, providerId: string) {
+  try {
+    const systemTenantId = await ensureSystemTenantId()
+    const tenantId = targetTenantId || systemTenantId
+    const profileKey = "google_veo_video_v1"
+
+    const existing = await query(
+      `SELECT 1 FROM model_api_profiles WHERE tenant_id = $1 AND provider_id = $2 AND profile_key = $3 LIMIT 1`,
+      [tenantId, providerId, profileKey]
+    )
+    if (existing.rows.length) return
+
+    const authProfile = await query(
+      `SELECT id FROM provider_auth_profiles
+       WHERE tenant_id = $1 AND provider_id = $2 AND auth_type IN ('google_adc','oauth2_service_account') AND is_active = TRUE
+       ORDER BY CASE WHEN auth_type = 'google_adc' THEN 0 ELSE 1 END LIMIT 1`,
+      [systemTenantId, providerId]
+    )
+    const authProfileId = authProfile.rows[0] ? String((authProfile.rows[0] as Record<string, unknown>).id || "") : null
+
+    const transport = {
+      kind: "http_json",
+      method: "POST",
+      path: "/projects/{{config_project_id}}/locations/{{config_location}}/publishers/google/models/veo-3.1-generate-preview:predictLongRunning",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer {{accessToken}}" },
+      body: {
+        instances: [{ prompt: "{{userPrompt}}" }],
+        parameters: {
+          durationSeconds: "{{params_seconds}}",
+          aspectRatio: "{{params_aspect_ratio}}",
+          resolution: "{{params_resolution}}",
+          generateAudio: "{{params_generate_audio}}",
+          sampleCount: 1,
+        },
+      },
+      timeout_ms: 120000,
+    }
+    const responseMapping = { result_type: "raw_json", mode: "json", extract: { job_id_path: "name" } }
+    const workflow = {
+      type: "async_job",
+      job_id_path: "name",
+      steps: [
+        {
+          name: "poll",
+          method: "POST",
+          path: "/projects/{{config_project_id}}/locations/{{config_location}}/publishers/google/models/veo-3.1-generate-preview:fetchPredictOperation",
+          body: { operationName: "{{job_id}}" },
+          interval_ms: 5000,
+          max_attempts: 60,
+          status_path: "done",
+          terminal_states: ["true"],
+        },
+        {
+          name: "download",
+          method: "POST",
+          path: "/projects/{{config_project_id}}/locations/{{config_location}}/publishers/google/models/veo-3.1-generate-preview:fetchPredictOperation",
+          body: { operationName: "{{job_id}}" },
+          mode: "json",
+          url_path: "response.videos[0].gcsUri",
+        },
+      ],
+    }
+
+    await query(
+      `
+      INSERT INTO model_api_profiles
+        (tenant_id, provider_id, model_id, profile_key, purpose, auth_profile_id, transport, response_mapping, workflow, is_active)
+      VALUES
+        ($1,$2,NULL,$3,'video',$4::uuid,$5::jsonb,$6::jsonb,$7::jsonb,TRUE)
+      `,
+      [tenantId, providerId, profileKey, authProfileId, JSON.stringify(transport), JSON.stringify(responseMapping), JSON.stringify(workflow)]
+    )
+  } catch (e) {
+    console.warn("ensureDefaultVeoVideoProfileForProvider failed (ignored):", e)
+  }
+}
+
+/**
  * Seed default Vertex AI Veo 3.1 video profile (best-effort).
  * - Requires a provider with api_base_url containing aiplatform.googleapis.com (Vertex AI).
- * - Requires a provider_auth_profiles row with auth_type=google_adc for that provider.
- * - Users create provider + google_adc auth profile in Admin, then this seed adds the model_api_profile.
+ * - Or: provider has video model with 'veo' in model_id (catches Veo providers with alternate URL format).
+ * - Requires a provider_auth_profiles row with auth_type=google_adc or oauth2_service_account for that provider.
+ * - Users create provider + auth profile in Admin, then this seed adds the model_api_profile.
+ * @param targetTenantId - If provided, seed for this tenant (e.g. request tenant). Otherwise use system tenant.
  */
-export async function ensureDefaultVeoVideoProfiles() {
+export async function ensureDefaultVeoVideoProfiles(targetTenantId?: string) {
   try {
-    const tenantId = await ensureSystemTenantId()
+    const systemTenantId = await ensureSystemTenantId()
+    const tenantId = targetTenantId || systemTenantId
 
+    // Match: (1) api_base_url contains aiplatform, or (2) provider has Veo video model
     const prov = await query(
       `
-      SELECT id FROM ai_providers
-      WHERE api_base_url ILIKE '%aiplatform.googleapis.com%'
-      ORDER BY updated_at DESC NULLS LAST
+      SELECT DISTINCT p.id FROM ai_providers p
+      LEFT JOIN ai_models m ON m.provider_id = p.id AND m.model_type = 'video' AND m.model_id ILIKE '%veo%'
+      WHERE p.api_base_url ILIKE '%aiplatform.googleapis.com%'
+         OR (m.id IS NOT NULL AND (p.api_base_url ILIKE '%aiplatform%' OR lower(p.provider_family) = 'google'))
+      ORDER BY p.updated_at DESC NULLS LAST
       `,
       []
     )
@@ -1416,11 +1503,13 @@ export async function ensureDefaultVeoVideoProfiles() {
     }
 
     for (const providerId of providerIds) {
+      // Auth profiles are typically in system tenant (Admin creates them there)
       const authProfile = await query(
         `SELECT id FROM provider_auth_profiles
-         WHERE tenant_id = $1 AND provider_id = $2 AND auth_type = 'google_adc' AND is_active = TRUE
+         WHERE tenant_id = $1 AND provider_id = $2 AND auth_type IN ('google_adc','oauth2_service_account') AND is_active = TRUE
+         ORDER BY CASE WHEN auth_type = 'google_adc' THEN 0 ELSE 1 END
          LIMIT 1`,
-        [tenantId, providerId]
+        [systemTenantId, providerId]
       )
       const authProfileId = authProfile.rows[0] ? String((authProfile.rows[0] as Record<string, unknown>).id || "") : null
 

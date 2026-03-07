@@ -48,6 +48,7 @@ const authProfilesService_1 = require("../services/authProfilesService");
 const credentialRateLimitService_1 = require("../services/credentialRateLimitService");
 const fileServiceClient_1 = require("../services/fileServiceClient");
 const normalizeAiContent_1 = require("../utils/normalizeAiContent");
+const gcsSignedUrl_1 = require("../utils/gcsSignedUrl");
 const webSearchSettingsService_1 = require("../services/webSearchSettingsService");
 const pricingService_1 = require("../services/pricingService");
 const MODEL_TYPES = ["text", "image", "audio", "music", "video", "multimodal", "embedding", "code"];
@@ -607,17 +608,40 @@ function getByPath(root, path) {
     return cur;
 }
 async function loadModelApiProfile(args) {
-    const r = await (0, db_1.query)(`
+    const systemTenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
+    // Search in both request tenant and system tenant (Admin creates profiles in system tenant).
+    // Prefer request tenant, then provider-level (model_id IS NULL) over model-specific.
+    const tenantIds = args.tenantId === systemTenantId ? [args.tenantId] : [args.tenantId, systemTenantId];
+    const tenantPlaceholders = tenantIds.map((_, i) => `$${i + 1}`).join(", ");
+    const baseParams = [...tenantIds, args.providerId, args.purpose, args.modelDbId];
+    const orderByTenantParam = baseParams.length + 1;
+    let r = await (0, db_1.query)(`
     SELECT id, provider_id, model_id, profile_key, purpose, auth_profile_id, transport, response_mapping, workflow
     FROM model_api_profiles
-    WHERE tenant_id = $1
-      AND provider_id = $2
-      AND purpose = $3
+    WHERE tenant_id IN (${tenantPlaceholders})
+      AND provider_id = $${tenantIds.length + 1}
+      AND purpose = $${tenantIds.length + 2}
       AND is_active = TRUE
-      AND (model_id = $4 OR model_id IS NULL)
-    ORDER BY (model_id IS NULL) ASC, updated_at DESC
+      AND (model_id = $${tenantIds.length + 3} OR model_id IS NULL)
+    ORDER BY (tenant_id = $${orderByTenantParam}) DESC, (model_id IS NULL) ASC, updated_at DESC
     LIMIT 1
-    `, [args.tenantId, args.providerId, args.purpose, args.modelDbId]);
+    `, [...baseParams, args.tenantId]);
+    // Fallback: profile may have model_id set to a specific model. Use provider-level (model_id IS NULL) if available.
+    if (r.rows.length === 0) {
+        const fallbackParams = [...tenantIds, args.providerId, args.purpose];
+        const fallbackOrderBy = fallbackParams.length + 1;
+        r = await (0, db_1.query)(`
+      SELECT id, provider_id, model_id, profile_key, purpose, auth_profile_id, transport, response_mapping, workflow
+      FROM model_api_profiles
+      WHERE tenant_id IN (${tenantPlaceholders})
+        AND provider_id = $${tenantIds.length + 1}
+        AND purpose = $${tenantIds.length + 2}
+        AND is_active = TRUE
+        AND model_id IS NULL
+      ORDER BY (tenant_id = $${fallbackOrderBy}) DESC, updated_at DESC
+      LIMIT 1
+      `, [...fallbackParams, args.tenantId]);
+    }
     if (r.rows.length === 0)
         return null;
     const row = (r.rows[0] || {});
@@ -865,19 +889,43 @@ async function executeHttpJsonProfile(args) {
                 content: { ...blockJson, job: { id: jobId, status: lastStatus }, video: { mime: ct, data_url: dataUrl }, raw: { initial: initial.json, poll: lastJson } },
             };
         }
-        // json download: try to extract URL
+        // json download: extract video from Vertex AI response (gcsUri or bytesBase64Encoded)
         const urlPath = pickString(download, "url_path") || pickString(download, "result_url_path");
         const urlVal = urlPath ? getByPath(downloaded.json, urlPath) : undefined;
-        const urlStr = typeof urlVal === "string" ? urlVal : "";
+        let urlStr = typeof urlVal === "string" ? urlVal : "";
+        let dataUrl = "";
+        let mime = "video/mp4";
+        // Fallback: Vertex AI returns bytesBase64Encoded when storageUri is not specified
+        if (!urlStr) {
+            const b64Val = getByPath(downloaded.json, "response.videos[0].bytesBase64Encoded");
+            const mimeVal = getByPath(downloaded.json, "response.videos[0].mimeType");
+            const b64 = typeof b64Val === "string" ? b64Val : "";
+            mime = typeof mimeVal === "string" ? mimeVal : "video/mp4";
+            if (b64)
+                dataUrl = `data:${mime};base64,${b64}`;
+        }
+        // gs:// URLs cannot be played in browser; convert to signed URL
+        if (urlStr && urlStr.startsWith("gs://")) {
+            try {
+                const signed = await (0, gcsSignedUrl_1.gcsUriToSignedUrl)(urlStr);
+                if (signed)
+                    urlStr = signed;
+            }
+            catch (e) {
+                console.warn("[Veo] gcsUri to signed URL failed, passing through:", e?.message);
+            }
+        }
+        const videoPayload = dataUrl ? { mime, data_url: dataUrl } : urlStr ? { url: urlStr } : {};
+        // job_id/status는 UI에 노출하지 않음 (내부 추적용으로 content.job에만 보관)
         const blockJson = {
             title: "비디오 생성",
-            summary: `job_id=${jobId}, status=${lastStatus}`,
-            blocks: [{ type: "markdown", markdown: urlStr ? `비디오 URL: ${urlStr}` : `비디오 생성 완료. job_id: ${jobId}` }],
+            summary: dataUrl || urlStr ? "" : `비디오 생성 완료. job_id: ${jobId}`,
+            blocks: [{ type: "markdown", markdown: dataUrl || urlStr ? `비디오가 생성되었습니다.` : `비디오 생성 완료. job_id: ${jobId}` }],
         };
         return {
             output_text: JSON.stringify(blockJson),
             raw: { initial: initial.json, poll: lastJson, download: downloaded.json },
-            content: { ...blockJson, job: { id: jobId, status: lastStatus }, video: urlStr ? { url: urlStr } : {}, raw: { initial: initial.json, poll: lastJson, download: downloaded.json } },
+            content: { ...blockJson, job: { id: jobId, status: lastStatus }, video: videoPayload, raw: { initial: initial.json, poll: lastJson, download: downloaded.json } },
         };
     }
     // binary mode (direct response)
@@ -2143,10 +2191,86 @@ async function chatRun(req, res) {
             }
         }
         // Video is DB-profile driven. If we have no profile (or the profile errored), don't fall back to a generic legacy "not implemented".
-        // Return an actionable error so Admin can add/fix `model_api_profiles(purpose=video)` for the provider.
+        // Lazy seed: try ensureDefaultVeoVideoProfiles for this tenant (handles provider created after server start).
         if (mt === "video" && out == null) {
+            try {
+                const { ensureDefaultVeoVideoProfileForProvider, ensureDefaultVeoVideoProfiles } = await Promise.resolve().then(() => __importStar(require("../services/schemaBootstrap")));
+                await ensureDefaultVeoVideoProfileForProvider(tenantId, providerId);
+                await ensureDefaultVeoVideoProfiles(tenantId);
+                const profile = await loadModelApiProfile({ tenantId, providerId, modelDbId: chosenModelDbId, purpose });
+                if (profile) {
+                    usedProfileKey = profile.profile_key;
+                    profileAttempted = true;
+                    usedProviderId = providerId;
+                    usedModelDbId = chosenModelDbId;
+                    usedModelApiId = modelApiId;
+                    usedProviderSlug = String(row.provider_slug || "");
+                    const auth = await (0, authProfilesService_1.resolveAuthForModelApiProfile)({ providerId, authProfileId: profile.auth_profile_id });
+                    usedCredentialId = auth.credentialId;
+                    (0, credentialRateLimitService_1.checkAndRecord)(auth.credentialId, auth.rateLimitPerMinute, auth.rateLimitPerDay);
+                    out = await executeHttpJsonProfile({
+                        apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                        apiKey: auth.apiKey,
+                        accessToken: auth.accessToken,
+                        modelApiId,
+                        purpose,
+                        prompt,
+                        input,
+                        language: finalLang,
+                        maxTokens: safeMaxTokens,
+                        history,
+                        options: mergedOptions,
+                        injectedTemplate,
+                        profile,
+                        configVars: auth.configVars,
+                        signal: abortSignal,
+                    });
+                }
+            }
+            catch (lazyErr) {
+                console.warn("[video] lazy seed or retry failed:", lazyErr);
+            }
+        }
+        if (mt === "video" && out == null) {
+            // Diagnostic: list video profiles for this provider to help debug tenant/provider/model_id mismatch
+            let diagnostic = null;
+            try {
+                const diagProfiles = await (0, db_1.query)(`SELECT id, tenant_id, provider_id, model_id, profile_key, purpose, is_active
+           FROM model_api_profiles
+           WHERE provider_id = $1 AND purpose = 'video'
+           ORDER BY is_active DESC, updated_at DESC
+           LIMIT 10`, [providerId]);
+                const systemTenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
+                diagnostic = {
+                    request_tenant_id: tenantId,
+                    system_tenant_id: systemTenantId,
+                    tenant_match: tenantId === systemTenantId,
+                    video_profiles_for_provider: (diagProfiles.rows || []).map((row) => ({
+                        id: row.id,
+                        tenant_id: row.tenant_id,
+                        model_id: row.model_id,
+                        profile_key: row.profile_key,
+                        is_active: row.is_active,
+                    })),
+                };
+            }
+            catch {
+                diagnostic = { error: "diagnostic query failed" };
+            }
+            // When profile was found but execution failed (e.g. auth/credential error), surface the actual error
+            const errStr = profileError ? String(profileError?.message || profileError) : null;
+            const isAuthOrCredentialError = profileAttempted &&
+                errStr &&
+                /credential|default credentials|auth|authentication|NO_ACTIVE_CREDENTIAL|AUTH_PROFILE|GOOGLE_ADC|ADC_CONFIG|SERVICE_ACCOUNT/i.test(errStr);
+            const message = isAuthOrCredentialError
+                ? `비디오 생성 인증 실패: ${errStr}`
+                : "Video requires an active model_api_profile (purpose=video) for the selected provider/model.";
+            const hint = isAuthOrCredentialError
+                ? "로컬: gcloud auth application-default login 실행. Docker: ADC 볼륨 마운트 또는 oauth2_service_account + 서비스 계정 JSON 사용. document/model_settings/ADC사용시설정방법.md 참고."
+                : "Create/activate a model_api_profiles row with purpose=video for this provider (model_id can be NULL to apply to all video models). " +
+                    "Ensure provider_id matches the Veo model's provider. Check diagnostic.video_profiles_for_provider and tenant_match.";
             return await failAndRespond(400, {
-                message: "Video requires an active model_api_profile (purpose=video) for the selected provider/model.",
+                message,
                 details: {
                     provider_id: providerId,
                     provider_family: providerKey,
@@ -2156,8 +2280,8 @@ async function chatRun(req, res) {
                     profile_key_used: usedProfileKey,
                     profile_attempted: profileAttempted,
                     error: profileError ? String(profileError?.message || profileError) : null,
-                    hint: "Create/activate a model_api_profiles row with purpose=video for this provider (model_id can be NULL to apply to all video models). " +
-                        "The built-in executor supports workflow.type=async_job (poll + binary download) and will return content.video.{data_url|url}.",
+                    diagnostic,
+                    hint,
                 },
             });
         }
@@ -2646,19 +2770,32 @@ async function chatRun(req, res) {
             imageUsage = { count, size, quality, resolution };
         }
         // model_api_profile 경로로 비디오 생성 시 videoUsage 설정 (추가 video 모델 확장 가능)
+        // Veo: resolution(720p, 1080p, 4k). Sora: size(1280x720 등). 둘 다 size 컬럼/과금에 사용.
         if (mt === "video" && out && !videoUsage) {
-            const seconds = typeof mergedOptions?.seconds === "number"
-                ? Math.max(0, Number(mergedOptions.seconds))
-                : typeof out.content?.seconds === "number"
-                    ? Math.max(0, Number(out.content.seconds))
+            const contentOpts = isRecord(out.content?.options)
+                ? out.content.options
+                : null;
+            const secondsFromOpts = mergedOptions?.seconds ?? contentOpts?.seconds ?? out.content?.seconds;
+            const seconds = typeof secondsFromOpts === "number"
+                ? Math.max(0, Number(secondsFromOpts))
+                : typeof secondsFromOpts === "string"
+                    ? Math.max(0, parseInt(String(secondsFromOpts), 10) || 0)
                     : 0;
             const size = typeof mergedOptions?.size === "string"
                 ? String(mergedOptions.size).trim()
                 : typeof out.content?.size === "string"
                     ? String(out.content.size).trim()
                     : undefined;
-            if (seconds > 0)
-                videoUsage = { seconds, size };
+            const resolution = typeof mergedOptions?.resolution === "string"
+                ? String(mergedOptions.resolution).trim()
+                : typeof out.content?.resolution === "string"
+                    ? String(out.content.resolution).trim()
+                    : undefined;
+            // 비디오가 생성되었으면( content.video 존재 ) seconds가 0이어도 기본 4초로 기록 (Veo 최소 길이)
+            const hasVideo = isRecord(out.content?.video);
+            const effectiveSeconds = seconds > 0 ? seconds : hasVideo ? 4 : 0;
+            if (effectiveSeconds > 0)
+                videoUsage = { seconds: effectiveSeconds, size, resolution };
         }
         if (!optionsForAssistant && mergedOptions && Object.keys(mergedOptions).length > 0) {
             optionsForAssistant = mergedOptions;
@@ -2742,6 +2879,26 @@ async function chatRun(req, res) {
             await (0, db_1.query)(`UPDATE model_conversations SET title = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND title = $3`, [convId, finalTitle, tempTitle]);
         }
         // ✅ usage log (best-effort)
+        // 비디오(model_api_profile) 경로에서 usedProviderId 등이 누락될 수 있으므로 폴백
+        if (mt === "video" && out && providerId && chosenModelDbId) {
+            usedProviderId = usedProviderId || providerId;
+            usedModelDbId = usedModelDbId || chosenModelDbId;
+            usedModelApiId = usedModelApiId || modelApiId || String(model_api_id || "").trim();
+            usedProviderSlug = usedProviderSlug || String(row.provider_slug || "");
+            // usedModelApiId가 여전히 비어 있으면 provider별 비디오 기본값 사용 (Veo 등)
+            if (!usedModelApiId || !String(usedModelApiId).trim()) {
+                const slug = String(usedProviderSlug || row.provider_slug || "").toLowerCase();
+                usedModelApiId = slug.includes("google") ? "veo-3" : slug.includes("openai") ? "sora-1" : "video";
+            }
+        }
+        if (!usedProviderId || !usedModelDbId || !usedModelApiId) {
+            console.warn("[usage-log] skip: missing required fields", {
+                mt,
+                usedProviderId: usedProviderId || "(empty)",
+                usedModelDbId: usedModelDbId || "(empty)",
+                usedModelApiId: usedModelApiId || "(empty)",
+            });
+        }
         try {
             if (usedProviderId && usedModelDbId && usedModelApiId) {
                 const usage = extractUsageFromProviderRaw(out?.raw);
@@ -2770,7 +2927,7 @@ async function chatRun(req, res) {
                     ? (await (0, pricingService_1.lookupImagePricing)(usedProviderSlug, usedModelApiId, imageUsage.size ?? null, imageUsage.quality ?? null, usedModelDbId, imageUsage.resolution ?? null)) * imageUsage.count
                     : 0;
                 const videoCost = modality === "video" && videoUsage && videoUsage.seconds > 0
-                    ? (await (0, pricingService_1.lookupVideoPricing)(usedProviderSlug, usedModelApiId, videoUsage.size ?? null, usedModelDbId)) * videoUsage.seconds
+                    ? (await (0, pricingService_1.lookupVideoPricing)(usedProviderSlug, usedModelApiId, videoUsage.resolution ?? videoUsage.size ?? null, usedModelDbId)) * videoUsage.seconds
                     : 0;
                 const audioCost = 0;
                 const musicCost = 0;
@@ -2963,6 +3120,7 @@ async function chatRun(req, res) {
               `, [usageLogId, imageUsage.count, imageUsage.size || null, imageUsage.quality || null]);
                     }
                     if (videoUsage) {
+                        const videoSizeOrResolution = videoUsage.resolution ?? videoUsage.size ?? null;
                         await (0, db_1.query)(`
               INSERT INTO llm_video_usages (
                 usage_log_id, seconds, size, unit
@@ -2971,7 +3129,7 @@ async function chatRun(req, res) {
               WHERE NOT EXISTS (
                 SELECT 1 FROM llm_video_usages WHERE usage_log_id = $1
               )
-              `, [usageLogId, videoUsage.seconds, videoUsage.size || null]);
+              `, [usageLogId, videoUsage.seconds, videoSizeOrResolution]);
                     }
                     if (musicUsage) {
                         await (0, db_1.query)(`

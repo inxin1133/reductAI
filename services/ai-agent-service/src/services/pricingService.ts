@@ -592,7 +592,7 @@ export async function lookupImagePricing(
  * 2. providerSlug + modelKey — model_id가 없거나 매칭 실패 시 폴백
  * 3. provider만 매칭 — model_key 무관
  *
- * @param resolution 요청 해상도(720x1280, 1024x1792 등). SKU metadata.resolution과 매칭 시 정규화 적용
+ * @param resolution 요청 해상도. Sora: 720x1280, 1024x1792 등. Veo: 720p, 1080p, 4k. SKU metadata.resolution과 매칭 시 정규화 적용
  * @returns USD per second. 조회 실패 시 0
  */
 export async function lookupVideoPricing(
