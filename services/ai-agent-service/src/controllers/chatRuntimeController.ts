@@ -714,6 +714,7 @@ async function executeHttpJsonProfile(args: {
     overrideMethod?: string
     overridePath?: string
     overrideQuery?: Record<string, unknown>
+    overrideBody?: Record<string, unknown> | null
     mode: "json" | "binary"
     signal?: AbortSignal
   }): Promise<{ ok: boolean; status: number; url: string; json: unknown; buf: Buffer | null; contentType: string | null }> {
@@ -722,8 +723,10 @@ async function executeHttpJsonProfile(args: {
     const rawQuery = safeObj(tr.query)
     const rawBody = safeObj(tr.body)
 
-    // If prompt_templates is configured, merge it into the profile body (template wins).
-    const mergedBody = (args2.templateBody ? deepMergeJson(rawBody, args2.templateBody) : rawBody) as Record<string, unknown>
+    // If overrideBody is provided (e.g. poll step body for Vertex fetchPredictOperation), use it.
+    const mergedBody = (args2.overrideBody !== undefined && args2.overrideBody !== null
+      ? args2.overrideBody
+      : (args2.templateBody ? deepMergeJson(rawBody, args2.templateBody) : rawBody)) as Record<string, unknown>
 
     const injectedHeaders = deepInjectVars(rawHeaders, args2.vars) as Record<string, unknown>
     const injectedQuery = deepInjectVars(rawQuery, args2.vars) as Record<string, unknown>
@@ -837,12 +840,14 @@ async function executeHttpJsonProfile(args: {
     for (let i = 0; i < pollMax; i++) {
       const pollPath = pickString(poll, "path") || ""
       if (!pollPath) throw new Error("ASYNC_JOB_MISSING_POLL_PATH")
+      const pollBody = poll.body && typeof poll.body === "object" && !Array.isArray(poll.body) ? (poll.body as Record<string, unknown>) : undefined
       const polled = await httpCall({
         transportSpec: transport,
         templateBody: null,
         vars,
         overrideMethod: pickString(poll, "method") || "GET",
         overridePath: pollPath,
+        overrideBody: pollBody ?? undefined,
         mode: "json",
         signal: args.signal,
       })
@@ -874,12 +879,14 @@ async function executeHttpJsonProfile(args: {
       return { output_text: JSON.stringify(blockJson), raw: { initial: initial.json, poll: lastJson }, content: { ...blockJson, job: { id: jobId, status: lastStatus }, raw: { initial: initial.json, poll: lastJson } } }
     }
 
+    const downloadBody = download.body && typeof download.body === "object" && !Array.isArray(download.body) ? (download.body as Record<string, unknown>) : undefined
     const downloaded = await httpCall({
       transportSpec: transport,
       templateBody: null,
       vars,
       overrideMethod: pickString(download, "method") || "GET",
       overridePath: downloadPath,
+      overrideBody: downloadBody ?? undefined,
       mode: downloadMode,
       signal: args.signal,
     })

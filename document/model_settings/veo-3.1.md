@@ -197,7 +197,7 @@ AI 모델 (비디오 타입)
     }
   ],
   "parameters": {
-    "durationSeconds": {{params_seconds}},
+    "durationSeconds": "{{params_seconds}}",
     "aspectRatio": "{{params_aspect_ratio}}",
     "resolution": "{{params_resolution}}",
     "generateAudio": "{{params_generate_audio}}",

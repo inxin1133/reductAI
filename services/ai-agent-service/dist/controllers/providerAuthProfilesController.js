@@ -25,7 +25,7 @@ function safeJsonb(v) {
 }
 function normalizeAuthType(v) {
     const s = typeof v === "string" ? v.trim() : "";
-    const allowed = new Set(["api_key", "oauth2_service_account", "aws_sigv4", "azure_ad"]);
+    const allowed = new Set(["api_key", "oauth2_service_account", "aws_sigv4", "azure_ad", "google_adc"]);
     return allowed.has(s) ? s : null;
 }
 async function listProviderAuthProfiles(req, res) {
@@ -75,7 +75,7 @@ async function listProviderAuthProfiles(req, res) {
         p.config
       FROM provider_auth_profiles p
       JOIN ai_providers pr ON pr.id = p.provider_id
-      JOIN provider_api_credentials c ON c.id = p.credential_id
+      LEFT JOIN provider_api_credentials c ON c.id = p.credential_id
       ${whereSql}
       ORDER BY p.is_active DESC, p.provider_id ASC, p.profile_key ASC, p.updated_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
@@ -118,15 +118,15 @@ async function createProviderAuthProfile(req, res) {
             return res.status(400).json({ message: "profile_key is required" });
         if (!authType)
             return res.status(400).json({ message: "auth_type is required" });
-        if (!credentialId)
-            return res.status(400).json({ message: "credential_id is required" });
+        if (authType !== "google_adc" && !credentialId)
+            return res.status(400).json({ message: "credential_id is required (except for google_adc)" });
         const result = await (0, db_1.query)(`
       INSERT INTO provider_auth_profiles
         (tenant_id, provider_id, profile_key, auth_type, credential_id, config, token_cache_key, is_active)
       VALUES
         ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)
       RETURNING *
-      `, [tenantId, providerId, profileKey, authType, credentialId, safeJsonb(config), tokenCacheKey, isActive]);
+      `, [tenantId, providerId, profileKey, authType, credentialId || null, safeJsonb(config), tokenCacheKey, isActive]);
         return res.status(201).json({ ok: true, row: result.rows[0] });
     }
     catch (e) {
@@ -162,7 +162,8 @@ async function updateProviderAuthProfile(req, res) {
             fields.push(`auth_type = $${params.length}`);
         }
         if (body.credential_id !== undefined) {
-            params.push(String(body.credential_id || "").trim());
+            const cid = body.credential_id != null ? String(body.credential_id).trim() : "";
+            params.push(cid || null);
             fields.push(`credential_id = $${params.length}`);
         }
         if (body.token_cache_key !== undefined) {

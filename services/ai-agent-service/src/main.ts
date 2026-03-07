@@ -80,10 +80,11 @@ app.listen(PORT, async () => {
     await ensureProviderAuthProfilesSchema()
     await ensureWebSearchSettingsSchema()
     await ensurePlanModelAccessSchema()
-    // Best-effort: seed default Sora video model_api_profile for OpenAI Sora providers.
+    // Best-effort: seed default video model_api_profiles for OpenAI Sora and Vertex AI Veo.
     // Users can edit/override in Admin (Model API Profiles).
-    const { ensureDefaultSoraVideoProfiles } = await import("./services/schemaBootstrap")
+    const { ensureDefaultSoraVideoProfiles, ensureDefaultVeoVideoProfiles } = await import("./services/schemaBootstrap")
     await ensureDefaultSoraVideoProfiles()
+    await ensureDefaultVeoVideoProfiles()
     console.log("ai-agent-service schema bootstrap ok")
   } catch (e) {
     console.error("ai-agent-service schema bootstrap failed:", e)

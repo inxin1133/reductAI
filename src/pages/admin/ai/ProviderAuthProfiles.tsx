@@ -31,7 +31,7 @@ import {
 import { Loader2, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react"
 import { AdminPage } from "@/components/layout/AdminPage"
 
-type AuthType = "api_key" | "oauth2_service_account" | "aws_sigv4" | "azure_ad"
+type AuthType = "api_key" | "oauth2_service_account" | "aws_sigv4" | "azure_ad" | "google_adc"
 
 type ProviderRow = { id: string; product_name: string; slug: string }
 type CredentialRow = { id: string; provider_id: string; credential_name: string; api_key_masked?: string | null }
@@ -83,7 +83,7 @@ function safeParseJsonObject(text: string): Record<string, unknown> {
   }
 }
 
-const AUTH_TYPES: AuthType[] = ["api_key", "oauth2_service_account", "aws_sigv4", "azure_ad"]
+const AUTH_TYPES: AuthType[] = ["api_key", "oauth2_service_account", "aws_sigv4", "azure_ad", "google_adc"]
 
 export default function ProviderAuthProfiles() {
   const [loading, setLoading] = useState(false)
@@ -209,7 +209,7 @@ export default function ProviderAuthProfiles() {
     const cid = credentialId.trim()
     if (!pid) return alert("provider를 선택해 주세요.")
     if (!pk) return alert("profile_key를 입력해 주세요.")
-    if (!cid) return alert("credential을 선택해 주세요.")
+    if (authType !== "google_adc" && !cid) return alert("credential을 선택해 주세요. (google_adc는 credential 없이 사용)")
 
     const config = safeParseJsonObject(configText)
 
@@ -217,7 +217,7 @@ export default function ProviderAuthProfiles() {
       provider_id: pid,
       profile_key: pk,
       auth_type: authType,
-      credential_id: cid,
+      credential_id: authType === "google_adc" ? (cid || null) : cid,
       token_cache_key: tokenCacheKey.trim() ? tokenCacheKey.trim() : null,
       is_active: isActive,
       config,
@@ -410,7 +410,11 @@ export default function ProviderAuthProfiles() {
                     <Badge variant="secondary">{r.auth_type}</Badge>
                   </TableCell>
                   <TableCell>
-                    <div className="text-sm">{credentialNameById.get(r.credential_id) || r.credential_id}</div>
+                    <div className="text-sm">
+                      {r.auth_type === "google_adc"
+                        ? "(ADC - 키 없음)"
+                        : credentialNameById.get(r.credential_id) || r.credential_id || "-"}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <Badge variant={r.is_active ? "default" : "secondary"}>{r.is_active ? "ON" : "OFF"}</Badge>

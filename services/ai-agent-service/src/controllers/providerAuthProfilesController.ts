@@ -2,7 +2,7 @@ import { Request, Response } from "express"
 import { query } from "../config/db"
 import { ensureSystemTenantId } from "../services/systemTenantService"
 
-type AuthType = "api_key" | "oauth2_service_account" | "aws_sigv4" | "azure_ad"
+type AuthType = "api_key" | "oauth2_service_account" | "aws_sigv4" | "azure_ad" | "google_adc"
 
 function toInt(v: unknown, fallback: number) {
   const n = Number(v)
@@ -22,7 +22,7 @@ function safeJsonb(v: unknown): string {
 
 function normalizeAuthType(v: unknown): AuthType | null {
   const s = typeof v === "string" ? v.trim() : ""
-  const allowed = new Set<AuthType>(["api_key", "oauth2_service_account", "aws_sigv4", "azure_ad"])
+  const allowed = new Set<AuthType>(["api_key", "oauth2_service_account", "aws_sigv4", "azure_ad", "google_adc"])
   return allowed.has(s as AuthType) ? (s as AuthType) : null
 }
 
@@ -80,7 +80,7 @@ export async function listProviderAuthProfiles(req: Request, res: Response) {
         p.config
       FROM provider_auth_profiles p
       JOIN ai_providers pr ON pr.id = p.provider_id
-      JOIN provider_api_credentials c ON c.id = p.credential_id
+      LEFT JOIN provider_api_credentials c ON c.id = p.credential_id
       ${whereSql}
       ORDER BY p.is_active DESC, p.provider_id ASC, p.profile_key ASC, p.updated_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
@@ -124,7 +124,7 @@ export async function createProviderAuthProfile(req: Request, res: Response) {
     if (!providerId) return res.status(400).json({ message: "provider_id is required" })
     if (!profileKey) return res.status(400).json({ message: "profile_key is required" })
     if (!authType) return res.status(400).json({ message: "auth_type is required" })
-    if (!credentialId) return res.status(400).json({ message: "credential_id is required" })
+    if (authType !== "google_adc" && !credentialId) return res.status(400).json({ message: "credential_id is required (except for google_adc)" })
 
     const result = await query(
       `
@@ -134,7 +134,7 @@ export async function createProviderAuthProfile(req: Request, res: Response) {
         ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)
       RETURNING *
       `,
-      [tenantId, providerId, profileKey, authType, credentialId, safeJsonb(config), tokenCacheKey, isActive]
+      [tenantId, providerId, profileKey, authType, credentialId || null, safeJsonb(config), tokenCacheKey, isActive]
     )
     return res.status(201).json({ ok: true, row: result.rows[0] })
   } catch (e: any) {
@@ -171,7 +171,8 @@ export async function updateProviderAuthProfile(req: Request, res: Response) {
       fields.push(`auth_type = $${params.length}`)
     }
     if (body.credential_id !== undefined) {
-      params.push(String(body.credential_id || "").trim())
+      const cid = body.credential_id != null ? String(body.credential_id).trim() : ""
+      params.push(cid || null)
       fields.push(`credential_id = $${params.length}`)
     }
     if (body.token_cache_key !== undefined) {

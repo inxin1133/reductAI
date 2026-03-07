@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.resolveAuthForModelApiProfile = resolveAuthForModelApiProfile;
 const crypto_1 = __importDefault(require("crypto"));
+const google_auth_library_1 = require("google-auth-library");
 const db_1 = require("../config/db");
 const systemTenantService_1 = require("./systemTenantService");
 const cryptoService_1 = require("./cryptoService");
@@ -146,7 +147,6 @@ async function resolveAuthForModelApiProfile(args) {
         throw new Error("AUTH_PROFILE_NOT_FOUND_OR_INACTIVE");
     if (profile.provider_id !== args.providerId)
         throw new Error("AUTH_PROFILE_PROVIDER_MISMATCH");
-    const cred = await loadCredentialById({ tenantId, credentialId: profile.credential_id });
     // expose profile.config primitive values as {{config_<key>}}
     const configVars = {};
     for (const [k, v] of Object.entries(profile.config || {})) {
@@ -157,6 +157,49 @@ async function resolveAuthForModelApiProfile(args) {
             continue;
         configVars[`config_${safeKey}`] = String(v);
     }
+    // google_adc: Application Default Credentials (로컬 gcloud auth application-default login / GCP Workload Identity)
+    if (profile.auth_type === "google_adc") {
+        const projectId = asString(profile.config.project_id) || process.env.GOOGLE_CLOUD_PROJECT || "";
+        const location = asString(profile.config.location) || "us-central1";
+        if (!projectId)
+            throw new Error("GOOGLE_ADC_CONFIG_MISSING_PROJECT_ID");
+        const cacheKey = profile.token_cache_key || `auth:adc:${tenantId}:${profile.id}`;
+        const cached = accessTokenCache.get(cacheKey);
+        const now = Date.now();
+        if (cached && cached.expiresAtMs - 30000 > now) {
+            return {
+                credentialId: "adc",
+                apiKey: "",
+                accessToken: cached.accessToken,
+                endpointUrl: null,
+                organizationId: null,
+                configVars: { ...configVars, config_project_id: projectId, config_location: location },
+                rateLimitPerMinute: null,
+                rateLimitPerDay: null,
+            };
+        }
+        const googleAuth = new google_auth_library_1.GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] });
+        const client = await googleAuth.getClient();
+        const tokenResponse = await client.getAccessToken();
+        const accessToken = tokenResponse.token;
+        if (!accessToken)
+            throw new Error("GOOGLE_ADC_ACCESS_TOKEN_MISSING");
+        const expiresAtMs = now + 55 * 60 * 1000; // ~55 min (tokens typically 1h)
+        accessTokenCache.set(cacheKey, { accessToken, expiresAtMs });
+        return {
+            credentialId: "adc",
+            apiKey: "",
+            accessToken,
+            endpointUrl: null,
+            organizationId: null,
+            configVars: { ...configVars, config_project_id: projectId, config_location: location },
+            rateLimitPerMinute: null,
+            rateLimitPerDay: null,
+        };
+    }
+    const cred = await loadCredentialById({ tenantId, credentialId: profile.credential_id });
+    if (!cred)
+        throw new Error("NO_ACTIVE_CREDENTIAL_FOR_AUTH_PROFILE");
     if (profile.auth_type === "api_key") {
         return {
             credentialId: cred.id,

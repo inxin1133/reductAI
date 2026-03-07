@@ -1351,6 +1351,101 @@ export async function ensureDefaultSoraVideoProfiles() {
 }
 
 /**
+ * Seed default Vertex AI Veo 3.1 video profile (best-effort).
+ * - Requires a provider with api_base_url containing aiplatform.googleapis.com (Vertex AI).
+ * - Requires a provider_auth_profiles row with auth_type=google_adc for that provider.
+ * - Users create provider + google_adc auth profile in Admin, then this seed adds the model_api_profile.
+ */
+export async function ensureDefaultVeoVideoProfiles() {
+  try {
+    const tenantId = await ensureSystemTenantId()
+
+    const prov = await query(
+      `
+      SELECT id FROM ai_providers
+      WHERE api_base_url ILIKE '%aiplatform.googleapis.com%'
+      ORDER BY updated_at DESC NULLS LAST
+      `,
+      []
+    )
+    const providerIds = ((prov.rows || []) as Array<Record<string, unknown>>).map((r) => String(r.id || "")).filter(Boolean)
+    if (!providerIds.length) return
+
+    const profileKey = "google_veo_video_v1"
+    const transport = {
+      kind: "http_json",
+      method: "POST",
+      path: "/projects/{{config_project_id}}/locations/{{config_location}}/publishers/google/models/veo-3.1-generate-preview:predictLongRunning",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer {{accessToken}}" },
+      body: {
+        instances: [{ prompt: "{{userPrompt}}" }],
+        parameters: {
+          durationSeconds: "{{params_seconds}}",
+          aspectRatio: "{{params_aspect_ratio}}",
+          resolution: "{{params_resolution}}",
+          generateAudio: "{{params_generate_audio}}",
+          sampleCount: 1,
+        },
+      },
+      timeout_ms: 120000,
+    }
+    const responseMapping = { result_type: "raw_json", mode: "json", extract: { job_id_path: "name" } }
+    const workflow = {
+      type: "async_job",
+      job_id_path: "name",
+      steps: [
+        {
+          name: "poll",
+          method: "POST",
+          path: "/projects/{{config_project_id}}/locations/{{config_location}}/publishers/google/models/veo-3.1-generate-preview:fetchPredictOperation",
+          body: { operationName: "{{job_id}}" },
+          interval_ms: 5000,
+          max_attempts: 60,
+          status_path: "done",
+          terminal_states: ["true"],
+        },
+        {
+          name: "download",
+          method: "POST",
+          path: "/projects/{{config_project_id}}/locations/{{config_location}}/publishers/google/models/veo-3.1-generate-preview:fetchPredictOperation",
+          body: { operationName: "{{job_id}}" },
+          mode: "json",
+          url_path: "response.videos[0].gcsUri",
+        },
+      ],
+    }
+
+    for (const providerId of providerIds) {
+      const authProfile = await query(
+        `SELECT id FROM provider_auth_profiles
+         WHERE tenant_id = $1 AND provider_id = $2 AND auth_type = 'google_adc' AND is_active = TRUE
+         LIMIT 1`,
+        [tenantId, providerId]
+      )
+      const authProfileId = authProfile.rows[0] ? String((authProfile.rows[0] as Record<string, unknown>).id || "") : null
+
+      const existing = await query(
+        `SELECT 1 FROM model_api_profiles WHERE tenant_id = $1 AND provider_id = $2 AND profile_key = $3 LIMIT 1`,
+        [tenantId, providerId, profileKey]
+      )
+      if (existing.rows.length) continue
+
+      await query(
+        `
+        INSERT INTO model_api_profiles
+          (tenant_id, provider_id, model_id, profile_key, purpose, auth_profile_id, transport, response_mapping, workflow, is_active)
+        VALUES
+          ($1,$2,NULL,$3,'video',$4::uuid,$5::jsonb,$6::jsonb,$7::jsonb,TRUE)
+        `,
+        [tenantId, providerId, profileKey, authProfileId, JSON.stringify(transport), JSON.stringify(responseMapping), JSON.stringify(workflow)]
+      )
+    }
+  } catch (e) {
+    console.warn("ensureDefaultVeoVideoProfiles failed (ignored):", e)
+  }
+}
+
+/**
  * Provider auth profiles schema
  * - provider_api_credentials 위에 "인증 방식"을 추상화합니다.
  * - v1: api_key / oauth2_service_account(google vertex)
@@ -1364,8 +1459,8 @@ export async function ensureProviderAuthProfilesSchema() {
       tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       provider_id UUID NOT NULL REFERENCES ai_providers(id) ON DELETE CASCADE,
       profile_key VARCHAR(100) NOT NULL,
-      auth_type VARCHAR(50) NOT NULL CHECK (auth_type IN ('api_key', 'oauth2_service_account', 'aws_sigv4', 'azure_ad')),
-      credential_id UUID NOT NULL REFERENCES provider_api_credentials(id) ON DELETE RESTRICT,
+      auth_type VARCHAR(50) NOT NULL CHECK (auth_type IN ('api_key', 'oauth2_service_account', 'aws_sigv4', 'azure_ad', 'google_adc')),
+      credential_id UUID REFERENCES provider_api_credentials(id) ON DELETE RESTRICT,
       config JSONB NOT NULL DEFAULT '{}'::jsonb,
       token_cache_key VARCHAR(255),
       is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -1377,6 +1472,27 @@ export async function ensureProviderAuthProfilesSchema() {
 
   await query(`CREATE INDEX IF NOT EXISTS idx_provider_auth_profiles_tenant_provider_active ON provider_auth_profiles(tenant_id, provider_id, is_active);`)
   await query(`CREATE INDEX IF NOT EXISTS idx_provider_auth_profiles_credential_id ON provider_auth_profiles(credential_id);`)
+
+  // Migration: google_adc auth_type + credential_id nullable (for existing DBs created before this change)
+  await query(`
+    DO $$
+    BEGIN
+      -- Add google_adc to auth_type check (drop old, add new)
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'provider_auth_profiles'::regclass AND conname = 'provider_auth_profiles_auth_type_check') THEN
+        ALTER TABLE provider_auth_profiles DROP CONSTRAINT provider_auth_profiles_auth_type_check;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'provider_auth_profiles'::regclass AND conname = 'provider_auth_profiles_auth_type_check') THEN
+        ALTER TABLE provider_auth_profiles ADD CONSTRAINT provider_auth_profiles_auth_type_check
+          CHECK (auth_type IN ('api_key', 'oauth2_service_account', 'aws_sigv4', 'azure_ad', 'google_adc'));
+      END IF;
+      -- credential_id nullable for google_adc
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_auth_profiles' AND column_name='credential_id' AND is_nullable='NO') THEN
+        ALTER TABLE provider_auth_profiles ALTER COLUMN credential_id DROP NOT NULL;
+      END IF;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE NOTICE 'provider_auth_profiles migration (google_adc): %', SQLERRM;
+    END $$;
+  `)
 
   // model_api_profiles.auth_profile_id FK (idempotent)
   await query(`

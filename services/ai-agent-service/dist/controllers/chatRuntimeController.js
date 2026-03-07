@@ -693,8 +693,10 @@ async function executeHttpJsonProfile(args) {
         const rawHeaders = safeObj(tr.headers);
         const rawQuery = safeObj(tr.query);
         const rawBody = safeObj(tr.body);
-        // If prompt_templates is configured, merge it into the profile body (template wins).
-        const mergedBody = (args2.templateBody ? deepMergeJson(rawBody, args2.templateBody) : rawBody);
+        // If overrideBody is provided (e.g. poll step body for Vertex fetchPredictOperation), use it.
+        const mergedBody = (args2.overrideBody !== undefined && args2.overrideBody !== null
+            ? args2.overrideBody
+            : (args2.templateBody ? deepMergeJson(rawBody, args2.templateBody) : rawBody));
         const injectedHeaders = deepInjectVars(rawHeaders, args2.vars);
         const injectedQuery = deepInjectVars(rawQuery, args2.vars);
         const injectedBody = deepInjectVars(mergedBody, args2.vars);
@@ -797,12 +799,14 @@ async function executeHttpJsonProfile(args) {
             const pollPath = pickString(poll, "path") || "";
             if (!pollPath)
                 throw new Error("ASYNC_JOB_MISSING_POLL_PATH");
+            const pollBody = poll.body && typeof poll.body === "object" && !Array.isArray(poll.body) ? poll.body : undefined;
             const polled = await httpCall({
                 transportSpec: transport,
                 templateBody: null,
                 vars,
                 overrideMethod: pickString(poll, "method") || "GET",
                 overridePath: pollPath,
+                overrideBody: pollBody ?? undefined,
                 mode: "json",
                 signal: args.signal,
             });
@@ -832,12 +836,14 @@ async function executeHttpJsonProfile(args) {
             };
             return { output_text: JSON.stringify(blockJson), raw: { initial: initial.json, poll: lastJson }, content: { ...blockJson, job: { id: jobId, status: lastStatus }, raw: { initial: initial.json, poll: lastJson } } };
         }
+        const downloadBody = download.body && typeof download.body === "object" && !Array.isArray(download.body) ? download.body : undefined;
         const downloaded = await httpCall({
             transportSpec: transport,
             templateBody: null,
             vars,
             overrideMethod: pickString(download, "method") || "GET",
             overridePath: downloadPath,
+            overrideBody: downloadBody ?? undefined,
             mode: downloadMode,
             signal: args.signal,
         });
