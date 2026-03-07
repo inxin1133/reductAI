@@ -2442,7 +2442,7 @@ async function chatRun(req, res) {
                 }
             }
             else if (mt === "image") {
-                if (providerKey !== "openai") {
+                if (providerKey !== "openai" && providerKey !== "google") {
                     return await failAndRespond(400, { message: `Image is not supported for provider=${providerKey} yet.` });
                 }
                 const n = typeof mergedOptions?.n === "number" ? clampInt(mergedOptions.n, 1, 10) : 1;
@@ -2456,30 +2456,47 @@ async function chatRun(req, res) {
                 const promptForImage = promptFromTemplate || prompt;
                 let r;
                 try {
-                    r =
-                        incomingImageDataUrls.length > 0
-                            ? await (0, providerClients_1.openaiEditImage)({
-                                apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-                                apiKey: auth.apiKey,
-                                model: modelApiId,
-                                prompt: promptForImage,
-                                image_data_url: incomingImageDataUrls[0],
-                                n,
-                                size,
-                                signal: abortSignal,
-                            })
-                            : await (0, providerClients_1.openaiGenerateImage)({
-                                apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-                                apiKey: auth.apiKey,
-                                model: modelApiId,
-                                prompt: promptForImage,
-                                n,
-                                size,
-                                quality,
-                                style,
-                                background,
-                                signal: abortSignal,
-                            });
+                    if (providerKey === "google") {
+                        const aspectRatio = typeof mergedOptions?.aspect_ratio === "string" ? mergedOptions.aspect_ratio : undefined;
+                        const resolution = typeof mergedOptions?.resolution === "string" ? mergedOptions.resolution : undefined;
+                        r = await (0, providerClients_1.googleGenerateImage)({
+                            apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                            apiKey: auth.apiKey,
+                            model: modelApiId,
+                            prompt: promptForImage,
+                            n,
+                            aspect_ratio: aspectRatio,
+                            resolution,
+                            image_data_url: incomingImageDataUrls.length > 0 ? incomingImageDataUrls[0] : undefined,
+                            signal: abortSignal,
+                        });
+                    }
+                    else {
+                        r =
+                            incomingImageDataUrls.length > 0
+                                ? await (0, providerClients_1.openaiEditImage)({
+                                    apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                                    apiKey: auth.apiKey,
+                                    model: modelApiId,
+                                    prompt: promptForImage,
+                                    image_data_url: incomingImageDataUrls[0],
+                                    n,
+                                    size,
+                                    signal: abortSignal,
+                                })
+                                : await (0, providerClients_1.openaiGenerateImage)({
+                                    apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                                    apiKey: auth.apiKey,
+                                    model: modelApiId,
+                                    prompt: promptForImage,
+                                    n,
+                                    size,
+                                    quality,
+                                    style,
+                                    background,
+                                    signal: abortSignal,
+                                });
+                    }
                 }
                 catch (e) {
                     const msg = e instanceof Error ? e.message : String(e);
@@ -2510,9 +2527,15 @@ async function chatRun(req, res) {
                         details: msg,
                     });
                 }
-                const appliedOptions = Object.fromEntries(Object.entries(incomingImageDataUrls.length > 0
-                    ? { n, size }
-                    : { n, size, quality, style, background }).filter(([, v]) => v !== undefined));
+                const appliedOptions = Object.fromEntries(Object.entries(providerKey === "google"
+                    ? {
+                        n,
+                        aspect_ratio: typeof mergedOptions?.aspect_ratio === "string" ? mergedOptions.aspect_ratio : undefined,
+                        resolution: typeof mergedOptions?.resolution === "string" ? mergedOptions.resolution : undefined,
+                    }
+                    : incomingImageDataUrls.length > 0
+                        ? { n, size }
+                        : { n, size, quality, style, background }).filter(([, v]) => v !== undefined));
                 optionsForAssistant = appliedOptions;
                 // Prefer data URLs when available; otherwise download URLs to keep assets permanent.
                 const sourceUrls = (r.data_urls && r.data_urls.length ? r.data_urls : r.urls) || [];

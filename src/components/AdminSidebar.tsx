@@ -15,7 +15,7 @@ import {
   LogOut
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { useNavigate, useLocation } from "react-router-dom"
 import { adminMenuGroups } from "@/config/adminMenu"
 import { IconReduct } from "@/components/icons/IconReduct"
@@ -37,6 +37,10 @@ type AdminSidebarProps = {
 
 export function AdminSidebar({ className }: AdminSidebarProps) {
   const ADMIN_SIDEBAR_OPEN_KEY = "reductai:adminSidebar:isOpen"
+  const ADMIN_SIDEBAR_WIDTH_KEY = "reductai:adminSidebar:width"
+  const SIDEBAR_MIN = 200
+  const SIDEBAR_MAX = 400
+
   const getInitialIsOpen = () => {
     try {
       if (typeof window === "undefined") return true
@@ -49,13 +53,64 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
     }
   }
 
+  const getInitialSidebarWidth = () => {
+    try {
+      if (typeof window === "undefined") return SIDEBAR_MIN
+      const v = window.localStorage.getItem(ADMIN_SIDEBAR_WIDTH_KEY)
+      const n = Number(v)
+      if (Number.isFinite(n) && n >= SIDEBAR_MIN && n <= SIDEBAR_MAX) return n
+      return SIDEBAR_MIN
+    } catch {
+      return SIDEBAR_MIN
+    }
+  }
+
   // Persist the user's desktop admin sidebar open/closed preference across route changes and resizes.
   const [isOpen, setIsOpen] = useState<boolean>(() => getInitialIsOpen())
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => getInitialSidebarWidth())
+  const [isResizing, setIsResizing] = useState(false)
+  const resizeStartRef = useRef<{ x: number; width: number } | null>(null)
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsResizing(true)
+    resizeStartRef.current = { x: e.clientX, width: sidebarWidth }
+  }, [sidebarWidth])
+
+  useEffect(() => {
+    if (!isResizing) return
+    const onMove = (e: MouseEvent) => {
+      const start = resizeStartRef.current
+      if (!start) return
+      const delta = e.clientX - start.x
+      const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, start.width + delta))
+      setSidebarWidth(next)
+      resizeStartRef.current = { x: e.clientX, width: next }
+    }
+    const onUp = () => {
+      const latestWidth = resizeStartRef.current?.width ?? sidebarWidth
+      setIsResizing(false)
+      resizeStartRef.current = null
+      try {
+        window.localStorage.setItem(ADMIN_SIDEBAR_WIDTH_KEY, String(latestWidth))
+      } catch { /* ignore */ }
+    }
+    document.addEventListener("mousemove", onMove)
+    document.addEventListener("mouseup", onUp)
+    document.body.style.cursor = "col-resize"
+    document.body.style.userSelect = "none"
+    return () => {
+      document.removeEventListener("mousemove", onMove)
+      document.removeEventListener("mouseup", onUp)
+      document.body.style.cursor = ""
+      document.body.style.userSelect = ""
+    }
+  }, [isResizing, sidebarWidth])
+
   const navigate = useNavigate()
   const location = useLocation()
   const [isHeaderHover, setIsHeaderHover] = useState(false)
-  
-  // Mobile menu state
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [isMobile, setIsMobile] = useState(false)
   const [isProfileOpen, setIsProfileOpen] = useState(false)
@@ -105,13 +160,21 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
   // Persist on desktop only (mobile uses a separate overlay UI).
   useEffect(() => {
     if (typeof window === "undefined") return
-    if (isMobile) return
+    if (window.innerWidth < 768) return
     try {
       window.localStorage.setItem(ADMIN_SIDEBAR_OPEN_KEY, isOpen ? "1" : "0")
     } catch {
       // ignore (storage might be blocked)
     }
-  }, [isMobile, isOpen])
+  }, [isOpen])
+
+  // Persist sidebar width on desktop (skip when mobile)
+  useEffect(() => {
+    if (typeof window === "undefined" || window.innerWidth < 768) return
+    try {
+      window.localStorage.setItem(ADMIN_SIDEBAR_WIDTH_KEY, String(sidebarWidth))
+    } catch { /* ignore */ }
+  }, [sidebarWidth])
 
   const [user, setUser] = useState(() => {
     const name = String(localStorage.getItem("user_name") || "").trim() || "관리자"
@@ -411,11 +474,23 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
   return (
     <div 
       className={cn(
-        "bg-sidebar border-r border-sidebar-border h-full flex flex-col shrink-0 transition-all duration-300 ease-in-out hidden md:flex", 
-        isOpen ? "w-[200px]" : "w-[50px]",
+        "bg-sidebar border-r border-sidebar-border h-full flex flex-col shrink-0 hidden md:flex relative",
+        !isResizing && "transition-[width] duration-300 ease-in-out",
         className
       )}
+      style={{ width: isOpen ? sidebarWidth : 50 }}
     >
+      {/* 리사이즈 핸들: 열린 상태에서만 오른쪽 가장자리 드래그 */}
+      {isOpen && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors z-10 flex items-center justify-center group"
+          onMouseDown={handleResizeStart}
+        >
+          <div className="w-0.5 h-12 rounded-full bg-border group-hover:bg-primary/60 opacity-0 group-hover:opacity-100 transition-opacity" />
+        </div>
+      )}
       {/* 헤더 (로고 & 토글) */}
       <div className="flex flex-col gap-2 p-2 pt-3.5">
         <div className={cn("flex items-center h-8 px-2", isOpen ? "justify-between" : "justify-center")}>

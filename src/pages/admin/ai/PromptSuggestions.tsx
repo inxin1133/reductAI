@@ -405,7 +405,7 @@ export default function PromptSuggestions() {
               <TableHead className="w-[90px]">활성</TableHead>
               <TableHead className="w-[120px]">scope</TableHead>
               <TableHead className="w-[120px]">model_type</TableHead>
-              <TableHead>title / text</TableHead>
+              <TableHead className="w-[280px] min-w-[200px]">title / text</TableHead>
               <TableHead className="w-[110px]">정렬</TableHead>
               <TableHead className="w-[140px]">연결 모델</TableHead>
               <TableHead className="w-[140px]">수정</TableHead>
@@ -426,9 +426,11 @@ export default function PromptSuggestions() {
                     </div>
                   </TableCell>
                   <TableCell className="font-mono text-sm">{r.model_type || "-"}</TableCell>
-                  <TableCell>
-                    {r.title ? <div className="font-medium">{r.title}</div> : <div className="text-muted-foreground">-</div>}
-                    <div className="text-sm text-muted-foreground line-clamp-2">{r.text}</div>
+                  <TableCell className="w-[280px] max-w-[280px] overflow-hidden whitespace-normal">
+                    <div className="min-w-0 space-y-0.5">
+                      {r.title ? <div className="font-medium truncate">{r.title}</div> : <div className="text-muted-foreground">-</div>}
+                      <div className="text-sm text-muted-foreground line-clamp-2 break-words overflow-hidden">{r.text}</div>
+                    </div>
                   </TableCell>
                   <TableCell className="font-mono">{r.sort_order}</TableCell>
                   <TableCell>

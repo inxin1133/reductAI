@@ -1277,7 +1277,7 @@ export default function Rates() {
       </Dialog>
 
       <Dialog open={missingOpen} onOpenChange={setMissingOpen}>
-        <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="min-w-[1200px] w-[90vw] max-w-[1800px] max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
               누락 SKU 추가

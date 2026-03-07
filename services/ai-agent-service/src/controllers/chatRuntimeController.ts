@@ -11,6 +11,7 @@ import {
   openaiTextToSpeech,
   anthropicSimulateChat,
   googleSimulateChat,
+  googleGenerateImage,
 } from "../services/providerClients"
 import { isModelAllowedForPlan } from "../services/planModelAccessService"
 import { resolveAuthForModelApiProfile } from "../services/authProfilesService"
@@ -2687,7 +2688,7 @@ export async function chatRun(req: Request, res: Response) {
         return await failAndRespond(400, { message: `Unsupported provider_family/provider_slug: ${providerKey}` })
         }
       } else if (mt === "image") {
-      if (providerKey !== "openai") {
+      if (providerKey !== "openai" && providerKey !== "google") {
         return await failAndRespond(400, { message: `Image is not supported for provider=${providerKey} yet.` })
       }
       const n = typeof mergedOptions?.n === "number" ? clampInt(mergedOptions.n, 1, 10) : 1
@@ -2703,30 +2704,46 @@ export async function chatRun(req: Request, res: Response) {
 
       let r: { raw?: unknown; urls?: string[]; data_urls?: string[]; b64?: string[] }
       try {
-        r =
-          incomingImageDataUrls.length > 0
-            ? await openaiEditImage({
-                apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-                apiKey: auth.apiKey,
-                model: modelApiId,
-                prompt: promptForImage,
-                image_data_url: incomingImageDataUrls[0],
-                n,
-                size,
-                signal: abortSignal,
-              })
-            : await openaiGenerateImage({
-                apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
-                apiKey: auth.apiKey,
-                model: modelApiId,
-                prompt: promptForImage,
-                n,
-                size,
-                quality,
-                style,
-                background,
-                signal: abortSignal,
-              })
+        if (providerKey === "google") {
+          const aspectRatio = typeof mergedOptions?.aspect_ratio === "string" ? mergedOptions.aspect_ratio : undefined
+          const resolution = typeof mergedOptions?.resolution === "string" ? mergedOptions.resolution : undefined
+          r = await googleGenerateImage({
+            apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+            apiKey: auth.apiKey,
+            model: modelApiId,
+            prompt: promptForImage,
+            n,
+            aspect_ratio: aspectRatio,
+            resolution,
+            image_data_url: incomingImageDataUrls.length > 0 ? incomingImageDataUrls[0] : undefined,
+            signal: abortSignal,
+          })
+        } else {
+          r =
+            incomingImageDataUrls.length > 0
+              ? await openaiEditImage({
+                  apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                  apiKey: auth.apiKey,
+                  model: modelApiId,
+                  prompt: promptForImage,
+                  image_data_url: incomingImageDataUrls[0],
+                  n,
+                  size,
+                  signal: abortSignal,
+                })
+              : await openaiGenerateImage({
+                  apiBaseUrl: auth.endpointUrl || base.apiBaseUrl,
+                  apiKey: auth.apiKey,
+                  model: modelApiId,
+                  prompt: promptForImage,
+                  n,
+                  size,
+                  quality,
+                  style,
+                  background,
+                  signal: abortSignal,
+                })
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         const parsed = parseOpenAiImageError(msg)
@@ -2759,9 +2776,15 @@ export async function chatRun(req: Request, res: Response) {
       }
       const appliedOptions = Object.fromEntries(
         Object.entries(
-          incomingImageDataUrls.length > 0
-            ? { n, size }
-            : { n, size, quality, style, background }
+          providerKey === "google"
+            ? {
+                n,
+                aspect_ratio: typeof mergedOptions?.aspect_ratio === "string" ? mergedOptions.aspect_ratio : undefined,
+                resolution: typeof mergedOptions?.resolution === "string" ? mergedOptions.resolution : undefined,
+              }
+            : incomingImageDataUrls.length > 0
+              ? { n, size }
+              : { n, size, quality, style, background }
         ).filter(([, v]) => v !== undefined)
       ) as Record<string, unknown>
       optionsForAssistant = appliedOptions

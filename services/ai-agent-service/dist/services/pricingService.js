@@ -77,14 +77,19 @@ async function lookupModelPricing(providerSlug, modelKey, modality, modelId) {
         FROM pricing_skus s
         JOIN pricing_rates r ON r.sku_id = s.id
         JOIN active_rc arc ON r.rate_card_id = arc.id
-        WHERE s.provider_slug = $1
-          AND s.model_key = $2
-          AND s.modality = $3
+        WHERE (
+          ($1::uuid IS NOT NULL AND s.model_id = $1)
+          OR (
+            (s.provider_slug = $2 OR s.provider_slug LIKE $2 || '-%' OR $2 LIKE s.provider_slug || '-%')
+            AND (s.model_key = $3 OR $3 LIKE s.model_key || '-%')
+          )
+        )
+          AND s.modality = $4
           AND s.unit = 'tokens'
           AND (s.token_category IS NULL OR s.token_category = 'text')
           AND s.is_active = TRUE
           AND s.usage_kind IN ('input_tokens', 'cached_input_tokens', 'output_tokens')
-        `, [providerSlug, modelKey, pricingModality]);
+        `, [modelId ?? null, providerSlug, modelKey, pricingModality]);
         }
         if (r.rows.length === 0)
             return FALLBACK_PRICING;
@@ -120,9 +125,10 @@ async function lookupModelPricing(providerSlug, modelKey, modality, modelId) {
 async function lookupImageTokenPricing(providerSlug, modelKey, modelId) {
     const pricingModality = "image";
     let model = modelKey && String(modelKey).trim() ? String(modelKey).trim() : "";
-    // OpenAI 이미지 모델 alias
+    // OpenAI 이미지 모델 alias: gpt-4o-image*, dall-e-3 등 → gpt-image-1.5 pricing 사용
+    // openai, openai-gptimage 등 provider_slug가 openai로 시작할 때 적용
     const slug = providerSlug && String(providerSlug).trim() ? String(providerSlug).trim().toLowerCase() : "";
-    if (slug === "openai" && model) {
+    if ((slug === "openai" || slug.startsWith("openai-")) && model) {
         const m = model.toLowerCase();
         if (m.startsWith("gpt-4o-image") || m.startsWith("gpt-4o-mini-image") || m === "dall-e-3" || m.startsWith("dall-e-3-")) {
             model = "gpt-image-1.5";
@@ -163,14 +169,19 @@ async function lookupImageTokenPricing(providerSlug, modelKey, modelId) {
           FROM pricing_skus s
           JOIN pricing_rates r ON r.sku_id = s.id
           JOIN active_rc arc ON r.rate_card_id = arc.id
-          WHERE s.provider_slug = $1
-            AND (s.model_key = $2 OR $2 LIKE s.model_key || '-%')
+          WHERE (
+            ($1::uuid IS NOT NULL AND s.model_id = $1)
+            OR (
+              (s.provider_slug = $2 OR s.provider_slug LIKE $2 || '-%' OR $2 LIKE s.provider_slug || '-%')
+              AND (s.model_key = $3 OR $3 LIKE s.model_key || '-%')
+            )
+          )
             AND s.modality = 'image'
             AND s.unit = 'tokens'
-            AND (s.token_category = $3 OR (s.token_category IS NULL AND $3 = 'text'))
+            AND (s.token_category = $4 OR (s.token_category IS NULL AND $4 = 'text'))
             AND s.is_active = TRUE
             AND s.usage_kind IN ('input_tokens', 'cached_input_tokens', 'output_tokens')
-          `, [slug, model, tokenCategory]);
+          `, [modelId ?? null, slug, model, tokenCategory]);
             }
             if (r.rows.length === 0)
                 return FALLBACK_PRICING;
@@ -243,7 +254,8 @@ async function lookupImagePricing(providerSlug, modelKey, size, quality, modelId
     if (!slug)
         return 0;
     // OpenAI 이미지 모델 alias: gpt-4o-image*, dall-e-3 등 → gpt-image-1.5 pricing 사용
-    if (slug === "openai" && model) {
+    // openai, openai-gptimage 등 provider_slug가 openai로 시작할 때 적용
+    if ((slug === "openai" || slug.startsWith("openai-")) && model) {
         const m = model.toLowerCase();
         if (m.startsWith("gpt-4o-image") || m.startsWith("gpt-4o-mini-image") || m === "dall-e-3" || m.startsWith("dall-e-3-")) {
             model = "gpt-image-1.5";
@@ -327,8 +339,13 @@ async function lookupImagePricing(providerSlug, modelKey, size, quality, modelId
             FROM pricing_skus s
             JOIN pricing_rates r ON r.sku_id = s.id
             JOIN active_rc arc ON r.rate_card_id = arc.id
-            WHERE s.provider_slug = $1
-              AND (s.model_key = $2 OR $2 LIKE s.model_key || '-%')
+            WHERE (
+              ($1::uuid IS NOT NULL AND s.model_id = $1)
+              OR (
+                (s.provider_slug = $2 OR s.provider_slug LIKE $2 || '-%' OR $2 LIKE s.provider_slug || '-%')
+                AND (s.model_key = $3 OR $3 LIKE s.model_key || '-%')
+              )
+            )
               AND s.modality = 'image'
               AND s.usage_kind = 'image_generation'
               AND s.unit = 'image'
@@ -336,10 +353,10 @@ async function lookupImagePricing(providerSlug, modelKey, size, quality, modelId
           )
           SELECT rate_value, unit_size, metadata
           FROM candidates
-          WHERE ($3::text IS NULL OR (metadata->>'resolution') IS NULL OR metadata->>'resolution' = $3)
-          ORDER BY CASE WHEN $3 IS NOT NULL AND metadata->>'resolution' = $3 THEN 0 ELSE 1 END
+          WHERE ($4::text IS NULL OR (metadata->>'resolution') IS NULL OR metadata->>'resolution' = $4)
+          ORDER BY CASE WHEN $4 IS NOT NULL AND metadata->>'resolution' = $4 THEN 0 ELSE 1 END
           LIMIT 1
-          `, [slug, model, queryResolution]);
+          `, [modelId || null, slug, model, queryResolution]);
             }
             if (!r || r.rows.length === 0) {
                 r = await (0, db_1.query)(`
@@ -354,7 +371,10 @@ async function lookupImagePricing(providerSlug, modelKey, size, quality, modelId
             FROM pricing_skus s
             JOIN pricing_rates r ON r.sku_id = s.id
             JOIN active_rc arc ON r.rate_card_id = arc.id
-            WHERE s.provider_slug = $1
+            WHERE (
+              ($1::uuid IS NOT NULL AND s.model_id = $1)
+              OR (s.provider_slug = $2 OR s.provider_slug LIKE $2 || '-%' OR $2 LIKE s.provider_slug || '-%')
+            )
               AND s.modality = 'image'
               AND s.usage_kind = 'image_generation'
               AND s.unit = 'image'
@@ -362,10 +382,10 @@ async function lookupImagePricing(providerSlug, modelKey, size, quality, modelId
           )
           SELECT rate_value, unit_size, metadata
           FROM candidates
-          WHERE ($2::text IS NULL OR (metadata->>'resolution') IS NULL OR metadata->>'resolution' = $2)
-          ORDER BY CASE WHEN $2 IS NOT NULL AND metadata->>'resolution' = $2 THEN 0 ELSE 1 END, metadata->>'resolution'
+          WHERE ($3::text IS NULL OR (metadata->>'resolution') IS NULL OR metadata->>'resolution' = $3)
+          ORDER BY CASE WHEN $3 IS NOT NULL AND metadata->>'resolution' = $3 THEN 0 ELSE 1 END, metadata->>'resolution'
           LIMIT 1
-          `, [slug, queryResolution]);
+          `, [modelId || null, slug, queryResolution]);
             }
         }
         else {
@@ -412,8 +432,13 @@ async function lookupImagePricing(providerSlug, modelKey, size, quality, modelId
             FROM pricing_skus s
             JOIN pricing_rates r ON r.sku_id = s.id
             JOIN active_rc arc ON r.rate_card_id = arc.id
-            WHERE s.provider_slug = $1
-              AND (s.model_key = $2 OR $2 LIKE s.model_key || '-%')
+            WHERE (
+              ($1::uuid IS NOT NULL AND s.model_id = $1)
+              OR (
+                (s.provider_slug = $2 OR s.provider_slug LIKE $2 || '-%' OR $2 LIKE s.provider_slug || '-%')
+                AND (s.model_key = $3 OR $3 LIKE s.model_key || '-%')
+              )
+            )
               AND s.modality = 'image'
               AND s.usage_kind = 'image_generation'
               AND s.unit = 'image'
@@ -421,13 +446,13 @@ async function lookupImagePricing(providerSlug, modelKey, size, quality, modelId
           )
           SELECT rate_value, unit_size, metadata
           FROM candidates
-          WHERE ($3::text IS NULL OR (metadata->>'quality') IS NULL OR metadata->>'quality' = $3)
-            AND ($4::text IS NULL OR (metadata->>'size') IS NULL OR metadata->>'size' = $4)
+          WHERE ($4::text IS NULL OR (metadata->>'quality') IS NULL OR metadata->>'quality' = $4)
+            AND ($5::text IS NULL OR (metadata->>'size') IS NULL OR metadata->>'size' = $5)
           ORDER BY
-            CASE WHEN $3 IS NOT NULL AND metadata->>'quality' = $3 THEN 0 ELSE 1 END,
-            CASE WHEN $4 IS NOT NULL AND metadata->>'size' = $4 THEN 0 ELSE 1 END
+            CASE WHEN $4 IS NOT NULL AND metadata->>'quality' = $4 THEN 0 ELSE 1 END,
+            CASE WHEN $5 IS NOT NULL AND metadata->>'size' = $5 THEN 0 ELSE 1 END
           LIMIT 1
-          `, [slug, model, queryQuality, querySize]);
+          `, [modelId ?? null, slug, model, queryQuality, querySize]);
             }
             if (!r || r.rows.length === 0) {
                 r = await (0, db_1.query)(`
@@ -442,7 +467,10 @@ async function lookupImagePricing(providerSlug, modelKey, size, quality, modelId
             FROM pricing_skus s
             JOIN pricing_rates r ON r.sku_id = s.id
             JOIN active_rc arc ON r.rate_card_id = arc.id
-            WHERE s.provider_slug = $1
+            WHERE (
+              ($1::uuid IS NOT NULL AND s.model_id = $1)
+              OR (s.provider_slug = $2 OR s.provider_slug LIKE $2 || '-%' OR $2 LIKE s.provider_slug || '-%')
+            )
               AND s.modality = 'image'
               AND s.usage_kind = 'image_generation'
               AND s.unit = 'image'
@@ -450,15 +478,15 @@ async function lookupImagePricing(providerSlug, modelKey, size, quality, modelId
           )
           SELECT rate_value, unit_size, metadata
           FROM candidates
-          WHERE ($2::text IS NULL OR (metadata->>'quality') IS NULL OR metadata->>'quality' = $2)
-            AND ($3::text IS NULL OR (metadata->>'size') IS NULL OR metadata->>'size' = $3)
+          WHERE ($3::text IS NULL OR (metadata->>'quality') IS NULL OR metadata->>'quality' = $3)
+            AND ($4::text IS NULL OR (metadata->>'size') IS NULL OR metadata->>'size' = $4)
           ORDER BY
-            CASE WHEN $2 IS NOT NULL AND metadata->>'quality' = $2 THEN 0 ELSE 1 END,
-            CASE WHEN $3 IS NOT NULL AND metadata->>'size' = $3 THEN 0 ELSE 1 END,
+            CASE WHEN $3 IS NOT NULL AND metadata->>'quality' = $3 THEN 0 ELSE 1 END,
+            CASE WHEN $4 IS NOT NULL AND metadata->>'size' = $4 THEN 0 ELSE 1 END,
             metadata->>'quality',
             metadata->>'size'
           LIMIT 1
-          `, [slug, queryQuality, querySize]);
+          `, [modelId ?? null, slug, queryQuality, querySize]);
             }
         }
         if (!r || !r.rows.length)
@@ -531,7 +559,7 @@ async function lookupVideoPricing(providerSlug, modelKey, resolution, modelId) {
         LIMIT 1
         `, [modelId, queryResolution]);
         }
-        // 2순위: provider_slug + model_key 폴백
+        // 2순위: model_id 또는 provider_slug + model_key 폴백 (provider_slug 유연: openai-gptimage 등)
         if (!r || r.rows.length === 0) {
             r = await (0, db_1.query)(`
         WITH active_rc AS (
@@ -545,8 +573,43 @@ async function lookupVideoPricing(providerSlug, modelKey, resolution, modelId) {
           FROM pricing_skus s
           JOIN pricing_rates r ON r.sku_id = s.id
           JOIN active_rc arc ON r.rate_card_id = arc.id
-          WHERE s.provider_slug = $1
-            AND (s.model_key = $2 OR $2 LIKE s.model_key || '-%')
+          WHERE (
+            ($1::uuid IS NOT NULL AND s.model_id = $1)
+            OR (
+              (s.provider_slug = $2 OR s.provider_slug LIKE $2 || '-%' OR $2 LIKE s.provider_slug || '-%')
+              AND (s.model_key = $3 OR $3 LIKE s.model_key || '-%')
+            )
+          )
+            AND s.modality = 'video'
+            AND s.usage_kind = 'seconds'
+            AND s.unit = 'second'
+            AND s.is_active = TRUE
+        )
+        SELECT rate_value, unit_size, metadata
+        FROM candidates
+        WHERE ($4::text IS NULL OR (metadata->>'resolution') IS NULL OR metadata->>'resolution' = $4)
+        ORDER BY CASE WHEN $4 IS NOT NULL AND metadata->>'resolution' = $4 THEN 0 ELSE 1 END
+        LIMIT 1
+        `, [modelId ?? null, slug, model, queryResolution]);
+        }
+        // 3순위: model_id 또는 provider만 매칭 (model_key 무관)
+        if (!r || r.rows.length === 0) {
+            r = await (0, db_1.query)(`
+        WITH active_rc AS (
+          SELECT id FROM pricing_rate_cards
+          WHERE status = 'active' AND effective_at <= NOW()
+          ORDER BY effective_at DESC, version DESC
+          LIMIT 1
+        ),
+        candidates AS (
+          SELECT s.id, s.unit_size, r.rate_value, s.metadata
+          FROM pricing_skus s
+          JOIN pricing_rates r ON r.sku_id = s.id
+          JOIN active_rc arc ON r.rate_card_id = arc.id
+          WHERE (
+            ($1::uuid IS NOT NULL AND s.model_id = $1)
+            OR (s.provider_slug = $2 OR s.provider_slug LIKE $2 || '-%' OR $2 LIKE s.provider_slug || '-%')
+          )
             AND s.modality = 'video'
             AND s.usage_kind = 'seconds'
             AND s.unit = 'second'
@@ -555,36 +618,9 @@ async function lookupVideoPricing(providerSlug, modelKey, resolution, modelId) {
         SELECT rate_value, unit_size, metadata
         FROM candidates
         WHERE ($3::text IS NULL OR (metadata->>'resolution') IS NULL OR metadata->>'resolution' = $3)
-        ORDER BY CASE WHEN $3 IS NOT NULL AND metadata->>'resolution' = $3 THEN 0 ELSE 1 END
+        ORDER BY CASE WHEN $3 IS NOT NULL AND metadata->>'resolution' = $3 THEN 0 ELSE 1 END, metadata->>'resolution'
         LIMIT 1
-        `, [slug, model, queryResolution]);
-        }
-        // 3순위: provider만 매칭 (model_key 무관)
-        if (!r || r.rows.length === 0) {
-            r = await (0, db_1.query)(`
-        WITH active_rc AS (
-          SELECT id FROM pricing_rate_cards
-          WHERE status = 'active' AND effective_at <= NOW()
-          ORDER BY effective_at DESC, version DESC
-          LIMIT 1
-        ),
-        candidates AS (
-          SELECT s.id, s.unit_size, r.rate_value, s.metadata
-          FROM pricing_skus s
-          JOIN pricing_rates r ON r.sku_id = s.id
-          JOIN active_rc arc ON r.rate_card_id = arc.id
-          WHERE s.provider_slug = $1
-            AND s.modality = 'video'
-            AND s.usage_kind = 'seconds'
-            AND s.unit = 'second'
-            AND s.is_active = TRUE
-        )
-        SELECT rate_value, unit_size, metadata
-        FROM candidates
-        WHERE ($2::text IS NULL OR (metadata->>'resolution') IS NULL OR metadata->>'resolution' = $2)
-        ORDER BY CASE WHEN $2 IS NOT NULL AND metadata->>'resolution' = $2 THEN 0 ELSE 1 END, metadata->>'resolution'
-        LIMIT 1
-        `, [slug, queryResolution]);
+        `, [modelId ?? null, slug, queryResolution]);
         }
         if (!r || !r.rows.length)
             return 0;

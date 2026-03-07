@@ -665,6 +665,123 @@ export async function googleSimulateChat(args: {
   return { raw: json, output_text: text }
 }
 
+/**
+ * Gemini 이미지 생성 (Nano Banana 2, gemini-2.0-flash-exp 등).
+ * generateContent API + responseModalities: ["TEXT", "IMAGE"] 사용.
+ * 응답 parts에서 inlineData (base64) 추출 → data URL로 변환.
+ */
+export async function googleGenerateImage(args: {
+  apiBaseUrl: string
+  apiKey: string
+  model: string
+  prompt: string
+  n?: number
+  aspect_ratio?: string
+  resolution?: string
+  image_data_url?: string
+  signal?: AbortSignal
+}): Promise<{ raw: unknown; urls: string[]; data_urls: string[]; b64: string[] }> {
+  const normalized = normalizeGoogleBaseUrl(args.apiBaseUrl)
+  const base = normalized || "https://generativelanguage.googleapis.com/v1beta"
+  const apiRoot = base.replace(/\/$/, "")
+
+  const url = `${apiRoot}/models/${encodeURIComponent(args.model)}:generateContent`
+
+  const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = []
+
+  if (args.image_data_url && args.image_data_url.startsWith("data:image/")) {
+    const m = args.image_data_url.match(/^data:([^;]+);base64,(.*)$/)
+    if (m) {
+      const mime = m[1] || "image/png"
+      const data = m[2] || ""
+      parts.push({ inlineData: { mimeType: mime, data } })
+    }
+  }
+
+  parts.push({ text: args.prompt })
+
+  // generationConfig: aspectRatio, outputImageSize, numberOfImages는 Google AI Gemini API에서 지원하지 않음.
+  // responseModalities만 사용. aspect_ratio/resolution은 프롬프트에 포함하거나 추후 API 확장 시 적용.
+  const generationConfig: Record<string, unknown> = {
+    maxOutputTokens: 8192,
+    responseModalities: ["TEXT", "IMAGE"],
+  }
+
+  const body = {
+    contents: [{ role: "user", parts }],
+    generationConfig,
+  }
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": args.apiKey,
+    },
+    body: JSON.stringify(body),
+    signal: args.signal,
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(`GOOGLE_IMAGE_FAILED_${res.status}@${apiRoot}:${JSON.stringify(json)}`)
+  }
+
+  const root = json && typeof json === "object" ? (json as Record<string, unknown>) : null
+  const err = root?.error && typeof root.error === "object" ? (root.error as Record<string, unknown>) : null
+  const msg = typeof err?.message === "string" ? err.message : ""
+  if (msg && msg.trim()) {
+    throw new Error(`GOOGLE_IMAGE_FAILED_200@${apiRoot}:${JSON.stringify(root)}`)
+  }
+
+  const candidates = root?.candidates as Array<Record<string, unknown>> | undefined
+  const firstCandidate = Array.isArray(candidates) ? candidates[0] : undefined
+  const content = firstCandidate?.content as Record<string, unknown> | undefined
+  const responseParts = content?.parts
+  const dataUrls: string[] = []
+  const b64List: string[] = []
+
+  if (Array.isArray(responseParts)) {
+    for (const p of responseParts) {
+      if (!p || typeof p !== "object") continue
+      const obj = p as Record<string, unknown>
+      const inline = obj.inlineData && typeof obj.inlineData === "object" ? (obj.inlineData as Record<string, unknown>) : null
+      if (inline && typeof inline.data === "string") {
+        const mime = typeof inline.mimeType === "string" ? inline.mimeType : "image/png"
+        const data = String(inline.data)
+        b64List.push(data)
+        dataUrls.push(`data:${mime};base64,${data}`)
+      }
+    }
+  }
+
+  const rawSafe: Record<string, unknown> = root ? { ...root } : {}
+  try {
+    if (Array.isArray(rawSafe.candidates)) {
+      rawSafe.candidates = (rawSafe.candidates as unknown[]).map((c) => {
+        if (!c || typeof c !== "object") return c
+        const cc = { ...(c as Record<string, unknown>) }
+        const content = cc.content && typeof cc.content === "object" ? (cc.content as Record<string, unknown>) : null
+        if (content && Array.isArray(content.parts)) {
+          content.parts = (content.parts as unknown[]).map((p) => {
+            if (!p || typeof p !== "object") return p
+            const pp = { ...(p as Record<string, unknown>) }
+            if (pp.inlineData && typeof pp.inlineData === "object") {
+              const id = pp.inlineData as Record<string, unknown>
+              if (typeof id.data === "string") id.data = `<omitted:${id.data.length}>`
+            }
+            return pp
+          })
+        }
+        return cc
+      })
+    }
+  } catch {
+    // ignore
+  }
+
+  return { raw: rawSafe, urls: [], data_urls: dataUrls, b64: b64List }
+}
+
 export async function openaiSimulateChat(args: {
   apiBaseUrl: string
   apiKey: string
