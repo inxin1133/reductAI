@@ -626,7 +626,9 @@ function extractTextFromJsonContent(content: unknown): string {
   if (typeof c.reply === "string") return c.reply
   // block-json 형태(title/summary/blocks) 렌더링
   const title = typeof c.title === "string" ? c.title : ""
-  const summary = typeof c.summary === "string" ? c.summary : ""
+  const summaryRaw = typeof c.summary === "string" ? c.summary : ""
+  const summary =
+    summaryRaw && !summaryRaw.startsWith("job_id=") && !summaryRaw.includes("operations/") ? summaryRaw : ""
   const blocks = Array.isArray(c.blocks) ? (c.blocks as Array<Record<string, unknown>>) : []
   if (title || summary || blocks.length) {
     const out: string[] = []

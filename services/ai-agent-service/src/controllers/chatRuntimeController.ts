@@ -399,6 +399,32 @@ function clampText(input: string, maxChars: number) {
   return s.slice(0, Math.max(0, maxChars - 1)) + "…"
 }
 
+const MAX_USAGE_LOG_STRING = 4000
+
+function sanitizeUsageLogRaw(raw: unknown, maxChars = MAX_USAGE_LOG_STRING): unknown {
+  if (!raw || typeof raw !== "object") return raw
+  try {
+    const seen = new WeakSet<object>()
+    const replacer = (_key: string, value: unknown) => {
+      if (typeof value === "string") {
+        if (value.startsWith("data:")) return `data:[omitted,len=${value.length}]`
+        if (value.length > maxChars) return `${value.slice(0, maxChars)}…(len=${value.length})`
+        return value
+      }
+      if (typeof value === "bigint") return value.toString()
+      if (typeof value === "object" && value !== null) {
+        if (Buffer.isBuffer(value)) return `[Buffer:${value.length}]`
+        if (seen.has(value as object)) return "[Circular]"
+        seen.add(value as object)
+      }
+      return value
+    }
+    return JSON.parse(JSON.stringify(raw, replacer))
+  } catch {
+    return { note: "raw_sanitization_failed" }
+  }
+}
+
 function normLang(x: string) {
   const s = String(x || "").trim().toLowerCase()
   return (s.split(/[-_]/)[0] || "en").slice(0, 8)
@@ -503,9 +529,11 @@ function deepInjectVars(input: unknown, vars: Record<string, unknown>): unknown 
       const s = String(raw)
       if (s === "true") return true
       if (s === "false") return false
-      // OpenAI videos API expects seconds as string enum ('4'|'8'|'12'), not a number.
-      // Keep this placeholder as a string even though it looks numeric.
-      if (k === "params_seconds") return s
+      if (k === "params_seconds") {
+        // OpenAI videos API expects seconds as string enum ('4'|'8'|'12').
+        // Only keep string when the profile requests it.
+        if (vars.__force_seconds_string === true) return s
+      }
       if (/^-?\d+(?:\.\d+)?$/.test(s)) return Number(s)
       return s
     }
@@ -714,6 +742,10 @@ async function executeHttpJsonProfile(args: {
       continue
     }
     vars[`params_${safeKey}`] = String(v)
+  }
+  const profileKey = String(args.profile.profile_key || "")
+  if (/openai_sora_video/i.test(profileKey)) {
+    vars.__force_seconds_string = true
   }
 
   function normalizeUrlJoin(args2: {
@@ -3042,12 +3074,19 @@ export async function chatRun(req: Request, res: Response) {
       const contentOpts = isRecord((out.content as Record<string, unknown>)?.options)
         ? ((out.content as Record<string, unknown>).options as Record<string, unknown>)
         : null
-      const secondsFromOpts = mergedOptions?.seconds ?? contentOpts?.seconds ?? (out.content as Record<string, unknown>)?.seconds
+      const secondsFromOpts =
+        mergedOptions?.seconds ??
+        (mergedOptions as Record<string, unknown> | null)?.duration ??
+        (mergedOptions as Record<string, unknown> | null)?.duration_seconds ??
+        contentOpts?.seconds ??
+        (contentOpts as Record<string, unknown> | null)?.duration ??
+        (out.content as Record<string, unknown>)?.seconds ??
+        (out.content as Record<string, unknown>)?.duration
       const seconds =
         typeof secondsFromOpts === "number"
           ? Math.max(0, Number(secondsFromOpts))
           : typeof secondsFromOpts === "string"
-            ? Math.max(0, parseInt(String(secondsFromOpts), 10) || 0)
+            ? Math.max(0, parseFloat(String(secondsFromOpts)) || 0)
             : 0
       const size =
         typeof mergedOptions?.size === "string"
@@ -3061,9 +3100,20 @@ export async function chatRun(req: Request, res: Response) {
           : typeof (out.content as Record<string, unknown>)?.resolution === "string"
             ? String((out.content as Record<string, unknown>).resolution).trim()
             : undefined
+      const rawDuration =
+        getByPath(out?.raw, "download.response.videos[0].durationSeconds") ??
+        getByPath(out?.raw, "download.response.videos[0].duration") ??
+        getByPath(out?.raw, "response.videos[0].durationSeconds") ??
+        getByPath(out?.raw, "response.videos[0].duration")
+      const secondsFromRaw =
+        typeof rawDuration === "number"
+          ? Math.max(0, Number(rawDuration))
+          : typeof rawDuration === "string"
+            ? Math.max(0, parseFloat(String(rawDuration)) || 0)
+            : 0
       // 비디오가 생성되었으면( content.video 존재 ) seconds가 0이어도 기본 4초로 기록 (Veo 최소 길이)
       const hasVideo = isRecord((out.content as Record<string, unknown>)?.video)
-      const effectiveSeconds = seconds > 0 ? seconds : hasVideo ? 4 : 0
+      const effectiveSeconds = secondsFromRaw > 0 ? secondsFromRaw : seconds > 0 ? seconds : hasVideo ? 4 : 0
       if (effectiveSeconds > 0) videoUsage = { seconds: effectiveSeconds, size, resolution }
     }
 
@@ -3268,7 +3318,7 @@ export async function chatRun(req: Request, res: Response) {
         }
         const responseData = {
           output_text_preview: String(contentTextForHistory || "").slice(0, 1000),
-          raw: out?.raw ?? null,
+          raw: sanitizeUsageLogRaw(out?.raw ?? null),
         }
         const modelParams = {
           max_tokens: safeMaxTokens,
@@ -3340,7 +3390,7 @@ export async function chatRun(req: Request, res: Response) {
             userId,
             usedProviderId,
             usedModelDbId,
-            usedCredentialId,
+            usedCredentialId && isUuid(usedCredentialId) ? usedCredentialId : null,
             null,
             requestedModel,
             usedModelApiId,

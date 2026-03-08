@@ -296,7 +296,10 @@ export function aiJsonToPmDoc(contentJson: unknown): PmDocJson | null {
     appendMarkdownBlocks(content, replyText)
   }
   const title = typeof obj.title === "string" ? obj.title.trim() : ""
-  const summary = typeof obj.summary === "string" ? obj.summary.trim() : ""
+  const summaryRaw = typeof obj.summary === "string" ? obj.summary.trim() : ""
+  // job_id=... / operations/... 형태의 내부 추적용 메시지는 UI에 노출하지 않음
+  const summary =
+    summaryRaw && !summaryRaw.startsWith("job_id=") && !summaryRaw.includes("operations/") ? summaryRaw : ""
   if (title) {
     content.push({
       type: "heading",
@@ -311,7 +314,11 @@ export function aiJsonToPmDoc(contentJson: unknown): PmDocJson | null {
   let blocks = Array.isArray(obj.blocks) ? (obj.blocks as AiBlock[]) : []
   if (!blocks.length) {
     const fallbackBlocks: AiBlock[] = []
-    const summaryText = typeof obj.summary === "string" ? obj.summary.trim() : ""
+    const summaryTextRaw = typeof obj.summary === "string" ? obj.summary.trim() : ""
+    const summaryText =
+      summaryTextRaw && !summaryTextRaw.startsWith("job_id=") && !summaryTextRaw.includes("operations/")
+        ? summaryTextRaw
+        : ""
     if (summaryText) {
       fallbackBlocks.push({ type: "markdown", content: `## 핵심 개요\n${summaryText}` })
     }

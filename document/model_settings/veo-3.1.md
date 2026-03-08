@@ -49,7 +49,7 @@ AI 모델 (비디오 타입)
 | 필드 | 값 | 비고 |
 |------|-----|------|
 | name | `veo-3.1` | reductai 모델 이름 |
-| model_id | `veo-3.1-generate-preview` | API 모델 ID. [Veo 3.1 문서](https://cloud.google.com/vertex-ai/generative-ai/docs/models/veo/3-1-generate-preview) 참고 |
+| model_id | `veo-3.1-generate-preview` (Standard) / `veo-3.1-fast-generate-preview` (Fast) | API 모델 ID. Standard와 Fast는 **별도 ai_models**로 등록 권장 |
 | display_name | `Veo 3.1 Generate Preview` | 표시용 |
 | model_type | `video` | **text, image가 아님** |
 | context_window | NULL | 비디오 모델은 해당 없음 |
@@ -63,7 +63,7 @@ AI 모델 (비디오 타입)
 | status | `active` | |
 | sort_order | `0` | |
 
-### capabilities
+### capabilities (Standard 모델 예시)
 ```json
 {
   "model": "veo-3.1-generate-preview",
@@ -90,7 +90,7 @@ AI 모델 (비디오 타입)
       "type": "enum",
       "label": "resolution",
       "values": ["720p", "1080p", "4k"],
-      "description": "출력 해상도. 4k는 Preview 전용"
+      "description": "출력 해상도. 4k는 Preview 전용. 720p/1080p 동일 단가, 4k 별도 단가"
     },
     "generate_audio": {
       "type": "bool",
@@ -99,7 +99,7 @@ AI 모델 (비디오 타입)
     }
   },
   "defaults": {
-    "seconds": 8,
+    "seconds": 4,
     "aspect_ratio": "16:9",
     "resolution": "720p",
     "generate_audio": true
@@ -117,6 +117,23 @@ AI 모델 (비디오 타입)
   ]
 }
 ```
+
+> **Standard vs Fast**: Veo 3.1은 **Standard**와 **Fast** 두 가지 모드가 있으며, API 모델 ID가 다릅니다.
+> - **Standard**: `veo-3.1-generate-preview` — 품질 우선
+> - **Fast**: `veo-3.1-fast-generate-preview` — 속도 우선
+>
+> **등록 권장**: Standard와 Fast를 **별도 ai_models**로 등록하고, 각각 `model_id`를 위 값으로 설정.  
+> model_api_profiles의 path/transport도 모델별로 `veo-3.1-generate-preview` 또는 `veo-3.1-fast-generate-preview`를 사용.
+
+### 가격 구조 (유료 등급, USD/초)
+| 모드 | 720p / 1080p | 4k |
+|------|--------------|-----|
+| **Standard** | $0.40/초 | $0.60/초 |
+| **Fast** | $0.15/초 | $0.35/초 |
+
+> 과금은 **모드(Standard/Fast) × 해상도(720p·1080p / 4k)** 조합으로 결정됩니다.  
+> 720p와 1080p는 동일 단가입니다.  
+> SKU는 모델별(model_key) + metadata.resolution(720p, 1080p, 4k)로 구분해 등록합니다.
 
 > **기술 사양** ([Veo 3.1 문서](https://cloud.google.com/vertex-ai/generative-ai/docs/models/veo/3-1-generate-preview)):  
 > - 해상도: 720p, 1080p, 4k(Preview 전용)  

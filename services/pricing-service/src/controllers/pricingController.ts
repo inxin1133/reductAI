@@ -1238,6 +1238,51 @@ function getImageTemplates(capabilities: unknown, providerSlug: string): SkuTemp
   return SKU_TEMPLATES.image
 }
 
+/**
+ * capabilities.options를 검토해 video(seconds) SKU 템플릿을 동적으로 생성.
+ * Veo 등: resolution(720p, 1080p, 4k)별로 별도 SKU. Standard/Fast는 model_key로 구분(별도 ai_models).
+ */
+function expandVideoTemplatesFromCapabilities(
+  capabilities: unknown,
+  providerSlug: string
+): SkuTemplateEntry[] {
+  const base = [...SKU_TEMPLATES.video]
+  const cap = capabilities && typeof capabilities === "object" ? (capabilities as Record<string, unknown>) : {}
+  const options = cap.options && typeof cap.options === "object" ? (cap.options as Record<string, unknown>) : {}
+  const slug = String(providerSlug || "").toLowerCase()
+  const isGoogle = slug === "google" || slug.startsWith("google-")
+
+  if (!isGoogle) return base
+
+  const resOpt = options.resolution && typeof options.resolution === "object" ? (options.resolution as { values?: unknown[] }) : null
+  const rawRes = Array.isArray(resOpt?.values) ? resOpt.values.map(String) : []
+  const resolutions = rawRes.filter((v) => v && String(v).toLowerCase() !== "auto")
+
+  if (resolutions.length === 0) {
+    resolutions.push("720p", "1080p", "4k")
+  }
+
+  for (const resolution of resolutions) {
+    base.push({
+      usage_kind: "seconds",
+      token_category: null,
+      unit: "second",
+      unit_size: 1,
+      metadata: { resolution: String(resolution).toLowerCase() },
+    })
+  }
+  return base
+}
+
+function getVideoTemplates(capabilities: unknown, providerSlug: string): SkuTemplateEntry[] {
+  const slug = String(providerSlug || "").toLowerCase()
+  const isGoogle = slug === "google" || slug.startsWith("google-")
+  if (isGoogle) {
+    return expandVideoTemplatesFromCapabilities(capabilities, providerSlug)
+  }
+  return SKU_TEMPLATES.video
+}
+
 // GET /skus/needs-generation?model_id=xxx → { ok, needsGeneration }
 // 모달리티별 필수 SKU 템플릿을 검토해, 누락된 SKU가 있으면 needsGeneration: true
 export async function checkModelNeedsSkuGeneration(req: Request, res: Response) {
@@ -1261,7 +1306,9 @@ export async function checkModelNeedsSkuGeneration(req: Request, res: Response) 
     const templates =
       modality === "image"
         ? getImageTemplates(model.capabilities, model.provider_slug || "unknown")
-        : (SKU_TEMPLATES[modality] || SKU_TEMPLATES.text)
+        : modality === "video"
+          ? getVideoTemplates(model.capabilities, model.provider_slug || "unknown")
+          : (SKU_TEMPLATES[modality] || SKU_TEMPLATES.text)
     const providerSlug = model.provider_slug || "unknown"
     const modelKey = model.model_key || ""
 
@@ -1316,7 +1363,9 @@ export async function generateSkusForModel(req: Request, res: Response) {
     const templates =
       modality === "image"
         ? getImageTemplates(model.capabilities, model.provider_slug || "unknown")
-        : (SKU_TEMPLATES[modality] || SKU_TEMPLATES.text)
+        : modality === "video"
+          ? getVideoTemplates(model.capabilities, model.provider_slug || "unknown")
+          : (SKU_TEMPLATES[modality] || SKU_TEMPLATES.text)
 
     const created: any[] = []
     const skipped: string[] = []

@@ -154,12 +154,17 @@ services:
       # 라우트 추가/수정(예: /api/ai/chat)이 즉시 반영되도록 합니다.
       - ./services/ai-agent-service:/app
       - /app/node_modules
+      # Google ADC (gcloud auth application-default login) - Vertex AI / Veo 인증용
+      # node 사용자의 $HOME/.config/gcloud에 마운트 (ADC 기본 경로)
+      - ~/.config/gcloud:/home/node/.config/gcloud:ro
     command: sh -c "npm ci --no-audit --no-fund || npm install --no-audit --no-fund; npm run dev"
     env_file:
       # CREDITS_SERVICE_KEY 등: auth-service/.env와 공유 (채팅 deduct, chat-ui config 필요)
       - ./services/auth-service/.env
     environment:
       - PORT=3007
+      # Vertex AI / Veo ADC: gcloud auth application-default login으로 발급한 credentials 경로
+      - GOOGLE_APPLICATION_CREDENTIALS=/home/node/.config/gcloud/application_default_credentials.json
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}

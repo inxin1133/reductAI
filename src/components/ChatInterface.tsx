@@ -637,7 +637,9 @@ function extractTextFromJsonContent(content: Record<string, unknown>): string {
   if (typeof content.output_text === "string") return content.output_text
   if (typeof content.input === "string") return content.input
   const title = typeof content.title === "string" ? content.title : ""
-  const summary = typeof content.summary === "string" ? content.summary : ""
+  const summaryRaw = typeof content.summary === "string" ? content.summary : ""
+  const summary =
+    summaryRaw && !summaryRaw.startsWith("job_id=") && !summaryRaw.includes("operations/") ? summaryRaw : ""
   const blocks = Array.isArray(content.blocks) ? (content.blocks as Array<Record<string, unknown>>) : []
   if (title || summary || blocks.length) {
     const out: string[] = []
