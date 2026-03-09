@@ -18,7 +18,7 @@ AI 제공업체 (GPT 텍스트/이미지 모델과 동일 OpenAI 공유)
 | slug | `openai` | 기존 코드가 `openai`로 하드코딩 |
 | api_base_url | `https://api.openai.com/v1` | **base만** 저장 |
 | website_url | `https://openai.com` | |
-| documentation_url | `https://platform.openai.com/docs` | |
+| documentation_url | `https://developers.openai.com/api/docs` | |
 | logo_key | `chatgpt` | UI 로고 매핑 (선택) |
 
 ---
@@ -29,69 +29,6 @@ API Key 인증 정보 (OpenAI 공유)
 | 필드 | 값 | 비고 |
 |------|-----|------|
 | endpoint_url | `https://api.openai.com/v1` | 커스텀 URL이 없으면 NULL |
-
----
-
-## ai_models
-AI 모델 (비디오 타입)
-
-| 필드 | 값 | 비고 |
-|------|-----|------|
-| name | `gpt-sora-2` | reductai 모델 이름 |
-| model_id | `sora-2` | API 모델 ID. [Videos API](https://platform.openai.com/docs/api-reference/videos)에서 확인 (sora-2, sora-2-pro 등) |
-| display_name | `GPT Sora 2` | 표시용 |
-| model_type | `video` | **text, image가 아님** |
-| context_window | NULL | 비디오 모델은 해당 없음 |
-| max_input_tokens | NULL | 비디오 모델은 해당 없음 |
-| max_output_tokens | NULL | 비디오 모델은 해당 없음 |
-| prompt_template_id | (prompt_templates.id) | 아래 prompt_templates 생성 후 FK |
-| response_schema_id | (response_schemas.id) | 아래 response_schemas 생성 후 FK |
-| capabilities | 아래 JSON | |
-| is_available | `true` | |
-| is_default | `false` | video 타입 기본 모델이 있으면 false |
-| status | `active` | |
-| sort_order | `0` | |
-
-### capabilities
-```json
-{
-  "model": "sora-2",
-  "limits": {
-    "max_duration_seconds": 12
-  },
-  "options": {
-    "seconds": {
-      "type": "int",
-      "label": "seconds",
-      "min": 4,
-      "max": 12,
-      "step": 4,
-      "description": "클립 길이(초). API 허용값: 4, 8, 12"
-    },
-    "size": {
-      "type": "enum",
-      "label": "size",
-      "values": ["720x1280", "1280x720"],
-      "description": "해상도(가로x세로). sora-2는 720x1280(세로), 1280x720(가로) 지원"
-    }
-  },
-  "defaults": {
-    "seconds": 4,
-    "size": "720x1280"
-  },
-  "supports": {
-    "seconds": true,
-    "size": true
-  },
-  "validation_hints": [
-    "seconds는 API에서 문자열로 전달됩니다 (\"4\", \"8\", \"12\"). params_seconds는 런타임에서 string으로 변환됩니다.",
-    "sora-2-pro는 1024x1792, 1792x1024 추가 지원. gpt-sora-2(sora-2)는 720x1280, 1280x720만 사용."
-  ]
-}
-```
-
-> **sora-2 vs sora-2-pro**: sora-2는 720x1280, 1280x720만 지원. sora-2-pro는 1024x1792, 1792x1024 추가.  
-> **권장**: 짧은 4초 클립을 여러 개 이어 붙이는 방식이 긴 1회 생성보다 안정적입니다. ([Sora 2 Prompting Guide](https://cookbook.openai.com/examples/sora/sora2_prompting_guide))
 
 ---
 
@@ -170,6 +107,69 @@ AI 모델 (비디오 타입)
 
 > `{{input}}` 또는 `{{userPrompt}}`는 런타임에서 사용자 입력으로 치환됩니다.  
 > `{{params_seconds}}`는 capabilities.defaults 또는 UI 입력값으로, API는 문자열 `"4"`, `"8"`, `"12"`를 요구합니다.
+
+---
+
+## ai_models
+AI 모델 (비디오 타입)
+
+| 필드 | 값 | 비고 |
+|------|-----|------|
+| name | `gpt-sora-2` | reductai 모델 이름 |
+| model_id | `sora-2` | API 모델 ID. [Videos API](https://platform.openai.com/docs/api-reference/videos)에서 확인 (sora-2, sora-2-pro 등) |
+| display_name | `GPT Sora 2` | 표시용 |
+| model_type | `video` | **text, image가 아님** |
+| context_window | NULL | 비디오 모델은 해당 없음 |
+| max_input_tokens | NULL | 비디오 모델은 해당 없음 |
+| max_output_tokens | NULL | 비디오 모델은 해당 없음 |
+| prompt_template_id | (prompt_templates.id) | 아래 prompt_templates 생성 후 FK |
+| response_schema_id | (response_schemas.id) | 아래 response_schemas 생성 후 FK |
+| capabilities | 아래 JSON | |
+| is_available | `true` | |
+| is_default | `false` | video 타입 기본 모델이 있으면 false |
+| status | `active` | |
+| sort_order | `0` | |
+
+### capabilities
+```json
+{
+  "model": "sora-2",
+  "limits": {
+    "max_duration_seconds": 12
+  },
+  "options": {
+    "seconds": {
+      "type": "int",
+      "label": "seconds",
+      "min": 4,
+      "max": 12,
+      "step": 4,
+      "description": "클립 길이(초). API 허용값: 4, 8, 12"
+    },
+    "size": {
+      "type": "enum",
+      "label": "size",
+      "values": ["720x1280", "1280x720"],
+      "description": "해상도(가로x세로). sora-2는 720x1280(세로), 1280x720(가로) 지원"
+    }
+  },
+  "defaults": {
+    "seconds": 4,
+    "size": "720x1280"
+  },
+  "supports": {
+    "seconds": true,
+    "size": true
+  },
+  "validation_hints": [
+    "seconds는 API에서 문자열로 전달됩니다 (\"4\", \"8\", \"12\"). params_seconds는 런타임에서 string으로 변환됩니다.",
+    "sora-2-pro는 1024x1792, 1792x1024 추가 지원. gpt-sora-2(sora-2)는 720x1280, 1280x720만 사용."
+  ]
+}
+```
+
+> **sora-2 vs sora-2-pro**: sora-2는 720x1280, 1280x720만 지원. sora-2-pro는 1024x1792, 1792x1024 추가.  
+> **권장**: 짧은 4초 클립을 여러 개 이어 붙이는 방식이 긴 1회 생성보다 안정적입니다. ([Sora 2 Prompting Guide](https://cookbook.openai.com/examples/sora/sora2_prompting_guide))
 
 ---
 

@@ -28,7 +28,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Loader2, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react"
+import { GripVertical, Loader2, Pencil, Plus, RefreshCcw, Trash2 } from "lucide-react"
+import { cn } from "@/lib/utils"
 import { AdminPage } from "@/components/layout/AdminPage"
 
 type ScopeType = "GLOBAL" | "TENANT" | "ROLE"
@@ -111,6 +112,8 @@ export default function PromptSuggestions() {
 
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<PromptSuggestionRow | null>(null)
+  const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [isReordering, setIsReordering] = useState(false)
 
   // form
   const [scopeType, setScopeType] = useState<ScopeType>("TENANT")
@@ -274,6 +277,46 @@ export default function PromptSuggestions() {
     }
   }
 
+  const reorderEnabled = modelTypeFilter !== "all" && !q.trim()
+
+  const persistReorder = async (ordered: PromptSuggestionRow[]) => {
+    if (!reorderEnabled) return
+    const ids = ordered.map((r) => r.id).filter(Boolean)
+    if (!ids.length) return
+
+    setIsReordering(true)
+    try {
+      const res = await fetch(`${API}/reorder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ordered_ids: ids }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        alert(jsonErrorMessage(json) || `정렬 저장 실패 (HTTP ${res.status})`)
+        return
+      }
+      await fetchList()
+    } finally {
+      setIsReordering(false)
+    }
+  }
+
+  const onDropReorder = async (overId: string) => {
+    if (!reorderEnabled || !draggingId) return
+    if (draggingId === overId) return
+
+    const from = rows.findIndex((r) => r.id === draggingId)
+    const to = rows.findIndex((r) => r.id === overId)
+    if (from < 0 || to < 0) return
+
+    const next = [...rows]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    setRows(next)
+    await persistReorder(next)
+  }
+
   useEffect(() => {
     fetchModels()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -399,9 +442,21 @@ export default function PromptSuggestions() {
       </div>
 
       <div className="rounded-md border">
+        {!reorderEnabled ? (
+          <div className="px-4 py-2 text-xs text-muted-foreground border-b">
+            정렬(드래그)은 <span className="font-medium">model_type을 하나로 선택</span>하고 <span className="font-medium">검색어를 비운</span> 상태에서
+            가능합니다.
+          </div>
+        ) : (
+          <div className="px-4 py-2 text-xs text-muted-foreground border-b">
+            드래그로 순서를 바꾸면 <span className="font-medium">DB(prompt_suggestions.sort_order)</span>에 저장됩니다.
+            {isReordering ? <span className="ml-2">저장 중...</span> : null}
+          </div>
+        )}
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-[40px]" />
               <TableHead className="w-[90px]">활성</TableHead>
               <TableHead className="w-[120px]">scope</TableHead>
               <TableHead className="w-[120px]">model_type</TableHead>
@@ -415,7 +470,25 @@ export default function PromptSuggestions() {
             {rows.map((r) => {
               const model = r.model_id ? models.find((m) => m.id === r.model_id) : undefined
               return (
-                <TableRow key={r.id}>
+                <TableRow
+                  key={r.id}
+                  draggable={reorderEnabled && !isReordering}
+                  onDragStart={() => setDraggingId(r.id)}
+                  onDragEnd={() => setDraggingId(null)}
+                  onDragOver={(e) => {
+                    if (!reorderEnabled || isReordering) return
+                    e.preventDefault()
+                  }}
+                  onDrop={(e) => {
+                    if (!reorderEnabled || isReordering) return
+                    e.preventDefault()
+                    void onDropReorder(r.id)
+                  }}
+                  className={cn(draggingId === r.id && "opacity-60")}
+                >
+                  <TableCell className="text-muted-foreground">
+                    <GripVertical className={reorderEnabled ? "h-4 w-4 cursor-grab" : "h-4 w-4 opacity-30"} />
+                  </TableCell>
                   <TableCell>
                     {r.is_active ? <Badge>ON</Badge> : <Badge variant="secondary">OFF</Badge>}
                   </TableCell>
@@ -459,7 +532,7 @@ export default function PromptSuggestions() {
             })}
             {rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground py-10">
+                <TableCell colSpan={8} className="text-center text-muted-foreground py-10">
                   데이터가 없습니다.
                 </TableCell>
               </TableRow>

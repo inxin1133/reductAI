@@ -1,5 +1,5 @@
 import { Request, Response } from "express"
-import { query } from "../config/db"
+import pool, { query } from "../config/db"
 import { ensureSystemTenantId } from "../services/systemTenantService"
 
 function toInt(v: unknown, fallback: number) {
@@ -217,6 +217,52 @@ export async function updatePromptSuggestion(req: Request, res: Response) {
   } catch (e: any) {
     console.error("updatePromptSuggestion error:", e)
     return res.status(500).json({ message: "Failed to update prompt suggestion", details: String(e?.message || e) })
+  }
+}
+
+// 순서 변경(드래그 정렬): ordered_ids 순서대로 sort_order 재부여
+export async function reorderPromptSuggestions(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const tenantId = await ensureSystemTenantId()
+    const { ordered_ids } = (req.body || {}) as { ordered_ids?: unknown }
+    if (!Array.isArray(ordered_ids) || ordered_ids.length === 0) {
+      return res.status(400).json({ message: "ordered_ids[] is required" })
+    }
+
+    const ids = ordered_ids.map((x) => String(x)).filter(Boolean)
+    if (ids.length !== ordered_ids.length) return res.status(400).json({ message: "ordered_ids contains invalid id" })
+
+    // tenant_id 검증
+    const check = await query(
+      `SELECT COUNT(*)::int AS cnt
+       FROM prompt_suggestions
+       WHERE tenant_id = $1 AND id = ANY($2::uuid[])`,
+      [tenantId, ids]
+    )
+    if ((check.rows?.[0]?.cnt ?? 0) !== ids.length) {
+      return res.status(400).json({ message: "ordered_ids must all belong to this tenant" })
+    }
+
+    await client.query("BEGIN")
+    for (let i = 0; i < ids.length; i++) {
+      await client.query(
+        `UPDATE prompt_suggestions SET sort_order = $1, updated_at = CURRENT_TIMESTAMP WHERE tenant_id = $2 AND id = $3`,
+        [i * 10, tenantId, ids[i]]
+      )
+    }
+    await client.query("COMMIT")
+    res.json({ ok: true, count: ids.length })
+  } catch (e: any) {
+    try {
+      await client.query("ROLLBACK")
+    } catch {
+      // ignore
+    }
+    console.error("reorderPromptSuggestions error:", e)
+    res.status(500).json({ message: "Failed to reorder prompt suggestions", details: String(e?.message || e) })
+  } finally {
+    client.release()
   }
 }
 

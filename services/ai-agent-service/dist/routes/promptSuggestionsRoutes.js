@@ -7,6 +7,7 @@ const express_1 = __importDefault(require("express"));
 const promptSuggestionsController_1 = require("../controllers/promptSuggestionsController");
 const router = express_1.default.Router();
 router.get("/", promptSuggestionsController_1.listPromptSuggestions);
+router.post("/reorder", promptSuggestionsController_1.reorderPromptSuggestions);
 router.get("/:id", promptSuggestionsController_1.getPromptSuggestion);
 router.post("/", promptSuggestionsController_1.createPromptSuggestion);
 router.put("/:id", promptSuggestionsController_1.updatePromptSuggestion);
