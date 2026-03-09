@@ -36,77 +36,7 @@ API Key 인증 정보 (Gemini 텍스트 모델과 공유)
 
 ---
 
-## ai_models
-AI 모델 (이미지 타입)
 
-| 필드 | 값 | 비고 |
-|------|-----|------|
-| name | `gemini-3.1-flash-image-preview` | 모델 이름 (Nano Banana 2) |
-| model_id | `gemini-3.1-flash-image-preview` | API 모델 ID. [모델 목록](https://ai.google.dev/gemini-api/docs/models)에서 확인 |
-| display_name | `Gemini 3.1 Flash Image` | 표시용 (Nano Banana 2) |
-| model_type | `image` | **text가 아님** |
-| context_window | `1048576` | 1M 토큰 (텍스트+이미지 입력) |
-| max_input_tokens | `850000` | 입력 토큰 상한 |
-| max_output_tokens | `65536` | 텍스트 출력 64K. 이미지 출력은 별도(4K 토큰 등가) |
-| prompt_template_id | (prompt_templates.id) | 아래 prompt_templates 생성 후 FK |
-| response_schema_id | (response_schemas.id) | 아래 response_schemas 생성 후 FK |
-| capabilities | 아래 JSON | |
-| is_available | `true` | |
-| is_default | `false` | image 타입 기본 모델이 있으면 false |
-| status | `active` | |
-| sort_order | `0` | |
-
-### capabilities
-```json
-{
-  "model": "gemini-3.1-flash-image-preview",
-  "limits": {
-    "max_images_per_request": 4,
-    "max_partial_images": 3
-  },
-  "options": {
-    "n": {
-      "max": 4,
-      "min": 1,
-      "type": "int",
-      "label": "n",
-      "description": "Number of images per request (sampleCount)"
-    },
-    "aspect_ratio": {
-      "type": "enum",
-      "label": "aspect_ratio",
-      "values": ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "4:1", "1:4"],
-      "description": "Aspect ratio. Gemini supports extreme ratios (4:1, 1:4)."
-    },
-    "resolution": {
-      "type": "enum",
-      "label": "resolution",
-      "values": ["512", "1024", "2048", "4096", "auto"],
-      "description": "Output resolution (512px to 4K). API 문서 확인 필요."
-    }
-  },
-  "defaults": {
-    "n": 1,
-    "aspect_ratio": "auto",
-    "resolution": "auto"
-  },
-  "supports": {
-    "n": true,
-    "aspect_ratio": true,
-    "resolution": true,
-    "reference_image": true
-  },
-  "validation_hints": [
-    "Gemini 3.1 Flash Image: subject consistency (up to 5 characters, 14 objects), precision text rendering.",
-    "Supports conversational editing, multi-image fusion.",
-    "현재 시스템은 provider=openai만 image 지원. Google 연동 시 구현 필요."
-  ]
-}
-```
-
-> **Nano Banana 2 특징**: Pro급 품질 + Flash 속도, 캐릭터 일관성(5명), 객체 정확도(14개), 512px~4K, 4:1/1:4 비율 지원. ([Image generation](https://ai.google.dev/gemini-api/docs/image-generation))
-
----
 
 ## response_schemas
 출력 계약 (이미지 응답 형식 — models_prompt_image.md 및 GPT Image 1.5와 호환)
@@ -185,6 +115,82 @@ AI 모델 (이미지 타입)
 ```
 
 > `{{userPrompt}}`는 런타임에서 사용자 입력으로 치환됩니다. Gemini 3.1 Flash Image는 텍스트 렌더링 정확도가 높아 인포그래픽/마케팅용 텍스트 포함 요청 시 유리합니다.
+
+---
+
+## ai_models
+AI 모델 (이미지 타입)
+
+| 필드 | 값 | 비고 |
+|------|-----|------|
+| name | `gemini-3.1-flash-image-preview` | 모델 이름 (Nano Banana 2) |
+| model_id | `gemini-3.1-flash-image-preview` | API 모델 ID. [모델 목록](https://ai.google.dev/gemini-api/docs/models)에서 확인 |
+| display_name | `Gemini 3.1 Flash Image` | 표시용 (Nano Banana 2) |
+| model_type | `image` | **text가 아님** |
+| context_window | `1048576` | 1M 토큰 (텍스트+이미지 입력) |
+| max_input_tokens | `850000` | 입력 토큰 상한 |
+| max_output_tokens | `65536` | 텍스트 출력 64K. 이미지 출력은 별도(4K 토큰 등가) |
+| prompt_template_id | (prompt_templates.id) | 아래 prompt_templates 생성 후 FK |
+| response_schema_id | (response_schemas.id) | 아래 response_schemas 생성 후 FK |
+| capabilities | 아래 JSON | |
+| is_available | `true` | |
+| is_default | `false` | image 타입 기본 모델이 있으면 false |
+| status | `active` | |
+| sort_order | `0` | |
+
+### capabilities
+```json
+{
+  "model": "gemini-3.1-flash-image-preview",
+  "limits": {
+    "max_images_per_request": 4,
+    "max_partial_images": 3
+  },
+  "options": {
+    "n": {
+      "max": 4,
+      "min": 1,
+      "type": "int",
+      "label": "n",
+      "description": "Number of images per request (sampleCount)"
+    },
+    "aspect_ratio": {
+      "type": "enum",
+      "label": "aspect_ratio",
+      "values": ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "4:1", "1:4"],
+      "description": "Aspect ratio. Gemini supports extreme ratios (4:1, 1:4)."
+    },
+    "resolution": {
+      "type": "enum",
+      "label": "resolution",
+      "values": ["512", "1024", "2048", "4096", "auto"],
+      "description": "Output resolution (512px to 4K). API 문서 확인 필요."
+    }
+  },
+  "defaults": {
+    "n": 1,
+    "aspect_ratio": "auto",
+    "resolution": "auto"
+  },
+  "supports": {
+    "n": true,
+    "aspect_ratio": true,
+    "resolution": true,
+    "reference_image": true
+  },
+  "validation_hints": [
+    "Gemini 3.1 Flash Image: subject consistency (up to 5 characters, 14 objects), precision text rendering.",
+    "Supports conversational editing, multi-image fusion.",
+    "현재 시스템은 provider=openai만 image 지원. Google 연동 시 구현 필요."
+  ], 
+  "description": [    
+    "정밀한 텍스트 렌더링",
+    "대화형 편집 및 다중 이미지 융합 지원"
+  ]
+}
+```
+
+> **Nano Banana 2 특징**: Pro급 품질 + Flash 속도, 캐릭터 일관성(5명), 객체 정확도(14개), 512px~4K, 4:1/1:4 비율 지원. ([Image generation](https://ai.google.dev/gemini-api/docs/image-generation))
 
 ---
 

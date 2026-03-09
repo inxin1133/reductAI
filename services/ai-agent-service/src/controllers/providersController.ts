@@ -1,5 +1,5 @@
 import { Request, Response } from "express"
-import { query } from "../config/db"
+import pool, { query } from "../config/db"
 
 type ProviderStatus = "active" | "inactive" | "deprecated"
 
@@ -9,9 +9,9 @@ export async function getProviders(_req: Request, res: Response) {
     const result = await query(
       `SELECT 
         id, provider_family, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url,
-        status, is_verified, metadata, created_at, updated_at
+        status, is_verified, metadata, sort_order, created_at, updated_at
       FROM ai_providers
-      ORDER BY created_at DESC`
+      ORDER BY sort_order ASC, created_at DESC`
     )
     res.json(result.rows)
   } catch (error) {
@@ -210,6 +210,42 @@ export async function updateProvider(req: Request, res: Response) {
       return res.status(409).json({ message: "Duplicate provider (slug already exists)" })
     }
     res.status(500).json({ message: "Failed to update provider" })
+  }
+}
+
+// 순서 변경(드래그 정렬): ordered_ids 순서대로 sort_order 재부여
+export async function reorderProviders(req: Request, res: Response) {
+  const client = await pool.connect()
+  try {
+    const { ordered_ids } = (req.body || {}) as { ordered_ids?: unknown }
+    if (!Array.isArray(ordered_ids) || ordered_ids.length === 0) {
+      return res.status(400).json({ message: "ordered_ids[] is required" })
+    }
+
+    const ids = ordered_ids.map((x) => String(x)).filter(Boolean)
+    if (ids.length !== ordered_ids.length) {
+      return res.status(400).json({ message: "ordered_ids contains invalid id" })
+    }
+
+    await client.query("BEGIN")
+    for (let i = 0; i < ids.length; i++) {
+      await client.query(`UPDATE ai_providers SET sort_order = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, [
+        i * 10,
+        ids[i],
+      ])
+    }
+    await client.query("COMMIT")
+    res.json({ ok: true, count: ids.length })
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK")
+    } catch {
+      // ignore
+    }
+    console.error("reorderProviders error:", error)
+    res.status(500).json({ message: "Failed to reorder providers" })
+  } finally {
+    client.release()
   }
 }
 

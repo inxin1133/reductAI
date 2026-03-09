@@ -36,81 +36,6 @@ API Key 인증 정보 (Gemini 텍스트 모델과 공유)
 
 ---
 
-## ai_models
-AI 모델 (이미지 타입)
-
-| 필드 | 값 | 비고 |
-|------|-----|------|
-| name | `gemini-2.5-flash-image-preview` | 모델 이름 (Nano Banana) |
-| model_id | `gemini-2.5-flash-image-preview` | API 모델 ID. [모델 목록](https://ai.google.dev/gemini-api/docs/models)에서 확인 |
-| display_name | `Gemini 2.5 Flash Image` | 표시용 (Nano Banana) |
-| model_type | `image` | **text가 아님** |
-| context_window | `32768` | 32K 토큰 (텍스트+이미지 입력) |
-| max_input_tokens | `32768` | 공식: 32,768 input tokens |
-| max_output_tokens | `32768` | 공식: 32,768 output tokens |
-| prompt_template_id | (prompt_templates.id) | 아래 prompt_templates 생성 후 FK |
-| response_schema_id | (response_schemas.id) | 아래 response_schemas 생성 후 FK |
-| capabilities | 아래 JSON | |
-| is_available | `true` | |
-| is_default | `false` | image 타입 기본 모델이 있으면 false |
-| status | `active` | |
-| sort_order | `0` | |
-
-### capabilities
-```json
-{
-  "model": "gemini-2.5-flash-image-preview",
-  "limits": {
-    "max_images_per_request": 4,
-    "max_partial_images": 3,
-    "max_reference_images": 3
-  },
-  "options": {
-    "n": {
-      "max": 4,
-      "min": 1,
-      "type": "int",
-      "label": "n",
-      "description": "Number of images per request (sampleCount)"
-    },
-    "aspect_ratio": {
-      "type": "enum",
-      "label": "aspect_ratio",
-      "values": ["auto", "1:1", "16:9", "9:16", "4:3", "3:4"],
-      "description": "Aspect ratio. 1024x1024 기본."
-    },
-    "resolution": {
-      "type": "enum",
-      "label": "resolution",
-      "values": ["1024", "auto"],
-      "description": "Output resolution. 1024x1024 기본 (1290 tokens/image)."
-    }
-  },
-  "defaults": {
-    "n": 1,
-    "aspect_ratio": "auto",
-    "resolution": "auto"
-  },
-  "supports": {
-    "n": true,
-    "aspect_ratio": true,
-    "resolution": true,
-    "reference_image": true,
-    "multi_image_fusion": true,
-    "localized_edit": true
-  },
-  "validation_hints": [
-    "Nano Banana: multi-image fusion (up to 3 input images), character consistency, localized edits.",
-    "Cost-effective, low latency. 32K context (smaller than 3.x Nano Banana).",
-    "현재 시스템은 provider=openai만 image 지원. Google 연동 시 구현 필요."
-  ]
-}
-```
-
-> **Nano Banana 특징**: 첫 번째 Nano Banana 모델(2025년 8월). 캐릭터 일관성, 최대 3장 입력 이미지 융합, 자연어 로컬라이즈드 편집. 비용·지연 최적화. ([Image generation](https://ai.google.dev/gemini-api/docs/image-generation))
-
----
-
 ## response_schemas
 출력 계약 (이미지 응답 형식 — models_prompt_image.md 및 GPT Image 1.5와 호환)
 
@@ -188,6 +113,85 @@ AI 모델 (이미지 타입)
 ```
 
 > `{{userPrompt}}`는 런타임에서 사용자 입력으로 치환됩니다. Nano Banana는 최대 3장 입력 이미지 융합과 자연어 기반 로컬라이즈드 편집을 지원합니다.
+
+---
+
+## ai_models
+AI 모델 (이미지 타입)
+
+| 필드 | 값 | 비고 |
+|------|-----|------|
+| name | `gemini-2.5-flash-image-preview` | 모델 이름 (Nano Banana) |
+| model_id | `gemini-2.5-flash-image-preview` | API 모델 ID. [모델 목록](https://ai.google.dev/gemini-api/docs/models)에서 확인 |
+| display_name | `Gemini 2.5 Flash Image` | 표시용 (Nano Banana) |
+| model_type | `image` | **text가 아님** |
+| context_window | `32768` | 32K 토큰 (텍스트+이미지 입력) |
+| max_input_tokens | `32768` | 공식: 32,768 input tokens |
+| max_output_tokens | `32768` | 공식: 32,768 output tokens |
+| prompt_template_id | (prompt_templates.id) | 아래 prompt_templates 생성 후 FK |
+| response_schema_id | (response_schemas.id) | 아래 response_schemas 생성 후 FK |
+| capabilities | 아래 JSON | |
+| is_available | `true` | |
+| is_default | `false` | image 타입 기본 모델이 있으면 false |
+| status | `active` | |
+| sort_order | `0` | |
+
+### capabilities
+```json
+{
+  "model": "gemini-2.5-flash-image-preview",
+  "limits": {
+    "max_images_per_request": 4,
+    "max_partial_images": 3,
+    "max_reference_images": 3
+  },
+  "options": {
+    "n": {
+      "max": 4,
+      "min": 1,
+      "type": "int",
+      "label": "n",
+      "description": "이미지 생성 수량 / Number of images per request (sampleCount)"
+    },
+    "aspect_ratio": {
+      "type": "enum",
+      "label": "aspect_ratio",
+      "values": ["auto", "1:1", "16:9", "9:16", "4:3", "3:4"],
+      "description": "비율 / Aspect ratio. 1024x1024 기본."
+    },
+    "resolution": {
+      "type": "enum",
+      "label": "resolution",
+      "values": ["1024", "auto"],
+      "description": "출력 해상도 / Output resolution. 1024x1024 기본 (1290 tokens/image)."
+    }
+  },
+  "defaults": {
+    "n": 1,
+    "aspect_ratio": "auto",
+    "resolution": "auto"
+  },
+  "supports": {
+    "n": true,
+    "aspect_ratio": true,
+    "resolution": true,
+    "reference_image": true,
+    "multi_image_fusion": true,
+    "localized_edit": true
+  },
+  "validation_hints": [
+    "Nano Banana: multi-image fusion (up to 3 input images), character consistency, localized edits.",
+    "Cost-effective, low latency. 32K context (smaller than 3.x Nano Banana).",
+    "현재 시스템은 provider=openai만 image 지원. Google 연동 시 구현 필요."
+  ],
+  "description": [    
+    "다중 이미지 융합(최대 3개의 입력 이미지)",
+    "비용 효율적이고 지연 시간이 짧습니다."
+  ]  
+}
+```
+
+> **Nano Banana 특징**: 첫 번째 Nano Banana 모델(2025년 8월). 캐릭터 일관성, 최대 3장 입력 이미지 융합, 자연어 로컬라이즈드 편집. 비용·지연 최적화. ([Image generation](https://ai.google.dev/gemini-api/docs/image-generation))
 
 ---
 

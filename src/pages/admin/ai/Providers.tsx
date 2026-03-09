@@ -28,7 +28,7 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, Pencil, Plus, Search, Trash2, ShieldCheck, ShieldAlert } from "lucide-react"
+import { GripVertical, Loader2, Pencil, Plus, Search, Trash2, ShieldCheck, ShieldAlert } from "lucide-react"
 import { AdminPage } from "@/components/layout/AdminPage"
 import { ProviderLogo, PROVIDER_LOGO_OPTIONS } from "@/components/icons/providerLogoRegistry"
 
@@ -46,6 +46,7 @@ interface AIProvider {
   documentation_url?: string | null
   status: ProviderStatus
   is_verified: boolean
+  sort_order?: number
   metadata?: Record<string, unknown> | null
   created_at: string
   updated_at: string
@@ -169,6 +170,9 @@ export default function Providers() {
   const [providers, setProviders] = useState<AIProvider[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
+  const [usedApi, setUsedApi] = useState(false)
+  const [isReordering, setIsReordering] = useState(false)
+  const [draggingId, setDraggingId] = useState<string | null>(null)
 
   // 검색(클라이언트 필터)
   const [search, setSearch] = useState("")
@@ -212,10 +216,12 @@ export default function Providers() {
       // 우선 API를 시도하고, 실패하면 localStorage로 fallback
       const data = await tryFetchJson<AIProvider[]>(API_URL, { headers: { ...authHeaders() } })
       setProviders(data)
+      setUsedApi(true)
     } catch (e) {
       // 백엔드가 아직 없거나(404), 프록시 미설정인 경우에도 화면/기능이 동작하도록 localStorage를 사용
       const local = loadFromLocalStorage()
       setProviders(local)
+      setUsedApi(false)
       console.warn("[Admin Providers] API 연결 실패로 localStorage fallback 사용:", e)
     } finally {
       setIsLoading(false)
@@ -401,6 +407,46 @@ export default function Providers() {
     }
   }
 
+  const reorderEnabled = usedApi && !search.trim()
+
+  const persistReorder = async (ordered: AIProvider[]) => {
+    if (!reorderEnabled) return
+    const ids = ordered.map((p) => p.id).filter(Boolean)
+    if (!ids.length) return
+
+    setIsReordering(true)
+    try {
+      const res = await fetch(`${API_URL}/reorder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ ordered_ids: ids }),
+      })
+      if (!res.ok) {
+        const text = (await res.text().catch(() => "")).trim()
+        alert(`정렬 저장 실패 (HTTP ${res.status})\n${text}`.trim())
+        return
+      }
+      await fetchProviders()
+    } finally {
+      setIsReordering(false)
+    }
+  }
+
+  const onDropReorder = async (overId: string) => {
+    if (!reorderEnabled || !draggingId) return
+    if (draggingId === overId) return
+
+    const from = providers.findIndex((p) => p.id === draggingId)
+    const to = providers.findIndex((p) => p.id === overId)
+    if (from < 0 || to < 0) return
+
+    const next = [...providers]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    setProviders(next)
+    await persistReorder(next)
+  }
+
   const statusBadge = (status: ProviderStatus) => {
     switch (status) {
       case "active":
@@ -449,9 +495,20 @@ export default function Providers() {
       </div>
 
       <div className="border rounded-md">
+        {!reorderEnabled ? (
+          <div className="px-4 py-2 text-xs text-muted-foreground border-b">
+            정렬(드래그)은 API 연결 시에만 가능하며, <span className="font-medium">검색어를 비우면</span> 드래그로 제공사 카드 순서를 변경할 수 있습니다.
+          </div>
+        ) : (
+          <div className="px-4 py-2 text-xs text-muted-foreground border-b">
+            드래그로 순서를 바꾸면 <span className="font-medium">DB(ai_providers.sort_order)</span>에 저장되어, 채팅 UI 제공사 카드 순서에 반영됩니다.
+            {isReordering ? <span className="ml-2">저장 중...</span> : null}
+          </div>
+        )}
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-[40px]"></TableHead>
               <TableHead>제품/업체 이름</TableHead>
               <TableHead>Slug</TableHead>
               <TableHead>Logo</TableHead>
@@ -465,19 +522,37 @@ export default function Providers() {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={8} className="h-24 text-center">
+                <TableCell colSpan={9} className="h-24 text-center">
                   <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                 </TableCell>
               </TableRow>
             ) : filteredProviders.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="h-24 text-center">
+                <TableCell colSpan={9} className="h-24 text-center">
                   등록된 제공업체가 없습니다.
                 </TableCell>
               </TableRow>
             ) : (
               filteredProviders.map((p) => (
-                <TableRow key={p.id}>
+                <TableRow
+                  key={p.id}
+                  draggable={reorderEnabled && !isReordering}
+                  onDragStart={() => setDraggingId(p.id)}
+                  onDragEnd={() => setDraggingId(null)}
+                  onDragOver={(e) => {
+                    if (!reorderEnabled || isReordering) return
+                    e.preventDefault()
+                  }}
+                  onDrop={(e) => {
+                    if (!reorderEnabled || isReordering) return
+                    e.preventDefault()
+                    void onDropReorder(p.id)
+                  }}
+                  className={draggingId === p.id ? "opacity-60" : ""}
+                >
+                  <TableCell className="text-muted-foreground">
+                    <GripVertical className={reorderEnabled ? "h-4 w-4 cursor-grab" : "h-4 w-4 opacity-30"} />
+                  </TableCell>
                   <TableCell className="font-medium">
                     <div className="flex items-center gap-2">
                       {p.is_verified ? (

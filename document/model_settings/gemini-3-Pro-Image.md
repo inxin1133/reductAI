@@ -36,6 +36,86 @@ API Key 인증 정보 (Gemini 텍스트 모델과 공유)
 
 ---
 
+## response_schemas
+출력 계약 (이미지 응답 형식 — models_prompt_image.md 및 GPT Image 1.5와 호환)
+
+| 필드 | 비고 |
+|------|------|
+| name | 예: `llm_image_response` (GPT Image와 공유 가능) |
+| strict | `true` |
+| schema | 아래 JSON |
+
+### schema
+```json
+{
+  "type": "object",
+  "required": ["images"],
+  "additionalProperties": false,
+  "properties": {
+    "title": { "type": "string" },
+    "summary": { "type": "string" },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "markdown"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "markdown" },
+          "markdown": { "type": "string" }
+        }
+      }
+    },
+    "images": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "url": { "type": "string" },
+          "b64_json": { "type": "string" },
+          "mime_type": { "type": "string" },
+          "width": { "type": "integer" },
+          "height": { "type": "integer" }
+        },
+        "anyOf": [
+          { "required": ["url"] },
+          { "required": ["b64_json"] }
+        ]
+      }
+    }
+  }
+}
+```
+
+> Gemini API 응답 형식은 Imagen/GPT와 다를 수 있음. 통합 시 `data`/`images`/`generatedImages` 등에서 URL 또는 base64 추출 로직 필요.
+
+---
+
+## prompt_templates
+프롬프트 템플릿 (이미지용 — `prompt` 필드 사용)
+
+| 필드 | 비고 |
+|------|------|
+| name | 예: `gemini-3-pro-image-generate` |
+| purpose | `image` | chat가 아님 |
+| is_active | `true` |
+| body | 아래 JSON |
+
+> 이미지 모델은 `prompt` 단일 필드를 사용합니다. models_prompt_image.md 스타일 규칙을 Gemini Pro Image에 맞게 적용합니다.
+
+### body
+```json
+{
+  "prompt": "{{userPrompt}}\n\nImage usage rule (very important):\n- If a reference image is provided, you MUST use it as the primary subject.\n- Apply a transformation to the provided image, not generate a new subject.\n- Preserve identity, proportions, and core structure of the original image unless explicitly told otherwise.\n\nGlobal style guide (always apply):\n- Clear, readable composition with a strong focal subject\n- Rich, high-quality visual detail (materials, textures, lighting)\n- Studio-quality output suitable for professional use\n\nHard constraints (must follow):\n- No text, no letters, no numbers, no captions, no speech bubbles (unless specifically requested for design)\n- No logos, no watermarks, no signatures, no UI\n\nQuality targets:\n- Sharp, clean, high fidelity\n- Avoid blur, noise, artifacts, distorted anatomy"
+}
+```
+
+> `{{userPrompt}}`는 런타임에서 사용자 입력으로 치환됩니다. Nano Banana Pro는 다국어 텍스트 렌더링(~94%)과 검색 기반 사실성이 있어 인포그래픽·다이어그램 요청에 적합합니다.
+
+---
+
 ## ai_models
 AI 모델 (이미지 타입)
 
@@ -122,91 +202,15 @@ AI 모델 (이미지 타입)
     "Nano Banana Pro: studio-quality output, ~94% text rendering accuracy, up to 14 reference images.",
     "Search grounding for factually correct diagrams/infographics. Translation of text within images.",
     "현재 시스템은 provider=openai만 image 지원. Google 연동 시 구현 필요."
+  ],
+  "description": [    
+    "스튜디오급 출력, 약 94%의 텍스트 렌더링 정확도",
+    "사실에 부합하는 다이어그램/인포그래픽 검색 지원. 이미지 내 텍스트 번역"
   ]
 }
 ```
 
 > **Nano Banana Pro 특징**: 스튜디오급 품질, 다국어 텍스트 렌더링(~94%), 참조 이미지 14장, 5명 캐릭터 일관성, 4K 해상도, 검색 기반 사실성(인포그래픽). ([Gemini 3 Pro Image](https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-image-preview))
-
----
-
-## response_schemas
-출력 계약 (이미지 응답 형식 — models_prompt_image.md 및 GPT Image 1.5와 호환)
-
-| 필드 | 비고 |
-|------|------|
-| name | 예: `llm_image_response` (GPT Image와 공유 가능) |
-| strict | `true` |
-| schema | 아래 JSON |
-
-### schema
-```json
-{
-  "type": "object",
-  "required": ["images"],
-  "additionalProperties": false,
-  "properties": {
-    "title": { "type": "string" },
-    "summary": { "type": "string" },
-    "blocks": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["type", "markdown"],
-        "additionalProperties": false,
-        "properties": {
-          "type": { "const": "markdown" },
-          "markdown": { "type": "string" }
-        }
-      }
-    },
-    "images": {
-      "type": "array",
-      "minItems": 1,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "url": { "type": "string" },
-          "b64_json": { "type": "string" },
-          "mime_type": { "type": "string" },
-          "width": { "type": "integer" },
-          "height": { "type": "integer" }
-        },
-        "anyOf": [
-          { "required": ["url"] },
-          { "required": ["b64_json"] }
-        ]
-      }
-    }
-  }
-}
-```
-
-> Gemini API 응답 형식은 Imagen/GPT와 다를 수 있음. 통합 시 `data`/`images`/`generatedImages` 등에서 URL 또는 base64 추출 로직 필요.
-
----
-
-## prompt_templates
-프롬프트 템플릿 (이미지용 — `prompt` 필드 사용)
-
-| 필드 | 비고 |
-|------|------|
-| name | 예: `gemini-3-pro-image-generate` |
-| purpose | `image` | chat가 아님 |
-| is_active | `true` |
-| body | 아래 JSON |
-
-> 이미지 모델은 `prompt` 단일 필드를 사용합니다. models_prompt_image.md 스타일 규칙을 Gemini Pro Image에 맞게 적용합니다.
-
-### body
-```json
-{
-  "prompt": "{{userPrompt}}\n\nImage usage rule (very important):\n- If a reference image is provided, you MUST use it as the primary subject.\n- Apply a transformation to the provided image, not generate a new subject.\n- Preserve identity, proportions, and core structure of the original image unless explicitly told otherwise.\n\nGlobal style guide (always apply):\n- Clear, readable composition with a strong focal subject\n- Rich, high-quality visual detail (materials, textures, lighting)\n- Studio-quality output suitable for professional use\n\nHard constraints (must follow):\n- No text, no letters, no numbers, no captions, no speech bubbles (unless specifically requested for design)\n- No logos, no watermarks, no signatures, no UI\n\nQuality targets:\n- Sharp, clean, high fidelity\n- Avoid blur, noise, artifacts, distorted anatomy"
-}
-```
-
-> `{{userPrompt}}`는 런타임에서 사용자 입력으로 치환됩니다. Nano Banana Pro는 다국어 텍스트 렌더링(~94%)과 검색 기반 사실성이 있어 인포그래픽·다이어그램 요청에 적합합니다.
 
 ---
 
