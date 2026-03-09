@@ -131,7 +131,7 @@ export default function Markups() {
 
   const [q, setQ] = useState("")
   const [scopeType, setScopeType] = useState<"all" | MarkupRow["scope_type"]>("all")
-  const [modality, setModality] = useState<"all" | "text" | "code" | "image" | "audio" | "video" | "web_search">("all")
+  const [modality, setModality] = useState<"all" | "text" | "code" | "image" | "audio" | "music" | "video" | "web_search">("all")
   const [usageKind, setUsageKind] = useState<
     "all" | "input_tokens" | "cached_input_tokens" | "output_tokens" | "image_generation" | "seconds" | "requests"
   >("all")
@@ -374,6 +374,7 @@ export default function Markups() {
             <SelectItem value="code">code</SelectItem>
             <SelectItem value="image">image</SelectItem>
             <SelectItem value="audio">audio</SelectItem>
+            <SelectItem value="music">music</SelectItem>
             <SelectItem value="video">video</SelectItem>
             <SelectItem value="web_search">web_search</SelectItem>
           </SelectContent>
@@ -593,6 +594,7 @@ export default function Markups() {
                     <SelectItem value="code">code</SelectItem>
                     <SelectItem value="image">image</SelectItem>
                     <SelectItem value="audio">audio</SelectItem>
+                    <SelectItem value="music">music</SelectItem>
                     <SelectItem value="video">video</SelectItem>
                     <SelectItem value="web_search">web_search</SelectItem>
                   </SelectContent>

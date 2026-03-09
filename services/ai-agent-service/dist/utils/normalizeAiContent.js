@@ -231,6 +231,7 @@ function finalizeNormalizedContent(content, blocks) {
     const options = isRecord(content.options) ? content.options : null;
     const images = Array.isArray(content.images) ? content.images : null;
     const audio = isRecord(content.audio) ? content.audio : null;
+    const audios = Array.isArray(content.audios) ? content.audios : null;
     const video = isRecord(content.video) ? content.video : null;
     const attachments = Array.isArray(content.attachments) ? (content.attachments || []) : null;
     const base = { blocks };
@@ -246,6 +247,8 @@ function finalizeNormalizedContent(content, blocks) {
         base.images = images;
     if (audio)
         base.audio = audio;
+    if (audios)
+        base.audios = audios;
     if (video)
         base.video = video;
     if (attachments)

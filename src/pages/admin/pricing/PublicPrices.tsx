@@ -53,7 +53,7 @@ type ListResponse = {
 
 const API_URL = "/api/ai/pricing/public-prices"
 
-type ModalityFilter = "all" | "text" | "code" | "image" | "audio" | "video" | "web_search"
+type ModalityFilter = "all" | "text" | "code" | "image" | "audio" | "music" | "video" | "web_search"
 
 function toNumber(v: unknown) {
   if (typeof v === "number") return Number.isFinite(v) ? v : 0
@@ -197,6 +197,7 @@ export default function PublicPrices() {
             <SelectItem value="code">code</SelectItem>
             <SelectItem value="image">image</SelectItem>
             <SelectItem value="audio">audio</SelectItem>
+            <SelectItem value="music">music</SelectItem>
             <SelectItem value="video">video</SelectItem>
             <SelectItem value="web_search">web_search</SelectItem>
           </SelectContent>

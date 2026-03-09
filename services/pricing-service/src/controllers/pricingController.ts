@@ -600,7 +600,7 @@ export async function bulkUpdateRates(req: Request, res: Response) {
 // SKU CRUD
 // ========================================
 
-const VALID_MODALITIES = new Set(["text", "code", "image", "video", "audio", "web_search"])
+const VALID_MODALITIES = new Set(["text", "code", "image", "video", "audio", "music", "web_search"])
 const VALID_USAGE_KINDS = new Set([
   "input_tokens",
   "cached_input_tokens",
@@ -1093,6 +1093,21 @@ type SkuTemplateEntry = {
   metadata?: Record<string, any>
 }
 
+/** ai_models.model_type → pricing_skus.modality 매핑 */
+function modelTypeToPricingModality(modelType: string): string {
+  const map: Record<string, string> = {
+    text: "text",
+    code: "code",
+    image: "image",
+    video: "video",
+    audio: "audio",
+    music: "music",
+    multimodal: "text",
+    embedding: "text",
+  }
+  return map[modelType] ?? "text"
+}
+
 const SKU_TEMPLATES: Record<string, SkuTemplateEntry[]> = {
   text: [
     { usage_kind: "input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
@@ -1120,6 +1135,9 @@ const SKU_TEMPLATES: Record<string, SkuTemplateEntry[]> = {
     { usage_kind: "cached_input_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
     { usage_kind: "output_tokens", token_category: "text", unit: "tokens", unit_size: 1000000 },
     { usage_kind: "seconds", token_category: null, unit: "second", unit_size: 1 },
+  ],
+  music: [
+    { usage_kind: "seconds", token_category: null, unit: "second", unit_size: 30 },
   ],
   video: [
     { usage_kind: "seconds", token_category: null, unit: "second", unit_size: 1 },
@@ -1302,11 +1320,12 @@ export async function checkModelNeedsSkuGeneration(req: Request, res: Response) 
     if (modelRes.rows.length === 0) return res.status(404).json({ message: "Model not found" })
 
     const model = modelRes.rows[0]
-    const modality = String(model.model_type || "text")
+    const modelType = String(model.model_type || "text")
+    const modality = modelTypeToPricingModality(modelType)
     const templates =
-      modality === "image"
+      modelType === "image"
         ? getImageTemplates(model.capabilities, model.provider_slug || "unknown")
-        : modality === "video"
+        : modelType === "video"
           ? getVideoTemplates(model.capabilities, model.provider_slug || "unknown")
           : (SKU_TEMPLATES[modality] || SKU_TEMPLATES.text)
     const providerSlug = model.provider_slug || "unknown"
@@ -1359,11 +1378,12 @@ export async function generateSkusForModel(req: Request, res: Response) {
     if (modelRes.rows.length === 0) return res.status(404).json({ message: "Model not found" })
 
     const model = modelRes.rows[0]
-    const modality = modalityOverride || model.model_type || "text"
+    const modelType = String(modalityOverride || model.model_type || "text")
+    const modality = modelTypeToPricingModality(modelType)
     const templates =
-      modality === "image"
+      modelType === "image"
         ? getImageTemplates(model.capabilities, model.provider_slug || "unknown")
-        : modality === "video"
+        : modelType === "video"
           ? getVideoTemplates(model.capabilities, model.provider_slug || "unknown")
           : (SKU_TEMPLATES[modality] || SKU_TEMPLATES.text)
 

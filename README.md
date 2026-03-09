@@ -108,3 +108,6 @@ docker compose down && docker compose up -d --build
 ## 원하는 곳만 재빌드 (폴더 이동후 빌드)
 cd services/ai-agent-service
 npm run build
+
+## ADC 로컬 인증
+gcloud auth application-default login

@@ -105,7 +105,7 @@ type MissingSku = {
 
 const RATE_CARDS_API = "/api/ai/pricing/rate-cards"
 
-type ModalityFilter = "all" | "text" | "code" | "image" | "audio" | "video" | "web_search"
+type ModalityFilter = "all" | "text" | "code" | "image" | "audio" | "music" | "video" | "web_search"
 type UsageKindFilter = "all" | "input_tokens" | "cached_input_tokens" | "output_tokens" | "image_generation" | "seconds" | "requests"
 type TokenCategoryFilter = "all" | "text" | "image"
 type TierUnitFilter =
@@ -835,6 +835,7 @@ export default function Rates() {
             <SelectItem value="code">code</SelectItem>
             <SelectItem value="image">image</SelectItem>
             <SelectItem value="audio">audio</SelectItem>
+            <SelectItem value="music">music</SelectItem>
             <SelectItem value="video">video</SelectItem>
             <SelectItem value="web_search">web_search</SelectItem>
           </SelectContent>

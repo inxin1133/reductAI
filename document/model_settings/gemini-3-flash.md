@@ -39,7 +39,7 @@ AI 모델 (필수 필드 포함)
 | 필드 | 값 | 비고 |
 |------|-----|------|
 | name | `gemini-3-flash` | 모델 이름 |
-| model_id | `gemini-3-flash` | API 모델 ID. 실제 배포 시 `gemini-3-flash-preview` 등 Google 문서 확인 |
+| model_id | `gemini-3-flash-preview` | API 모델 ID. 실제 배포 시 `gemini-3-flash-preview` 등 Google 문서 확인 |
 | display_name | `Gemini 3 Flash` | 표시용 |
 | model_type | `text` | |
 | context_window | `1048576` | models_prompt_text(chat).md 권장 (1M 토큰) |

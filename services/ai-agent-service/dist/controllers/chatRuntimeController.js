@@ -310,6 +310,74 @@ function detectLanguageCode(text) {
         return "en";
     return null;
 }
+/** Lyria requires US English. Translate non-English prompts via Gemini. */
+async function translateToEnglishForLyria(args) {
+    const body = {
+        contents: [
+            {
+                role: "user",
+                parts: [
+                    {
+                        text: `Translate the following music description to US English. Output only the English translation, no other text:\n\n${args.input}`,
+                    },
+                ],
+            },
+        ],
+        generationConfig: { maxOutputTokens: 1024 },
+    };
+    // 1) GEMINI_API_KEY 있으면 Gemini API 우선 (generativelanguage, gemini-3-flash-preview)
+    const geminiKey = String(process.env.GEMINI_API_KEY || "").trim();
+    if (geminiKey) {
+        const modelId = "gemini-3-flash-preview";
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`;
+        const res = await fetch(`${url}?key=${encodeURIComponent(geminiKey)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal: args.signal,
+        });
+        const json = (await res.json().catch(() => ({})));
+        if (res.ok) {
+            const candidate = json?.candidates?.[0];
+            const content = candidate?.content;
+            const text = content?.parts?.[0]?.text;
+            if (typeof text === "string" && text.trim())
+                return text.trim();
+        }
+        else {
+            throw new Error(`GEMINI_API_TRANSLATE_FAILED_${res.status}:${JSON.stringify(json)}`);
+        }
+    }
+    // 2) Vertex AI fallback (프로젝트에서 사용 가능한 모델 순차 시도)
+    if (args.projectId === "unknown") {
+        throw new Error("Missing projectId for Vertex AI fallback translation. Set GOOGLE_CLOUD_PROJECT or GEMINI_API_KEY.");
+    }
+    const modelIds = ["gemini-2.0-flash-001", "gemini-1.5-flash-002"];
+    for (const modelId of modelIds) {
+        const url = `https://${args.location}-aiplatform.googleapis.com/v1/projects/${args.projectId}/locations/${args.location}/publishers/google/models/${modelId}:generateContent`;
+        const res = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${args.accessToken}`,
+            },
+            body: JSON.stringify(body),
+            signal: args.signal,
+        });
+        const json = (await res.json().catch(() => ({})));
+        if (!res.ok) {
+            if (res.status === 404)
+                continue;
+            throw new Error(`LYRIA_TRANSLATE_FAILED_${res.status}:${JSON.stringify(json)}`);
+        }
+        const candidate = json?.candidates?.[0];
+        const content = candidate?.content;
+        const text = content?.parts?.[0]?.text;
+        if (typeof text === "string" && text.trim())
+            return text.trim();
+    }
+    return args.input;
+}
 /** 전략 A: 시간 맥락이 필요한 질문인지 감지. 이 경우에만 동적 context에 시간 정보를 추가해 캐시 효율 유지.
  *  한글: \b가 한글 문자에서 동작하지 않으므로 패턴만 사용 (예: /오늘/).
  *  영어: \b로 단어 경계 보장.
@@ -701,12 +769,40 @@ async function executeHttpJsonProfile(args) {
     const method = (pickString(transport, "method") || "POST").toUpperCase();
     const path = pickString(transport, "path") || "/";
     const timeoutMs = Number(transport.timeout_ms || 60000) || 60000;
+    // Lyria requires US English. Auto-translate non-English prompts via Vertex Gemini.
+    let effectiveInput = args.input;
+    let effectivePrompt = args.prompt;
+    if (args.purpose === "music" &&
+        /google_lyria|lyria/i.test(String(args.profile.profile_key || "")) &&
+        args.accessToken) {
+        const detected = detectLanguageCode(args.input);
+        if (detected && detected !== "en") {
+            const projectId = String(args.configVars?.config_project_id || "").trim() ||
+                String(process.env.GOOGLE_CLOUD_PROJECT || "").trim();
+            const location = String(args.configVars?.config_location || "us-central1").trim();
+            try {
+                const translated = await translateToEnglishForLyria({
+                    input: args.input,
+                    projectId: projectId || "unknown",
+                    location,
+                    accessToken: args.accessToken,
+                    signal: args.signal,
+                });
+                console.log(`[Lyria] Translated prompt (${detected} -> en):`, translated);
+                effectiveInput = translated;
+                effectivePrompt = translated;
+            }
+            catch (e) {
+                console.warn("[Lyria] prompt translation failed, using original:", e?.message);
+            }
+        }
+    }
     const vars = {
         apiKey: args.apiKey,
         accessToken: args.accessToken || "",
         model: args.modelApiId,
-        userPrompt: args.prompt,
-        input: args.input,
+        userPrompt: effectivePrompt,
+        input: effectiveInput,
         language: args.language,
         maxTokens: String(args.maxTokens),
         shortHistory: args.history.shortText,
@@ -760,7 +856,71 @@ async function executeHttpJsonProfile(args) {
             : (args2.templateBody ? deepMergeJson(rawBody, args2.templateBody) : rawBody));
         const injectedHeaders = deepInjectVars(rawHeaders, args2.vars);
         const injectedQuery = deepInjectVars(rawQuery, args2.vars);
-        const injectedBody = deepInjectVars(mergedBody, args2.vars);
+        let injectedBody = deepInjectVars(mergedBody, args2.vars);
+        // Lyria: seed와 sample_count 동시 사용 불가. options에 따라 body 구조 분기
+        const isLyriaProfile = /google_lyria|lyria/i.test(String(args.profile.profile_key || ""));
+        if (!isLyriaProfile && args.purpose === "music") {
+            console.log("[Lyria] body 분기 미적용: profile_key가 lyria 포함 안함", args.profile.profile_key);
+        }
+        if (args2.overrideBody == null && args.purpose === "music" && isLyriaProfile) {
+            // injectedTemplate은 chatRun에서 원문으로 미리 치환됨. 번역된 prompt를 덮어씀.
+            const translatedPrompt = String(args2.vars?.input || args2.vars?.userPrompt || "").trim();
+            if (translatedPrompt) {
+                const instances = Array.isArray(injectedBody.instances) ? injectedBody.instances : [];
+                const firstInst = instances[0];
+                if (firstInst) {
+                    firstInst.prompt =
+                        translatedPrompt +
+                            "\n\nMusic direction:\n- instrumental only\n- describe genre, mood, instrumentation, tempo in detail";
+                }
+            }
+            const opts = args.options || {};
+            const seedVal = opts.seed;
+            const hasSeed = seedVal !== undefined && seedVal !== null && String(seedVal).trim() !== "";
+            const seedNum = typeof seedVal === "number"
+                ? seedVal
+                : typeof seedVal === "string"
+                    ? parseInt(String(seedVal).trim(), 10)
+                    : NaN;
+            // Lyria API: seed must be > 0. Use sample_count when seed is 0 or invalid.
+            const validSeed = hasSeed && !isNaN(seedNum) && seedNum > 0;
+            const instances = Array.isArray(injectedBody.instances)
+                ? injectedBody.instances.map((i) => i && typeof i === "object"
+                    ? { ...i }
+                    : i)
+                : [];
+            const firstInst = instances[0];
+            if (validSeed) {
+                if (firstInst) {
+                    firstInst.seed = seedNum;
+                    delete firstInst.sample_count;
+                }
+                injectedBody = { ...injectedBody, instances, parameters: {} };
+            }
+            else {
+                if (firstInst)
+                    delete firstInst.seed;
+                const sc = typeof opts.sample_count === "number"
+                    ? opts.sample_count
+                    : typeof opts.sample_count === "string"
+                        ? parseInt(String(opts.sample_count), 10)
+                        : 1;
+                const params = { sample_count: Number.isFinite(sc) ? sc : 1 };
+                injectedBody = { ...injectedBody, instances, parameters: params };
+                console.log(`[Lyria] 요청 parameters:`, JSON.stringify(params), `(options.sample_count=${opts.sample_count})`);
+            }
+            // negative_prompt 빈 값 시 필드 생략
+            const inst0 = injectedBody.instances?.[0];
+            if (inst0 && typeof inst0 === "object") {
+                const np = inst0.negative_prompt;
+                if (np === "" ||
+                    np === undefined ||
+                    (typeof np === "string" && !np.trim()) ||
+                    String(np) === "{{params_negative_prompt}}") {
+                    delete inst0.negative_prompt;
+                }
+            }
+        }
         const trBaseAny = deepInjectVars(tr.base_url, args2.vars);
         const trBase = typeof trBaseAny === "string" && trBaseAny.trim() ? trBaseAny.trim() : "";
         const pathAny = deepInjectVars(args2.overridePath ?? pickString(tr, "path") ?? "/", args2.vars);
@@ -984,8 +1144,35 @@ async function executeHttpJsonProfile(args) {
     if (modeRaw === "json_base64") {
         const b64Path = pickString(extract, "base64_path") || pickString(extract, "audio_base64_path") || pickString(extract, "video_base64_path");
         const mimePath = pickString(extract, "mime_path") || pickString(extract, "mime_type_path");
-        const b64Val = b64Path ? getByPath(initial.json, b64Path) : undefined;
-        const mimeVal = mimePath ? getByPath(initial.json, mimePath) : undefined;
+        let b64Val = b64Path ? getByPath(initial.json, b64Path) : undefined;
+        let mimeVal = mimePath ? getByPath(initial.json, mimePath) : undefined;
+        // Lyria: purpose=music이면 predictions 전체를 먼저 처리 (sample_count 2~4 등 1개 이상 노출)
+        if (args.purpose === "music" && initial.json && typeof initial.json === "object") {
+            const root = initial.json;
+            const preds = root.predictions;
+            const predsLen = Array.isArray(preds) ? preds.length : 0;
+            console.log(`[Lyria] API 응답: predictions.length=${predsLen}`, predsLen > 0 ? `첫 항목 키: ${Object.keys(preds[0] || {}).join(",")}` : "");
+            if (Array.isArray(preds) && preds.length > 0) {
+                const audios = [];
+                for (const p of preds) {
+                    if (!p || typeof p !== "object")
+                        continue;
+                    const obj = p;
+                    const b = obj.audioContent ?? obj.bytesBase64Encoded;
+                    const m = obj.mimeType ?? obj.mime_type;
+                    if (typeof b !== "string" || !b)
+                        continue;
+                    const mime = typeof m === "string" ? m : pickString(responseMapping, "content_type") || "audio/wav";
+                    audios.push({ mime, data_url: `data:${mime};base64,${b}` });
+                }
+                console.log(`[Lyria] 추출된 audios 수: ${audios.length}`);
+                if (audios.length > 0) {
+                    const title = "음악 생성";
+                    const blockJson = { title, summary: "생성이 완료되었습니다.", blocks: [{ type: "markdown", markdown: `${title}이 되었습니다.` }] };
+                    return { output_text: JSON.stringify(blockJson), raw: initial.json, content: { ...blockJson, audios, raw: initial.json } };
+                }
+            }
+        }
         const b64 = typeof b64Val === "string" ? b64Val : "";
         const mime = typeof mimeVal === "string" ? mimeVal : pickString(responseMapping, "content_type") || "application/octet-stream";
         if (!b64)
@@ -1469,6 +1656,26 @@ function rewriteContentWithAssetUrls(content) {
         assets.push({ assetId, kind, dataUrl: du, index: 0 });
         out[k] = { ...obj, data_url: assetUrl, asset_id: assetId };
     }
+    // audios[]: multiple audio clips (e.g. Lyria sample_count > 1)
+    const audiosVal = out.audios;
+    if (Array.isArray(audiosVal)) {
+        const nextAudios = [];
+        for (let i = 0; i < audiosVal.length; i++) {
+            const it = audiosVal[i];
+            if (!isRecord(it))
+                continue;
+            const du = typeof it.data_url === "string" ? String(it.data_url) : "";
+            if (!du.startsWith("data:")) {
+                nextAudios.push(it);
+                continue;
+            }
+            const assetId = (0, fileServiceClient_1.newAssetId)();
+            const assetUrl = `/api/ai/media/assets/${assetId}`;
+            assets.push({ assetId, kind: "audio", dataUrl: du, index: i });
+            nextAudios.push({ ...it, data_url: assetUrl, asset_id: assetId });
+        }
+        out.audios = nextAudios;
+    }
     return { content: out, assets };
 }
 const MAX_REMOTE_IMAGE_BYTES = 15 * 1024 * 1024;
@@ -1923,6 +2130,11 @@ async function chatRun(req, res) {
             }
             templateVars[`params_${safeKey}`] = String(v);
         }
+        // OpenAI Videos API expects seconds as string enum ('4'|'8'|'12'). Keep params_seconds as string during injection.
+        const modelApiIdForTemplateLower = modelApiIdForTemplate.trim().toLowerCase();
+        if (mt === "video" && modelApiIdForTemplateLower.startsWith("sora")) {
+            templateVars.__force_seconds_string = true;
+        }
         const injectedTemplate = templateBody ? deepInjectVars(templateBody, templateVars) : null;
         // 5) 안전 조정 (min/max)
         const modelMaxOut = row.max_output_tokens ? Number(row.max_output_tokens) : null;
@@ -2235,7 +2447,7 @@ async function chatRun(req, res) {
             try {
                 const { ensureDefaultSoraVideoProfileForProvider, ensureDefaultVeoVideoProfileForProvider, ensureDefaultVeoVideoProfiles, } = await Promise.resolve().then(() => __importStar(require("../services/schemaBootstrap")));
                 const modelApiIdLower = modelApiId.trim().toLowerCase();
-                const isSoraModel = /^sora(-|2|2-pro|\d)/i.test(modelApiIdLower) || modelApiIdLower.startsWith("sora");
+                const isSoraModel = modelApiIdLower.startsWith("sora");
                 const isVeoModel = /veo/i.test(modelApiIdLower);
                 if (isSoraModel) {
                     await ensureDefaultSoraVideoProfileForProvider(tenantId, providerId);
@@ -2330,6 +2542,23 @@ async function chatRun(req, res) {
                     error: profileError ? String(profileError?.message || profileError) : null,
                     diagnostic,
                     hint,
+                },
+            });
+        }
+        // Music uses model_api_profiles only; no built-in fallback. Surface actual error when execution failed.
+        if (mt === "music" && out == null) {
+            const errStr = profileError ? String(profileError?.message || profileError) : null;
+            return await failAndRespond(400, {
+                message: errStr || "음악 생성에 실패했습니다.",
+                details: {
+                    provider_id: providerId,
+                    model_db_id: chosenModelDbId,
+                    model_api_id: modelApiId,
+                    purpose,
+                    profile_key_used: usedProfileKey,
+                    profile_attempted: profileAttempted,
+                    error: errStr,
+                    hint: "Lyria seed는 0보다 커야 합니다. sample_count와 동시 사용 불가. document/model_settings/lyria-002.md 참고.",
                 },
             });
         }
@@ -2860,6 +3089,18 @@ async function chatRun(req, res) {
             if (effectiveSeconds > 0)
                 videoUsage = { seconds: effectiveSeconds, size, resolution };
         }
+        // model_api_profile 경로로 음악 생성 시 musicUsage 설정 (Lyria: 30초/클립)
+        if (mt === "music" && out && !musicUsage) {
+            const contentRec = out.content;
+            const hasAudio = isRecord(contentRec?.audio) || (Array.isArray(contentRec?.audios) && contentRec.audios.length > 0);
+            if (hasAudio) {
+                const sampleCount = typeof mergedOptions?.sample_count === "number"
+                    ? Math.max(1, Math.min(4, mergedOptions.sample_count))
+                    : 1;
+                const seconds = 30 * sampleCount; // Lyria: 30초/클립, sample_count 1~4
+                musicUsage = { seconds, sample_rate: 48000 };
+            }
+        }
         if (!optionsForAssistant && mergedOptions && Object.keys(mergedOptions).length > 0) {
             optionsForAssistant = mergedOptions;
         }
@@ -2885,7 +3126,8 @@ async function chatRun(req, res) {
         const title = typeof normalizedAssistantContent.title === "string" ? normalizedAssistantContent.title : "";
         const summary = typeof normalizedAssistantContent.summary === "string" ? normalizedAssistantContent.summary : "";
         const imgCount = Array.isArray(normalizedAssistantContent.images) ? normalizedAssistantContent.images.length : 0;
-        const hasAudio = isRecord(normalizedAssistantContent.audio);
+        const hasAudio = isRecord(normalizedAssistantContent.audio) ||
+            (Array.isArray(normalizedAssistantContent.audios) && normalizedAssistantContent.audios.length > 0);
         const hasVideo = isRecord(normalizedAssistantContent.video);
         const contentTextFromBlocks = extractTextFromJsonContent(normalizedAssistantContent);
         const contentTextForHistory = title || summary
@@ -2993,7 +3235,9 @@ async function chatRun(req, res) {
                     ? (await (0, pricingService_1.lookupVideoPricing)(usedProviderSlug, usedModelApiId, videoUsage.resolution ?? videoUsage.size ?? null, usedModelDbId)) * videoUsage.seconds
                     : 0;
                 const audioCost = 0;
-                const musicCost = 0;
+                const musicCost = mt === "music" && musicUsage && musicUsage.seconds > 0
+                    ? (await (0, pricingService_1.lookupMusicPricing)(usedProviderSlug, usedModelApiId, usedModelDbId)) * musicUsage.seconds
+                    : 0;
                 const totalCost = tokenTotalCost + webSearchCost + imageCost + videoCost + audioCost + musicCost;
                 const { inputCost, cachedInputCost, outputCost } = costs;
                 const costCurrency = costs.currency;

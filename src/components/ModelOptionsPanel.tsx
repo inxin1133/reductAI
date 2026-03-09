@@ -87,6 +87,12 @@ function normalizeDefaults(v: unknown): Record<string, unknown> {
   return isRecord(v) ? v : {}
 }
 
+function normalizeDescription(v: unknown): string[] {
+  if (typeof v === "string" && v.trim()) return [v.trim()]
+  if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string" && String(x).trim()).map((x) => x.trim())
+  return []
+}
+
 function inferLimitMaxForKey(limits: Record<string, number>, optionKey: string): number | undefined {
   // required example mapping: n -> max_images_per_request
   if (optionKey === "n" && typeof limits.max_images_per_request === "number") return limits.max_images_per_request
@@ -135,6 +141,7 @@ export function ModelOptionsPanel({ capabilities, value, onApply, className }: M
   const defaults = React.useMemo(() => normalizeDefaults(cap.defaults), [cap.defaults])
   const supports = React.useMemo(() => normalizeSupports(cap.supports), [cap.supports])
   const limits = React.useMemo(() => normalizeLimits(cap.limits), [cap.limits])
+  const descriptionLines = React.useMemo(() => normalizeDescription(cap.description), [cap.description])
 
   const optionKeys = React.useMemo(() => Object.keys(options).sort((a, b) => a.localeCompare(b)), [options])
   const visibleKeys = React.useMemo(() => optionKeys.filter((k) => supports[k] !== false), [optionKeys, supports])
@@ -211,6 +218,15 @@ export function ModelOptionsPanel({ capabilities, value, onApply, className }: M
         </CardHeader> */}
         <CardContent className="px-2">
           <div className="flex flex-col gap-4">
+            {descriptionLines.length > 0 && (
+              <div className="text-xs text-muted-foreground">
+                <ul className="list-disc list-inside space-y-1">
+                  {descriptionLines.map((line, i) => (
+                    <li key={i}>{line}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {visibleKeys.map((k) => {
               const spec = options[k]
               const label = spec.label || k

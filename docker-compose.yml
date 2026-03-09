@@ -161,6 +161,8 @@ services:
     env_file:
       # CREDITS_SERVICE_KEY 등: auth-service/.env와 공유 (채팅 deduct, chat-ui config 필요)
       - ./services/auth-service/.env
+      # GEMINI_API_KEY 등: Lyria 한국어 번역용 (ai-agent-service/.env에 설정)
+      - ./services/ai-agent-service/.env
     environment:
       - PORT=3007
       # Vertex AI / Veo ADC: gcloud auth application-default login으로 발급한 credentials 경로
@@ -175,6 +177,8 @@ services:
       - FILE_SERVICE_URL=http://file-service:3008
       - CREDITS_SERVICE_URL=http://credits-service:3011
       - CREDITS_SERVICE_KEY=${CREDITS_SERVICE_KEY:-reductai-credits-internal}
+      # Lyria 한국어→영어 번역용. provider_auth_profiles.config.project_id가 없을 때 사용
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-gen-lang-client-0897415661}
     depends_on:
       - credits-service
     extra_hosts:

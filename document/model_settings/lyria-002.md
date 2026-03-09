@@ -109,7 +109,10 @@ AI 제공업체 (Vertex AI용)
 
 > Lyria API는 `instances[0].prompt`와 `instances[0].negative_prompt`, `parameters.sample_count` 등을 사용합니다.
 
-### body
+### body (통합 템플릿)
+> **seed와 sample_count 동시 사용 불가**: Lyria API 제약으로, 런타임에서 options에 따라 body가 자동 분기됩니다.  
+> `model_api_profiles.transport.body`와 `prompt_templates.body`는 아래 통합 형식 하나만 사용합니다.
+
 ```json
 {
   "instances": [
@@ -119,28 +122,19 @@ AI 제공업체 (Vertex AI용)
     }
   ],
   "parameters": {
-    "sample_count": {{params_sample_count}}
+    "sample_count": "{{params_sample_count}}"
   }
 }
 ```
 
-> `{{input}}` 또는 `{{userPrompt}}`는 런타임에서 사용자 입력으로 치환됩니다.  
-> `params_negative_prompt`가 비어 있으면 해당 필드 생략 권장.  
-> `params_sample_count`는 1~4. **seed** 사용 시 `sample_count`와 **동시 사용 불가** — body에서 `parameters.sample_count` 제거하고 `instances[0].seed` 추가.
+> - `{{input}}` 또는 `{{userPrompt}}`: 사용자 입력으로 치환  
+> - `{{params_negative_prompt}}`: 비어 있으면 필드 생략  
+> - `{{params_sample_count}}`: 1~4. **seed가 지정되면** runtime에서 `parameters` 비우고 `instances[0].seed` 사용  
+> - **seed 미지정 시**: `parameters.sample_count` 유지 (options.sample_count 또는 1)
 
-### body (seed 사용 시)
-```json
-{
-  "instances": [
-    {
-      "prompt": "{{input}}",
-      "negative_prompt": "{{params_negative_prompt}}",
-      "seed": {{params_seed}}
-    }
-  ],
-  "parameters": {}
-}
-```
+**런타임 분기 (executeHttpJsonProfile)**  
+- `options.seed` 있음 → `instances[0].seed` 추가, `parameters = {}`  
+- `options.seed` 없음 → `instances[0].seed` 제거, `parameters.sample_count` 유지
 
 ---
 
@@ -166,6 +160,40 @@ AI 모델 (음악 타입)
 | sort_order | `0` | |
 
 ### capabilities
+```json
+{
+  "model": "lyria-002",
+  "limits": {
+    "duration_seconds": 30,
+    "max_clips_per_request": 4
+  },
+  "options": {
+    "seed": {
+      "type": "int",
+      "label": "seed",
+      "description": "같은 음악을 미세하게 수정할 때, 예)55번 선택, 생성후 55번 그대로 선택, 프로프트 미세 수정 → 생성"
+    }
+  },
+  "defaults": {
+    "negative_prompt": ""
+  },
+  "supports": {
+    "sample_count": false,
+    "seed": true,
+    "negative_prompt": true
+  },
+  "validation_hints": [
+    "프롬프트는 US English(en-us)로 작성해야 합니다.",
+    "출력: 30초 WAV, 48kHz, 악기만 (보컬 미지원). SynthID 워터마크 포함."
+  ],
+  "description": [
+    "Lyria는 실험용 모델",
+    "출력: 30초 WAV, 48kHz, 악기만 (보컬 미지원)."
+  ]
+}
+```
+
+<!-- sample_count 있는 버전
 ```json
 {
   "model": "lyria-002",
@@ -207,7 +235,7 @@ AI 모델 (음악 타입)
     "출력: 30초 WAV, 48kHz, 악기만 (보컬 미지원). SynthID 워터마크 포함."
   ]
 }
-```
+``` -->
 
 > **기술 사양** ([Lyria 2 문서](https://cloud.google.com/vertex-ai/generative-ai/docs/models/lyria/lyria-002)):  
 > - 포맷: WAV  
@@ -249,7 +277,7 @@ Content-Type: application/json
       }
     ],
     "parameters": {
-      "sample_count": {{params_sample_count}}
+      "sample_count": "{{params_sample_count}}"
     }
   },
   "timeout_ms": 60000
@@ -258,7 +286,8 @@ Content-Type: application/json
 
 > `{{config_project_id}}`, `{{config_location}}`: provider_auth_profiles.config의 project_id, location이 주입됨.  
 > `{{accessToken}}`: OAuth2로 발급한 토큰.  
-> `params_negative_prompt`가 없으면 빈 문자열 또는 필드 생략.
+> `params_negative_prompt`가 없으면 필드 생략.  
+> **seed/sample_count 분기**: profile_key에 `lyria` 포함 시, options.seed 유무에 따라 런타임에서 body가 자동 분기됩니다 (위 prompt_templates body 참고).
 
 ### response_mapping
 ```json
@@ -456,5 +485,7 @@ Veo와 Lyria는 **동일한 Vertex AI provider**를 사용하므로, **같은 AD
 - **Vertex AI 전용**: Lyria는 Gemini API(generativelanguage.googleapis.com)와 다른 Vertex AI(aiplatform.googleapis.com) 엔드포인트를 사용합니다.
 - **OAuth 필요**: API Key만으로는 호출 불가. **google_adc**(로컬: `gcloud auth application-default login` / GCP: Workload Identity) 또는 **oauth2_service_account**(서비스 계정 JSON) 필요.
 - **project_id**: 모든 요청에 GCP 프로젝트 ID가 필요합니다. provider_auth_profiles.config에 설정하고 템플릿 변수 `{{config_project_id}}`로 주입됩니다.
-- **프롬프트 언어**: US English(en-us)만 지원됩니다.
+- **프롬프트 언어**: API는 US English(en-us)만 지원합니다. reductai는 한국어/일본어/중국어 입력 시 **자동 번역** 후 Lyria에 전달합니다.
+  - 1차: `GEMINI_API_KEY` 있으면 Gemini API (generativelanguage), 없으면 Vertex AI
+  - 순서: gemini-2.0-flash-lite → gemini-2.5-flash-lite → gemini-2.5-flash
 - **sample_count vs seed**: 둘 중 하나만 사용. 동시 사용 불가.

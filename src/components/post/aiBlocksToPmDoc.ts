@@ -442,9 +442,14 @@ export function aiJsonToPmDoc(contentJson: unknown): PmDocJson | null {
     })
   }
 
+  const audios = Array.isArray(obj.audios) ? (obj.audios as Array<Record<string, unknown>>) : []
   const audio = obj.audio && typeof obj.audio === "object" ? (obj.audio as Record<string, unknown>) : null
   const video = obj.video && typeof obj.video === "object" ? (obj.video as Record<string, unknown>) : null
-  const audioSrc = audio && typeof audio.data_url === "string" ? audio.data_url : typeof audio?.url === "string" ? audio.url : ""
+  for (const a of audios) {
+    const src = typeof a?.data_url === "string" ? a.data_url : typeof a?.url === "string" ? a.url : ""
+    if (src) content.push({ type: "audio", attrs: { src: withAuthToken(src), title: null } })
+  }
+  const audioSrc = !audios.length && audio ? (typeof audio.data_url === "string" ? audio.data_url : typeof audio?.url === "string" ? audio.url : "") : ""
   const videoSrc = video && typeof video.data_url === "string" ? video.data_url : typeof video?.url === "string" ? video.url : ""
   if (audioSrc) {
     content.push({ type: "audio", attrs: { src: withAuthToken(audioSrc), title: null } })

@@ -100,7 +100,7 @@ const SELECT_ALL = "__all__"
 const SELECT_NONE = "__none__"
 const MODEL_NONE = "__none__"
 
-const MODALITIES = ["text", "code", "image", "video", "audio", "web_search"] as const
+const MODALITIES = ["text", "code", "image", "video", "audio", "music", "web_search"] as const
 
 /** ai_models.model_type → pricing_skus.modality 매핑 */
 function modelTypeToModality(modelType: string): string {
@@ -110,7 +110,7 @@ function modelTypeToModality(modelType: string): string {
     image: "image",
     video: "video",
     audio: "audio",
-    music: "audio",
+    music: "music",
     multimodal: "text",
     embedding: "text",
   }

@@ -5,6 +5,7 @@ exports.lookupImageTokenPricing = lookupImageTokenPricing;
 exports.calculateImageTokenCost = calculateImageTokenCost;
 exports.lookupImagePricing = lookupImagePricing;
 exports.lookupVideoPricing = lookupVideoPricing;
+exports.lookupMusicPricing = lookupMusicPricing;
 exports.lookupWebSearchPricing = lookupWebSearchPricing;
 exports.calculateCost = calculateCost;
 const db_1 = require("../config/db");
@@ -631,6 +632,109 @@ async function lookupVideoPricing(providerSlug, modelKey, resolution, modelId) {
     }
     catch (e) {
         console.warn("[pricingService] lookupVideoPricing failed:", e);
+        return 0;
+    }
+}
+/**
+ * 음악 생성(music, seconds) 단가를 조회한다.
+ * pricing_skus: modality=music 또는 audio, usage_kind=seconds, unit=second
+ * Lyria: $0.06 per 30초 = $0.002/초
+ *
+ * @returns USD per second. 조회 실패 시 0
+ */
+async function lookupMusicPricing(providerSlug, modelKey, modelId) {
+    const slug = providerSlug && String(providerSlug).trim() ? String(providerSlug).trim().toLowerCase() : "";
+    const model = modelKey && String(modelKey).trim() ? String(modelKey).trim() : "";
+    if (!slug || !model)
+        return 0;
+    try {
+        let r = null;
+        // modality: music 우선, 없으면 audio 폴백
+        const modalities = ["music", "audio"];
+        for (const modality of modalities) {
+            if (modelId && String(modelId).trim()) {
+                r = await (0, db_1.query)(`
+          WITH active_rc AS (
+            SELECT id FROM pricing_rate_cards
+            WHERE status = 'active' AND effective_at <= NOW()
+            ORDER BY effective_at DESC, version DESC
+            LIMIT 1
+          )
+          SELECT r.rate_value, s.unit_size
+          FROM pricing_skus s
+          JOIN pricing_rates r ON r.sku_id = s.id
+          JOIN active_rc arc ON r.rate_card_id = arc.id
+          WHERE s.model_id = $1
+            AND s.modality = $2
+            AND s.usage_kind = 'seconds'
+            AND s.unit = 'second'
+            AND s.is_active = TRUE
+          ORDER BY r.rate_value ASC
+          LIMIT 1
+          `, [modelId, modality]);
+            }
+            if (!r || r.rows.length === 0) {
+                r = await (0, db_1.query)(`
+          WITH active_rc AS (
+            SELECT id FROM pricing_rate_cards
+            WHERE status = 'active' AND effective_at <= NOW()
+            ORDER BY effective_at DESC, version DESC
+            LIMIT 1
+          )
+          SELECT r.rate_value, s.unit_size
+          FROM pricing_skus s
+          JOIN pricing_rates r ON r.sku_id = s.id
+          JOIN active_rc arc ON r.rate_card_id = arc.id
+          WHERE (
+            ($1::uuid IS NOT NULL AND s.model_id = $1)
+            OR (
+              (s.provider_slug = $2 OR s.provider_slug LIKE $2 || '-%' OR $2 LIKE s.provider_slug || '-%')
+              AND (s.model_key = $3 OR $3 LIKE s.model_key || '-%')
+            )
+          )
+            AND s.modality = $4
+            AND s.usage_kind = 'seconds'
+            AND s.unit = 'second'
+            AND s.is_active = TRUE
+          ORDER BY r.rate_value ASC
+          LIMIT 1
+          `, [modelId ?? null, slug, model, modality]);
+            }
+            if (!r || r.rows.length === 0) {
+                r = await (0, db_1.query)(`
+          WITH active_rc AS (
+            SELECT id FROM pricing_rate_cards
+            WHERE status = 'active' AND effective_at <= NOW()
+            ORDER BY effective_at DESC, version DESC
+            LIMIT 1
+          )
+          SELECT r.rate_value, s.unit_size
+          FROM pricing_skus s
+          JOIN pricing_rates r ON r.sku_id = s.id
+          JOIN active_rc arc ON r.rate_card_id = arc.id
+          WHERE (
+            ($1::uuid IS NOT NULL AND s.model_id = $1)
+            OR (s.provider_slug = $2 OR s.provider_slug LIKE $2 || '-%' OR $2 LIKE s.provider_slug || '-%')
+          )
+            AND s.modality = $3
+            AND s.usage_kind = 'seconds'
+            AND s.unit = 'second'
+            AND s.is_active = TRUE
+          ORDER BY r.rate_value ASC
+          LIMIT 1
+          `, [modelId ?? null, slug, modality]);
+            }
+            if (r && r.rows.length > 0) {
+                const row = r.rows[0];
+                const rateValue = Number(row?.rate_value ?? 0);
+                const unitSize = Math.max(1, Number(row?.unit_size ?? 1));
+                return rateValue / unitSize;
+            }
+        }
+        return 0;
+    }
+    catch (e) {
+        console.warn("[pricingService] lookupMusicPricing failed:", e);
         return 0;
     }
 }

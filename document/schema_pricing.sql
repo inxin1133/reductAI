@@ -52,7 +52,7 @@ CREATE TABLE pricing_skus (
     model_id UUID REFERENCES ai_models(id) ON DELETE SET NULL,
     model_key VARCHAR(255) NOT NULL, -- API model id or external key
     model_name VARCHAR(255) NOT NULL, -- display name
-    modality VARCHAR(30) NOT NULL CHECK (modality IN ('text', 'code', 'image', 'video', 'audio', 'web_search')),
+    modality VARCHAR(30) NOT NULL CHECK (modality IN ('text', 'code', 'image', 'video', 'audio', 'music', 'web_search')),
     usage_kind VARCHAR(50) NOT NULL CHECK (usage_kind IN ('input_tokens', 'cached_input_tokens', 'output_tokens', 'image_generation', 'seconds', 'requests')),
     token_category VARCHAR(20) CHECK (token_category IN ('text', 'image')),
     unit VARCHAR(20) NOT NULL CHECK (unit IN ('tokens', 'image', 'second', 'request')),
@@ -76,7 +76,7 @@ COMMENT ON COLUMN pricing_skus.provider_slug IS 'Provider 슬러그.';
 COMMENT ON COLUMN pricing_skus.model_id IS 'Model ID(ai_models.id)';
 COMMENT ON COLUMN pricing_skus.model_key IS 'Model 키(api model id or external key)';
 COMMENT ON COLUMN pricing_skus.model_name IS 'Model 이름(display name)';
-COMMENT ON COLUMN pricing_skus.modality IS '모달리티(text, code, image, video, audio, web_search)';
+COMMENT ON COLUMN pricing_skus.modality IS '모달리티(text, code, image, video, audio, music, web_search)';
 COMMENT ON COLUMN pricing_skus.usage_kind IS '사용 종류(input_tokens, cached_input_tokens, output_tokens, image_generation, seconds, requests)';
 COMMENT ON COLUMN pricing_skus.token_category IS '토큰 카테고리(text, image)';
 COMMENT ON COLUMN pricing_skus.unit IS '단위(tokens, image, second, request)';
@@ -130,7 +130,7 @@ CREATE TABLE pricing_markup_rules (
     name VARCHAR(100) NOT NULL,
     scope_type VARCHAR(20) NOT NULL CHECK (scope_type IN ('global', 'modality', 'model', 'model_usage')),
     model_id UUID REFERENCES ai_models(id) ON DELETE SET NULL,
-    modality VARCHAR(30) CHECK (modality IN ('text', 'code', 'image', 'video', 'audio', 'web_search')),
+    modality VARCHAR(30) CHECK (modality IN ('text', 'code', 'image', 'video', 'audio', 'music', 'web_search')),
     usage_kind VARCHAR(50) CHECK (usage_kind IN ('input_tokens', 'cached_input_tokens', 'output_tokens', 'image_generation', 'seconds', 'requests')),
     token_category VARCHAR(20) CHECK (token_category IN ('text', 'image')),
     margin_percent DECIMAL(6, 2) NOT NULL DEFAULT 0,
@@ -156,7 +156,7 @@ COMMENT ON TABLE pricing_markup_rules IS '서비스 마진 규칙(base provider 
 COMMENT ON COLUMN pricing_markup_rules.name IS '마진 규칙 이름(global, modality, model, model_usage)';
 COMMENT ON COLUMN pricing_markup_rules.scope_type IS '규칙 적용 스코프(global, modality, model, model_usage)';
 COMMENT ON COLUMN pricing_markup_rules.model_id IS 'Model ID(ai_models.id)';
-COMMENT ON COLUMN pricing_markup_rules.modality IS '모달리티(text, code, image, video, audio, web_search)';
+COMMENT ON COLUMN pricing_markup_rules.modality IS '모달리티(text, code, image, video, audio, music, web_search)';
 COMMENT ON COLUMN pricing_markup_rules.usage_kind IS '사용 종류(input_tokens, cached_input_tokens, output_tokens, image_generation, seconds, requests)';
 COMMENT ON COLUMN pricing_markup_rules.token_category IS '토큰 카테고리(text, image)';
 COMMENT ON COLUMN pricing_markup_rules.margin_percent IS '마진 퍼센트';
@@ -391,6 +391,9 @@ WITH sku_data AS (
         ('openai', 'whisper-1', 'Whisper 1', 'audio', 'seconds', NULL, 'second', 1, '{"task":"stt"}'::jsonb, 'openai.whisper-1.audio.seconds'),
         ('google', 'stt', 'Google STT', 'audio', 'seconds', NULL, 'second', 1, '{"task":"stt"}'::jsonb, 'google.stt.audio.seconds'),
 
+        -- Music models (Lyria 2: $0.06 per 30 sec)
+        ('google', 'lyria-002', 'Lyria 2', 'music', 'seconds', NULL, 'second', 30, '{}'::jsonb, 'google.lyria-002.music.seconds'),
+
         -- Web search
         ('serper', 'serper', 'Serper', 'web_search', 'requests', NULL, 'request', 1, '{}'::jsonb, 'serper.web_search.request')
     ) AS t(provider_slug, model_key, model_name, modality, usage_kind, token_category, unit, unit_size, metadata, sku_code)
@@ -487,6 +490,8 @@ rate_data AS (
         ('openai.whisper-1.audio.seconds', 0.00, NULL, NULL, NULL),
         -- Google STT
         ('google.stt.audio.seconds', 0.0001, NULL, NULL, NULL),
+        -- Lyria 2 ($0.06 per 30 sec)
+        ('google.lyria-002.music.seconds', 0.06, NULL, NULL, NULL),
         -- Serper
         ('serper.web_search.request', 0.001, NULL, NULL, NULL)
     ) AS t(sku_code, rate_value, tier_unit, tier_min, tier_max)
@@ -512,5 +517,6 @@ VALUES
     ('image_margin', 'modality', 'image', 30, 10, CURRENT_TIMESTAMP),
     ('video_margin', 'modality', 'video', 30, 10, CURRENT_TIMESTAMP),
     ('audio_margin', 'modality', 'audio', 30, 10, CURRENT_TIMESTAMP),
+    ('music_margin', 'modality', 'music', 30, 10, CURRENT_TIMESTAMP),
     ('web_search_margin', 'modality', 'web_search', 30, 10, CURRENT_TIMESTAMP)
 ON CONFLICT DO NOTHING;

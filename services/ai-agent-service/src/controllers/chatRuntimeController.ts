@@ -28,6 +28,7 @@ import {
   lookupWebSearchPricing,
   lookupImagePricing,
   lookupVideoPricing,
+  lookupMusicPricing,
   lookupImageTokenPricing,
   calculateCost,
   calculateImageTokenCost,
@@ -303,6 +304,83 @@ function detectLanguageCode(text: string): string | null {
   if (/[\u4e00-\u9fff]/.test(s)) return "zh"
   if (/[a-zA-Z]/.test(s)) return "en"
   return null
+}
+
+const LYRIA_TRANSLATION_MODELS = ["gemini-2.0-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"] as const
+
+function extractTranslatedText(json: Record<string, unknown>): string | null {
+  const candidate = (json?.candidates as unknown[])?.[0] as Record<string, unknown> | undefined
+  const content = candidate?.content as { parts?: Array<{ text?: string }> } | undefined
+  const text = content?.parts?.[0]?.text
+  return typeof text === "string" && text.trim() ? text.trim() : null
+}
+
+/** Lyria requires US English. Translate non-English prompts via Gemini. */
+async function translateToEnglishForLyria(args: {
+  input: string
+  projectId: string
+  location: string
+  accessToken: string
+  signal?: AbortSignal
+}): Promise<string> {
+  const body = {
+    contents: [{ role: "user", parts: [{ text: `Translate the following music description to US English. Output only the English translation, no other text:\n\n${args.input}` }] }],
+    generationConfig: { maxOutputTokens: 1024 },
+  }
+
+  // 1) GEMINI_API_KEY: generativelanguage API (우선순위 순으로 시도)
+  const geminiKey = String(process.env.GEMINI_API_KEY || "").trim()
+  if (geminiKey) {
+    for (const modelId of LYRIA_TRANSLATION_MODELS) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`
+        const res = await fetch(`${url}?key=${encodeURIComponent(geminiKey)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: args.signal,
+        })
+        const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
+        const text = extractTranslatedText(json)
+        if (text) return text
+        if (!res.ok) {
+          console.warn("[Lyria] Gemini 번역 실패:", modelId, res.status, (json as { error?: { message?: string } })?.error?.message || "")
+        }
+      } catch (e) {
+        console.warn("[Lyria] Gemini 번역 예외:", modelId, (e as Error)?.message)
+      }
+    }
+  }
+
+  // 2) Vertex AI fallback
+  if (args.projectId === "unknown") {
+    throw new Error("Missing projectId for Vertex AI fallback translation. Set GOOGLE_CLOUD_PROJECT or GEMINI_API_KEY.")
+  }
+  for (const modelId of LYRIA_TRANSLATION_MODELS) {
+    try {
+      const url = `https://${args.location}-aiplatform.googleapis.com/v1/projects/${args.projectId}/locations/${args.location}/publishers/google/models/${modelId}:generateContent`
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${args.accessToken}` },
+        body: JSON.stringify(body),
+        signal: args.signal,
+      })
+      const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
+      const text = extractTranslatedText(json)
+      if (text) {
+        console.log("[Lyria] Vertex AI 번역 성공:", modelId)
+        return text
+      }
+      if (!res.ok) {
+        console.warn("[Lyria] Vertex 번역 실패:", modelId, res.status, (json as { error?: { message?: string } })?.error?.message || "")
+      }
+    } catch (e) {
+      console.warn("[Lyria] Vertex 번역 예외:", modelId, (e as Error)?.message)
+    }
+  }
+
+  console.warn("[Lyria] 번역 실패, 원문 사용 (Lyria는 en만 지원):", args.input.slice(0, 80))
+  return args.input
 }
 
 /** 전략 A: 시간 맥락이 필요한 질문인지 감지. 이 경우에만 동적 context에 시간 정보를 추가해 캐시 효율 유지.
@@ -716,12 +794,43 @@ async function executeHttpJsonProfile(args: {
   const path = pickString(transport, "path") || "/"
   const timeoutMs = Number(transport.timeout_ms || 60000) || 60000
 
+  // Lyria requires US English. Auto-translate non-English prompts via Vertex Gemini.
+  let effectiveInput = args.input
+  let effectivePrompt = args.prompt
+  if (
+    args.purpose === "music" &&
+    /google_lyria|lyria/i.test(String(args.profile.profile_key || "")) &&
+    args.accessToken
+  ) {
+    const detected = detectLanguageCode(args.input)
+    if (detected && detected !== "en") {
+      const projectId =
+        String(args.configVars?.config_project_id || "").trim() ||
+        String(process.env.GOOGLE_CLOUD_PROJECT || "").trim()
+      const location = String(args.configVars?.config_location || "us-central1").trim()
+      try {
+        const translated = await translateToEnglishForLyria({
+          input: args.input,
+          projectId: projectId || "unknown",
+          location,
+          accessToken: args.accessToken,
+          signal: args.signal,
+        })
+        console.log(`[Lyria] Translated prompt (${detected} -> en):`, translated)
+        effectiveInput = translated
+        effectivePrompt = translated
+      } catch (e) {
+        console.warn("[Lyria] prompt translation failed, using original:", (e as Error)?.message)
+      }
+    }
+  }
+
   const vars: Record<string, unknown> = {
     apiKey: args.apiKey,
     accessToken: args.accessToken || "",
     model: args.modelApiId,
-    userPrompt: args.prompt,
-    input: args.input,
+    userPrompt: effectivePrompt,
+    input: effectiveInput,
     language: args.language,
     maxTokens: String(args.maxTokens),
     shortHistory: args.history.shortText,
@@ -789,7 +898,81 @@ async function executeHttpJsonProfile(args: {
 
     const injectedHeaders = deepInjectVars(rawHeaders, args2.vars) as Record<string, unknown>
     const injectedQuery = deepInjectVars(rawQuery, args2.vars) as Record<string, unknown>
-    const injectedBody = deepInjectVars(mergedBody, args2.vars) as Record<string, unknown>
+    let injectedBody = deepInjectVars(mergedBody, args2.vars) as Record<string, unknown>
+
+    // Lyria: seed와 sample_count 동시 사용 불가. options에 따라 body 구조 분기
+    const isLyriaProfile = /google_lyria|lyria/i.test(String(args.profile.profile_key || ""))
+    if (!isLyriaProfile && args.purpose === "music") {
+      console.log("[Lyria] body 분기 미적용: profile_key가 lyria 포함 안함", args.profile.profile_key)
+    }
+    if (args2.overrideBody == null && args.purpose === "music" && isLyriaProfile) {
+      // injectedTemplate은 chatRun에서 원문으로 미리 치환됨. 번역된 prompt를 덮어씀.
+      const translatedPrompt = String(args2.vars?.input || args2.vars?.userPrompt || "").trim()
+      if (translatedPrompt) {
+        const instances = Array.isArray(injectedBody.instances) ? injectedBody.instances : []
+        const firstInst = instances[0] as Record<string, unknown> | undefined
+        if (firstInst) {
+          firstInst.prompt =
+            translatedPrompt +
+            "\n\nMusic direction:\n- instrumental only\n- describe genre, mood, instrumentation, tempo in detail"
+        }
+      }
+
+      const opts = args.options || {}
+      const seedVal = opts.seed
+      const hasSeed =
+        seedVal !== undefined && seedVal !== null && String(seedVal).trim() !== ""
+      const seedNum =
+        typeof seedVal === "number"
+          ? seedVal
+          : typeof seedVal === "string"
+            ? parseInt(String(seedVal).trim(), 10)
+            : NaN
+      // Lyria API: seed must be > 0. Use sample_count when seed is 0 or invalid.
+      const validSeed = hasSeed && !isNaN(seedNum) && seedNum > 0
+
+      const instances = Array.isArray(injectedBody.instances)
+        ? injectedBody.instances.map((i) =>
+            i && typeof i === "object"
+              ? { ...(i as Record<string, unknown>) }
+              : (i as Record<string, unknown>)
+          )
+        : []
+      const firstInst = instances[0] as Record<string, unknown> | undefined
+
+      if (validSeed) {
+        if (firstInst) {
+          firstInst.seed = seedNum
+          delete firstInst.sample_count
+        }
+        injectedBody = { ...injectedBody, instances, parameters: {} }
+      } else {
+        if (firstInst) delete firstInst.seed
+        const sc =
+          typeof opts.sample_count === "number"
+            ? opts.sample_count
+            : typeof opts.sample_count === "string"
+              ? parseInt(String(opts.sample_count), 10)
+              : 1
+        const params = { sample_count: Number.isFinite(sc) ? sc : 1 }
+        injectedBody = { ...injectedBody, instances, parameters: params }
+        console.log(`[Lyria] 요청 parameters:`, JSON.stringify(params), `(options.sample_count=${opts.sample_count})`)
+      }
+
+      // negative_prompt 빈 값 시 필드 생략
+      const inst0 = (injectedBody.instances as unknown[])?.[0]
+      if (inst0 && typeof inst0 === "object") {
+        const np = (inst0 as Record<string, unknown>).negative_prompt
+        if (
+          np === "" ||
+          np === undefined ||
+          (typeof np === "string" && !np.trim()) ||
+          String(np) === "{{params_negative_prompt}}"
+        ) {
+          delete (inst0 as Record<string, unknown>).negative_prompt
+        }
+      }
+    }
 
     const trBaseAny = deepInjectVars(tr.base_url, args2.vars)
     const trBase = typeof trBaseAny === "string" && trBaseAny.trim() ? trBaseAny.trim() : ""
@@ -813,6 +996,18 @@ async function executeHttpJsonProfile(args: {
     }
     if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type") && args2.mode === "json") {
       headers["Content-Type"] = "application/json"
+    }
+
+    // Lyria 요청 body 검증용 로그 (sample_count 적용 여부 확인)
+    if (args.purpose === "music" && m !== "GET" && m !== "HEAD") {
+      const inst0 = (injectedBody.instances as unknown[])?.[0] as Record<string, unknown> | undefined
+      const safeLog = {
+        parameters: injectedBody.parameters,
+        instances0_keys: inst0 ? Object.keys(inst0) : [],
+        instances0_has_seed: !!(inst0?.seed),
+        instances0_has_sample_count: !!(inst0?.sample_count),
+      }
+      console.log("[Lyria] 실제 전송 body (요약):", JSON.stringify(safeLog, null, 2))
     }
 
     const controller = new AbortController()
@@ -872,6 +1067,17 @@ async function executeHttpJsonProfile(args: {
     signal: args.signal,
   })
   if (!initial.ok) {
+    const rawErr = initial.json as { error?: { message?: string } }
+    const errMsg = String(rawErr?.error?.message ?? "")
+    if (
+      args.purpose === "music" &&
+      initial.status === 400 &&
+      /unsupported language|supported languages:\s*en/i.test(errMsg)
+    ) {
+      throw new Error(
+        "Lyria는 영어(en)로 된 프롬프트만 지원합니다. 영어로 작성되지 않은 내용은 자동 번역이 진행되는데, 자동 번역이 실패한 경우에도 이 안내가 표시될 수 있습니다. 오류가 계속되면 영어(en)으로 작성 해주세요."
+      )
+    }
     throw new Error(`MODEL_API_PROFILE_HTTP_${initial.status}:${JSON.stringify(initial.json)}@${initial.url}`)
   }
 
@@ -1032,8 +1238,33 @@ async function executeHttpJsonProfile(args: {
   if (modeRaw === "json_base64") {
     const b64Path = pickString(extract, "base64_path") || pickString(extract, "audio_base64_path") || pickString(extract, "video_base64_path")
     const mimePath = pickString(extract, "mime_path") || pickString(extract, "mime_type_path")
-    const b64Val = b64Path ? getByPath(initial.json, b64Path) : undefined
-    const mimeVal = mimePath ? getByPath(initial.json, mimePath) : undefined
+    let b64Val = b64Path ? getByPath(initial.json, b64Path) : undefined
+    let mimeVal = mimePath ? getByPath(initial.json, mimePath) : undefined
+    // Lyria: purpose=music이면 predictions 전체를 먼저 처리 (sample_count 2~4 등 1개 이상 노출)
+    if (args.purpose === "music" && initial.json && typeof initial.json === "object") {
+      const root = initial.json as Record<string, unknown>
+      const preds = root.predictions
+      const predsLen = Array.isArray(preds) ? preds.length : 0
+      console.log(`[Lyria] API 응답: predictions.length=${predsLen}`, predsLen > 0 ? `첫 항목 키: ${Object.keys((preds as unknown[])[0] as object || {}).join(",")}` : "")
+      if (Array.isArray(preds) && preds.length > 0) {
+        const audios: Array<{ mime: string; data_url: string }> = []
+        for (const p of preds) {
+          if (!p || typeof p !== "object") continue
+          const obj = p as Record<string, unknown>
+          const b = obj.audioContent ?? obj.bytesBase64Encoded
+          const m = obj.mimeType ?? obj.mime_type
+          if (typeof b !== "string" || !b) continue
+          const mime = typeof m === "string" ? m : pickString(responseMapping, "content_type") || "audio/wav"
+          audios.push({ mime, data_url: `data:${mime};base64,${b}` })
+        }
+        console.log(`[Lyria] 추출된 audios 수: ${audios.length}`)
+        if (audios.length > 0) {
+          const title = "음악 생성"
+          const blockJson = { title, summary: "생성이 완료되었습니다.", blocks: [{ type: "markdown", markdown: `${title}이 되었습니다.` }] }
+          return { output_text: JSON.stringify(blockJson), raw: initial.json, content: { ...blockJson, audios, raw: initial.json } }
+        }
+      }
+    }
     const b64 = typeof b64Val === "string" ? b64Val : ""
     const mime = typeof mimeVal === "string" ? mimeVal : pickString(responseMapping, "content_type") || "application/octet-stream"
     if (!b64) throw new Error("JSON_BASE64_MISSING_BASE64")
@@ -1595,6 +1826,26 @@ function rewriteContentWithAssetUrls(content: Record<string, unknown>): { conten
     const assetUrl = `/api/ai/media/assets/${assetId}`
     assets.push({ assetId, kind, dataUrl: du, index: 0 })
     out[k] = { ...obj, data_url: assetUrl, asset_id: assetId }
+  }
+
+  // audios[]: multiple audio clips (e.g. Lyria sample_count > 1)
+  const audiosVal = out.audios
+  if (Array.isArray(audiosVal)) {
+    const nextAudios: Record<string, unknown>[] = []
+    for (let i = 0; i < audiosVal.length; i++) {
+      const it = audiosVal[i]
+      if (!isRecord(it)) continue
+      const du = typeof it.data_url === "string" ? String(it.data_url) : ""
+      if (!du.startsWith("data:")) {
+        nextAudios.push(it)
+        continue
+      }
+      const assetId = newAssetId()
+      const assetUrl = `/api/ai/media/assets/${assetId}`
+      assets.push({ assetId, kind: "audio", dataUrl: du, index: i })
+      nextAudios.push({ ...it, data_url: assetUrl, asset_id: assetId })
+    }
+    out.audios = nextAudios
   }
 
   return { content: out, assets }
@@ -2579,6 +2830,32 @@ export async function chatRun(req: Request, res: Response) {
       })
     }
 
+    // Music uses model_api_profiles only; no built-in fallback. Surface user-friendly error when execution failed.
+    if (mt === "music" && out == null) {
+      const errStr = profileError ? String((profileError as { message?: string })?.message || profileError) : null
+      const isLanguageError =
+        errStr && (/Lyria는 영어.*지원합니다/i.test(errStr) || /Unsupported language|supported languages:\s*en/i.test(errStr))
+      const message = isLanguageError
+        ? "Lyria는 영어(en)로 된 프롬프트만 지원합니다. 입력 내용을 영어로 작성해 주세요."
+        : errStr || "음악 생성에 실패했습니다."
+      const hint = isLanguageError
+        ? "한국어 등 다른 언어 입력 시 자동 번역을 시도합니다. 실패한 경우 영어로 다시 입력해 주세요."
+        : "Lyria seed는 0보다 커야 합니다. sample_count와 동시 사용 불가. document/model_settings/lyria-002.md 참고."
+      return await failAndRespond(400, {
+        message,
+        details: {
+          provider_id: providerId,
+          model_db_id: chosenModelDbId,
+          model_api_id: modelApiId,
+          purpose,
+          profile_key_used: usedProfileKey,
+          profile_attempted: profileAttempted,
+          error: errStr,
+          hint,
+        },
+      })
+    }
+
     if (out == null) {
       const auth = await resolveAuthForModelApiProfile({ providerId, authProfileId: null })
       usedCredentialId = auth.credentialId
@@ -3136,6 +3413,21 @@ export async function chatRun(req: Request, res: Response) {
       if (effectiveSeconds > 0) videoUsage = { seconds: effectiveSeconds, size, resolution }
     }
 
+    // model_api_profile 경로로 음악 생성 시 musicUsage 설정 (Lyria: 30초/클립)
+    if (mt === "music" && out && !musicUsage) {
+      const contentRec = out.content as Record<string, unknown>
+      const hasAudio =
+        isRecord(contentRec?.audio) || (Array.isArray(contentRec?.audios) && (contentRec.audios as unknown[]).length > 0)
+      if (hasAudio) {
+        const sampleCount =
+          typeof mergedOptions?.sample_count === "number"
+            ? Math.max(1, Math.min(4, mergedOptions.sample_count))
+            : 1
+        const seconds = 30 * sampleCount // Lyria: 30초/클립, sample_count 1~4
+        musicUsage = { seconds, sample_rate: 48000 }
+      }
+    }
+
     if (!optionsForAssistant && mergedOptions && Object.keys(mergedOptions).length > 0) {
       optionsForAssistant = mergedOptions
     }
@@ -3163,7 +3455,9 @@ export async function chatRun(req: Request, res: Response) {
     const title = typeof normalizedAssistantContent.title === "string" ? normalizedAssistantContent.title : ""
     const summary = typeof normalizedAssistantContent.summary === "string" ? normalizedAssistantContent.summary : ""
     const imgCount = Array.isArray(normalizedAssistantContent.images) ? (normalizedAssistantContent.images as unknown[]).length : 0
-    const hasAudio = isRecord(normalizedAssistantContent.audio)
+    const hasAudio =
+      isRecord(normalizedAssistantContent.audio) ||
+      (Array.isArray(normalizedAssistantContent.audios) && (normalizedAssistantContent.audios as unknown[]).length > 0)
     const hasVideo = isRecord(normalizedAssistantContent.video)
     const contentTextFromBlocks = extractTextFromJsonContent(normalizedAssistantContent)
     const contentTextForHistory =
@@ -3303,7 +3597,10 @@ export async function chatRun(req: Request, res: Response) {
               )) * videoUsage.seconds
             : 0
         const audioCost = 0
-        const musicCost = 0
+        const musicCost =
+          mt === "music" && musicUsage && musicUsage.seconds > 0
+            ? (await lookupMusicPricing(usedProviderSlug, usedModelApiId, usedModelDbId)) * musicUsage.seconds
+            : 0
         const totalCost = tokenTotalCost + webSearchCost + imageCost + videoCost + audioCost + musicCost
         const { inputCost, cachedInputCost, outputCost } = costs
         const costCurrency = costs.currency
