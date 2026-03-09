@@ -2144,6 +2144,11 @@ export async function chatRun(req: Request, res: Response) {
       }
       templateVars[`params_${safeKey}`] = String(v)
     }
+    // OpenAI Videos API expects seconds as string enum ('4'|'8'|'12'). Keep params_seconds as string during injection.
+    const modelApiIdForTemplateLower = modelApiIdForTemplate.trim().toLowerCase()
+    if (mt === "video" && modelApiIdForTemplateLower.startsWith("sora")) {
+      templateVars.__force_seconds_string = true
+    }
     const injectedTemplate = templateBody ? (deepInjectVars(templateBody, templateVars) as Record<string, unknown>) : null
 
     // 5) 안전 조정 (min/max)
@@ -2462,12 +2467,25 @@ export async function chatRun(req: Request, res: Response) {
     }
 
     // Video is DB-profile driven. If we have no profile (or the profile errored), don't fall back to a generic legacy "not implemented".
-    // Lazy seed: try ensureDefaultVeoVideoProfiles for this tenant (handles provider created after server start).
+    // Lazy seed: 이미 선택된 모델의 provider_id를 사용. provider 재검색 없이 해당 provider에 직접 시드.
+    // - Sora 계열 (model_api_id: sora, sora-2, sora-2-pro): ensureDefaultSoraVideoProfileForProvider
+    // - Veo 계열 (model_api_id: veo 포함): ensureDefaultVeoVideoProfileForProvider + ensureDefaultVeoVideoProfiles
     if (mt === "video" && out == null) {
       try {
-        const { ensureDefaultVeoVideoProfileForProvider, ensureDefaultVeoVideoProfiles } = await import("../services/schemaBootstrap")
-        await ensureDefaultVeoVideoProfileForProvider(tenantId, providerId)
-        await ensureDefaultVeoVideoProfiles(tenantId)
+        const {
+          ensureDefaultSoraVideoProfileForProvider,
+          ensureDefaultVeoVideoProfileForProvider,
+          ensureDefaultVeoVideoProfiles,
+        } = await import("../services/schemaBootstrap")
+        const modelApiIdLower = modelApiId.trim().toLowerCase()
+        const isSoraModel = modelApiIdLower.startsWith("sora")
+        const isVeoModel = /veo/i.test(modelApiIdLower)
+        if (isSoraModel) {
+          await ensureDefaultSoraVideoProfileForProvider(tenantId, providerId)
+        } else if (isVeoModel && (providerKey === "google" || providerSlugLower.startsWith("google"))) {
+          await ensureDefaultVeoVideoProfileForProvider(tenantId, providerId)
+          await ensureDefaultVeoVideoProfiles(tenantId)
+        }
         const profile = await loadModelApiProfile({ tenantId, providerId, modelDbId: chosenModelDbId, purpose })
         if (profile) {
           usedProfileKey = profile.profile_key
@@ -2541,13 +2559,14 @@ export async function chatRun(req: Request, res: Response) {
         : "Video requires an active model_api_profile (purpose=video) for the selected provider/model."
       const hint = isAuthOrCredentialError
         ? "로컬: gcloud auth application-default login 실행. Docker: ADC 볼륨 마운트 또는 oauth2_service_account + 서비스 계정 JSON 사용. document/model_settings/ADC사용시설정방법.md 참고."
-        : "Create/activate a model_api_profiles row with purpose=video for this provider (model_id can be NULL to apply to all video models). " +
-          "Ensure provider_id matches the Veo model's provider. Check diagnostic.video_profiles_for_provider and tenant_match."
+        : "Create/activate a model_api_profiles row with purpose=video for this provider (model_id can be NULL). " +
+          "Sora(sora-2 등)는 선택된 모델의 provider에 자동 시드. Check diagnostic.video_profiles_for_provider and tenant_match. document/model_settings/gpt-sora-2.md 참고."
       return await failAndRespond(400, {
         message,
         details: {
           provider_id: providerId,
           provider_family: providerKey,
+          provider_slug: usedProviderSlug || row.provider_slug,
           model_db_id: chosenModelDbId,
           model_api_id: modelApiId,
           purpose,

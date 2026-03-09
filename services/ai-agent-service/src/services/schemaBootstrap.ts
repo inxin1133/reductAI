@@ -1241,12 +1241,14 @@ export async function ensureDefaultSoraVideoProfiles() {
   try {
     const tenantId = await ensureSystemTenantId()
 
-    // Find OpenAI providers (best-effort).
+    // Find OpenAI providers (Sora/Sora 2): openai, openai-sora 등
     const prov = await query(
       `
       SELECT id
       FROM ai_providers
       WHERE lower(provider_family) = 'openai'
+         OR lower(provider_family) = 'openai-sora'
+         OR lower(provider_family) LIKE 'openai%'
       ORDER BY updated_at DESC NULLS LAST
       `,
       []
@@ -1317,6 +1319,7 @@ export async function ensureDefaultSoraVideoProfiles() {
       if (exists.rows.length) {
         // Migration/cleanup for older installs:
         // - Remove optional input_reference from transport.body to avoid sending "" (provider validation error).
+        // - Reactivate if was disabled (is_active=FALSE).
         await query(
           `
           UPDATE model_api_profiles
@@ -1326,6 +1329,7 @@ export async function ensureDefaultSoraVideoProfiles() {
               THEN jsonb_set(transport, '{body}', (transport->'body') - 'input_reference', true)
               ELSE transport
             END,
+            is_active = TRUE,
             updated_at = CURRENT_TIMESTAMP
           WHERE tenant_id = $1
             AND provider_id = $2
@@ -1347,6 +1351,91 @@ export async function ensureDefaultSoraVideoProfiles() {
     }
   } catch (e) {
     console.warn("ensureDefaultSoraVideoProfiles failed (ignored):", e)
+  }
+}
+
+/**
+ * Seed Sora video profile for a specific provider (used when video request fails and we have the exact provider).
+ * Call this in lazy seed to ensure the selected Sora provider gets a profile regardless of provider_family matching.
+ */
+export async function ensureDefaultSoraVideoProfileForProvider(targetTenantId: string, providerId: string) {
+  try {
+    const systemTenantId = await ensureSystemTenantId()
+    const tenantIdsToSeed = [targetTenantId || systemTenantId]
+    if (targetTenantId && targetTenantId !== systemTenantId) {
+      tenantIdsToSeed.push(systemTenantId)
+    }
+    const profileKey = "openai_sora_video_v1"
+
+    const transport = {
+      kind: "http_json",
+      method: "POST",
+      path: "/videos",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer {{apiKey}}" },
+      body: {
+        model: "{{model}}",
+        prompt: "{{userPrompt}}",
+        seconds: "{{params_seconds}}",
+        size: "{{params_size}}",
+      },
+      timeout_ms: 120000,
+    }
+    const responseMapping = { result_type: "raw_json", mode: "json", extract: { job_id_path: "id" } }
+    const workflow = {
+      type: "async_job",
+      job_id_path: "id",
+      steps: [
+        {
+          name: "poll",
+          method: "GET",
+          path: "/videos/{{job_id}}",
+          interval_ms: 2000,
+          max_attempts: 90,
+          status_path: "status",
+          terminal_states: ["completed", "failed", "canceled", "cancelled", "error"],
+        },
+        { name: "download", method: "GET", path: "/videos/{{job_id}}/content", mode: "binary", content_type: "video/mp4" },
+      ],
+    }
+
+    for (const tenantId of tenantIdsToSeed) {
+      const existing = await query(
+        `SELECT id, is_active FROM model_api_profiles WHERE tenant_id = $1 AND provider_id = $2 AND profile_key = $3 LIMIT 1`,
+        [tenantId, providerId, profileKey]
+      )
+      if (existing.rows.length) {
+        const row = existing.rows[0] as Record<string, unknown>
+        const isActive = row?.is_active === true
+        if (!isActive) {
+          const up = await query(
+            `UPDATE model_api_profiles SET is_active = TRUE, updated_at = CURRENT_TIMESTAMP
+             WHERE tenant_id = $1 AND provider_id = $2 AND profile_key = $3`,
+            [tenantId, providerId, profileKey]
+          ).catch((err) => {
+            console.warn("[Sora profile] reactivate failed:", { tenantId, providerId, err: String(err?.message || err) })
+            return null
+          })
+          if (up) console.log("[Sora profile] reactivated:", { tenantId, providerId })
+        }
+        continue
+      }
+
+      const ins = await query(
+        `
+        INSERT INTO model_api_profiles
+          (tenant_id, provider_id, model_id, profile_key, purpose, auth_profile_id, transport, response_mapping, workflow, is_active)
+        VALUES
+          ($1,$2,NULL,$3,'video',NULL,$4::jsonb,$5::jsonb,$6::jsonb,TRUE)
+        `,
+        [tenantId, providerId, profileKey, JSON.stringify(transport), JSON.stringify(responseMapping), JSON.stringify(workflow)]
+      ).catch((err) => {
+        console.warn("[Sora profile] insert failed:", { tenantId, providerId, err: String(err?.message || err) })
+        return null
+      })
+      if (ins) console.log("[Sora profile] inserted:", { tenantId, providerId })
+    }
+  } catch (e) {
+    console.warn("ensureDefaultSoraVideoProfileForProvider failed (ignored):", e)
   }
 }
 
