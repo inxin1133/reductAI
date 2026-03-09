@@ -43,6 +43,95 @@ AI 제공업체 (Vertex AI용)
 
 ---
 
+## response_schemas
+출력 계약 (block_json 형식 — 비디오 포함)
+
+| 필드 | 비고 |
+|------|------|
+| name | 예: `llm_video_response` |
+| strict | `true` |
+| schema | 아래 JSON |
+
+### schema
+```json
+{
+  "type": "object",
+  "required": ["title", "summary", "blocks", "video"],
+  "additionalProperties": false,
+  "properties": {
+    "title": { "type": "string" },
+    "summary": { "type": "string" },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "markdown"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "markdown" },
+          "markdown": { "type": "string" }
+        }
+      }
+    },
+    "video": {
+      "type": "object",
+      "required": ["id", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "status": { "type": "string" },
+        "mime": { "type": "string" },
+        "download_url": { "type": "string" },
+        "data_url": { "type": "string" }
+      }
+    }
+  }
+}
+```
+
+> 비동기 작업 완료 후 chatRuntimeController가 `content.video.{data_url|url}` 형태로 반환합니다.  
+> Vertex AI는 완료 시 `response.videos[].gcsUri` 또는 base64를 반환합니다.
+
+---
+
+## prompt_templates
+프롬프트 템플릿 (비디오용)
+
+| 필드 | 비고 |
+|------|------|
+| name | 예: `veo-3.1-video-generate` |
+| purpose | `video` | chat, image가 아님 |
+| is_active | `true` |
+| body | 아래 JSON |
+
+> Vertex AI Veo는 `instances[0].prompt`와 `parameters` 객체를 사용합니다.  
+> reductai는 `model_api_profiles(purpose=video)`로 호출합니다.
+
+### body
+```json
+{
+  "instances": [
+    {
+      "prompt": "{{input}}\n\nVideo direction:\n- cinematic lighting\n- smooth camera movement\n- stable frame-to-frame (avoid flicker)\n- avoid artifacts, glitches\n- avoid text/letters/logos/watermarks"
+    }
+  ],
+  "parameters": {
+    "durationSeconds": "{{params_seconds}}",
+    "aspectRatio": "{{params_aspect_ratio}}",
+    "resolution": "{{params_resolution}}",
+    "generateAudio": "{{params_generate_audio}}",
+    "sampleCount": 1
+  }
+}
+```
+
+> `{{input}}` 또는 `{{userPrompt}}`는 런타임에서 사용자 입력으로 치환됩니다.  
+> `params_seconds`는 정수(4, 6, 8)로 전달. `params_aspect_ratio`는 "16:9" 또는 "9:16".  
+> `params_resolution`은 "720p", "1080p", "4k". `params_generate_audio`는 boolean.
+
+---
+
+
 ## ai_models
 AI 모델 (비디오 타입)
 
@@ -141,94 +230,6 @@ AI 모델 (비디오 타입)
 > - 길이: 4, 6, 8초  
 > - 프레임: 24 FPS  
 > - 포맷: video/mp4  
-
----
-
-## response_schemas
-출력 계약 (block_json 형식 — 비디오 포함)
-
-| 필드 | 비고 |
-|------|------|
-| name | 예: `llm_video_response` |
-| strict | `true` |
-| schema | 아래 JSON |
-
-### schema
-```json
-{
-  "type": "object",
-  "required": ["title", "summary", "blocks", "video"],
-  "additionalProperties": false,
-  "properties": {
-    "title": { "type": "string" },
-    "summary": { "type": "string" },
-    "blocks": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["type", "markdown"],
-        "additionalProperties": false,
-        "properties": {
-          "type": { "const": "markdown" },
-          "markdown": { "type": "string" }
-        }
-      }
-    },
-    "video": {
-      "type": "object",
-      "required": ["id", "status"],
-      "additionalProperties": false,
-      "properties": {
-        "id": { "type": "string" },
-        "status": { "type": "string" },
-        "mime": { "type": "string" },
-        "download_url": { "type": "string" },
-        "data_url": { "type": "string" }
-      }
-    }
-  }
-}
-```
-
-> 비동기 작업 완료 후 chatRuntimeController가 `content.video.{data_url|url}` 형태로 반환합니다.  
-> Vertex AI는 완료 시 `response.videos[].gcsUri` 또는 base64를 반환합니다.
-
----
-
-## prompt_templates
-프롬프트 템플릿 (비디오용)
-
-| 필드 | 비고 |
-|------|------|
-| name | 예: `veo-3.1-video-generate` |
-| purpose | `video` | chat, image가 아님 |
-| is_active | `true` |
-| body | 아래 JSON |
-
-> Vertex AI Veo는 `instances[0].prompt`와 `parameters` 객체를 사용합니다.  
-> reductai는 `model_api_profiles(purpose=video)`로 호출합니다.
-
-### body
-```json
-{
-  "instances": [
-    {
-      "prompt": "{{input}}\n\nVideo direction:\n- cinematic lighting\n- smooth camera movement\n- stable frame-to-frame (avoid flicker)\n- avoid artifacts, glitches\n- avoid text/letters/logos/watermarks"
-    }
-  ],
-  "parameters": {
-    "durationSeconds": "{{params_seconds}}",
-    "aspectRatio": "{{params_aspect_ratio}}",
-    "resolution": "{{params_resolution}}",
-    "generateAudio": "{{params_generate_audio}}",
-    "sampleCount": 1
-  }
-}
-```
-
-> `{{input}}` 또는 `{{userPrompt}}`는 런타임에서 사용자 입력으로 치환됩니다.  
-> `params_seconds`는 정수(4, 6, 8)로 전달. `params_aspect_ratio`는 "16:9" 또는 "9:16".  
-> `params_resolution`은 "720p", "1080p", "4k". `params_generate_audio`는 boolean.
 
 ---
 

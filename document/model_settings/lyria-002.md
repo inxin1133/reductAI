@@ -14,15 +14,19 @@ Lyria 2 (`lyria-002`)는 Google의 음악 생성 모델로, **Vertex AI**를 통
 reductai는 음악 생성 시 `model_api_profiles(purpose=music)`를 사용합니다.
 
 > **동기 API**: Lyria는 Veo와 달리 **`predictLongRunning`이 아닌 `predict`** 를 사용합니다.  
-> 비동기 poll 없이 **요청 직후 응답**에 base64 오디오가 포함됩니다.  
->  
-> **인증**: Vertex AI는 **OAuth 2.0(서비스 계정)** 이 필요합니다.  
-> `auth_profile_id`로 OAuth2 프로필을 연결해야 합니다.
+> 비동기 poll 없이 **요청 직후 응답**에 base64 오디오가 포함됩니다.
+
+> **인증**: Vertex AI는 API Key가 아니라 **OAuth 2.0** 인증이 필요합니다.  
+> reductai는 두 가지 방식을 지원합니다:
+> - **google_adc**: Application Default Credentials (로컬 `gcloud auth application-default login` / GCP Workload Identity). **credential 없이** config만 설정.
+> - **oauth2_service_account**: 서비스 계정 JSON을 credential로 등록. 조직 정책으로 JSON 키 발급이 가능한 환경에서 사용.
 
 ---
 
 ## ai_providers
 AI 제공업체 (Vertex AI용)
+
+> Veo 3.1과 **동일한 Vertex AI provider**를 사용합니다. [veo-3.1.md](veo-3.1.md) 참고.
 
 | 필드 | 값 | 비고 |
 |------|-----|------|
@@ -37,83 +41,10 @@ AI 제공업체 (Vertex AI용)
 
 ---
 
-## provider_api_credentials / provider_auth_profiles
-> Vertex AI는 API Key 대신 **OAuth2 서비스 계정** 인증을 사용합니다.  
-> [veo-3.1.md](veo-3.1.md)의 `provider_auth_profiles` 섹션을 참고하여 동일하게 설정합니다.  
-> (credential에 서비스 계정 JSON, profile에 oauth2_service_account, config에 project_id, location)
-
----
-
-## ai_models
-AI 모델 (음악 타입)
-
-| 필드 | 값 | 비고 |
-|------|-----|------|
-| name | `lyria-002` | reductai 모델 이름 |
-| model_id | `lyria-002` | API 모델 ID. [Lyria 2 문서](https://cloud.google.com/vertex-ai/generative-ai/docs/models/lyria/lyria-002) 참고 |
-| display_name | `Lyria 2` | 표시용 |
-| model_type | `music` | **text, image, video가 아님** |
-| context_window | NULL | 음악 모델은 해당 없음 |
-| max_input_tokens | NULL | 음악 모델은 해당 없음 |
-| max_output_tokens | NULL | 음악 모델은 해당 없음 |
-| prompt_template_id | (prompt_templates.id) | 아래 prompt_templates 생성 후 FK |
-| response_schema_id | (response_schemas.id) | 아래 response_schemas 생성 후 FK |
-| capabilities | 아래 JSON | |
-| is_available | `true` | |
-| is_default | `false` | music 타입 기본 모델이 있으면 false |
-| status | `active` | |
-| sort_order | `0` | |
-
-### capabilities
-```json
-{
-  "model": "lyria-002",
-  "limits": {
-    "duration_seconds": 30,
-    "max_clips_per_request": 4
-  },
-  "options": {
-    "sample_count": {
-      "type": "int",
-      "label": "sample_count",
-      "min": 1,
-      "max": 4,
-      "description": "생성할 오디오 클립 수. seed 사용 시 불가"
-    },
-    "seed": {
-      "type": "int",
-      "label": "seed",
-      "description": "재현 가능한 출력용 시드. sample_count와 동시 사용 불가"
-    },
-    "negative_prompt": {
-      "type": "string",
-      "label": "negative_prompt",
-      "description": "제외할 요소 기술 (예: vocals, slow tempo)"
-    }
-  },
-  "defaults": {
-    "sample_count": 1,
-    "negative_prompt": ""
-  },
-  "supports": {
-    "sample_count": true,
-    "seed": true,
-    "negative_prompt": true
-  },
-  "validation_hints": [
-    "sample_count와 seed는 동시에 사용할 수 없습니다.",
-    "프롬프트는 US English(en-us)로 작성해야 합니다.",
-    "출력: 30초 WAV, 48kHz, 악기만 (보컬 미지원). SynthID 워터마크 포함."
-  ]
-}
-```
-
-> **기술 사양** ([Lyria 2 문서](https://cloud.google.com/vertex-ai/generative-ai/docs/models/lyria/lyria-002)):  
-> - 포맷: WAV  
-> - 샘플레이트: 48kHz  
-> - 길이: 클립당 약 30초  
-> - 최대 요청당 클립: 4  
-> - 프롬프트 언어: US English (en-us)  
+## provider_api_credentials
+> Vertex AI는 API Key 대신 **OAuth2** 인증을 사용합니다.  
+> - **google_adc** 사용 시: `provider_api_credentials` 등록 **불필요**. credential 없이 `provider_auth_profiles`만 설정.
+> - **oauth2_service_account** 사용 시: `provider_api_credentials`에 서비스 계정 JSON을 저장하고, `provider_auth_profiles`에서 credential_id로 연결.
 
 ---
 
@@ -213,10 +144,86 @@ AI 모델 (음악 타입)
 
 ---
 
+
+## ai_models
+AI 모델 (음악 타입)
+
+| 필드 | 값 | 비고 |
+|------|-----|------|
+| name | `lyria-002` | reductai 모델 이름 |
+| model_id | `lyria-002` | API 모델 ID. [Lyria 2 문서](https://cloud.google.com/vertex-ai/generative-ai/docs/models/lyria/lyria-002) 참고 |
+| display_name | `Lyria 2` | 표시용 |
+| model_type | `music` | **text, image, video가 아님** |
+| context_window | NULL | 음악 모델은 해당 없음 |
+| max_input_tokens | NULL | 음악 모델은 해당 없음 |
+| max_output_tokens | NULL | 음악 모델은 해당 없음 |
+| prompt_template_id | (prompt_templates.id) | 아래 prompt_templates 생성 후 FK |
+| response_schema_id | (response_schemas.id) | 아래 response_schemas 생성 후 FK |
+| capabilities | 아래 JSON | |
+| is_available | `true` | |
+| is_default | `false` | music 타입 기본 모델이 있으면 false |
+| status | `active` | |
+| sort_order | `0` | |
+
+### capabilities
+```json
+{
+  "model": "lyria-002",
+  "limits": {
+    "duration_seconds": 30,
+    "max_clips_per_request": 4
+  },
+  "options": {
+    "sample_count": {
+      "type": "int",
+      "label": "sample_count",
+      "min": 1,
+      "max": 4,
+      "description": "생성할 오디오 클립 수. seed 사용 시 불가"
+    },
+    "seed": {
+      "type": "int",
+      "label": "seed",
+      "description": "재현 가능한 출력용 시드. sample_count와 동시 사용 불가"
+    },
+    "negative_prompt": {
+      "type": "string",
+      "label": "negative_prompt",
+      "description": "제외할 요소 기술 (예: vocals, slow tempo)"
+    }
+  },
+  "defaults": {
+    "sample_count": 1,
+    "negative_prompt": ""
+  },
+  "supports": {
+    "sample_count": true,
+    "seed": true,
+    "negative_prompt": true
+  },
+  "validation_hints": [
+    "sample_count와 seed는 동시에 사용할 수 없습니다.",
+    "프롬프트는 US English(en-us)로 작성해야 합니다.",
+    "출력: 30초 WAV, 48kHz, 악기만 (보컬 미지원). SynthID 워터마크 포함."
+  ]
+}
+```
+
+> **기술 사양** ([Lyria 2 문서](https://cloud.google.com/vertex-ai/generative-ai/docs/models/lyria/lyria-002)):  
+> - 포맷: WAV  
+> - 샘플레이트: 48kHz  
+> - 길이: 클립당 약 30초  
+> - 최대 요청당 클립: 4  
+> - 프롬프트 언어: US English (en-us)  
+
+---
+
+
 ## model_api_profiles
 > reductai는 음악 생성 시 **model_api_profiles(purpose=music)** 를 사용합니다.  
 > Lyria는 **동기 `predict`** API이므로 workflow 없이 직통 응답을 처리합니다.  
-> 응답에 `predictions[0].audioContent` (base64), `predictions[0].mimeType` 포함.
+> 응답에 `predictions[0].audioContent` (base64), `predictions[0].mimeType` 포함.  
+> **인증**: `auth_profile_id`로 OAuth2 프로필(google_adc 또는 oauth2_service_account)을 연결합니다.
 
 ### transport
 ```
@@ -249,8 +256,8 @@ Content-Type: application/json
 }
 ```
 
-> `{{config_project_id}}`, `{{config_location}}`: provider_auth_profiles.config에서 주입  
-> `{{accessToken}}`: OAuth2 토큰  
+> `{{config_project_id}}`, `{{config_location}}`: provider_auth_profiles.config의 project_id, location이 주입됨.  
+> `{{accessToken}}`: OAuth2로 발급한 토큰.  
 > `params_negative_prompt`가 없으면 빈 문자열 또는 필드 생략.
 
 ### response_mapping
@@ -293,6 +300,75 @@ Content-Type: application/json
   "model_type": "music"
 }
 ```
+
+---
+
+## provider_auth_profiles
+인증 프로필 (provider_auth_profiles 테이블)
+
+> Vertex AI Lyria는 API Key가 아니라 **OAuth2** 인증이 필요합니다.  
+> reductai는 **google_adc**(권장) 또는 **oauth2_service_account** 두 가지 방식을 지원합니다.
+
+### 방식 1: google_adc (권장 — credential 없음)
+로컬 개발: `gcloud auth application-default login` 실행 후 ADC 사용.  
+GCP 배포: Workload Identity(서비스 계정 연결) 시 메타데이터 서버에서 자동 인증.
+
+| 필드 | 값 | 비고 |
+|------|-----|------|
+| profile_key | `google_vertex_adc_v1` | 예시 (Veo와 동일 프로필 공유 가능) |
+| auth_type | `google_adc` | credential 없이 config만 설정 |
+| credential_id | **NULL** | google_adc는 credential 불필요 |
+| config | 아래 JSON | project_id, location 필수 |
+
+**config (google_adc)**:
+```json
+{
+  "project_id": "YOUR_GCP_PROJECT_ID",
+  "location": "us-central1"
+}
+```
+
+### 방식 2: oauth2_service_account (서비스 계정 JSON)
+조직 정책으로 JSON 키 발급이 가능한 환경에서 사용.
+
+| 필드 | 값 | 비고 |
+|------|-----|------|
+| profile_key | `google_vertex_sa_v1` | 예시 |
+| auth_type | `oauth2_service_account` | |
+| credential_id | (provider_api_credentials.id) | 서비스 계정 JSON이 저장된 credential FK |
+| config | 아래 JSON | scopes, token_url, project_id, location |
+
+**config (oauth2_service_account)**:
+```json
+{
+  "token_url": "https://oauth2.googleapis.com/token",
+  "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
+  "project_id": "YOUR_GCP_PROJECT_ID",
+  "location": "us-central1"
+}
+```
+
+> **config 공통 필드**:  
+> - `project_id`: GCP 프로젝트 ID. transport path의 `{{config_project_id}}`로 주입됨 (필수)  
+> - `location`: 리전. `{{config_location}}`으로 주입 (기본: us-central1)
+
+### credential (oauth2_service_account 전용)
+`auth_type=oauth2_service_account`일 때만 `credential_id`로 참조하는 `provider_api_credentials` 레코드가 필요합니다.
+
+| 필드 | 값 | 비고 |
+|------|-----|------|
+| credential_name | 예: `Vertex AI Service Account` | |
+| api_key_encrypted | (암호화된 값) | **서비스 계정 JSON 전체** (private_key, client_email 등) |
+
+### model_api_profiles 연결
+`model_api_profiles` 생성 시 `auth_profile_id`에 위 `provider_auth_profiles.id`를 설정합니다.  
+Veo와 Lyria는 **동일한 Vertex AI provider**를 사용하므로, **같은 ADC 프로필**을 공유할 수 있습니다.
+
+> transport의 `Authorization` 헤더는 `{{accessToken}}`을 사용합니다.  
+> - **google_adc**: `GoogleAuth.getApplicationDefault()`로 토큰 발급  
+> - **oauth2_service_account**: JWT assertion으로 access_token 발급
+
+> **추가 참고**: [ADC사용시설정방법.md](ADC사용시설정방법.md)에서 관리자 페이지별 설정 순서를 확인할 수 있습니다.
 
 ---
 
@@ -348,14 +424,23 @@ Content-Type: application/json
 
 ## 등록 순서 권장
 
-1. **ai_providers**: Vertex AI용 provider 생성 (veo-3.1과 동일)
-2. **provider_api_credentials**: 서비스 계정 JSON 등록
-3. **provider_auth_profiles**: oauth2_service_account 프로필 생성
-4. **response_schemas**: 음악 응답 스키마 생성 → ID 확보
-5. **prompt_templates**: purpose=`music`, body에 `instances`, `parameters` 포함 → ID 확보
-6. **ai_models**: model_type=`music`, response_schema_id, prompt_template_id 연결하여 생성
-7. **model_api_profiles**: purpose=`music`, profile_key=`google_lyria_music_v1`, auth_profile_id 연결
-8. **model_routing_rules**: (선택) music 타입 라우팅 규칙 추가
+### ADC 사용 시 (권장 — credential 없음)
+1. **ai_providers**: Vertex AI용 provider 생성 (api_base_url=`https://us-central1-aiplatform.googleapis.com/v1`)
+2. **provider_auth_profiles**: `auth_type=google_adc`, config에 `project_id`, `location` 설정 (credential_id=NULL)
+3. **response_schemas**: 음악 응답 스키마 생성 → ID 확보
+4. **prompt_templates**: purpose=`music`, body에 `instances`, `parameters` 포함 → ID 확보
+5. **ai_models**: model_type=`music`, response_schema_id, prompt_template_id 연결하여 생성
+6. **model_api_profiles**: purpose=`music`, profile_key=`google_lyria_music_v1`, auth_profile_id 연결
+7. **model_routing_rules**: (선택) music 타입 라우팅 규칙 추가
+
+> **로컬**: `gcloud auth application-default login` 실행 후 위 설정 진행.  
+> **GCP 배포**: Workload Identity로 서비스 계정 연결 시 별도 설정 없이 동작.
+
+### oauth2_service_account 사용 시 (서비스 계정 JSON)
+1. **ai_providers**: Vertex AI용 provider 생성
+2. **provider_api_credentials**: 서비스 계정 JSON을 credential로 등록 (api_key_encrypted에 SA JSON 저장)
+3. **provider_auth_profiles**: oauth2_service_account 프로필 생성 (credential_id, config 연결)
+4. **response_schemas** ~ **model_routing_rules**: 위와 동일
 
 ---
 
@@ -368,7 +453,8 @@ Content-Type: application/json
 ---
 
 ## 주의사항
-- **Vertex AI 전용**: Lyria는 Vertex AI(aiplatform.googleapis.com)를 사용합니다.
-- **OAuth 필요**: API Key만으로는 호출 불가.
+- **Vertex AI 전용**: Lyria는 Gemini API(generativelanguage.googleapis.com)와 다른 Vertex AI(aiplatform.googleapis.com) 엔드포인트를 사용합니다.
+- **OAuth 필요**: API Key만으로는 호출 불가. **google_adc**(로컬: `gcloud auth application-default login` / GCP: Workload Identity) 또는 **oauth2_service_account**(서비스 계정 JSON) 필요.
+- **project_id**: 모든 요청에 GCP 프로젝트 ID가 필요합니다. provider_auth_profiles.config에 설정하고 템플릿 변수 `{{config_project_id}}`로 주입됩니다.
 - **프롬프트 언어**: US English(en-us)만 지원됩니다.
 - **sample_count vs seed**: 둘 중 하나만 사용. 동시 사용 불가.

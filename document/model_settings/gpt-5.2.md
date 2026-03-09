@@ -33,69 +33,6 @@ API Key 인증 정보
 
 ---
 
-## ai_models
-AI 모델 (필수 필드 포함)
-
-| 필드 | 값 | 비고 |
-|------|-----|------|
-| name | `gpt-5.2` | 모델 이름 |
-| model_id | `gpt-5.2` | API 모델 ID. [모델 목록](https://platform.openai.com/api/docs/models)에서 확인 (예: gpt-5.4, gpt-5.2 등) |
-| display_name | `GPT-5.2` | 표시용 |
-| model_type | `text` | |
-| context_window | `400000` | models_prompt_text(chat).md 권장 |
-| max_input_tokens | `300000` | models_prompt_text(chat).md 권장 |
-| max_output_tokens | `100000` | models_prompt_text(chat).md 권장 |
-| prompt_template_id | (prompt_templates.id) | 아래 prompt_templates 생성 후 FK |
-| response_schema_id | (response_schemas.id) | 아래 response_schemas 생성 후 FK |
-| capabilities | 아래 JSON | |
-| is_available | `true` | |
-| is_default | `false` | text 타입 기본 모델이 있으면 false |
-| status | `active` | |
-| sort_order | `0` | 드래그 정렬 시 자동 조정 |
-
-### capabilities
-```json
-{
-  "model": "gpt-5.2",
-  "options": {
-    "top_p": {
-      "max": 1,
-      "min": 0,
-      "step": 0.05,
-      "type": "number",
-      "label": "top_p",
-      "description": "샘플링 누적 확률"
-    },
-    "temperature": {
-      "max": 2,
-      "min": 0,
-      "step": 0.1,
-      "type": "number",
-      "label": "temperature",
-      "description": "창의성/랜덤성"
-    }
-  },
-  "defaults": {
-    "top_p": 1,
-    "temperature": 0.35
-  },
-  "supports": {
-    "top_p": true,
-    "json_schema": true,
-    "system_role": true,
-    "temperature": true,
-    "developer_role": true,
-    "structured_outputs": true
-  },
-  "prompt_caching": true
-}
-```
-
-> **temperature vs top_p**: 공식 권장—둘 중 하나만 조정 (동시 조정 비권장).  
-> **prompt_caching**: 1024 토큰 이상 시 자동 적용. gpt-5 계열은 `prompt_cache_retention: "24h"` 지원 ([Prompt caching](https://platform.openai.com/api/docs/guides/prompt-caching)).
-
----
-
 ## response_schemas
 출력 계약 (block_json 형식)
 
@@ -221,6 +158,69 @@ AI 모델 (필수 필드 포함)
   ]
 }
 ```
+
+---
+
+## ai_models
+AI 모델 (필수 필드 포함)
+
+| 필드 | 값 | 비고 |
+|------|-----|------|
+| name | `gpt-5.2` | 모델 이름 |
+| model_id | `gpt-5.2` | API 모델 ID. [모델 목록](https://platform.openai.com/api/docs/models)에서 확인 (예: gpt-5.4, gpt-5.2 등) |
+| display_name | `GPT-5.2` | 표시용 |
+| model_type | `text` | |
+| context_window | `400000` | models_prompt_text(chat).md 권장 |
+| max_input_tokens | `300000` | models_prompt_text(chat).md 권장 |
+| max_output_tokens | `100000` | models_prompt_text(chat).md 권장 |
+| prompt_template_id | (prompt_templates.id) | 아래 prompt_templates 생성 후 FK |
+| response_schema_id | (response_schemas.id) | 아래 response_schemas 생성 후 FK |
+| capabilities | 아래 JSON | |
+| is_available | `true` | |
+| is_default | `false` | text 타입 기본 모델이 있으면 false |
+| status | `active` | |
+| sort_order | `0` | 드래그 정렬 시 자동 조정 |
+
+### capabilities
+```json
+{
+  "model": "gpt-5.2",
+  "options": {
+    "top_p": {
+      "max": 1,
+      "min": 0,
+      "step": 0.05,
+      "type": "number",
+      "label": "top_p",
+      "description": "샘플링 누적 확률"
+    },
+    "temperature": {
+      "max": 2,
+      "min": 0,
+      "step": 0.1,
+      "type": "number",
+      "label": "temperature",
+      "description": "창의성/랜덤성"
+    }
+  },
+  "defaults": {
+    "top_p": 1,
+    "temperature": 0.35
+  },
+  "supports": {
+    "top_p": true,
+    "json_schema": true,
+    "system_role": true,
+    "temperature": true,
+    "developer_role": true,
+    "structured_outputs": true
+  },
+  "prompt_caching": true
+}
+```
+
+> **temperature vs top_p**: 공식 권장—둘 중 하나만 조정 (동시 조정 비권장).  
+> **prompt_caching**: 1024 토큰 이상 시 자동 적용. gpt-5 계열은 `prompt_cache_retention: "24h"` 지원 ([Prompt caching](https://platform.openai.com/api/docs/guides/prompt-caching)).
 
 ---
 

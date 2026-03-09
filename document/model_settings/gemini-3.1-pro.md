@@ -35,76 +35,7 @@ API Key 인증 정보 (Gemini 3 Pro와 공유)
 
 ---
 
-## ai_models
-AI 모델 (필수 필드 포함)
 
-| 필드 | 값 | 비고 |
-|------|-----|------|
-| name | `gemini-3.1-pro-preview` | 모델 이름 |
-| model_id | `gemini-3.1-pro-preview` | API 모델 ID. [모델 목록](https://ai.google.dev/gemini-api/docs/models)에서 확인 |
-| display_name | `Gemini 3.1 Pro` | 표시용 |
-| model_type | `text` | |
-| context_window | `1048576` | 1M 토큰 (Gemini 3 Pro와 동일) |
-| max_input_tokens | `850000` | Gemini 3 Pro와 동일 권장 |
-| max_output_tokens | `65536` | 64K. 기본 8192 — `maxOutputTokens` 명시 필요 |
-| prompt_template_id | (prompt_templates.id) | 아래 prompt_templates 생성 후 FK |
-| response_schema_id | (response_schemas.id) | 아래 response_schemas 생성 후 FK |
-| capabilities | 아래 JSON | |
-| is_available | `true` | |
-| is_default | `false` | |
-| status | `active` | |
-| sort_order | `0` | |
-
-### capabilities
-```json
-{
-  "model": "gemini-3.1-pro-preview",
-  "options": {
-    "top_k": {
-      "max": 100,
-      "min": 1,
-      "type": "int",
-      "label": "top_k",
-      "description": "샘플링 후보 수"
-    },
-    "top_p": {
-      "max": 1,
-      "min": 0,
-      "step": 0.05,
-      "type": "number",
-      "label": "top_p",
-      "description": "샘플링 누적 확률"
-    },
-    "temperature": {
-      "max": 2,
-      "min": 0,
-      "step": 0.1,
-      "type": "number",
-      "label": "temperature",
-      "description": "창의성/랜덤성"
-    }
-  },
-  "defaults": {
-    "top_k": 40,
-    "top_p": 1,
-    "temperature": 0.2
-  },
-  "supports": {
-    "top_k": true,
-    "top_p": true,
-    "temperature": true,
-    "json_schema": true,
-    "system_role": true,
-    "structured_outputs": true
-  }
-}
-```
-
-> Gemini는 `developer_role`을 별도 지원하지 않습니다. `systemInstruction` 하나로 통합합니다.  
-> `prompt_caching`은 [Caching API](https://ai.google.dev/api/caching)로 지원되나, capabilities에는 생략 가능합니다.  
-> **temperature vs topP**: 공식 권장—둘 중 하나만 조정 (동시 조정 비권장).
-
----
 
 ## response_schemas
 출력 계약 (block_json 형식 — Gemini 3 Pro와 동일)
@@ -213,6 +144,78 @@ AI 모델 (필수 필드 포함)
 > 채팅 런타임은 templateBody를 `googleSimulateChat`에 전달하고, baseBody의 `contents`(user input)와 merge합니다.  
 > `{{input}}` 변수는 런타임에서 `contents[0].parts[0].text`로 주입됩니다.  
 > **구조화 출력**: 현재 `googleSimulateChat`은 `responseSchema`를 주입하지 않습니다. JSON 형식은 systemInstruction 프롬프트로 유도합니다. 공식 [Structured output](https://ai.google.dev/gemini-api/docs/structured-output)을 활용하려면 templateBody에 `generationConfig.responseMimeType: "application/json"` 및 `responseSchema`를 포함하거나, providerClients 수정이 필요합니다.
+
+---
+
+
+## ai_models
+AI 모델 (필수 필드 포함)
+
+| 필드 | 값 | 비고 |
+|------|-----|------|
+| name | `gemini-3.1-pro-preview` | 모델 이름 |
+| model_id | `gemini-3.1-pro-preview` | API 모델 ID. [모델 목록](https://ai.google.dev/gemini-api/docs/models)에서 확인 |
+| display_name | `Gemini 3.1 Pro` | 표시용 |
+| model_type | `text` | |
+| context_window | `1048576` | 1M 토큰 (Gemini 3 Pro와 동일) |
+| max_input_tokens | `850000` | Gemini 3 Pro와 동일 권장 |
+| max_output_tokens | `65536` | 64K. 기본 8192 — `maxOutputTokens` 명시 필요 |
+| prompt_template_id | (prompt_templates.id) | 아래 prompt_templates 생성 후 FK |
+| response_schema_id | (response_schemas.id) | 아래 response_schemas 생성 후 FK |
+| capabilities | 아래 JSON | |
+| is_available | `true` | |
+| is_default | `false` | |
+| status | `active` | |
+| sort_order | `0` | |
+
+### capabilities
+```json
+{
+  "model": "gemini-3.1-pro-preview",
+  "options": {
+    "top_k": {
+      "max": 100,
+      "min": 1,
+      "type": "int",
+      "label": "top_k",
+      "description": "샘플링 후보 수"
+    },
+    "top_p": {
+      "max": 1,
+      "min": 0,
+      "step": 0.05,
+      "type": "number",
+      "label": "top_p",
+      "description": "샘플링 누적 확률"
+    },
+    "temperature": {
+      "max": 2,
+      "min": 0,
+      "step": 0.1,
+      "type": "number",
+      "label": "temperature",
+      "description": "창의성/랜덤성"
+    }
+  },
+  "defaults": {
+    "top_k": 40,
+    "top_p": 1,
+    "temperature": 0.2
+  },
+  "supports": {
+    "top_k": true,
+    "top_p": true,
+    "temperature": true,
+    "json_schema": true,
+    "system_role": true,
+    "structured_outputs": true
+  }
+}
+```
+
+> Gemini는 `developer_role`을 별도 지원하지 않습니다. `systemInstruction` 하나로 통합합니다.  
+> `prompt_caching`은 [Caching API](https://ai.google.dev/api/caching)로 지원되나, capabilities에는 생략 가능합니다.  
+> **temperature vs topP**: 공식 권장—둘 중 하나만 조정 (동시 조정 비권장).
 
 ---
 
