@@ -21,6 +21,7 @@ import {
 } from "../services/credentialRateLimitService"
 import { newAssetId, storeImageDataUrlAsAsset } from "../services/fileServiceClient"
 import { normalizeAiContent } from "../utils/normalizeAiContent"
+import { getEffectiveMaxAttachments, getEffectiveMaxAttachmentBytes } from "../utils/attachmentLimits"
 import { deriveProviderClientKey } from "../utils/providerClientKey"
 import { gcsUriToSignedUrl } from "../utils/gcsSignedUrl"
 import { getWebSearchPolicy } from "../services/webSearchSettingsService"
@@ -2541,6 +2542,36 @@ export async function chatRun(req: Request, res: Response) {
       }
     }
 
+    // 첨부 수량 및 크기 검증 (등급/모델별 제한)
+    const effectiveMax = getEffectiveMaxAttachments({
+      planTier: plan_tier ?? null,
+      modelType: mt,
+      modelApiId,
+      capabilities: cap,
+    })
+    if (attachmentSlots.length > effectiveMax) {
+      return res.status(400).json({
+        message: `최대 ${effectiveMax}개까지 첨부할 수 있습니다. (현재: ${attachmentSlots.length}개)`,
+        code: "ATTACHMENT_LIMIT_EXCEEDED",
+      })
+    }
+    const planTierForValidation = plan_tier ?? null
+    for (const slot of attachmentSlots) {
+      if (slot.dataUrl && slot.dataUrl.startsWith("data:")) {
+        const base64Match = slot.dataUrl.match(/^data:[^;]+;base64,(.*)$/)
+        const base64 = base64Match?.[1] ?? ""
+        const bytes = Buffer.byteLength(Buffer.from(base64, "base64"))
+        const kind = slot.kind === "image" ? "image" : "file"
+        const limit = getEffectiveMaxAttachmentBytes(planTierForValidation, kind)
+        if (bytes > limit) {
+          return res.status(400).json({
+            message: `파일 "${slot.name || "첨부파일"}"이(가) ${Math.round(limit / 1024 / 1024)}MB를 초과합니다.`,
+            code: "ATTACHMENT_FILE_TOO_LARGE",
+          })
+        }
+      }
+    }
+
     const initialAttachments = attachmentSlots.map(({ dataUrl, ...rest }) => rest)
     const normalizedUserContent = normalizeAiContent({ text: prompt, options: mergedOptions, attachments: initialAttachments })
     await appendMessage({
@@ -2581,6 +2612,7 @@ export async function chatRun(req: Request, res: Response) {
               index: i,
               kind: slot.kind === "image" || slot.kind === "file" ? slot.kind : undefined,
               sourceType: "attachment",
+              planTier: plan_tier ?? null,
               authHeader,
             })
             safeAttachments.push({ ...base, url: stored.url, asset_id: stored.assetId, bytes: stored.bytes })
@@ -3207,7 +3239,7 @@ export async function chatRun(req: Request, res: Response) {
             n,
             aspect_ratio: aspectRatio,
             resolution,
-            image_data_url: incomingImageDataUrls.length > 0 ? incomingImageDataUrls[0] : undefined,
+            image_data_urls: incomingImageDataUrls.length > 0 ? incomingImageDataUrls : undefined,
             signal: abortSignal,
           })
         } else {
@@ -3218,7 +3250,7 @@ export async function chatRun(req: Request, res: Response) {
                   apiKey: auth.apiKey,
                   model: modelApiId,
                   prompt: promptForImage,
-                  image_data_url: incomingImageDataUrls[0],
+                  image_data_urls: incomingImageDataUrls,
                   n,
                   size,
                   signal: abortSignal,

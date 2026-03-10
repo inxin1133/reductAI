@@ -385,29 +385,44 @@ async function openaiEditImage(args) {
     const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl);
     const base = normalized || "https://api.openai.com/v1";
     const apiRoot = base.replace(/\/$/, "");
-    const parsed = parseDataUrl(args.image_data_url);
-    if (!parsed)
+    // 다중 이미지 우선, 없으면 단일
+    const urlsToUse = Array.isArray(args.image_data_urls) && args.image_data_urls.length > 0
+        ? args.image_data_urls
+        : args.image_data_url
+            ? [args.image_data_url]
+            : [];
+    if (urlsToUse.length === 0)
+        throw new Error("OPENAI_IMAGE_EDIT_NO_IMAGE");
+    const modelLower = (args.model || "").trim().toLowerCase();
+    const isDallE2 = modelLower.includes("dall-e-2") || modelLower === "dall-e-2";
+    const maxImages = isDallE2 ? 1 : 16;
+    const imagesToSend = urlsToUse.slice(0, maxImages);
+    const imagesPayload = imagesToSend
+        .map((dataUrl) => {
+        if (!dataUrl || !dataUrl.startsWith("data:image/"))
+            return null;
+        return { image_url: dataUrl };
+    })
+        .filter(Boolean);
+    if (imagesPayload.length === 0)
         throw new Error("OPENAI_IMAGE_EDIT_INVALID_DATA_URL");
-    const bytes = Buffer.from(parsed.base64, "base64");
-    const blob = new Blob([bytes], { type: parsed.mime });
-    const fileName = parsed.mime.toLowerCase().includes("png") ? "image.png" : "image";
-    const form = new FormData();
-    form.append("model", args.model);
-    form.append("prompt", args.prompt);
-    form.append("image", blob, fileName);
+    const body = {
+        model: args.model,
+        prompt: args.prompt,
+        images: imagesPayload,
+    };
     if (Number.isFinite(args.n))
-        form.append("n", String(args.n));
+        body.n = args.n;
     if (typeof args.size === "string" && args.size.trim()) {
-        const normalizedSize = args.size.trim().replace(/[×*]/g, "x");
-        form.append("size", normalizedSize);
+        body.size = args.size.trim().replace(/[×*]/g, "x");
     }
     const res = await fetch(`${apiRoot}/images/edits`, {
         method: "POST",
         headers: {
             Authorization: `Bearer ${args.apiKey}`,
-            // NOTE: do NOT set Content-Type; fetch will set multipart boundary.
+            "Content-Type": "application/json",
         },
-        body: form,
+        body: JSON.stringify(body),
         signal: args.signal,
     });
     const json = await res.json().catch(() => ({}));
@@ -640,12 +655,18 @@ async function googleGenerateImage(args) {
     const apiRoot = base.replace(/\/$/, "");
     const url = `${apiRoot}/models/${encodeURIComponent(args.model)}:generateContent`;
     const parts = [];
-    if (args.image_data_url && args.image_data_url.startsWith("data:image/")) {
-        const m = args.image_data_url.match(/^data:([^;]+);base64,(.*)$/);
-        if (m) {
-            const mime = m[1] || "image/png";
-            const data = m[2] || "";
-            parts.push({ inlineData: { mimeType: mime, data } });
+    // 다중 이미지 우선, 없으면 단일 image_data_url
+    const urlsToUse = Array.isArray(args.image_data_urls) && args.image_data_urls.length > 0
+        ? args.image_data_urls
+        : args.image_data_url ? [args.image_data_url] : [];
+    for (const dataUrl of urlsToUse) {
+        if (dataUrl && dataUrl.startsWith("data:image/")) {
+            const m = dataUrl.match(/^data:([^;]+);base64,(.*)$/);
+            if (m) {
+                const mime = m[1] || "image/png";
+                const data = m[2] || "";
+                parts.push({ inlineData: { mimeType: mime, data } });
+            }
         }
     }
     parts.push({ text: args.prompt });

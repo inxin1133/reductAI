@@ -379,7 +379,10 @@ export async function openaiEditImage(args: {
   apiKey: string
   model: string
   prompt: string
-  image_data_url: string
+  /** 단일 이미지 (하위 호환) */
+  image_data_url?: string
+  /** 다중 이미지 - 모든 첨부 이미지를 함께 전달 (GPT Image 최대 16장, DALL-E 2는 1장) */
+  image_data_urls?: string[]
   // common options (best-effort)
   n?: number
   size?: string
@@ -389,30 +392,47 @@ export async function openaiEditImage(args: {
   const base = normalized || "https://api.openai.com/v1"
   const apiRoot = base.replace(/\/$/, "")
 
-  const parsed = parseDataUrl(args.image_data_url)
-  if (!parsed) throw new Error("OPENAI_IMAGE_EDIT_INVALID_DATA_URL")
+  // 다중 이미지 우선, 없으면 단일
+  const urlsToUse =
+    Array.isArray(args.image_data_urls) && args.image_data_urls.length > 0
+      ? args.image_data_urls
+      : args.image_data_url
+        ? [args.image_data_url]
+        : []
 
-  const bytes = Buffer.from(parsed.base64, "base64")
-  const blob = new Blob([bytes], { type: parsed.mime })
-  const fileName = parsed.mime.toLowerCase().includes("png") ? "image.png" : "image"
+  if (urlsToUse.length === 0) throw new Error("OPENAI_IMAGE_EDIT_NO_IMAGE")
 
-  const form = new FormData()
-  form.append("model", args.model)
-  form.append("prompt", args.prompt)
-  form.append("image", blob, fileName)
-  if (Number.isFinite(args.n as number)) form.append("n", String(args.n))
+  const modelLower = (args.model || "").trim().toLowerCase()
+  const isDallE2 = modelLower.includes("dall-e-2") || modelLower === "dall-e-2"
+  const maxImages = isDallE2 ? 1 : 16
+  const imagesToSend = urlsToUse.slice(0, maxImages)
+
+  const imagesPayload = imagesToSend
+    .map((dataUrl) => {
+      if (!dataUrl || !dataUrl.startsWith("data:image/")) return null
+      return { image_url: dataUrl }
+    })
+    .filter(Boolean) as Array<{ image_url: string }>
+
+  if (imagesPayload.length === 0) throw new Error("OPENAI_IMAGE_EDIT_INVALID_DATA_URL")
+
+  const body: Record<string, unknown> = {
+    model: args.model,
+    prompt: args.prompt,
+    images: imagesPayload,
+  }
+  if (Number.isFinite(args.n as number)) body.n = args.n
   if (typeof args.size === "string" && args.size.trim()) {
-    const normalizedSize = args.size.trim().replace(/[×*]/g, "x")
-    form.append("size", normalizedSize)
+    body.size = args.size.trim().replace(/[×*]/g, "x")
   }
 
   const res = await fetch(`${apiRoot}/images/edits`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${args.apiKey}`,
-      // NOTE: do NOT set Content-Type; fetch will set multipart boundary.
+      "Content-Type": "application/json",
     },
-    body: form as any,
+    body: JSON.stringify(body),
     signal: args.signal,
   })
   const json = await res.json().catch(() => ({}))
@@ -678,7 +698,10 @@ export async function googleGenerateImage(args: {
   n?: number
   aspect_ratio?: string
   resolution?: string
+  /** 단일 이미지 (하위 호환) */
   image_data_url?: string
+  /** 다중 이미지 - 모든 첨부 이미지를 함께 전달 */
+  image_data_urls?: string[]
   signal?: AbortSignal
 }): Promise<{ raw: unknown; urls: string[]; data_urls: string[]; b64: string[] }> {
   const normalized = normalizeGoogleBaseUrl(args.apiBaseUrl)
@@ -689,12 +712,19 @@ export async function googleGenerateImage(args: {
 
   const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = []
 
-  if (args.image_data_url && args.image_data_url.startsWith("data:image/")) {
-    const m = args.image_data_url.match(/^data:([^;]+);base64,(.*)$/)
-    if (m) {
-      const mime = m[1] || "image/png"
-      const data = m[2] || ""
-      parts.push({ inlineData: { mimeType: mime, data } })
+  // 다중 이미지 우선, 없으면 단일 image_data_url
+  const urlsToUse = Array.isArray(args.image_data_urls) && args.image_data_urls.length > 0
+    ? args.image_data_urls
+    : args.image_data_url ? [args.image_data_url] : []
+
+  for (const dataUrl of urlsToUse) {
+    if (dataUrl && dataUrl.startsWith("data:image/")) {
+      const m = dataUrl.match(/^data:([^;]+);base64,(.*)$/)
+      if (m) {
+        const mime = m[1] || "image/png"
+        const data = m[2] || ""
+        parts.push({ inlineData: { mimeType: mime, data } })
+      }
     }
   }
 

@@ -52,6 +52,7 @@ import {
 import { ProviderLogo } from "@/components/icons/providerLogoRegistry"
 import { ModelOptionsPanel } from "@/components/ModelOptionsPanel"
 import { getCreditTabStyles, PLAN_TIER_LABELS, PLAN_TIER_STYLES, normalizePlanTier, type PlanTier } from "@/lib/planTier"
+import { getEffectiveMaxAttachments, getEffectiveMaxAttachmentBytes } from "@/lib/attachmentLimits"
 import { withActiveTenantHeader } from "@/lib/tenantContext"
 import { CreditSelectionProvider, useCreditSelection } from "@/contexts/CreditSelectionContext"
 
@@ -1212,8 +1213,6 @@ function ChatInterfaceInner({
     setIsPreparingAttachments(hasPendingAttachments)
   }, [hasPendingAttachments])
 
-  const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024 // 10MB
-  const MAX_ATTACHMENTS_COUNT = 6
   const MAX_IMAGE_DIM = 2048
 
   const compressImageToBlob = React.useCallback(
@@ -1302,6 +1301,8 @@ function ChatInterfaceInner({
         source_type: "attachment",
         filename: args.name || "",
       })
+      const planTierForUpload = creditSelection?.planTier ?? ""
+      if (planTierForUpload) params.set("plan_tier", planTierForUpload)
       const res = await fetch(`/api/ai/media/assets/upload?${params.toString()}`, {
         method: "POST",
         headers: {
@@ -1328,7 +1329,7 @@ function ChatInterfaceInner({
       if (!url) throw new Error("UPLOAD_FAILED")
       return { url, assetId }
     },
-    [conversationId, getAuthToken]
+    [conversationId, creditSelection?.planTier, getAuthToken]
   )
 
   const updateAttachment = React.useCallback((id: string, patch: Partial<ChatAttachment>) => {
@@ -1352,22 +1353,25 @@ function ChatInterfaceInner({
     setAttachments(next)
   }, [])
 
-  const addFiles = React.useCallback((files: FileList | null, mode: "mixed" | "image_only") => {
-    console.log("[addFiles] called with", files?.length, "files, mode:", mode)
-    if (!files || files.length === 0) return
+  const effectiveMaxAttachmentsRef = React.useRef(6)
 
-    // Check max attachments count
-    const currentCount = attachmentsRef.current.length
-    const remaining = MAX_ATTACHMENTS_COUNT - currentCount
-    if (remaining <= 0) {
-      alert(`최대 ${MAX_ATTACHMENTS_COUNT}개까지만 첨부할 수 있습니다.`)
-      return
-    }
+  const addFiles = React.useCallback(
+    (files: FileList | null, mode: "mixed" | "image_only") => {
+      console.log("[addFiles] called with", files?.length, "files, mode:", mode)
+      if (!files || files.length === 0) return
 
-    const fileArray = Array.from(files).slice(0, remaining)
-    if (fileArray.length < files.length) {
-      alert(`최대 ${MAX_ATTACHMENTS_COUNT}개까지만 첨부할 수 있습니다. ${files.length - fileArray.length}개 파일이 제외되었습니다.`)
-    }
+      const maxCount = effectiveMaxAttachmentsRef.current
+      const currentCount = attachmentsRef.current.length
+      const remaining = maxCount - currentCount
+      if (remaining <= 0) {
+        alert(`최대 ${maxCount}개까지만 첨부할 수 있습니다.`)
+        return
+      }
+
+      const fileArray = Array.from(files).slice(0, remaining)
+      if (fileArray.length < files.length) {
+        alert(`최대 ${maxCount}개까지만 첨부할 수 있습니다. ${files.length - fileArray.length}개 파일이 제외되었습니다.`)
+      }
 
     const next: ChatAttachment[] = []
     for (const f of fileArray) {
@@ -1388,9 +1392,9 @@ function ChatInterfaceInner({
           uploading: true,
         })
       } else {
-        // Non-image file: check size limit directly
-        if (f.size > MAX_ATTACHMENT_BYTES) {
-          alert(`파일 "${f.name}"은(는) ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB를 초과하여 첨부할 수 없습니다.`)
+        const maxFileBytes = getEffectiveMaxAttachmentBytes(creditSelection?.planTier ?? null, "file")
+        if (f.size > maxFileBytes) {
+          alert(`파일 "${f.name}"은(는) ${Math.round(maxFileBytes / 1024 / 1024)}MB를 초과하여 첨부할 수 없습니다.`)
           continue
         }
         next.push({
@@ -1426,11 +1430,12 @@ function ChatInterfaceInner({
               removeAttachment(a.id)
               return
             }
-            const result = await compressImageToBlob(a.file, MAX_ATTACHMENT_BYTES)
+            const maxImageBytes = getEffectiveMaxAttachmentBytes(creditSelection?.planTier ?? null, "image")
+            const result = await compressImageToBlob(a.file, maxImageBytes)
             if (result.failed) {
               alert(
                 `이미지 "${a.name}"은(는) 압축 후에도 ${Math.round(
-                  MAX_ATTACHMENT_BYTES / 1024 / 1024
+                  maxImageBytes / 1024 / 1024
                 )}MB를 초과하여 첨부할 수 없습니다.\n더 작은 이미지를 사용하거나 직접 리사이즈해주세요.`
               )
               removeAttachment(a.id)
@@ -1453,8 +1458,9 @@ function ChatInterfaceInner({
             return
           }
 
-          if (a.file.size > MAX_ATTACHMENT_BYTES) {
-            alert(`파일 "${a.name}"은(는) ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB를 초과하여 첨부할 수 없습니다.`)
+          const maxFileBytes = getEffectiveMaxAttachmentBytes(creditSelection?.planTier ?? null, "file")
+          if (a.file.size > maxFileBytes) {
+            alert(`파일 "${a.name}"은(는) ${Math.round(maxFileBytes / 1024 / 1024)}MB를 초과하여 첨부할 수 없습니다.`)
             removeAttachment(a.id)
             return
           }
@@ -1475,7 +1481,8 @@ function ChatInterfaceInner({
         } catch (err: any) {
           console.warn("[addFiles] upload failed:", err)
           if (err?.status === 413 || String(err?.message || "").includes("too large")) {
-            alert(`파일 "${a.name}"은(는) ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB를 초과하여 첨부할 수 없습니다.`)
+            const limitBytes = getEffectiveMaxAttachmentBytes(creditSelection?.planTier ?? null, a.kind)
+            alert(`파일 "${a.name}"은(는) ${Math.round(limitBytes / 1024 / 1024)}MB를 초과하여 첨부할 수 없습니다.`)
           } else if (String(err?.message || "").includes("AUTH_REQUIRED")) {
             alert("로그인이 필요합니다. 다시 로그인 후 시도해 주세요.")
           } else {
@@ -1485,7 +1492,7 @@ function ChatInterfaceInner({
         }
       })()
     })
-  }, [compressImageToBlob, removeAttachment, updateAttachment, uploadAttachmentToFileService])
+  }, [creditSelection?.planTier, compressImageToBlob, removeAttachment, updateAttachment, uploadAttachmentToFileService])
 
   const handleDropAttachments = React.useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
@@ -1971,6 +1978,21 @@ function ChatInterfaceInner({
   const selectedCapabilities = React.useMemo(() => {
     return selectedModel?.capabilities ?? {}
   }, [selectedModel?.capabilities])
+
+  const effectiveMaxAttachments = React.useMemo(
+    () =>
+      getEffectiveMaxAttachments({
+        planTier: creditSelection?.planTier ?? null,
+        modelType: String(uiSelectedType ?? "text"),
+        modelApiId: String(useSelectionOverride ? uiSelectedModelApiId ?? "" : effectiveModelApiId ?? ""),
+        capabilities: selectedCapabilities,
+      }),
+    [creditSelection?.planTier, uiSelectedType, useSelectionOverride, uiSelectedModelApiId, effectiveModelApiId, selectedCapabilities]
+  )
+
+  React.useEffect(() => {
+    effectiveMaxAttachmentsRef.current = effectiveMaxAttachments
+  }, [effectiveMaxAttachments])
 
   React.useEffect(() => {
     const type = useSelectionOverride ? uiSelectedType : selectedType
@@ -2699,9 +2721,8 @@ function ChatInterfaceInner({
       setPrompt("")
 
       // Serialize attachments for API (uploaded -> url). Limit size to avoid huge payloads.
-      const maxAttachments = 6
       const apiAttachments: Array<Record<string, unknown>> = []
-      for (const a of attachmentsSnapshot.slice(0, maxAttachments)) {
+      for (const a of attachmentsSnapshot.slice(0, effectiveMaxAttachments)) {
         if (a.kind === "link") {
           apiAttachments.push({ kind: "link", url: a.url, title: a.title || "" })
           continue
@@ -2897,6 +2918,7 @@ function ChatInterfaceInner({
       hasPendingAttachments,
       isWaitingForResponse,
       onIntroSendClick,
+      effectiveMaxAttachments,
     ]
   )
 
@@ -3637,6 +3659,11 @@ function ChatInterfaceInner({
                           onClick={() => {
                             const raw = String(linkUrl || "").trim()
                             if (!raw) return
+                            const maxCount = effectiveMaxAttachments
+                            if (attachments.length >= maxCount) {
+                              alert(`최대 ${maxCount}개까지만 첨부할 수 있습니다.`)
+                              return
+                            }
                             const url = /^(https?:)?\/\//i.test(raw) ? raw : `https://${raw}`
                             setAttachments((prev) => [
                               ...prev,

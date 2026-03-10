@@ -208,6 +208,7 @@ export async function createMediaAsset(req: Request, res: Response) {
     ] as FileSourceType[]).includes(sourceTypeRaw as FileSourceType)
       ? (sourceTypeRaw as FileSourceType)
       : 'attachment';
+    const planTier = typeof body.plan_tier === 'string' ? body.plan_tier.trim() || null : null;
     const kindRaw = typeof body.kind === 'string' ? body.kind.trim().toLowerCase() : '';
     const kind = (['image', 'audio', 'video', 'file'] as MediaKind[]).includes(kindRaw as MediaKind)
       ? (kindRaw as MediaKind)
@@ -232,6 +233,7 @@ export async function createMediaAsset(req: Request, res: Response) {
       index,
       kind,
       sourceType,
+      planTier,
     });
 
     return res.status(201).json(stored);
@@ -266,6 +268,7 @@ export async function createMediaAssetUpload(req: Request, res: Response) {
     ] as FileSourceType[]).includes(sourceTypeRaw as FileSourceType)
       ? (sourceTypeRaw as FileSourceType)
       : 'attachment';
+    const planTier = typeof q.plan_tier === 'string' ? q.plan_tier.trim() || null : null;
     const kindRaw = typeof q.kind === 'string' ? q.kind.trim().toLowerCase() : '';
     const kind = (['image', 'audio', 'video', 'file'] as MediaKind[]).includes(kindRaw as MediaKind)
       ? (kindRaw as MediaKind)
@@ -301,6 +304,7 @@ export async function createMediaAssetUpload(req: Request, res: Response) {
       kind,
       sourceType,
       originalFilename,
+      planTier,
     });
 
     return res.status(201).json(stored);

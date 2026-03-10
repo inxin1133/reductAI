@@ -53,6 +53,27 @@ function maxBytes() {
   return Number.isFinite(raw) && raw > 0 ? raw : 20 * 1024 * 1024;
 }
 
+/**
+ * 첨부파일 용량 제한 (file-service 총괄)
+ * - Free: 7MB (이미지/파일 각각)
+ * - Pro 이상: 20MB (이미지/파일 각각)
+ * - plan_tier 미제공 시 DEFAULT (20MB) 적용 (post_upload 등)
+ */
+function getAttachmentBytesLimit(planTier: string | null, kind: 'image' | 'file'): number {
+  const tier = (planTier ?? '').toLowerCase();
+  const isFree = tier === 'free';
+  if (kind === 'image') {
+    const key = isFree ? 'ATTACHMENT_IMAGE_MAX_BYTES_FREE' : 'ATTACHMENT_IMAGE_MAX_BYTES_DEFAULT';
+    const fallback = isFree ? 7 * 1024 * 1024 : 20 * 1024 * 1024;
+    const raw = Number.parseInt(process.env[key] || String(fallback), 10);
+    return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+  }
+  const key = isFree ? 'ATTACHMENT_FILE_MAX_BYTES_FREE' : 'ATTACHMENT_FILE_MAX_BYTES_DEFAULT';
+  const fallback = isFree ? 7 * 1024 * 1024 : 20 * 1024 * 1024;
+  const raw = Number.parseInt(process.env[key] || String(fallback), 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
 function computeExpiresAt(applyTtl: boolean) {
   if (!applyTtl) return null;
   const days = ttlDays();
@@ -73,6 +94,7 @@ export async function storeImageDataUrlAsAsset(args: {
   index: number;
   kind?: MediaKind;
   sourceType?: FileSourceType;
+  planTier?: string | null;
 }): Promise<{ assetId: string; url: string; mime: string; bytes: number; sha256: string; storageKey: string }> {
   const parsed = parseDataUrl(args.dataUrl);
   if (!parsed) throw new Error('INVALID_DATA_URL');
@@ -88,7 +110,14 @@ export async function storeImageDataUrlAsAsset(args: {
           : 'file');
 
   const bytesBuf = Buffer.from(parsed.base64, 'base64');
-  if (bytesBuf.length > maxBytes()) {
+  let limit: number;
+  if (args.sourceType === 'attachment') {
+    const attachKind = kind === 'image' ? 'image' : 'file';
+    limit = getAttachmentBytesLimit(args.planTier ?? null, attachKind);
+  } else {
+    limit = maxBytes();
+  }
+  if (bytesBuf.length > limit) {
     throw new Error('FILE_TOO_LARGE');
   }
   const sha256 = crypto.createHash('sha256').update(bytesBuf).digest('hex');
@@ -161,6 +190,7 @@ export async function storeBytesAsAsset(args: {
   kind?: MediaKind;
   sourceType?: FileSourceType;
   originalFilename?: string | null;
+  planTier?: string | null;
 }): Promise<{ assetId: string; url: string; mime: string; bytes: number; sha256: string; storageKey: string }> {
   const mime = String(args.mime || '').trim() || 'application/octet-stream';
   const kind: MediaKind =
@@ -175,7 +205,14 @@ export async function storeBytesAsAsset(args: {
 
   const bytesBuf = args.bytesBuf;
   if (!Buffer.isBuffer(bytesBuf) || bytesBuf.length === 0) throw new Error('INVALID_BYTES');
-  if (bytesBuf.length > maxBytes()) {
+  let limit: number;
+  if (args.sourceType === 'attachment') {
+    const attachKind = kind === 'image' ? 'image' : 'file';
+    limit = getAttachmentBytesLimit(args.planTier ?? null, attachKind);
+  } else {
+    limit = maxBytes();
+  }
+  if (bytesBuf.length > limit) {
     throw new Error('FILE_TOO_LARGE');
   }
 

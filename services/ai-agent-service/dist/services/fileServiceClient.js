@@ -15,18 +15,21 @@ async function storeImageDataUrlAsAsset(args) {
     const authHeader = (args.authHeader || "").trim();
     if (authHeader)
         headers.Authorization = authHeader;
+    const body = {
+        conversation_id: args.conversationId,
+        message_id: args.messageId,
+        asset_id: args.assetId,
+        data_url: args.dataUrl,
+        index: args.index,
+        kind: args.kind,
+        source_type: args.sourceType,
+    };
+    if (args.planTier)
+        body.plan_tier = args.planTier;
     const res = await fetch(`${FILE_SERVICE_URL}/api/ai/media/assets`, {
         method: "POST",
         headers,
-        body: JSON.stringify({
-            conversation_id: args.conversationId,
-            message_id: args.messageId,
-            asset_id: args.assetId,
-            data_url: args.dataUrl,
-            index: args.index,
-            kind: args.kind,
-            source_type: args.sourceType,
-        }),
+        body: JSON.stringify(body),
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
