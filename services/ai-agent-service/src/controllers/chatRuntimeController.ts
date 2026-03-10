@@ -3306,8 +3306,12 @@ export async function chatRun(req: Request, res: Response) {
             },
           })
         }
+        const providerLabel =
+          typeof row.provider_product_name === "string" && String(row.provider_product_name).trim()
+            ? String(row.provider_product_name).trim()
+            : "이미지"
         return await failAndRespond(500, {
-          message: "OpenAI 이미지 요청에 실패했습니다.",
+          message: `${providerLabel} 이미지 요청에 실패했습니다.`,
           details: msg,
         })
       }

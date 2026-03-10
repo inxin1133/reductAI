@@ -121,7 +121,7 @@ AI 모델 (이미지 타입)
 
 | 필드 | 값 | 비고 |
 |------|-----|------|
-| name | `gemini-3-pro-image-preview` | 모델 이름 (Nano Banana Pro) |
+| name | `Nano Banana Pro` | 모델 이름 (Nano Banana Pro) |
 | model_id | `gemini-3-pro-image-preview` | API 모델 ID. [모델 문서](https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-image-preview) 확인 |
 | display_name | `Gemini 3 Pro Image` | 표시용 (Nano Banana Pro) |
 | model_type | `image` | **text가 아님** |
@@ -137,6 +137,12 @@ AI 모델 (이미지 타입)
 | sort_order | `0` | |
 
 ### capabilities
+
+> **첨부 파일 제한** (document/attachment_limits_implementation.md)
+> - `limits.max_reference_images`: 참조 이미지 최대 수 (14장). 등급 한도(free 1, pro 6)와 조합해 `min(tierMax, 14)` 적용
+> - **용량**: Free 7MB / Pro 이상 20MB (이미지·파일 각각, file-service 단일 소스)
+> - image 모델: `getEffectiveMaxAttachments` = `min(등급별_첨부수, max_reference_images)`
+
 ```json
 {
   "model": "gemini-3-pro-image-preview",
@@ -201,7 +207,7 @@ AI 모델 (이미지 타입)
   "validation_hints": [
     "Nano Banana Pro: studio-quality output, ~94% text rendering accuracy, up to 14 reference images.",
     "Search grounding for factually correct diagrams/infographics. Translation of text within images.",
-    "현재 시스템은 provider=openai만 image 지원. Google 연동 시 구현 필요."
+    "첨부 제한: max_reference_images 14장. 용량 Free 7MB / Pro+ 20MB."
   ],
   "description": [    
     "스튜디오급 출력, 약 94%의 텍스트 렌더링 정확도",

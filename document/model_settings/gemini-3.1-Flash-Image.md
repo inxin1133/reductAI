@@ -123,7 +123,7 @@ AI 모델 (이미지 타입)
 
 | 필드 | 값 | 비고 |
 |------|-----|------|
-| name | `gemini-3.1-flash-image-preview` | 모델 이름 (Nano Banana 2) |
+| name | `Nano Banana 2` | 모델 이름 (Nano Banana 2) |
 | model_id | `gemini-3.1-flash-image-preview` | API 모델 ID. [모델 목록](https://ai.google.dev/gemini-api/docs/models)에서 확인 |
 | display_name | `Gemini 3.1 Flash Image` | 표시용 (Nano Banana 2) |
 | model_type | `image` | **text가 아님** |
@@ -139,12 +139,18 @@ AI 모델 (이미지 타입)
 | sort_order | `0` | |
 
 ### capabilities
+
+> **첨부 파일 제한** (document/attachment_limits_implementation.md)
+> - `limits.max_reference_images`: 참조 이미지 최대 수 (14장). 등급 한도(free 1, pro 6)와 조합해 `min(tierMax, 14)` 적용
+> - **용량**: Free 7MB / Pro 이상 20MB (이미지·파일 각각, file-service 단일 소스)
+
 ```json
 {
   "model": "gemini-3.1-flash-image-preview",
   "limits": {
     "max_images_per_request": 4,
-    "max_partial_images": 3
+    "max_partial_images": 3,
+    "max_reference_images": 14
   },
   "options": {
     "n": {
@@ -181,7 +187,7 @@ AI 모델 (이미지 타입)
   "validation_hints": [
     "Gemini 3.1 Flash Image: subject consistency (up to 5 characters, 14 objects), precision text rendering.",
     "Supports conversational editing, multi-image fusion.",
-    "현재 시스템은 provider=openai만 image 지원. Google 연동 시 구현 필요."
+    "첨부 제한: max_reference_images 14장. 용량 Free 7MB / Pro+ 20MB."
   ], 
   "description": [    
     "정밀한 텍스트 렌더링",

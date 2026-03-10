@@ -1,4 +1,4 @@
-# Gemini 2.5 Flash Image Preview (Nano Banana)
+# Gemini 2.5 Flash Image (Nano Banana)
 
 > 이 문서는 reductai 시스템에 Gemini 2.5 Flash Image Preview (Nano Banana)를 등록할 때 참조하는 설정 스펙입니다.
 > models_prompt_image.md 및 schema_models.sql 스키마를 기준으로 검토·조정되었습니다.
@@ -121,8 +121,8 @@ AI 모델 (이미지 타입)
 
 | 필드 | 값 | 비고 |
 |------|-----|------|
-| name | `gemini-2.5-flash-image-preview` | 모델 이름 (Nano Banana) |
-| model_id | `gemini-2.5-flash-image-preview` | API 모델 ID. [모델 목록](https://ai.google.dev/gemini-api/docs/models)에서 확인 |
+| name | `Nano Banana` | 모델 이름 (Nano Banana) |
+| model_id | `gemini-2.5-flash-image` | API 모델 ID. [모델 목록](https://ai.google.dev/gemini-api/docs/models)에서 확인 |
 | display_name | `Gemini 2.5 Flash Image` | 표시용 (Nano Banana) |
 | model_type | `image` | **text가 아님** |
 | context_window | `32768` | 32K 토큰 (텍스트+이미지 입력) |
@@ -137,9 +137,14 @@ AI 모델 (이미지 타입)
 | sort_order | `0` | |
 
 ### capabilities
+
+> **첨부 파일 제한** (document/attachment_limits_implementation.md)
+> - `limits.max_reference_images`: 참조 이미지 최대 수 (3장). 등급 한도(free 1, pro 6)와 조합해 `min(tierMax, 3)` 적용
+> - **용량**: Free 7MB / Pro 이상 20MB (이미지·파일 각각, file-service 단일 소스)
+
 ```json
 {
-  "model": "gemini-2.5-flash-image-preview",
+  "model": "gemini-2.5-flash-image",
   "limits": {
     "max_images_per_request": 4,
     "max_partial_images": 3,
@@ -182,7 +187,7 @@ AI 모델 (이미지 타입)
   "validation_hints": [
     "Nano Banana: multi-image fusion (up to 3 input images), character consistency, localized edits.",
     "Cost-effective, low latency. 32K context (smaller than 3.x Nano Banana).",
-    "현재 시스템은 provider=openai만 image 지원. Google 연동 시 구현 필요."
+    "첨부 제한: max_reference_images 3장. 용량 Free 7MB / Pro+ 20MB."
   ],
   "description": [    
     "다중 이미지 융합(최대 3개의 입력 이미지)",

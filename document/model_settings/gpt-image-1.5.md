@@ -134,12 +134,18 @@ AI 모델 (이미지 타입)
 | sort_order | `0` | |
 
 ### capabilities
+
+> **첨부 파일 제한** (document/attachment_limits_implementation.md)
+> - `limits.max_reference_images`: 참조 이미지 최대 수 (16장). 등급 한도(free 1, pro 6)와 조합해 `min(tierMax, 16)` 적용
+> - **용량**: Free 7MB / Pro 이상 20MB (이미지·파일 각각, file-service 단일 소스)
+
 ```json
 {
   "model": "gpt-image-1.5",
   "limits": {
     "max_images_per_request": 10,
-    "max_partial_images": 3
+    "max_partial_images": 3,
+    "max_reference_images": 16
   },
   "options": {
     "n": {
@@ -190,7 +196,8 @@ AI 모델 (이미지 타입)
   },
   "validation_hints": [
     "Image edit (with reference image) currently applies size only; quality/background are ignored.",
-    "input_fidelity is supported for gpt-image-1.5 (not gpt-image-1-mini)."
+    "input_fidelity is supported for gpt-image-1.5 (not gpt-image-1-mini).",
+    "첨부 제한: max_reference_images 16장. 용량 Free 7MB / Pro+ 20MB."
   ]
 }
 ```
