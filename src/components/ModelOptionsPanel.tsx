@@ -89,7 +89,7 @@ function normalizeDefaults(v: unknown): Record<string, unknown> {
 
 function normalizeDescription(v: unknown): string[] {
   if (typeof v === "string" && v.trim()) return [v.trim()]
-  if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string" && String(x).trim()).map((x) => x.trim())
+  if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string" && Boolean(String(x).trim())).map((x) => x.trim())
   return []
 }
 
@@ -133,9 +133,11 @@ export type ModelOptionsPanelProps = {
   value: Record<string, unknown>
   onApply: (next: Record<string, unknown>) => void
   className?: string
+  /** true: 마지막 구간. 옵션 변경 차단, 기본값만 사용 */
+  disabled?: boolean
 }
 
-export function ModelOptionsPanel({ capabilities, value, onApply, className }: ModelOptionsPanelProps) {
+export function ModelOptionsPanel({ capabilities, value, onApply, className, disabled }: ModelOptionsPanelProps) {
   const cap = isRecord(capabilities) ? capabilities : {}
   const options = React.useMemo(() => normalizeOptions(cap.options), [cap.options])
   const defaults = React.useMemo(() => normalizeDefaults(cap.defaults), [cap.defaults])
@@ -205,13 +207,22 @@ export function ModelOptionsPanel({ capabilities, value, onApply, className }: M
   if (!visibleKeys.length) return <div className={cn("text-sm text-muted-foreground", className)}>이 모델은 옵션이 없습니다.</div>
 
   const setAndApply = (nextDraft: Record<string, unknown>) => {
+    if (disabled) return
     setDraft(nextDraft)
     onApply(sanitizeDraft(nextDraft))
   }
 
   return (
     <div className={cn("w-full", className)}>
-      <Card className="max-h-[360px] py-2 overflow-y-scroll overscroll-contain scrollbar-thin border-0 shadow-none rounded-none">
+      {disabled && (
+        <p className="text-xs text-amber-600 mb-2">마지막 구간: 기본 옵션만 적용됩니다.</p>
+      )}
+      <Card
+        className={cn(
+          "max-h-[360px] py-2 overflow-y-scroll overscroll-contain scrollbar-thin border-0 shadow-none rounded-none",
+          disabled && "pointer-events-none opacity-70"
+        )}
+      >
         {/* <CardHeader className="px-4">
           <CardTitle>Options</CardTitle>
           <CardDescription>capabilities.options 기반 (변경 즉시 적용)</CardDescription>

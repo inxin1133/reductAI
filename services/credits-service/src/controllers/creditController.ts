@@ -2466,11 +2466,17 @@ export async function checkCanConsume(req: Request, res: Response) {
     })
 
     const canConsume = withBalance.length > 0
+    const primaryAccount =
+      accounts.find((a) => selectedAccountId && String(a.id) === selectedAccountId) || withBalance[0] || accounts[0]
+    const remainingCredits = primaryAccount
+      ? Math.max(0, Number(primaryAccount.balance_credits ?? 0) - Number(primaryAccount.reserved_credits ?? 0))
+      : 0
     return res.json({
       ok: true,
       can_consume: canConsume,
       reason: canConsume ? null : "insufficient_credits",
       message: canConsume ? null : "크레딧이 부족합니다.",
+      remaining_credits: remainingCredits,
     })
   } catch (e: unknown) {
     console.error("checkCanConsume error:", e)

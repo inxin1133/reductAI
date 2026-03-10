@@ -28,6 +28,7 @@ export async function getChatUiConfig(_req: Request, res: Response) {
         m.context_window,
         m.max_input_tokens,
         m.max_output_tokens,
+        m.metadata,
         p.id AS provider_id,
         p.name AS provider_name,
         p.product_name AS provider_product_name,
@@ -73,6 +74,11 @@ export async function getChatUiConfig(_req: Request, res: Response) {
         providersByType[modelType].push(entry)
       }
 
+      const metadata = r.metadata && typeof r.metadata === "object" ? (r.metadata as Record<string, unknown>) : {}
+      const creditRestriction =
+        metadata.credit_restriction && typeof metadata.credit_restriction === "object"
+          ? (metadata.credit_restriction as Record<string, unknown>)
+          : null
       entry.models.push({
         id: String(r.model_db_id),
         model_type: modelType,
@@ -87,6 +93,7 @@ export async function getChatUiConfig(_req: Request, res: Response) {
         context_window: typeof r.context_window === "number" ? r.context_window : null,
         max_input_tokens: typeof r.max_input_tokens === "number" ? r.max_input_tokens : null,
         max_output_tokens: typeof r.max_output_tokens === "number" ? r.max_output_tokens : null,
+        credit_restriction: creditRestriction,
       })
     }
 

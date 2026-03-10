@@ -61,14 +61,18 @@ export function getLimitsFromCapabilities(capabilities: unknown): Partial<Attach
  * 유효 최대 첨부 수 (파일 유형 무관, 총합)
  * - image 모델: 이미지 한도 + 등급 한도 조합
  * - text 등: 총 첨부 수만 적용
+ * - isInLastZone: 크레딧 마지막 구간 시 1개로 제한 (이미지 첨부 악용 방지)
  */
 export function getEffectiveMaxAttachments(args: {
   planTier: string | null
   modelType: string
   modelApiId: string
   capabilities?: unknown
+  isInLastZone?: boolean
 }): number {
-  const { planTier, modelType, modelApiId, capabilities } = args
+  const { planTier, modelType, modelApiId, capabilities, isInLastZone } = args
+  if (isInLastZone) return 1
+
   const capLimits = getLimitsFromCapabilities(capabilities)
   const tierKey = (planTier ?? "free").toLowerCase()
   const tierMax = TIER_MAX_ATTACHMENTS[tierKey] ?? 1

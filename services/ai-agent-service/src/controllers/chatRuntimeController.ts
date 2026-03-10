@@ -103,10 +103,11 @@ export type UsageTokenBreakdown = {
 }
 
 /** OpenAI Images, Gemini Imagen 등: input/output_tokens_details에서 text_tokens, image_tokens 추출 */
-function extractTokenBreakdown(u: any): UsageTokenBreakdown | null {
+function extractTokenBreakdown(u: unknown): UsageTokenBreakdown | null {
   if (!u || typeof u !== "object") return null
-  const inDetails = u.input_tokens_details || u.inputTokenDetails || u.prompt_token_details
-  const outDetails = u.output_tokens_details || u.outputTokenDetails || u.candidates_token_details || u.completion_token_details
+  const o = u as Record<string, unknown>
+  const inDetails = (o.input_tokens_details || o.inputTokenDetails || o.prompt_token_details) as Record<string, unknown> | undefined
+  const outDetails = (o.output_tokens_details || o.outputTokenDetails || o.candidates_token_details || o.completion_token_details) as Record<string, unknown> | undefined
   const inText = Number(inDetails?.text_tokens ?? inDetails?.textTokens ?? 0)
   const inImage = Number(inDetails?.image_tokens ?? inDetails?.imageTokens ?? 0)
   const outText = Number(outDetails?.text_tokens ?? outDetails?.textTokens ?? 0)
@@ -115,7 +116,7 @@ function extractTokenBreakdown(u: any): UsageTokenBreakdown | null {
   return { input_text_tokens: inText, input_image_tokens: inImage, output_text_tokens: outText, output_image_tokens: outImage }
 }
 
-function extractUsageFromProviderRaw(raw: any): {
+function extractUsageFromProviderRaw(raw: unknown): {
   input_tokens: number
   cached_input_tokens: number
   output_tokens: number
@@ -123,7 +124,8 @@ function extractUsageFromProviderRaw(raw: any): {
   /** Text/image token breakdown (OpenAI Images, Gemini Imagen 등). 있으면 image 모달리티에서 별도 과금 적용 */
   token_breakdown?: UsageTokenBreakdown
 } {
-  const au = raw?.usage
+  const r = raw as Record<string, unknown>
+  const au = r?.usage as Record<string, unknown> | undefined
   if (
     au &&
     (typeof au.cache_read_input_tokens === "number" || typeof au.cache_creation_input_tokens === "number") &&
@@ -144,11 +146,11 @@ function extractUsageFromProviderRaw(raw: any): {
       ...(breakdown ? { token_breakdown: breakdown } : {}),
     }
   }
-  const u = raw?.usage
+  const u = r?.usage as Record<string, unknown> | undefined
   if (u && (typeof u.input_tokens === "number" || typeof u.output_tokens === "number")) {
     const input = Number(u.input_tokens || 0)
     const output = Number(u.output_tokens || 0)
-    const cached = Number(u?.input_tokens_details?.cached_tokens || 0)
+    const cached = Number((u?.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens || 0)
     const total = typeof u.total_tokens === "number" ? Number(u.total_tokens) : input + output
     const breakdown = extractTokenBreakdown(u)
     return {
@@ -159,18 +161,18 @@ function extractUsageFromProviderRaw(raw: any): {
       ...(breakdown ? { token_breakdown: breakdown } : {}),
     }
   }
-  const cu = raw?.usage
+  const cu = r?.usage as Record<string, unknown> | undefined
   if (cu && (typeof cu.prompt_tokens === "number" || typeof cu.completion_tokens === "number")) {
     const input = Number(cu.prompt_tokens || 0)
     const output = Number(cu.completion_tokens || 0)
-    const cached = Number(cu?.prompt_tokens_details?.cached_tokens || 0)
+    const cached = Number((cu?.prompt_tokens_details as Record<string, unknown> | undefined)?.cached_tokens || 0)
     const total = typeof cu.total_tokens === "number" ? Number(cu.total_tokens) : input + output
     return { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: total }
   }
   // Google Gemini: usageMetadata (promptTokenCount, candidatesTokenCount)
   // - REST API: camelCase (promptTokenCount, candidatesTokenCount, totalTokenCount)
   // - cached_content_token_count: 캐시 사용 시에만 존재 (implicit/explicit context caching)
-  const um = raw?.usageMetadata || raw?.usage_metadata
+  const um = (r?.usageMetadata || r?.usage_metadata) as Record<string, unknown> | undefined
   if (um && (typeof um.promptTokenCount === "number" || typeof um.prompt_token_count === "number" || typeof um.candidatesTokenCount === "number" || typeof um.candidates_token_count === "number")) {
     const input = Number(um.promptTokenCount ?? um.prompt_token_count ?? 0)
     const output = Number(um.candidatesTokenCount ?? um.candidates_token_count ?? 0)
@@ -1240,8 +1242,8 @@ async function executeHttpJsonProfile(args: {
   if (modeRaw === "json_base64") {
     const b64Path = pickString(extract, "base64_path") || pickString(extract, "audio_base64_path") || pickString(extract, "video_base64_path")
     const mimePath = pickString(extract, "mime_path") || pickString(extract, "mime_type_path")
-    let b64Val = b64Path ? getByPath(initial.json, b64Path) : undefined
-    let mimeVal = mimePath ? getByPath(initial.json, mimePath) : undefined
+    const b64Val = b64Path ? getByPath(initial.json, b64Path) : undefined
+    const mimeVal = mimePath ? getByPath(initial.json, mimePath) : undefined
     // Lyria: purpose=music이면 predictions 전체를 먼저 처리 (sample_count 2~4 등 1개 이상 노출)
     if (args.purpose === "music" && initial.json && typeof initial.json === "object") {
       const root = initial.json as Record<string, unknown>
@@ -1629,6 +1631,7 @@ async function appendMessage(args: {
   return { id: String(r.rows[0].id), message_order: Number(r.rows[0].message_order) }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- reserved for future use
 async function updateMessageStatus(args: { id: string; status: "in_progress" | "success" | "failed" | "stopped" }) {
   const r = await query(
     `
@@ -1669,7 +1672,6 @@ async function updateMessageContent(args: {
 export async function cancelChatRun(req: Request, res: Response) {
   try {
     const userId = (req as AuthedRequest).userId
-    const authHeader = String(req.headers.authorization || "")
     const body = (req.body || {}) as { conversation_id?: string; request_id?: string }
     const conversationId = String(body.conversation_id || "").trim()
     const requestId = String(body.request_id || "").trim()
@@ -1977,7 +1979,6 @@ async function loadHistory(args: { conversationId: string }) {
 export async function getConversationContext(req: Request, res: Response) {
   try {
     const userId = (req as AuthedRequest).userId
-    const authHeader = String(req.headers.authorization || "")
     const params = (req.params || {}) as Record<string, string | undefined>
     const conversationId = String(params.id || "").trim()
     if (!isUuid(conversationId)) return res.status(400).json({ message: "Invalid conversation id" })
@@ -2124,8 +2125,8 @@ export async function chatRun(req: Request, res: Response) {
     }
     const webSearchPolicy = await getWebSearchPolicy(tenantId)
 
-    // Pre-validate: block AI call when user has no credits (402)
     const userIdStr = userId ? String(userId) : null
+    let userRemainingCredits = 0
     if (userIdStr && CREDITS_SERVICE_KEY) {
       try {
         const checkUrl = new URL("/api/ai/credits/internal/check-can-consume", CREDITS_SERVICE_URL)
@@ -2135,8 +2136,9 @@ export async function chatRun(req: Request, res: Response) {
           body: JSON.stringify({ user_id: userIdStr, tenant_id: tenantId }),
         })
         const checkJson = (await checkRes.json().catch(() => null)) as
-          | { ok?: boolean; can_consume?: boolean; reason?: string; message?: string }
+          | { ok?: boolean; can_consume?: boolean; reason?: string; message?: string; remaining_credits?: number }
           | null
+        userRemainingCredits = Number(checkJson?.remaining_credits ?? 0) || 0
         if (checkJson?.ok === true && checkJson?.can_consume === false) {
           return res.status(402).json({
             message: checkJson?.message ?? "크레딧이 부족합니다.",
@@ -2278,6 +2280,7 @@ export async function chatRun(req: Request, res: Response) {
         m.prompt_template_id,
         m.response_schema_id,
         m.capabilities,
+        m.metadata,
         p.id AS provider_id,
         p.provider_family,
         p.slug AS provider_slug,
@@ -2296,11 +2299,35 @@ export async function chatRun(req: Request, res: Response) {
 
     const cap = isRecord(row.capabilities) ? (row.capabilities as Record<string, unknown>) : {}
     const capDefaults = cap && isRecord(cap.defaults) ? (cap.defaults as Record<string, unknown>) : {}
-    const mergedOptions = { ...capDefaults, ...(options || {}) }
+    const metadata = isRecord(row.metadata) ? (row.metadata as Record<string, unknown>) : {}
+    const creditRestriction =
+      metadata.credit_restriction && typeof metadata.credit_restriction === "object"
+        ? (metadata.credit_restriction as Record<string, unknown>)
+        : null
+    const from = Number(creditRestriction?.min_credits_from ?? 0) || 0
+    const to = Number(creditRestriction?.min_credits_to ?? 0) || 0
+    const blockBelow = creditRestriction?.block_below_from !== false
+    const isInLastZone =
+      creditRestriction &&
+      (blockBelow ? userRemainingCredits >= from : true) &&
+      userRemainingCredits <= to
+    const mergedOptions = isInLastZone ? { ...capDefaults } : { ...capDefaults, ...(options || {}) }
     let optionsForAssistant: Record<string, unknown> | null = null
 
     // Incoming attachments (used for image-to-image in image mode)
-    const incomingAttachments = Array.isArray(attachments) ? attachments : []
+    let incomingAttachmentsRaw = Array.isArray(attachments) ? attachments : []
+    if (isInLastZone) {
+      const images = incomingAttachmentsRaw.filter((a) => a && typeof a === "object" && (a as Record<string, unknown>).kind === "image")
+      if (images.length > 1) {
+        return res.status(400).json({
+          message: "마지막 크레딧 구간에서는 이미지를 1개만 첨부할 수 있습니다.",
+          code: "LAST_ZONE_IMAGE_LIMIT",
+        })
+      }
+      const nonImages = incomingAttachmentsRaw.filter((a) => !a || typeof a !== "object" || (a as Record<string, unknown>).kind !== "image")
+      incomingAttachmentsRaw = nonImages.concat(images.slice(0, 1))
+    }
+    const incomingAttachments = incomingAttachmentsRaw
     const incomingImageDataUrls: string[] = []
     const incomingImageUrls: string[] = []
     for (const a of incomingAttachments) {
@@ -2572,7 +2599,10 @@ export async function chatRun(req: Request, res: Response) {
       }
     }
 
-    const initialAttachments = attachmentSlots.map(({ dataUrl, ...rest }) => rest)
+    const initialAttachments = attachmentSlots.map(({ dataUrl, ...rest }) => {
+  void dataUrl // intentionally omitted from rest
+  return rest
+})
     const normalizedUserContent = normalizeAiContent({ text: prompt, options: mergedOptions, attachments: initialAttachments })
     await appendMessage({
       id: userMessageId,
@@ -2859,7 +2889,7 @@ export async function chatRun(req: Request, res: Response) {
         diagnostic = { error: "diagnostic query failed" }
       }
       // When profile was found but execution failed (e.g. auth/credential error), surface the actual error
-      const errStr = profileError ? String((profileError as any)?.message || profileError) : null
+      const errStr = profileError ? String((profileError as { message?: string })?.message || profileError) : null
       const isAuthOrCredentialError =
         profileAttempted &&
         errStr &&
@@ -2882,7 +2912,7 @@ export async function chatRun(req: Request, res: Response) {
           purpose,
           profile_key_used: usedProfileKey,
           profile_attempted: profileAttempted,
-          error: profileError ? String((profileError as any)?.message || profileError) : null,
+          error: profileError ? String((profileError as { message?: string })?.message || profileError) : null,
           diagnostic,
           hint,
         },
@@ -2950,7 +2980,7 @@ export async function chatRun(req: Request, res: Response) {
 
           const systemDevMsgs: ChatMsg[] = Array.isArray(templateMsgs)
             ? templateMsgs
-                .map((m: any): ChatMsg | null => {
+                .map((m: Record<string, unknown>): ChatMsg | null => {
                   const role = typeof m?.role === "string" ? m.role : ""
                   const content = typeof m?.content === "string" ? m.content : ""
                   if ((role === "system" || role === "developer") && content) {
@@ -2999,7 +3029,7 @@ export async function chatRun(req: Request, res: Response) {
               first.res.status === 400 && /(response_format|json_object|json_schema|Invalid schema|unsupported)/i.test(errStr)
             if (isUnsupportedResponseFormat) {
               const copy = { ...body }
-              delete (copy as any).response_format
+              delete (copy as Record<string, unknown>).response_format
               const retry = await doPost(copy)
               if (retry.res.ok) return retry
               return retry
@@ -3010,7 +3040,7 @@ export async function chatRun(req: Request, res: Response) {
             if (isUnsupportedMaxCompletion) {
               const copy = { ...body }
               const mct = typeof copy.max_completion_tokens === "number" ? copy.max_completion_tokens : undefined
-              delete (copy as any).max_completion_tokens
+              delete (copy as Record<string, unknown>).max_completion_tokens
               if (typeof mct === "number") copy.max_tokens = mct
               const retry = await doPost(copy)
               if (retry.res.ok) return retry
@@ -3020,8 +3050,9 @@ export async function chatRun(req: Request, res: Response) {
             return first
           }
 
-          function extractAssistant(json: any): { content: string; tool_calls: ToolCall[] } {
-            const msg = json?.choices?.[0]?.message
+          function extractAssistant(json: Record<string, unknown>): { content: string; tool_calls: ToolCall[] } {
+            const choices = json?.choices as Array<{ message?: { content?: string; tool_calls?: ToolCall[] } }> | undefined
+            const msg = choices?.[0]?.message
             const content = typeof msg?.content === "string" ? msg.content : ""
             const tool_calls = Array.isArray(msg?.tool_calls) ? (msg.tool_calls as ToolCall[]) : []
             return { content, tool_calls }
@@ -3124,7 +3155,7 @@ export async function chatRun(req: Request, res: Response) {
             })
           }
 
-          out = { output_text: finalText, raw: lastRaw, content: { output_text: finalText, raw: lastRaw as any } }
+          out = { output_text: finalText, raw: lastRaw, content: { output_text: finalText, raw: lastRaw as Record<string, unknown> } }
         } else {
           // outputFormat은 이 코드 경로에서 block_json으로 고정. responseSchema는 ai_models.response_schema_id에서 로드됨.
           const r = await openaiSimulateChat({
@@ -3825,7 +3856,7 @@ export async function chatRun(req: Request, res: Response) {
               client_request_id: clientRequestId || null,
               profile_key: usedProfileKey || null,
               profile_attempted: profileAttempted,
-              profile_error: profileError ? String((profileError as any)?.message || profileError) : null,
+              profile_error: profileError ? String((profileError as { message?: string })?.message || profileError) : null,
             }),
           ]
         )
@@ -3958,7 +3989,9 @@ export async function chatRun(req: Request, res: Response) {
     }
 
     responseFinalized = true
-    const clientDebug = isRecord(req.body) && isRecord((req.body as any).client_debug) ? ((req.body as any).client_debug as Record<string, unknown>) : null
+    const clientDebug = isRecord(req.body) && isRecord((req.body as Record<string, unknown>).client_debug)
+  ? ((req.body as Record<string, unknown>).client_debug as Record<string, unknown>)
+  : null
     return res.json({
       ok: true,
       conversation_id: convId,

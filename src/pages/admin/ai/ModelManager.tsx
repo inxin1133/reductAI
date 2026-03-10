@@ -153,6 +153,11 @@ export default function ModelManager() {
   const [editing, setEditing] = useState<AIModel | null>(null)
   const [capabilitiesText, setCapabilitiesText] = useState("{}")
   const [metadataText, setMetadataText] = useState("{}")
+  const [creditRestriction, setCreditRestriction] = useState<{
+    min_credits_from: string
+    min_credits_to: string
+    block_below_from: boolean
+  }>({ min_credits_from: "", min_credits_to: "", block_below_from: true })
   const [formData, setFormData] = useState<{
     provider_id: string
     model_id: string
@@ -334,6 +339,7 @@ export default function ModelManager() {
     })
     setCapabilitiesText("{}")
     setMetadataText("{}")
+    setCreditRestriction({ min_credits_from: "", min_credits_to: "", block_below_from: true })
     setIsDialogOpen(true)
   }
 
@@ -369,6 +375,13 @@ export default function ModelManager() {
     })
     setCapabilitiesText(JSON.stringify(normalizeCapabilities(m.capabilities), null, 2))
     setMetadataText(JSON.stringify(m.metadata ?? {}, null, 2))
+    const cr = (m.metadata as Record<string, unknown>)?.credit_restriction
+    const crObj = cr && typeof cr === "object" && !Array.isArray(cr) ? (cr as Record<string, unknown>) : null
+    setCreditRestriction({
+      min_credits_from: crObj?.min_credits_from != null ? String(crObj.min_credits_from) : "",
+      min_credits_to: crObj?.min_credits_to != null ? String(crObj.min_credits_to) : "",
+      block_below_from: crObj?.block_below_from !== false,
+    })
     setIsDialogOpen(true)
   }
 
@@ -420,7 +433,21 @@ export default function ModelManager() {
         status: formData.status,
         released_at: formData.released_at ? formData.released_at : null,
         deprecated_at: formData.deprecated_at ? formData.deprecated_at : null,
-        metadata: JSON.parse(metadataText || "{}"),
+        metadata: (() => {
+          const meta = JSON.parse(metadataText || "{}") as Record<string, unknown>
+          const from = creditRestriction.min_credits_from.trim()
+          const to = creditRestriction.min_credits_to.trim()
+          if (from || to) {
+            meta.credit_restriction = {
+              ...(from ? { min_credits_from: Number(from) || 0 } : {}),
+              ...(to ? { min_credits_to: Number(to) || 0 } : {}),
+              block_below_from: creditRestriction.block_below_from,
+            }
+          } else {
+            delete meta.credit_restriction
+          }
+          return meta
+        })(),
       }
 
       if (editing) {
@@ -1117,11 +1144,51 @@ export default function ModelManager() {
             </div>
 
             <div className="grid grid-cols-4 items-start gap-4">
+              <Label className="text-right pt-2">크레딧 선검증</Label>
+              <div className="col-span-3 space-y-2 rounded-md border p-3">
+                <p className="text-xs text-muted-foreground">
+                  마지막 구간 [min_credits_from, min_credits_to]: 옵션 기본값만, 이미지 1개. 비워두면 제한 없음.
+                </p>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="space-y-1">
+                    <Label className="text-xs">min_credits_from</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      placeholder="0"
+                      value={creditRestriction.min_credits_from}
+                      onChange={(e) => setCreditRestriction((p) => ({ ...p, min_credits_from: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">min_credits_to</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      placeholder="500"
+                      value={creditRestriction.min_credits_to}
+                      onChange={(e) => setCreditRestriction((p) => ({ ...p, min_credits_to: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1 flex items-end">
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={creditRestriction.block_below_from}
+                        onCheckedChange={(v) => setCreditRestriction((p) => ({ ...p, block_below_from: v }))}
+                      />
+                      <Label className="text-xs">block_below_from</Label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-4 items-start gap-4">
               <Label className="text-right pt-2">metadata</Label>
               <div className="col-span-3 space-y-1">
                 <Textarea className="font-mono text-xs min-h-[110px]" value={metadataText} onChange={(e) => setMetadataText(e.target.value)} />
                 <p className="text-xs text-muted-foreground">
-                  예) <span className="font-mono">{"{"}"family":"gpt-5","tier":"mini","source":"manual_preset"{"}"}</span> (JSON 객체)
+                  예) <span className="font-mono">{"{"}"family":"gpt-5","tier":"mini","source":"manual_preset"{"}"}</span> (JSON 객체). 크레딧 선검증은 위 필드에서 설정.
                 </p>
               </div>
             </div>

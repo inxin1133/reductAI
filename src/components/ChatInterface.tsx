@@ -253,6 +253,7 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
     const selectedTab = creditTabs.find((t) => t.accountId === selectedAccountId)
     const hasCredits = selectedTab ? selectedTab.remaining > 0 : true
     creditSelection?.setSelectedTabHasCredits(hasCredits)
+    creditSelection?.setRemainingCredits(selectedTab?.remaining ?? 0)
   }, [creditTabs, selectedAccountId, creditSelection])
 
   if (loading) {
@@ -409,6 +410,12 @@ export interface ChatInterfaceProps {
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 
+type CreditRestriction = {
+  min_credits_from?: number
+  min_credits_to?: number
+  block_below_from?: boolean
+} | null
+
 type UiModel = {
   id: string
   model_type: ModelType
@@ -422,6 +429,19 @@ type UiModel = {
   context_window?: number | null
   max_input_tokens?: number | null
   max_output_tokens?: number | null
+  credit_restriction?: CreditRestriction
+}
+
+type CreditStatus = "blocked" | "last_zone" | "normal"
+
+function getCreditStatus(remainingCredits: number, restriction: CreditRestriction): { status: CreditStatus; isInLastZone: boolean } {
+  if (!restriction) return { status: "normal", isInLastZone: false }
+  const from = restriction.min_credits_from ?? 0
+  const to = restriction.min_credits_to ?? 0
+  const blockBelow = restriction.block_below_from !== false
+  if (blockBelow && remainingCredits < from) return { status: "blocked", isInLastZone: false }
+  if (remainingCredits <= to) return { status: "last_zone", isInLastZone: true }
+  return { status: "normal", isInLastZone: false }
 }
 
 type UiProviderGroup = {
@@ -1898,6 +1918,13 @@ function ChatInterfaceInner({
     ? uiSelectableModels.find((m) => m.model_api_id === uiSelectedModelApiId) || null
     : selectedModel || (uiSelectedModelApiId ? uiDropdownModels.find((m) => m.model_api_id === uiSelectedModelApiId) || null : null)
 
+  const remainingCreditsForRestriction = creditSelection?.remainingCredits ?? 0
+  const creditStatusForSelected =
+    creditsSystemReady && uiSelectedModel?.credit_restriction
+      ? getCreditStatus(remainingCreditsForRestriction, uiSelectedModel.credit_restriction)
+      : { status: "normal" as const, isInLastZone: false }
+  const isInLastZoneForSelectedModel = creditStatusForSelected.isInLastZone
+
   const uiSelectedModelDbId = useSelectionOverride
     ? (uiSelectableModels.find((m) => m.model_api_id === uiSelectedModelApiId) || uiSelectableModels[0])?.id || ""
     : selectedModelDbId
@@ -1986,8 +2013,17 @@ function ChatInterfaceInner({
         modelType: String(uiSelectedType ?? "text"),
         modelApiId: String(useSelectionOverride ? uiSelectedModelApiId ?? "" : effectiveModelApiId ?? ""),
         capabilities: selectedCapabilities,
+        isInLastZone: isInLastZoneForSelectedModel,
       }),
-    [creditSelection?.planTier, uiSelectedType, useSelectionOverride, uiSelectedModelApiId, effectiveModelApiId, selectedCapabilities]
+    [
+      creditSelection?.planTier,
+      uiSelectedType,
+      useSelectionOverride,
+      uiSelectedModelApiId,
+      effectiveModelApiId,
+      selectedCapabilities,
+      isInLastZoneForSelectedModel,
+    ]
   )
 
   React.useEffect(() => {
@@ -2140,10 +2176,10 @@ function ChatInterfaceInner({
   const applyRuntimeOptions = React.useCallback(
     (next: Record<string, unknown>) => {
       setRuntimeOptionsSafe(next)
-      if (!selectedModelDbId) return
+      if (!selectedModelDbId || isInLastZoneForSelectedModel) return
       setRuntimeOptionsByModel((prev) => ({ ...prev, [selectedModelDbId]: next }))
     },
-    [selectedModelDbId, setRuntimeOptionsSafe]
+    [selectedModelDbId, setRuntimeOptionsSafe, isInLastZoneForSelectedModel]
   )
 
   // In Timeline, the parent passes "last used model" as initial props.
@@ -2384,8 +2420,15 @@ function ChatInterfaceInner({
   }, [selectableModels, selectedSubModel, currentProviderGroup?.models])
 
   // 모델이 바뀌면: 이전에 선택했던 옵션이 있으면 복원, 없으면 defaults 적용
+  // 마지막 구간(last zone)에서는 항상 기본값만 사용 (옵션 강화 악용 방지)
   React.useEffect(() => {
     if (!selectedModelDbId) return
+    if (isInLastZoneForSelectedModel) {
+      const cap = selectedCapabilities
+      const defaults = cap && isRecord(cap.defaults) ? (cap.defaults as Record<string, unknown>) : {}
+      setRuntimeOptionsSafe(defaults)
+      return
+    }
     const saved = runtimeOptionsByModel[selectedModelDbId]
     if (saved && typeof saved === "object") {
       setRuntimeOptionsSafe(saved)
@@ -2394,7 +2437,36 @@ function ChatInterfaceInner({
     const cap = selectedCapabilities
     const defaults = cap && isRecord(cap.defaults) ? (cap.defaults as Record<string, unknown>) : {}
     setRuntimeOptionsSafe(defaults)
-  }, [runtimeOptionsByModel, selectedCapabilities, selectedModelDbId, setRuntimeOptionsSafe])
+  }, [runtimeOptionsByModel, selectedCapabilities, selectedModelDbId, setRuntimeOptionsSafe, isInLastZoneForSelectedModel])
+
+  // 선택된 모델이 크레딧 부족(blocked)이면 첫 번째 사용 가능한 모델로 자동 전환
+  React.useEffect(() => {
+    if (creditStatusForSelected.status !== "blocked") return
+    const group = useSelectionOverride ? uiProviderGroup : currentProviderGroup
+    const models = (group?.models || []).filter((m) => m.is_available && String(m.model_api_id || "").trim())
+    const notBlocked = models.filter(
+      (m) => getCreditStatus(remainingCreditsForRestriction, m.credit_restriction ?? null).status !== "blocked"
+    )
+    const planFiltered =
+      allowedModelApiIds && allowedModelApiIds.size > 0
+        ? notBlocked.filter((m) => allowedModelApiIds.has(String(m.model_api_id || "").trim().toLowerCase()))
+        : notBlocked
+    const toPick = planFiltered.length > 0 ? planFiltered : notBlocked.length > 0 ? notBlocked : models
+    const fallback = toPick.find((m) => m.is_default) || toPick[0]
+    if (fallback && fallback.model_api_id !== (useSelectionOverride ? uiSelectedModelApiId : selectedSubModel)) {
+      selectionDirtyRef.current = true
+      setSelectedSubModel(fallback.model_api_id)
+    }
+  }, [
+    creditStatusForSelected.status,
+    remainingCreditsForRestriction,
+    useSelectionOverride,
+    uiProviderGroup,
+    currentProviderGroup,
+    allowedModelApiIds,
+    uiSelectedModelApiId,
+    selectedSubModel,
+  ])
 
   React.useEffect(() => {
     const controller = new AbortController()
@@ -2659,7 +2731,8 @@ function ChatInterfaceInner({
 
       const capDefaults = selectedCapabilities && isRecord(selectedCapabilities.defaults) ? (selectedCapabilities.defaults as Record<string, unknown>) : {}
       const runtimeSnapshot = runtimeOptionsRef.current || {}
-      const baseOptions = overrideOptions ?? { ...capDefaults, ...runtimeSnapshot }
+      const baseOptions =
+        overrideOptions ?? (isInLastZoneForSelectedModel ? capDefaults : { ...capDefaults, ...runtimeSnapshot })
       const validation =
         overrideOptions == null ? validateAndNormalizeOptions(baseOptions, selectedCapabilities) : { correctedOptions: baseOptions, corrections: [] }
       if (!overrideOptions && validation.corrections.length > 0) {
@@ -2919,6 +2992,7 @@ function ChatInterfaceInner({
       isWaitingForResponse,
       onIntroSendClick,
       effectiveMaxAttachments,
+      isInLastZoneForSelectedModel,
     ]
   )
 
@@ -3069,13 +3143,21 @@ function ChatInterfaceInner({
                   uiProviderGroup?.provider.id === g.provider.id ? "border-1 border-primary bg-accent" : ""
                 )}
                 onClick={() => {
+                  if (!allowed) return
+                  if (isCreditLocked) return
                   selectionDirtyRef.current = true
                   setSelectedProviderId(g.provider.id)
                   const allAvailable = (g.models || []).filter((m) => m.is_available)
                   const filtered = allowedModelApiIds
                     ? allAvailable.filter((m) => allowedModelApiIds!.has(String(m.model_api_id || "").trim().toLowerCase()))
                     : allAvailable
-                  const modelsToPick = filtered.length > 0 ? filtered : allAvailable
+                  const notCreditBlocked =
+                    creditsSystemReady && filtered.some((m) => m.credit_restriction)
+                      ? filtered.filter(
+                          (m) => getCreditStatus(remainingCreditsForRestriction, m.credit_restriction ?? null).status !== "blocked"
+                        )
+                      : filtered
+                  const modelsToPick = notCreditBlocked.length > 0 ? notCreditBlocked : filtered.length > 0 ? filtered : allAvailable
                   const savedModelId = lastModelByTypeProviderRef.current[selectionKeyForTypeProvider(uiSelectedType, String(g.provider.id))]
                   const nextModelId =
                     (savedModelId && modelsToPick.find((m: { model_api_id: string }) => m.model_api_id === savedModelId)?.model_api_id) ||
@@ -3531,7 +3613,14 @@ function ChatInterfaceInner({
                                 allowedModelApiIds.size === 0 ||
                                 allowedModelApiIds.has(String(m.model_api_id || "").trim().toLowerCase())
                               const isCreditLockedForModel = creditSelection?.selectedTabHasCredits === false
-                              const isSelectable = isAllowedForPlan && !isCreditLockedForModel
+                              const creditStatus =
+                                creditsSystemReady && m.credit_restriction
+                                  ? getCreditStatus(remainingCreditsForRestriction, m.credit_restriction)
+                                  : { status: "normal" as const }
+                              const isCreditBlocked = creditStatus.status === "blocked"
+                              const isSelectable = isAllowedForPlan && !isCreditLockedForModel && !isCreditBlocked
+                              const labelSuffix =
+                                isCreditBlocked ? "(크레딧부족)" : !isAllowedForPlan ? "(사용제한)" : ""
                               return (
                                 <DropdownMenuItem
                                   key={m.model_api_id}
@@ -3549,7 +3638,7 @@ function ChatInterfaceInner({
                                     }
                                   }}
                                 >
-                                  {isSelectable ? m.display_name : `(사용제한) ${m.display_name || ""}`}
+                                  {isSelectable ? m.display_name : `${labelSuffix} ${m.display_name || ""}`}
                                 </DropdownMenuItem>
                               )
                             })}
@@ -3803,6 +3892,7 @@ function ChatInterfaceInner({
                         capabilities={selectedCapabilities}
                         value={runtimeOptions}
                         onApply={applyRuntimeOptions}
+                        disabled={isInLastZoneForSelectedModel}
                       />
                     </div>
                     <div className="flex flex-1"></div>
@@ -3856,6 +3946,7 @@ function ChatInterfaceInner({
             capabilities={selectedCapabilities}
             value={runtimeOptions}
             onApply={applyRuntimeOptions}
+            disabled={isInLastZoneForSelectedModel}
           />
         </div>
       )}

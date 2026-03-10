@@ -222,6 +222,26 @@ AI 모델 (필수 필드 포함)
 > **temperature vs top_p**: 공식 권장—둘 중 하나만 조정 (동시 조정 비권장).  
 > **prompt_caching**: 1024 토큰 이상 시 자동 적용. gpt-5 계열은 `prompt_cache_retention: "24h"` 지원 ([Prompt caching](https://platform.openai.com/api/docs/guides/prompt-caching)).
 
+### metadata (크레딧 선검증)
+
+| 필드 | 값 | 비고 |
+|------|-----|------|
+| credit_restriction | 아래 JSON | 마지막 구간 [from, to]에서 옵션 기본값·이미지 1개 제한 |
+
+```json
+{
+  "credit_restriction": {
+    "min_credits_from": 0,
+    "min_credits_to": 500,
+    "block_below_from": true
+  }
+}
+```
+
+- `min_credits_from`: 이 값 미만이면 모델 선택 불가 (크레딧부족)
+- `min_credits_to`: [from, to] 구간 = 마지막 구간 (옵션 기본값만, 이미지 1개)
+- `block_below_from`: true면 from 미만 시 선택 차단
+
 ---
 
 ## model_api_profiles

@@ -103,8 +103,9 @@ function isUuid(v) {
 function extractTokenBreakdown(u) {
     if (!u || typeof u !== "object")
         return null;
-    const inDetails = u.input_tokens_details || u.inputTokenDetails || u.prompt_token_details;
-    const outDetails = u.output_tokens_details || u.outputTokenDetails || u.candidates_token_details || u.completion_token_details;
+    const o = u;
+    const inDetails = (o.input_tokens_details || o.inputTokenDetails || o.prompt_token_details);
+    const outDetails = (o.output_tokens_details || o.outputTokenDetails || o.candidates_token_details || o.completion_token_details);
     const inText = Number(inDetails?.text_tokens ?? inDetails?.textTokens ?? 0);
     const inImage = Number(inDetails?.image_tokens ?? inDetails?.imageTokens ?? 0);
     const outText = Number(outDetails?.text_tokens ?? outDetails?.textTokens ?? 0);
@@ -114,7 +115,8 @@ function extractTokenBreakdown(u) {
     return { input_text_tokens: inText, input_image_tokens: inImage, output_text_tokens: outText, output_image_tokens: outImage };
 }
 function extractUsageFromProviderRaw(raw) {
-    const au = raw?.usage;
+    const r = raw;
+    const au = r?.usage;
     if (au &&
         (typeof au.cache_read_input_tokens === "number" || typeof au.cache_creation_input_tokens === "number") &&
         typeof au.input_tokens === "number") {
@@ -133,7 +135,7 @@ function extractUsageFromProviderRaw(raw) {
             ...(breakdown ? { token_breakdown: breakdown } : {}),
         };
     }
-    const u = raw?.usage;
+    const u = r?.usage;
     if (u && (typeof u.input_tokens === "number" || typeof u.output_tokens === "number")) {
         const input = Number(u.input_tokens || 0);
         const output = Number(u.output_tokens || 0);
@@ -148,7 +150,7 @@ function extractUsageFromProviderRaw(raw) {
             ...(breakdown ? { token_breakdown: breakdown } : {}),
         };
     }
-    const cu = raw?.usage;
+    const cu = r?.usage;
     if (cu && (typeof cu.prompt_tokens === "number" || typeof cu.completion_tokens === "number")) {
         const input = Number(cu.prompt_tokens || 0);
         const output = Number(cu.completion_tokens || 0);
@@ -159,7 +161,7 @@ function extractUsageFromProviderRaw(raw) {
     // Google Gemini: usageMetadata (promptTokenCount, candidatesTokenCount)
     // - REST API: camelCase (promptTokenCount, candidatesTokenCount, totalTokenCount)
     // - cached_content_token_count: 캐시 사용 시에만 존재 (implicit/explicit context caching)
-    const um = raw?.usageMetadata || raw?.usage_metadata;
+    const um = (r?.usageMetadata || r?.usage_metadata);
     if (um && (typeof um.promptTokenCount === "number" || typeof um.prompt_token_count === "number" || typeof um.candidatesTokenCount === "number" || typeof um.candidates_token_count === "number")) {
         const input = Number(um.promptTokenCount ?? um.prompt_token_count ?? 0);
         const output = Number(um.candidatesTokenCount ?? um.candidates_token_count ?? 0);
@@ -1164,8 +1166,8 @@ async function executeHttpJsonProfile(args) {
     if (modeRaw === "json_base64") {
         const b64Path = pickString(extract, "base64_path") || pickString(extract, "audio_base64_path") || pickString(extract, "video_base64_path");
         const mimePath = pickString(extract, "mime_path") || pickString(extract, "mime_type_path");
-        let b64Val = b64Path ? getByPath(initial.json, b64Path) : undefined;
-        let mimeVal = mimePath ? getByPath(initial.json, mimePath) : undefined;
+        const b64Val = b64Path ? getByPath(initial.json, b64Path) : undefined;
+        const mimeVal = mimePath ? getByPath(initial.json, mimePath) : undefined;
         // Lyria: purpose=music이면 predictions 전체를 먼저 처리 (sample_count 2~4 등 1개 이상 노출)
         if (args.purpose === "music" && initial.json && typeof initial.json === "object") {
             const root = initial.json;
@@ -1509,6 +1511,7 @@ async function appendMessage(args) {
     ]);
     return { id: String(r.rows[0].id), message_order: Number(r.rows[0].message_order) };
 }
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- reserved for future use
 async function updateMessageStatus(args) {
     const r = await (0, db_1.query)(`
     UPDATE model_messages
@@ -1535,7 +1538,6 @@ async function updateMessageContent(args) {
 async function cancelChatRun(req, res) {
     try {
         const userId = req.userId;
-        const authHeader = String(req.headers.authorization || "");
         const body = (req.body || {});
         const conversationId = String(body.conversation_id || "").trim();
         const requestId = String(body.request_id || "").trim();
@@ -1813,7 +1815,6 @@ async function loadHistory(args) {
 async function getConversationContext(req, res) {
     try {
         const userId = req.userId;
-        const authHeader = String(req.headers.authorization || "");
         const params = (req.params || {});
         const conversationId = String(params.id || "").trim();
         if (!isUuid(conversationId))
@@ -2313,7 +2314,10 @@ async function chatRun(req, res) {
                 }
             }
         }
-        const initialAttachments = attachmentSlots.map(({ dataUrl, ...rest }) => rest);
+        const initialAttachments = attachmentSlots.map(({ dataUrl, ...rest }) => {
+            void dataUrl; // intentionally omitted from rest
+            return rest;
+        });
         const normalizedUserContent = (0, normalizeAiContent_1.normalizeAiContent)({ text: prompt, options: mergedOptions, attachments: initialAttachments });
         await appendMessage({
             id: userMessageId,
@@ -2734,7 +2738,8 @@ async function chatRun(req, res) {
                             return first;
                         }
                         function extractAssistant(json) {
-                            const msg = json?.choices?.[0]?.message;
+                            const choices = json?.choices;
+                            const msg = choices?.[0]?.message;
                             const content = typeof msg?.content === "string" ? msg.content : "";
                             const tool_calls = Array.isArray(msg?.tool_calls) ? msg.tool_calls : [];
                             return { content, tool_calls };
@@ -3021,8 +3026,11 @@ async function chatRun(req, res) {
                             },
                         });
                     }
+                    const providerLabel = typeof row.provider_product_name === "string" && String(row.provider_product_name).trim()
+                        ? String(row.provider_product_name).trim()
+                        : "이미지";
                     return await failAndRespond(500, {
-                        message: "OpenAI 이미지 요청에 실패했습니다.",
+                        message: `${providerLabel} 이미지 요청에 실패했습니다.`,
                         details: msg,
                     });
                 }
@@ -3585,7 +3593,9 @@ async function chatRun(req, res) {
             console.warn("[usage-log] insert failed:", e);
         }
         responseFinalized = true;
-        const clientDebug = isRecord(req.body) && isRecord(req.body.client_debug) ? req.body.client_debug : null;
+        const clientDebug = isRecord(req.body) && isRecord(req.body.client_debug)
+            ? req.body.client_debug
+            : null;
         return res.json({
             ok: true,
             conversation_id: convId,
