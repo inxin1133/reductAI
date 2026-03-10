@@ -2943,8 +2943,9 @@ export async function chatRun(req: Request, res: Response) {
               ? (injectedTemplate as Record<string, unknown>).messages
               : null
           type ToolCall = { id: string; type?: string; function: { name: string; arguments: string } }
+          type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }
           type ChatMsg =
-            | { role: "system" | "developer" | "user" | "assistant"; content: string; tool_calls?: ToolCall[] }
+            | { role: "system" | "developer" | "user" | "assistant"; content: string | ContentPart[]; tool_calls?: ToolCall[] }
             | { role: "tool"; tool_call_id: string; content: string }
 
           const systemDevMsgs: ChatMsg[] = Array.isArray(templateMsgs)
@@ -3026,7 +3027,16 @@ export async function chatRun(req: Request, res: Response) {
             return { content, tool_calls }
           }
 
-          const messages: ChatMsg[] = [...systemDevMsgs, { role: "user", content: input }]
+          const userContent: string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> =
+            incomingImageDataUrls.length > 0
+              ? [
+                  { type: "text", text: input },
+                  ...incomingImageDataUrls
+                    .filter((u) => u && u.startsWith("data:image/"))
+                    .map((url) => ({ type: "image_url" as const, image_url: { url } })),
+                ]
+              : input
+          const messages: ChatMsg[] = [...systemDevMsgs, { role: "user", content: userContent }]
 
           let lastRaw: unknown = null
           let finalText = ""
@@ -3123,6 +3133,7 @@ export async function chatRun(req: Request, res: Response) {
             model: modelApiId,
             input,
             maxTokens: safeMaxTokens,
+            image_data_urls: incomingImageDataUrls.length > 0 ? incomingImageDataUrls : undefined,
             outputFormat: "block_json",
             templateBody: injectedTemplate || undefined,
             responseSchema,
@@ -3139,6 +3150,7 @@ export async function chatRun(req: Request, res: Response) {
           model: modelApiId,
           input,
           maxTokens: safeMaxTokens,
+          image_data_urls: incomingImageDataUrls.length > 0 ? incomingImageDataUrls : undefined,
           templateBody: injectedTemplate || undefined,
           cacheControl: { ttl: undefined },
           staticSystemText: staticContext || null,
@@ -3204,6 +3216,7 @@ export async function chatRun(req: Request, res: Response) {
           model: modelApiId,
           input: googleInput,
           maxTokens: safeMaxTokens,
+          image_data_urls: incomingImageDataUrls.length > 0 ? incomingImageDataUrls : undefined,
           templateBody: injectedTemplate || undefined,
           signal: abortSignal,
         })

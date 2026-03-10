@@ -608,11 +608,24 @@ async function googleSimulateChat(args) {
     const base = normalized || "https://generativelanguage.googleapis.com/v1beta";
     const apiRoot = base.replace(/\/$/, "");
     const url = `${apiRoot}/models/${encodeURIComponent(args.model)}:generateContent`;
+    const imageUrls = Array.isArray(args.image_data_urls) ? args.image_data_urls : [];
+    const imageParts = [];
+    for (const dataUrl of imageUrls) {
+        if (!dataUrl || !dataUrl.startsWith("data:image/"))
+            continue;
+        const m = dataUrl.match(/^data:([^;]+);base64,(.*)$/);
+        if (m)
+            imageParts.push({ inlineData: { mimeType: m[1] || "image/png", data: m[2] || "" } });
+    }
+    const userParts = [
+        ...imageParts,
+        { text: args.input },
+    ];
     const baseBody = {
         contents: [
             {
                 role: "user",
-                parts: [{ text: args.input }],
+                parts: userParts,
             },
         ],
         generationConfig: {
@@ -753,6 +766,15 @@ async function openaiSimulateChat(args) {
     const normalized = normalizeOpenAiBaseUrl(args.apiBaseUrl);
     const base = normalized || "https://api.openai.com/v1";
     const apiRoot = base.replace(/\/$/, "");
+    const hasImages = Array.isArray(args.image_data_urls) && args.image_data_urls.length > 0;
+    const userContent = hasImages
+        ? [
+            { type: "text", text: args.input },
+            ...args.image_data_urls
+                .filter((u) => u && String(u).startsWith("data:image/"))
+                .map((url) => ({ type: "image_url", image_url: { url } })),
+        ]
+        : args.input;
     // OpenAI 모델별로 파라미터/엔드포인트 호환성이 달라질 수 있어 방어적으로 처리합니다.
     // - 일부 최신 모델(GPT-5 계열)은 chat/completions에서 max_tokens를 거부하고 max_completion_tokens를 요구합니다.
     // - 일부 모델은 chat 모델이 아니어서 /v1/chat/completions 자체를 거부할 수 있습니다 → /v1/responses로 fallback.
@@ -1036,8 +1058,10 @@ async function openaiSimulateChat(args) {
         }
         return { ok: false };
     }
+    // 이미지 첨부 시 Responses API는 멀티모달 미지원 → chat/completions 직접 사용
+    const skipResponsesForMultimodal = hasImages;
     // outputFormat이 있는 경우: 서버 레벨 강제를 위해 responses API를 우선 사용합니다.
-    if (args.outputFormat === "block_json") {
+    if (!skipResponsesForMultimodal && args.outputFormat === "block_json") {
         const tried = await tryResponsesWithNonEmptyText([responsesBody(), responsesBodyJsonObject(), responsesBodyPlain()]);
         if (tried.ok)
             return { raw: tried.raw, output_text: tried.output_text, truncated: tried.truncated };
@@ -1045,7 +1069,7 @@ async function openaiSimulateChat(args) {
     }
     // GPT-5 계열은 환경에 따라 chat/completions에서 content가 비어있는 경우가 있어
     // responses API를 우선 사용합니다. (실패 시 chat/completions로 fallback)
-    const preferResponses = /^gpt-5/i.test((args.model || "").trim());
+    const preferResponses = !skipResponsesForMultimodal && /^gpt-5/i.test((args.model || "").trim());
     if (preferResponses) {
         const tried = await tryResponsesWithNonEmptyText([responsesBody(), responsesBodyJsonObject(), responsesBodyPlain()]);
         if (tried.ok)
@@ -1060,9 +1084,9 @@ async function openaiSimulateChat(args) {
         const chatMessages = hasTemplateSystemOrDev
             ? [
                 ...templateMsgs.filter((m) => m.role === "system" || m.role === "developer"),
-                { role: "user", content: args.input },
+                { role: "user", content: userContent },
             ]
-            : [{ role: "user", content: args.input }];
+            : [{ role: "user", content: userContent }];
         // block_json: caller의 maxTokens를 그대로 사용. 없으면 20000 (구조적 출력 시 추론+출력 공간 확보)
         const defaultMaxForBlockJson = 20000;
         const maxCompletionTokens = args.outputFormat === "block_json"
@@ -1115,7 +1139,7 @@ async function openaiSimulateChat(args) {
         if (isUnsupportedMaxCompletion) {
             const retry = await postJson(`${apiRoot}/chat/completions`, {
                 model: args.model,
-                messages: [{ role: "user", content: args.input }],
+                messages: [{ role: "user", content: userContent }],
                 max_tokens: args.maxTokens,
                 ...(schema ? { response_format: { type: "json_object" } } : {}),
             });
@@ -1137,7 +1161,7 @@ async function openaiSimulateChat(args) {
         if (schema && isUnsupportedResponseFormat) {
             const retry = await postJson(`${apiRoot}/chat/completions`, {
                 model: args.model,
-                messages: [{ role: "user", content: args.input }],
+                messages: [{ role: "user", content: userContent }],
                 max_completion_tokens: args.maxTokens,
             });
             if (retry.res.ok) {
@@ -1152,7 +1176,7 @@ async function openaiSimulateChat(args) {
             // 동일 엔드포인트 재시도: max_completion_tokens만으로 다시 호출
             const retry = await postJson(`${apiRoot}/chat/completions`, {
                 model: args.model,
-                messages: [{ role: "user", content: args.input }],
+                messages: [{ role: "user", content: userContent }],
                 max_completion_tokens: args.maxTokens,
             });
             if (retry.res.ok) {
@@ -1171,10 +1195,20 @@ async function openaiSimulateChat(args) {
 }
 async function anthropicSimulateChat(args) {
     const base = (args.apiBaseUrl || "https://api.anthropic.com/v1").replace(/\/+$/g, "");
+    const imageUrls = Array.isArray(args.image_data_urls) ? args.image_data_urls : [];
+    const imageBlocks = [];
+    for (const dataUrl of imageUrls) {
+        if (!dataUrl || !dataUrl.startsWith("data:image/"))
+            continue;
+        const m = dataUrl.match(/^data:([^;]+);base64,(.*)$/);
+        if (m)
+            imageBlocks.push({ type: "image", source: { type: "base64", media_type: m[1] || "image/png", data: m[2] || "" } });
+    }
+    const userContent = imageBlocks.length > 0 ? [{ type: "text", text: args.input }, ...imageBlocks] : args.input;
     const baseBody = {
         model: args.model,
         max_tokens: args.maxTokens,
-        messages: [{ role: "user", content: args.input }],
+        messages: [{ role: "user", content: userContent }],
     };
     const body = args.templateBody && typeof args.templateBody === "object" ? deepMerge(args.templateBody, baseBody) : baseBody;
     if (args.cacheControl) {

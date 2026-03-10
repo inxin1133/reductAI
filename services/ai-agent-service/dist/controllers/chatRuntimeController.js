@@ -2739,7 +2739,15 @@ async function chatRun(req, res) {
                             const tool_calls = Array.isArray(msg?.tool_calls) ? msg.tool_calls : [];
                             return { content, tool_calls };
                         }
-                        const messages = [...systemDevMsgs, { role: "user", content: input }];
+                        const userContent = incomingImageDataUrls.length > 0
+                            ? [
+                                { type: "text", text: input },
+                                ...incomingImageDataUrls
+                                    .filter((u) => u && u.startsWith("data:image/"))
+                                    .map((url) => ({ type: "image_url", image_url: { url } })),
+                            ]
+                            : input;
+                        const messages = [...systemDevMsgs, { role: "user", content: userContent }];
                         let lastRaw = null;
                         let finalText = "";
                         for (let i = 0; i < maxSearchCalls + 2; i++) {
@@ -2834,6 +2842,7 @@ async function chatRun(req, res) {
                             model: modelApiId,
                             input,
                             maxTokens: safeMaxTokens,
+                            image_data_urls: incomingImageDataUrls.length > 0 ? incomingImageDataUrls : undefined,
                             outputFormat: "block_json",
                             templateBody: injectedTemplate || undefined,
                             responseSchema,
@@ -2851,6 +2860,7 @@ async function chatRun(req, res) {
                         model: modelApiId,
                         input,
                         maxTokens: safeMaxTokens,
+                        image_data_urls: incomingImageDataUrls.length > 0 ? incomingImageDataUrls : undefined,
                         templateBody: injectedTemplate || undefined,
                         cacheControl: { ttl: undefined },
                         staticSystemText: staticContext || null,
@@ -2920,6 +2930,7 @@ async function chatRun(req, res) {
                         model: modelApiId,
                         input: googleInput,
                         maxTokens: safeMaxTokens,
+                        image_data_urls: incomingImageDataUrls.length > 0 ? incomingImageDataUrls : undefined,
                         templateBody: injectedTemplate || undefined,
                         signal: abortSignal,
                     });
