@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.chatCompletion = chatCompletion;
 const db_1 = require("../config/db");
 const providerClients_1 = require("../services/providerClients");
+const providerClientKey_1 = require("../utils/providerClientKey");
 const credentialRateLimitService_1 = require("../services/credentialRateLimitService");
 const systemTenantService_1 = require("../services/systemTenantService");
 const pricingService_1 = require("../services/pricingService");
@@ -120,11 +121,13 @@ async function chatCompletion(req, res) {
         if (!model || !input) {
             return res.status(400).json({ message: "model and input are required" });
         }
-        const provider = await (0, db_1.query)(`SELECT id, slug, api_base_url FROM ai_providers WHERE slug = $1`, [provider_slug]);
+        const provider = await (0, db_1.query)(`SELECT id, slug, provider_family, api_base_url FROM ai_providers WHERE slug = $1`, [provider_slug]);
         if (provider.rows.length === 0) {
             return res.status(404).json({ message: `Provider not found: ${provider_slug}` });
         }
-        const providerId = provider.rows[0].id;
+        const providerRow = provider.rows[0];
+        const providerId = providerRow.id;
+        const providerKey = (0, providerClientKey_1.deriveProviderClientKey)(providerRow.provider_family, providerRow.slug);
         const auth = await (0, providerClients_1.getProviderAuth)(providerId);
         (0, credentialRateLimitService_1.checkAndRecord)(auth.credentialId, auth.rateLimitPerMinute, auth.rateLimitPerDay);
         const base = await (0, providerClients_1.getProviderBase)(providerId);
@@ -133,7 +136,7 @@ async function chatCompletion(req, res) {
         const userId = extractOptionalUserIdFromAuthHeader(req);
         const modelRow = await resolveAiModelId(providerId, model);
         const requestId = crypto_1.default.randomUUID();
-        if (provider_slug === "openai") {
+        if (providerKey === "openai") {
             // 모델에 연결된 프롬프트 템플릿(body JSONB)을 가져와 OpenAI 요청 바디에 merge 합니다.
             // - prompt_templates는 현재 system tenant에서 관리되므로 tenant_id 검증은 생략합니다.
             // - templateBody는 responses API 바디 형식으로 저장되어 있으며, base body가 우선(override)됩니다.
@@ -284,7 +287,7 @@ async function chatCompletion(req, res) {
                 raw: out.raw,
             });
         }
-        if (provider_slug === "anthropic") {
+        if (providerKey === "anthropic") {
             const out = await (0, providerClients_1.anthropicSimulateChat)({
                 apiKey: auth.apiKey,
                 model,

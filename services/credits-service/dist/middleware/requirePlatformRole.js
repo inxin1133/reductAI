@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.requirePlatformAdmin = requirePlatformAdmin;
-const PLATFORM_ADMIN_SLUGS = new Set(["owner", "admin", "super-admin"]);
+const PLATFORM_ADMIN_SLUGS = new Set(["super-admin", "admin", "manager"]);
 function requirePlatformAdmin(req, res, next) {
     const roleSlug = req.platformRole;
     if (!roleSlug || !PLATFORM_ADMIN_SLUGS.has(String(roleSlug))) {

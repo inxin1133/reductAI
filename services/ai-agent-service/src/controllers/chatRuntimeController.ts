@@ -21,6 +21,7 @@ import {
 } from "../services/credentialRateLimitService"
 import { newAssetId, storeImageDataUrlAsAsset } from "../services/fileServiceClient"
 import { normalizeAiContent } from "../utils/normalizeAiContent"
+import { deriveProviderClientKey } from "../utils/providerClientKey"
 import { gcsUriToSignedUrl } from "../utils/gcsSignedUrl"
 import { getWebSearchPolicy } from "../services/webSearchSettingsService"
 import {
@@ -2122,6 +2123,32 @@ export async function chatRun(req: Request, res: Response) {
     }
     const webSearchPolicy = await getWebSearchPolicy(tenantId)
 
+    // Pre-validate: block AI call when user has no credits (402)
+    const userIdStr = userId ? String(userId) : null
+    if (userIdStr && CREDITS_SERVICE_KEY) {
+      try {
+        const checkUrl = new URL("/api/ai/credits/internal/check-can-consume", CREDITS_SERVICE_URL)
+        const checkRes = await fetch(checkUrl.toString(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-service-key": CREDITS_SERVICE_KEY },
+          body: JSON.stringify({ user_id: userIdStr, tenant_id: tenantId }),
+        })
+        const checkJson = (await checkRes.json().catch(() => null)) as
+          | { ok?: boolean; can_consume?: boolean; reason?: string; message?: string }
+          | null
+        if (checkJson?.ok === true && checkJson?.can_consume === false) {
+          return res.status(402).json({
+            message: checkJson?.message ?? "크레딧이 부족합니다.",
+            code: "INSUFFICIENT_CREDITS",
+            reason: checkJson?.reason ?? "insufficient_credits",
+          })
+        }
+      } catch (err) {
+        console.warn("[credits-check] check-can-consume failed:", err)
+        // On check failure, allow request (fail open) - deduct will handle at end
+      }
+    }
+
     const {
       model_type,
       conversation_id,
@@ -2407,9 +2434,9 @@ export async function chatRun(req: Request, res: Response) {
     let safeMaxTokens = modelMaxOut ? clampInt(maxTokensRequested, 16, Math.max(16, modelMaxOut)) : maxTokensRequested
     // OpenAI GPT-5 mini can spend an entire completion budget on reasoning and emit empty visible text.
     // Ensure enough budget so it can produce actual output (especially for structured JSON).
-    const providerKeyLowerForBudget = String(row.provider_family || row.provider_slug || "").trim().toLowerCase()
+    const providerKeyForBudget = deriveProviderClientKey(row.provider_family, row.provider_slug)
     const modelApiIdForBudget = String(row.model_api_id || "").trim()
-    if (providerKeyLowerForBudget === "openai" && /gpt-5.*mini/i.test(modelApiIdForBudget)) {
+    if (providerKeyForBudget === "openai" && /gpt-5.*mini/i.test(modelApiIdForBudget)) {
       safeMaxTokens = Math.max(safeMaxTokens, 4096)
     }
 
@@ -2417,7 +2444,7 @@ export async function chatRun(req: Request, res: Response) {
     const providerId = String(row.provider_id)
     const base = await getProviderBase(providerId)
 
-    const providerKey = String(row.provider_family || row.provider_slug || "").trim().toLowerCase()
+    const providerKey = deriveProviderClientKey(row.provider_family, row.provider_slug)
     const modelApiId = String(row.model_api_id || "")
     usedProviderId = providerId
     usedModelDbId = chosenModelDbId

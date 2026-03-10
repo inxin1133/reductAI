@@ -201,6 +201,29 @@ async function ensureAiAccessSchema() {
   `);
     // 인덱스(존재 시 무시)
     await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_ai_models_sort_order ON ai_models(model_type, sort_order);`);
+    // ai_providers.sort_order 추가(드래그 정렬용)
+    // - 채팅 UI 제공사 카드 순서를 위해 DB에 저장합니다.
+    await (0, db_1.query)(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'ai_providers'
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'ai_providers'
+          AND column_name = 'sort_order'
+      ) THEN
+        ALTER TABLE ai_providers ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+      END IF;
+    END $$;
+  `);
+    await (0, db_1.query)(`CREATE INDEX IF NOT EXISTS idx_ai_providers_sort_order ON ai_providers(sort_order);`);
     // ai_models.model_type CHECK 제약 업데이트 (music 추가)
     // - CREATE TABLE에서 inline CHECK로 생성된 경우 constraint 이름이 자동 생성되어 환경마다 다를 수 있어,
     //   pg_get_constraintdef로 식별 후 drop → 우리가 관리하는 이름으로 재생성합니다.

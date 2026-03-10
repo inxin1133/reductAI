@@ -1,6 +1,7 @@
 import { Request, Response } from "express"
 import pool, { query } from "../config/db"
 import { getProviderAuth, openaiSimulateChat, anthropicSimulateChat, googleSimulateChat } from "../services/providerClients"
+import { deriveProviderClientKey } from "../utils/providerClientKey"
 
 type ModelType = "text" | "image" | "audio" | "music" | "video" | "multimodal" | "embedding" | "code"
 type ModelStatus = "active" | "inactive" | "deprecated" | "beta"
@@ -308,25 +309,8 @@ export async function simulateModel(req: Request, res: Response) {
     const row = m.rows[0]
 
     const providerId = row.provider_id as string
-    // provider 라우팅은 "canonical key(openai/anthropic/google)"로 정규화합니다.
-    // - 운영 데이터에서는 ai_providers.name/slug가 다양하게 들어올 수 있어(예: name='OpenAI', slug='openai-chatgpt')
-    //   방어적으로 normalize 합니다.
-    const providerNameRaw = String(row.provider_name || "")
     const providerSlug = String(row.provider_slug || "")
-    const providerFamily = String((row as any).provider_family || "").trim().toLowerCase()
-    const providerKey = (() => {
-      // 1) provider_family가 있으면 그 값을 최우선 사용
-      if (providerFamily) return providerFamily
-      // 2) (레거시) name/slug로 추론
-      const n = providerNameRaw.trim().toLowerCase()
-      const s = providerSlug.trim().toLowerCase()
-      const s0 = s.split("-")[0] || s
-      if (n.includes("openai")) return "openai"
-      if (n.includes("anthropic")) return "anthropic"
-      if (n.includes("google")) return "google"
-      if (s0) return s0
-      return ""
-    })()
+    const providerKey = deriveProviderClientKey((row as any).provider_family, row.provider_slug)
     const modelApiId = row.model_api_id as string
     const apiBaseUrl = (row.api_base_url as string | null) || ""
 

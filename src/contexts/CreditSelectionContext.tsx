@@ -3,7 +3,9 @@ import * as React from "react"
 type CreditSelectionContextValue = {
   selectedAccountId: string | null
   planTier: string | null
+  selectedTabHasCredits: boolean
   setSelection: (accountId: string | null, planTier: string | null) => void
+  setSelectedTabHasCredits: (hasCredits: boolean) => void
 }
 
 const CreditSelectionContext = React.createContext<CreditSelectionContextValue | null>(null)
@@ -11,6 +13,7 @@ const CreditSelectionContext = React.createContext<CreditSelectionContextValue |
 export function CreditSelectionProvider({ children }: { children: React.ReactNode }) {
   const [selectedAccountId, setSelectedAccountId] = React.useState<string | null>(null)
   const [planTier, setPlanTier] = React.useState<string | null>(null)
+  const [selectedTabHasCredits, setSelectedTabHasCredits] = React.useState(true)
 
   const setSelection = React.useCallback((accountId: string | null, tier: string | null) => {
     setSelectedAccountId(accountId)
@@ -18,8 +21,8 @@ export function CreditSelectionProvider({ children }: { children: React.ReactNod
   }, [])
 
   const value = React.useMemo(
-    () => ({ selectedAccountId, planTier, setSelection }),
-    [selectedAccountId, planTier, setSelection]
+    () => ({ selectedAccountId, planTier, selectedTabHasCredits, setSelection, setSelectedTabHasCredits }),
+    [selectedAccountId, planTier, selectedTabHasCredits, setSelection]
   )
 
   return (

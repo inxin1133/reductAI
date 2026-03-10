@@ -37,7 +37,7 @@ async function getChatUiConfig(_req, res) {
       FROM ai_models m
       JOIN ai_providers p ON p.id = m.provider_id
       WHERE m.status = 'active'
-      ORDER BY m.model_type ASC, p.product_name ASC, m.sort_order ASC, m.display_name ASC
+      ORDER BY m.model_type ASC, p.sort_order ASC, p.product_name ASC, m.sort_order ASC, m.display_name ASC
       `);
         const providersByType = {};
         for (const t of MODEL_TYPES)

@@ -48,6 +48,7 @@ const authProfilesService_1 = require("../services/authProfilesService");
 const credentialRateLimitService_1 = require("../services/credentialRateLimitService");
 const fileServiceClient_1 = require("../services/fileServiceClient");
 const normalizeAiContent_1 = require("../utils/normalizeAiContent");
+const providerClientKey_1 = require("../utils/providerClientKey");
 const gcsSignedUrl_1 = require("../utils/gcsSignedUrl");
 const webSearchSettingsService_1 = require("../services/webSearchSettingsService");
 const pricingService_1 = require("../services/pricingService");
@@ -310,72 +311,72 @@ function detectLanguageCode(text) {
         return "en";
     return null;
 }
+const LYRIA_TRANSLATION_MODELS = ["gemini-2.0-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
+function extractTranslatedText(json) {
+    const candidate = json?.candidates?.[0];
+    const content = candidate?.content;
+    const text = content?.parts?.[0]?.text;
+    return typeof text === "string" && text.trim() ? text.trim() : null;
+}
 /** Lyria requires US English. Translate non-English prompts via Gemini. */
 async function translateToEnglishForLyria(args) {
     const body = {
-        contents: [
-            {
-                role: "user",
-                parts: [
-                    {
-                        text: `Translate the following music description to US English. Output only the English translation, no other text:\n\n${args.input}`,
-                    },
-                ],
-            },
-        ],
+        contents: [{ role: "user", parts: [{ text: `Translate the following music description to US English. Output only the English translation, no other text:\n\n${args.input}` }] }],
         generationConfig: { maxOutputTokens: 1024 },
     };
-    // 1) GEMINI_API_KEY 있으면 Gemini API 우선 (generativelanguage, gemini-3-flash-preview)
+    // 1) GEMINI_API_KEY: generativelanguage API (우선순위 순으로 시도)
     const geminiKey = String(process.env.GEMINI_API_KEY || "").trim();
     if (geminiKey) {
-        const modelId = "gemini-3-flash-preview";
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`;
-        const res = await fetch(`${url}?key=${encodeURIComponent(geminiKey)}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-            signal: args.signal,
-        });
-        const json = (await res.json().catch(() => ({})));
-        if (res.ok) {
-            const candidate = json?.candidates?.[0];
-            const content = candidate?.content;
-            const text = content?.parts?.[0]?.text;
-            if (typeof text === "string" && text.trim())
-                return text.trim();
-        }
-        else {
-            throw new Error(`GEMINI_API_TRANSLATE_FAILED_${res.status}:${JSON.stringify(json)}`);
+        for (const modelId of LYRIA_TRANSLATION_MODELS) {
+            try {
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`;
+                const res = await fetch(`${url}?key=${encodeURIComponent(geminiKey)}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                    signal: args.signal,
+                });
+                const json = (await res.json().catch(() => ({})));
+                const text = extractTranslatedText(json);
+                if (text)
+                    return text;
+                if (!res.ok) {
+                    console.warn("[Lyria] Gemini 번역 실패:", modelId, res.status, json?.error?.message || "");
+                }
+            }
+            catch (e) {
+                console.warn("[Lyria] Gemini 번역 예외:", modelId, e?.message);
+            }
         }
     }
-    // 2) Vertex AI fallback (프로젝트에서 사용 가능한 모델 순차 시도)
+    // 2) Vertex AI fallback
     if (args.projectId === "unknown") {
         throw new Error("Missing projectId for Vertex AI fallback translation. Set GOOGLE_CLOUD_PROJECT or GEMINI_API_KEY.");
     }
-    const modelIds = ["gemini-2.0-flash-001", "gemini-1.5-flash-002"];
-    for (const modelId of modelIds) {
-        const url = `https://${args.location}-aiplatform.googleapis.com/v1/projects/${args.projectId}/locations/${args.location}/publishers/google/models/${modelId}:generateContent`;
-        const res = await fetch(url, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${args.accessToken}`,
-            },
-            body: JSON.stringify(body),
-            signal: args.signal,
-        });
-        const json = (await res.json().catch(() => ({})));
-        if (!res.ok) {
-            if (res.status === 404)
-                continue;
-            throw new Error(`LYRIA_TRANSLATE_FAILED_${res.status}:${JSON.stringify(json)}`);
+    for (const modelId of LYRIA_TRANSLATION_MODELS) {
+        try {
+            const url = `https://${args.location}-aiplatform.googleapis.com/v1/projects/${args.projectId}/locations/${args.location}/publishers/google/models/${modelId}:generateContent`;
+            const res = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${args.accessToken}` },
+                body: JSON.stringify(body),
+                signal: args.signal,
+            });
+            const json = (await res.json().catch(() => ({})));
+            const text = extractTranslatedText(json);
+            if (text) {
+                console.log("[Lyria] Vertex AI 번역 성공:", modelId);
+                return text;
+            }
+            if (!res.ok) {
+                console.warn("[Lyria] Vertex 번역 실패:", modelId, res.status, json?.error?.message || "");
+            }
         }
-        const candidate = json?.candidates?.[0];
-        const content = candidate?.content;
-        const text = content?.parts?.[0]?.text;
-        if (typeof text === "string" && text.trim())
-            return text.trim();
+        catch (e) {
+            console.warn("[Lyria] Vertex 번역 예외:", modelId, e?.message);
+        }
     }
+    console.warn("[Lyria] 번역 실패, 원문 사용 (Lyria는 en만 지원):", args.input.slice(0, 80));
     return args.input;
 }
 /** 전략 A: 시간 맥락이 필요한 질문인지 감지. 이 경우에만 동적 context에 시간 정보를 추가해 캐시 효율 유지.
@@ -941,6 +942,17 @@ async function executeHttpJsonProfile(args) {
         if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type") && args2.mode === "json") {
             headers["Content-Type"] = "application/json";
         }
+        // Lyria 요청 body 검증용 로그 (sample_count 적용 여부 확인)
+        if (args.purpose === "music" && m !== "GET" && m !== "HEAD") {
+            const inst0 = injectedBody.instances?.[0];
+            const safeLog = {
+                parameters: injectedBody.parameters,
+                instances0_keys: inst0 ? Object.keys(inst0) : [],
+                instances0_has_seed: !!(inst0?.seed),
+                instances0_has_sample_count: !!(inst0?.sample_count),
+            };
+            console.log("[Lyria] 실제 전송 body (요약):", JSON.stringify(safeLog, null, 2));
+        }
         const controller = new AbortController();
         const onAbort = () => controller.abort();
         if (args2.signal) {
@@ -996,6 +1008,13 @@ async function executeHttpJsonProfile(args) {
         signal: args.signal,
     });
     if (!initial.ok) {
+        const rawErr = initial.json;
+        const errMsg = String(rawErr?.error?.message ?? "");
+        if (args.purpose === "music" &&
+            initial.status === 400 &&
+            /unsupported language|supported languages:\s*en/i.test(errMsg)) {
+            throw new Error("Lyria는 영어(en)로 된 프롬프트만 지원합니다. 영어로 작성되지 않은 내용은 자동 번역이 진행되는데, 자동 번역이 실패한 경우에도 이 안내가 표시될 수 있습니다. 오류가 계속되면 영어(en)으로 작성 해주세요.");
+        }
         throw new Error(`MODEL_API_PROFILE_HTTP_${initial.status}:${JSON.stringify(initial.json)}@${initial.url}`);
     }
     // async job workflow: poll -> download/url
@@ -1913,6 +1932,30 @@ async function chatRun(req, res) {
             tenantId = await (0, systemTenantService_1.ensureSystemTenantId)();
         }
         const webSearchPolicy = await (0, webSearchSettingsService_1.getWebSearchPolicy)(tenantId);
+        // Pre-validate: block AI call when user has no credits (402)
+        const userIdStr = userId ? String(userId) : null;
+        if (userIdStr && CREDITS_SERVICE_KEY) {
+            try {
+                const checkUrl = new URL("/api/ai/credits/internal/check-can-consume", CREDITS_SERVICE_URL);
+                const checkRes = await fetch(checkUrl.toString(), {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "x-service-key": CREDITS_SERVICE_KEY },
+                    body: JSON.stringify({ user_id: userIdStr, tenant_id: tenantId }),
+                });
+                const checkJson = (await checkRes.json().catch(() => null));
+                if (checkJson?.ok === true && checkJson?.can_consume === false) {
+                    return res.status(402).json({
+                        message: checkJson?.message ?? "크레딧이 부족합니다.",
+                        code: "INSUFFICIENT_CREDITS",
+                        reason: checkJson?.reason ?? "insufficient_credits",
+                    });
+                }
+            }
+            catch (err) {
+                console.warn("[credits-check] check-can-consume failed:", err);
+                // On check failure, allow request (fail open) - deduct will handle at end
+            }
+        }
         const { model_type, conversation_id, userPrompt, max_tokens, session_language, 
         // optional: client-selected model override
         plan_tier, model_api_id, provider_id, provider_slug, options, attachments, 
@@ -2141,15 +2184,15 @@ async function chatRun(req, res) {
         let safeMaxTokens = modelMaxOut ? clampInt(maxTokensRequested, 16, Math.max(16, modelMaxOut)) : maxTokensRequested;
         // OpenAI GPT-5 mini can spend an entire completion budget on reasoning and emit empty visible text.
         // Ensure enough budget so it can produce actual output (especially for structured JSON).
-        const providerKeyLowerForBudget = String(row.provider_family || row.provider_slug || "").trim().toLowerCase();
+        const providerKeyForBudget = (0, providerClientKey_1.deriveProviderClientKey)(row.provider_family, row.provider_slug);
         const modelApiIdForBudget = String(row.model_api_id || "").trim();
-        if (providerKeyLowerForBudget === "openai" && /gpt-5.*mini/i.test(modelApiIdForBudget)) {
+        if (providerKeyForBudget === "openai" && /gpt-5.*mini/i.test(modelApiIdForBudget)) {
             safeMaxTokens = Math.max(safeMaxTokens, 4096);
         }
         // 7) 최종 request body 생성 + provider call
         const providerId = String(row.provider_id);
         const base = await (0, providerClients_1.getProviderBase)(providerId);
-        const providerKey = String(row.provider_family || row.provider_slug || "").trim().toLowerCase();
+        const providerKey = (0, providerClientKey_1.deriveProviderClientKey)(row.provider_family, row.provider_slug);
         const modelApiId = String(row.model_api_id || "");
         usedProviderId = providerId;
         usedModelDbId = chosenModelDbId;
@@ -2545,11 +2588,18 @@ async function chatRun(req, res) {
                 },
             });
         }
-        // Music uses model_api_profiles only; no built-in fallback. Surface actual error when execution failed.
+        // Music uses model_api_profiles only; no built-in fallback. Surface user-friendly error when execution failed.
         if (mt === "music" && out == null) {
             const errStr = profileError ? String(profileError?.message || profileError) : null;
+            const isLanguageError = errStr && (/Lyria는 영어.*지원합니다/i.test(errStr) || /Unsupported language|supported languages:\s*en/i.test(errStr));
+            const message = isLanguageError
+                ? "Lyria는 영어(en)로 된 프롬프트만 지원합니다. 입력 내용을 영어로 작성해 주세요."
+                : errStr || "음악 생성에 실패했습니다.";
+            const hint = isLanguageError
+                ? "한국어 등 다른 언어 입력 시 자동 번역을 시도합니다. 실패한 경우 영어로 다시 입력해 주세요."
+                : "Lyria seed는 0보다 커야 합니다. sample_count와 동시 사용 불가. document/model_settings/lyria-002.md 참고.";
             return await failAndRespond(400, {
-                message: errStr || "음악 생성에 실패했습니다.",
+                message,
                 details: {
                     provider_id: providerId,
                     model_db_id: chosenModelDbId,
@@ -2558,7 +2608,7 @@ async function chatRun(req, res) {
                     profile_key_used: usedProfileKey,
                     profile_attempted: profileAttempted,
                     error: errStr,
-                    hint: "Lyria seed는 0보다 커야 합니다. sample_count와 동시 사용 불가. document/model_settings/lyria-002.md 참고.",
+                    hint,
                 },
             });
         }

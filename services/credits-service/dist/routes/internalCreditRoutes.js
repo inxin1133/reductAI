@@ -8,4 +8,5 @@ const creditController_1 = require("../controllers/creditController");
 const router = express_1.default.Router();
 router.post("/subscription-grant", creditController_1.grantSubscriptionCredits);
 router.post("/deduct-for-usage", creditController_1.deductCreditsForUsage);
+router.post("/check-can-consume", creditController_1.checkCanConsume);
 exports.default = router;

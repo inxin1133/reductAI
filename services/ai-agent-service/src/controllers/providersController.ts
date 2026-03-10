@@ -1,5 +1,6 @@
 import { Request, Response } from "express"
 import pool, { query } from "../config/db"
+import { deriveProviderClientKey } from "../utils/providerClientKey"
 
 type ProviderStatus = "active" | "inactive" | "deprecated"
 
@@ -78,10 +79,7 @@ export async function createProvider(req: Request, res: Response) {
     const family =
       typeof provider_family === "string" && provider_family.trim()
         ? provider_family.trim().toLowerCase()
-        : String(slug || "")
-            .trim()
-            .toLowerCase()
-            .split("-")[0] || "custom"
+        : deriveProviderClientKey(null, slug) || "custom"
 
     const result = await query(
       `INSERT INTO ai_providers
@@ -161,6 +159,14 @@ export async function updateProvider(req: Request, res: Response) {
           ? LOGO_KEY_CLEAR
           : logo_key
 
+    // provider_family: 명시적으로 전달되면 사용, slug 변경 시 prefix에서 추론 (openai/google/anthropic)
+    const familyToSet =
+      typeof provider_family === "string" && provider_family.trim()
+        ? provider_family.trim().toLowerCase()
+        : slug && String(slug).trim()
+          ? deriveProviderClientKey(null, String(slug).trim())
+          : null
+
     // 부분 업데이트 지원
     const result = await query(
       `UPDATE ai_providers SET
@@ -187,7 +193,7 @@ export async function updateProvider(req: Request, res: Response) {
         status, is_verified, metadata, created_at, updated_at`,
       [
         id,
-        typeof provider_family === "string" ? provider_family.trim().toLowerCase() : null,
+        familyToSet,
         name ?? null,
         product_name ?? null,
         slug ?? null,

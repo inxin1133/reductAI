@@ -50,6 +50,7 @@ exports.getMyTopupUsage = getMyTopupUsage;
 exports.getTenantUsageHistory = getTenantUsageHistory;
 exports.getMyUsageHistory = getMyUsageHistory;
 exports.updateMemberTopupCreditAccess = updateMemberTopupCreditAccess;
+exports.checkCanConsume = checkCanConsume;
 exports.deductCreditsForUsage = deductCreditsForUsage;
 exports.grantSubscriptionCredits = grantSubscriptionCredits;
 exports.listCreditLedgerEntries = listCreditLedgerEntries;
@@ -2002,6 +2003,151 @@ async function updateMemberTopupCreditAccess(req, res) {
         return res.status(500).json({ message: "Failed to update member topup credit access", details: String(e?.message || e) });
     }
 }
+/**
+ * Pre-check: can user consume credits for AI usage?
+ * Called by ai-agent-service before chatRun to block requests when no credits available.
+ * Body: { user_id: string (required), tenant_id?: string }
+ */
+async function checkCanConsume(req, res) {
+    const userId = toStr(req.body?.user_id);
+    if (!userId || !isUuid(userId)) {
+        return res.status(400).json({
+            ok: false,
+            can_consume: false,
+            reason: "invalid_user_id",
+            message: "user_id is required (valid UUID)",
+        });
+    }
+    let tenantId = toStr(req.body?.tenant_id);
+    if (!tenantId || !isUuid(tenantId)) {
+        const systemTenantRes = await (0, db_1.query)(`SELECT id FROM tenants WHERE slug = 'system' AND deleted_at IS NULL LIMIT 1`);
+        const systemTenantId = systemTenantRes.rows[0]?.id ? String(systemTenantRes.rows[0].id) : null;
+        if (systemTenantId) {
+            const primaryRes = await (0, db_1.query)(`
+        SELECT utr.tenant_id
+        FROM user_tenant_roles utr
+        JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+        WHERE utr.user_id = $1
+          AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+          AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+        ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC
+        LIMIT 1
+        `, [userId]);
+            tenantId = primaryRes.rows[0]?.tenant_id ? String(primaryRes.rows[0].tenant_id) : "";
+        }
+    }
+    if (!tenantId || !isUuid(tenantId)) {
+        return res.json({
+            ok: true,
+            can_consume: false,
+            reason: "no_tenant",
+            message: "크레딧이 부족합니다.",
+        });
+    }
+    try {
+        const prefRes = await (0, db_1.query)(`SELECT selected_account_id FROM credit_user_preferences WHERE user_id = $1 LIMIT 1`, [userId]);
+        const selectedAccountId = prefRes.rows[0]?.selected_account_id
+            ? String(prefRes.rows[0].selected_account_id)
+            : null;
+        if (selectedAccountId) {
+            const accTenantRes = await (0, db_1.query)(`
+        SELECT ca.owner_tenant_id, ca.source_tenant_id, ca.owner_type
+        FROM credit_accounts ca
+        WHERE ca.id = $1 AND ca.status = 'active'
+          AND (
+            EXISTS (SELECT 1 FROM credit_account_access caa WHERE caa.user_id = $2 AND caa.account_id = ca.id AND caa.is_active = TRUE)
+            OR EXISTS (SELECT 1 FROM tenants t WHERE t.id = ca.owner_tenant_id AND t.owner_id = $2 AND t.deleted_at IS NULL)
+          )
+        LIMIT 1
+        `, [selectedAccountId, userId]);
+            const accRow = accTenantRes.rows[0];
+            if (accRow) {
+                const resolvedTenant = accRow.owner_type === "tenant" && accRow.owner_tenant_id
+                    ? accRow.owner_tenant_id
+                    : accRow.source_tenant_id;
+                if (resolvedTenant)
+                    tenantId = String(resolvedTenant);
+            }
+        }
+        // 신규 대화 시 chatRun이 system tenant를 넘김. credit_accounts는 사용자 tenant에 있으므로 primary로 resolve
+        const systemTenantRes = await (0, db_1.query)(`SELECT id FROM tenants WHERE slug = 'system' AND deleted_at IS NULL LIMIT 1`);
+        const systemTenantId = systemTenantRes.rows[0]?.id ? String(systemTenantRes.rows[0].id) : null;
+        if (systemTenantId && tenantId === systemTenantId) {
+            const primaryRes = await (0, db_1.query)(`
+        SELECT utr.tenant_id
+        FROM user_tenant_roles utr
+        JOIN tenants t ON t.id = utr.tenant_id AND t.deleted_at IS NULL
+        WHERE utr.user_id = $1
+          AND (utr.membership_status IS NULL OR utr.membership_status = 'active')
+          AND COALESCE((t.metadata->>'system')::boolean, FALSE) = FALSE
+        ORDER BY COALESCE(utr.is_primary_tenant, FALSE) DESC, utr.joined_at ASC
+        LIMIT 1
+        `, [userId]);
+            const primaryTenantId = primaryRes.rows[0]?.tenant_id ? String(primaryRes.rows[0].tenant_id) : null;
+            if (primaryTenantId) {
+                tenantId = primaryTenantId;
+            }
+        }
+        const accountsRes = await (0, db_1.query)(`
+      SELECT id, balance_credits, reserved_credits, priority, credit_type
+      FROM (
+        (
+          SELECT ca.id, ca.balance_credits, ca.reserved_credits, caa.priority, ca.credit_type
+          FROM credit_account_access caa
+          JOIN credit_accounts ca ON ca.id = caa.account_id AND ca.status = 'active'
+            AND ca.owner_type = 'tenant' AND ca.owner_tenant_id = $2
+          WHERE caa.user_id = $1
+            AND caa.is_active = TRUE
+            AND (
+              ca.credit_type = 'subscription'
+              OR (ca.credit_type = 'topup' AND caa.allow_when_empty = TRUE)
+            )
+        )
+        UNION
+        (
+          SELECT ca.id, ca.balance_credits, ca.reserved_credits, 0 AS priority, ca.credit_type
+          FROM credit_accounts ca
+          JOIN tenants t ON t.id = ca.owner_tenant_id AND t.owner_id = $1
+          WHERE ca.status = 'active'
+            AND ca.owner_type = 'tenant' AND ca.owner_tenant_id = $2
+            AND (
+              ca.credit_type = 'subscription'
+              OR ca.credit_type = 'topup'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM credit_account_access caa2
+              WHERE caa2.user_id = $1 AND caa2.account_id = ca.id
+            )
+        )
+      ) sub
+      ORDER BY
+        CASE WHEN id::text = $3 THEN 0 ELSE 1 END,
+        priority ASC,
+        CASE credit_type WHEN 'subscription' THEN 0 ELSE 1 END
+      `, [userId, tenantId, selectedAccountId || ""]);
+        const accounts = accountsRes.rows;
+        const withBalance = accounts.filter((a) => {
+            const avail = Math.max(0, Number(a.balance_credits ?? 0) - Number(a.reserved_credits ?? 0));
+            return avail > 0;
+        });
+        const canConsume = withBalance.length > 0;
+        return res.json({
+            ok: true,
+            can_consume: canConsume,
+            reason: canConsume ? null : "insufficient_credits",
+            message: canConsume ? null : "크레딧이 부족합니다.",
+        });
+    }
+    catch (e) {
+        console.error("checkCanConsume error:", e);
+        return res.status(500).json({
+            ok: false,
+            can_consume: false,
+            reason: "error",
+            message: "크레딧 확인 중 오류가 발생했습니다.",
+        });
+    }
+}
 async function deductCreditsForUsage(req, res) {
     const usageLogId = toStr(req.body?.usage_log_id);
     if (!usageLogId || !isUuid(usageLogId)) {
@@ -2237,11 +2383,10 @@ async function deductCreditsForUsage(req, res) {
             remaining -= deduct;
             allocations.push({ account_id: acc.id, amount: deduct });
         }
+        // Allow partial deduction: deduct what we can (e.g. 15 of 20)
+        // Response already sent to user; remaining shortage is logged only
         if (remaining > 0) {
-            await client.query("ROLLBACK");
-            transactionStarted = false;
-            console.warn("[deduct] skip usage_log_id=%s reason=insufficient_balance remaining=%d creditsToDeduct=%d", usageLogId, remaining, creditsToDeduct);
-            return res.json({ ok: true, deducted: 0, skipped: true, reason: "insufficient_balance" });
+            console.warn("[deduct] partial deduction usage_log_id=%s remaining=%d creditsToDeduct=%d allocated=%d", usageLogId, remaining, creditsToDeduct, creditsToDeduct - remaining);
         }
         const occurredAt = new Date().toISOString();
         for (const alloc of allocations) {
@@ -2277,10 +2422,11 @@ async function deductCreditsForUsage(req, res) {
         }
         await client.query("COMMIT");
         transactionStarted = false;
-        console.log("[deduct] success usage_log_id=%s base_cost=%.6f margin%%=%s cost_with_margin=%.6f deducted=%d", usageLogId, totalCost, marginPercent, costWithMargin, creditsToDeduct);
+        const actualDeducted = allocations.reduce((sum, a) => sum + a.amount, 0);
+        console.log("[deduct] success usage_log_id=%s base_cost=%.6f margin%%=%s cost_with_margin=%.6f deducted=%d", usageLogId, totalCost, marginPercent, costWithMargin, actualDeducted);
         return res.json({
             ok: true,
-            deducted: creditsToDeduct,
+            deducted: actualDeducted,
             allocations: allocations.map((a) => ({ account_id: a.account_id, amount: a.amount })),
         });
     }
@@ -2894,7 +3040,17 @@ async function updateMyCreditPreferences(req, res) {
             if (!isUuid(selectedAccountId)) {
                 return res.status(400).json({ message: "selected_account_id must be a valid UUID" });
             }
-            const accessRes = await (0, db_1.query)(`SELECT 1 FROM credit_account_access WHERE user_id = $1 AND account_id = $2 AND is_active = TRUE LIMIT 1`, [userId, selectedAccountId]);
+            const accessRes = await (0, db_1.query)(`
+        SELECT 1 FROM credit_accounts ca
+        WHERE ca.id = $2 AND ca.status = 'active'
+          AND (
+            EXISTS (SELECT 1 FROM credit_account_access caa
+                    WHERE caa.user_id = $1 AND caa.account_id = ca.id AND caa.is_active = TRUE)
+            OR EXISTS (SELECT 1 FROM tenants t
+                       WHERE t.id = ca.owner_tenant_id AND t.owner_id = $1 AND t.deleted_at IS NULL)
+          )
+        LIMIT 1
+        `, [userId, selectedAccountId]);
             if (accessRes.rows.length === 0) {
                 return res.status(403).json({ message: "No access to the specified credit account" });
             }

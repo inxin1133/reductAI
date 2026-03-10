@@ -107,26 +107,34 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
       const grantsJson = (await grantsRes.json().catch(() => null)) as { ok?: boolean; grants?: GrantedCredit[] } | null
       const prefsJson = (await prefsRes.json().catch(() => null)) as { ok?: boolean; selected_account_id?: string | null } | null
       const grants = grantsJson?.ok && Array.isArray(grantsJson.grants) ? grantsJson.grants : []
+      const getRemainingForAccountId = (accountId: string): number => {
+        for (const g of grants) {
+          if (g.account_id === accountId) return g.service?.remaining_credits ?? 0
+          if (g.topup_account_id === accountId) return g.topup_auto_use || g.role_slug === "owner" || g.role_slug === "tenant_owner" ? g.topup_remaining_credits ?? 0 : 0
+        }
+        return 0
+      }
       const buildTabs = (glist: typeof grants) => {
-        const tabs: Array<{ accountId: string }> = []
+        const tabs: Array<{ accountId: string; remaining: number }> = []
         for (const g of glist) {
           const serviceRemaining = g.service?.remaining_credits ?? 0
           const topupRemaining = g.topup_remaining_credits ?? 0
           const hasTopupAccess = g.topup_auto_use || g.role_slug === "owner" || g.role_slug === "tenant_owner"
           if (serviceRemaining > 0 && g.account_id) {
-            tabs.push({ accountId: g.account_id })
+            tabs.push({ accountId: g.account_id, remaining: serviceRemaining })
           } else if (topupRemaining > 0 && hasTopupAccess && g.topup_account_id) {
-            tabs.push({ accountId: g.topup_account_id })
+            tabs.push({ accountId: g.topup_account_id, remaining: topupRemaining })
           } else if (g.account_id) {
-            tabs.push({ accountId: g.account_id })
+            tabs.push({ accountId: g.account_id, remaining: serviceRemaining })
           } else if (hasTopupAccess && g.topup_account_id) {
-            tabs.push({ accountId: g.topup_account_id })
+            tabs.push({ accountId: g.topup_account_id, remaining: topupRemaining })
           }
         }
         return tabs
       }
       const tabs = buildTabs(grants)
       const allAccountIds = tabs.map((t) => t.accountId)
+      const firstTabWithCredits = tabs.find((t) => t.remaining > 0)
       const ownerGrant = grants.find((g) => g.role_slug === "owner" || g.role_slug === "tenant_owner")
       const defaultAccountId =
         (ownerGrant
@@ -135,10 +143,13 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
             : (ownerGrant.topup_remaining_credits ?? 0) > 0
               ? ownerGrant.topup_account_id
               : ownerGrant.account_id ?? ownerGrant.topup_account_id ?? null
-          : null) ?? tabs[0]?.accountId ?? null
+          : null) ?? (firstTabWithCredits?.accountId ?? tabs[0]?.accountId ?? null)
       const storedSelected = prefsJson?.ok && prefsJson.selected_account_id !== undefined ? (prefsJson.selected_account_id ?? null) : null
       const isStoredValid = storedSelected != null && allAccountIds.includes(storedSelected)
-      const effectiveSelected = isStoredValid ? storedSelected : defaultAccountId
+      let effectiveSelected = isStoredValid ? storedSelected : defaultAccountId
+      if (effectiveSelected && getRemainingForAccountId(effectiveSelected) <= 0 && firstTabWithCredits) {
+        effectiveSelected = firstTabWithCredits.accountId
+      }
       if (effectiveSelected != null && effectiveSelected !== storedSelected) {
         try {
           const patchRes = await fetch("/api/ai/credits/my/preferences", {
@@ -237,6 +248,12 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
     creditSelection?.setSelection(selectedAccountId, tier)
   }, [selectedAccountId, creditTabs, creditSelection])
 
+  React.useEffect(() => {
+    const selectedTab = creditTabs.find((t) => t.accountId === selectedAccountId)
+    const hasCredits = selectedTab ? selectedTab.remaining > 0 : true
+    creditSelection?.setSelectedTabHasCredits(hasCredits)
+  }, [creditTabs, selectedAccountId, creditSelection])
+
   if (loading) {
     if (variant === "compact") {
       return (
@@ -325,14 +342,21 @@ function PaidToken({ className, authHeaders, variant = "full" }: PaidTokenProps)
               <span className="min-w-0 max-w-[5rem] truncate">{tab.tenantLabel}</span>
               <span className="shrink-0">:{tab.planLabel}</span>
             </p>
-            <div
-              className={cn(
-                "flex flex-col h-[20px] items-center justify-center px-[6px] py-[2px] rounded-full shrink-0 font-mono font-medium text-[12px] leading-[16px]",
-                isTopup ? "bg-indigo-500 text-white" : isSelected ? styles.badgeSelected : styles.badgeUnselected
-              )}
-            >
-              {isTopup ? `충전:${formatCredits(tab.remaining)}` : formatCredits(tab.remaining)}
-            </div>
+            {isSelected && tab.remaining <= 0 ? (
+              <div className="flex items-center gap-1 shrink-0">
+                <Lock className="size-3.5 text-amber-600" />
+                <span className="text-xs text-amber-600">크레딧이 부족합니다</span>
+              </div>
+            ) : (
+              <div
+                className={cn(
+                  "flex flex-col h-[20px] items-center justify-center px-[6px] py-[2px] rounded-full shrink-0 font-mono font-medium text-[12px] leading-[16px]",
+                  isTopup ? "bg-indigo-500 text-white" : isSelected ? styles.badgeSelected : styles.badgeUnselected
+                )}
+              >
+                {isTopup ? `충전:${formatCredits(tab.remaining)}` : formatCredits(tab.remaining)}
+              </div>
+            )}
           </button>
         )
       })}
@@ -1773,8 +1797,12 @@ function ChatInterfaceInner({
     if (selectedSubModel && selectableModels.some((m) => m.model_api_id === selectedSubModel)) {
       return selectedSubModel
     }
+    const allProviderModels = (currentProviderGroup?.models || []).filter((m) => m.is_available && String(m.model_api_id || "").trim())
+    if (!selectableModels.length && selectedSubModel && allProviderModels.some((m) => m.model_api_id === selectedSubModel)) {
+      return selectedSubModel
+    }
     return selectableModels[0]?.model_api_id || ""
-  }, [selectableModels, selectedSubModel])
+  }, [selectableModels, selectedSubModel, currentProviderGroup?.models])
 
   const useSelectionOverride =
     !!forceSelectionSync &&
@@ -1861,7 +1889,7 @@ function ChatInterfaceInner({
 
   const uiSelectedModel = useSelectionOverride
     ? uiSelectableModels.find((m) => m.model_api_id === uiSelectedModelApiId) || null
-    : selectedModel
+    : selectedModel || (uiSelectedModelApiId ? uiDropdownModels.find((m) => m.model_api_id === uiSelectedModelApiId) || null : null)
 
   const uiSelectedModelDbId = useSelectionOverride
     ? (uiSelectableModels.find((m) => m.model_api_id === uiSelectedModelApiId) || uiSelectableModels[0])?.id || ""
@@ -2318,15 +2346,20 @@ function ChatInterfaceInner({
   }, [applyRuntimeOptions, initialOptions, selectedModelDbId])
 
   // 항상 "선택된 모델"이 유지되도록 강제 (선택값이 현재 목록에 없으면 default/첫번째로 복구)
+  // Lock 제공사: selectableModels=[]이어도 selectedSubModel 유지 (플랜 제한 안내용)
   React.useEffect(() => {
+    const allProviderModels = (currentProviderGroup?.models || []).filter((m) => m.is_available && String(m.model_api_id || "").trim())
     if (!selectableModels.length) {
+      if (allProviderModels.length > 0 && selectedSubModel && allProviderModels.some((m) => m.model_api_id === selectedSubModel)) {
+        return
+      }
       setSelectedSubModel("")
       return
     }
     if (selectedSubModel && selectableModels.some((m) => m.model_api_id === selectedSubModel)) return
     const picked = selectableModels.find((m) => m.is_default) || selectableModels[0]
     setSelectedSubModel(picked.model_api_id)
-  }, [selectableModels, selectedSubModel])
+  }, [selectableModels, selectedSubModel, currentProviderGroup?.models])
 
   // 모델이 바뀌면: 이전에 선택했던 옵션이 있으면 복원, 없으면 defaults 적용
   React.useEffect(() => {
@@ -2434,10 +2467,13 @@ function ChatInterfaceInner({
     return !models.some((m) => allowedModelApiIds.has(String(m.model_api_id || "").trim().toLowerCase()))
   }, [allowedModelApiIds, uiProviderGroup])
 
-  // 모델 선택됨 + 잠금 아님 + 크레딧 있음 시에만 전송 가능
+  // 모델 선택됨 + 잠금 아님 + 크레딧 있음 + 선택 크레딧탭에 잔액 있음 시에만 전송 가능
   const effectiveModelForSend = useSelectionOverride ? uiSelectedModelApiId : effectiveModelApiId
   const canSendWithModel =
-    canSend && Boolean(String(effectiveModelForSend || "").trim()) && !isCurrentModelLocked
+    canSend &&
+    Boolean(String(effectiveModelForSend || "").trim()) &&
+    !isCurrentModelLocked &&
+    (creditSelection?.selectedTabHasCredits !== false)
 
   // 프롬프트 입력 가능 여부 (모델 미선택/잠금 시 입력 차단)
   const canTypePrompt = introMode || canSendWithModel
@@ -2445,11 +2481,12 @@ function ChatInterfaceInner({
   // placeholder 우선순위
   const promptPlaceholder = React.useMemo(() => {
     if (introMode) return "로그인 후 AI와 대화를 시작해 보세요"
+    if (isCurrentModelLocked) return "서비스 등급 제한에 따라 사용이 불가합니다."
     if (!String(effectiveModelForSend || "").trim()) return "모델을 선택해 주세요"
-    if (isCurrentModelLocked) return "선택한 플랜에서 이 모델을 사용할 수 없습니다."
-    if (!canSend) return creditsSystemReady ? "크레딧이 모두 소진 되었습니다." : "크레딧 시스템 설정 중입니다."
+    if (creditSelection?.selectedTabHasCredits === false) return "크레딧이 부족합니다."
+    if (!canSend) return creditsSystemReady ? "크레딧이 모두 소진되었습니다." : "크레딧 시스템 설정 중입니다."
     return uiSelectedModelLabel || "프롬프트를 입력해 주세요"
-  }, [introMode, effectiveModelForSend, isCurrentModelLocked, canSend, creditsSystemReady, uiSelectedModelLabel])
+  }, [introMode, effectiveModelForSend, isCurrentModelLocked, canSend, creditsSystemReady, uiSelectedModelLabel, creditSelection?.selectedTabHasCredits])
 
   // Web search toggle (text/chat only)
   const [webAllowedHasStorage, setWebAllowedHasStorage] = React.useState<boolean>(() => {
@@ -2754,6 +2791,9 @@ function ChatInterfaceInner({
         const json = isRecord(jsonUnknown) ? jsonUnknown : {}
 
         if (!res.ok) {
+          if (res.status === 402) {
+            window.dispatchEvent(new CustomEvent("reductai:credits-refresh"))
+          }
           const msg = (typeof json.message === "string" ? String(json.message) : "") || raw || "AI 응답 실패"
           const details = typeof json.details === "string" ? `\n${String(json.details)}` : ""
           throw new Error(`${msg}${details}`)
@@ -2851,6 +2891,7 @@ function ChatInterfaceInner({
       creditsSystemReady,
       canSend,
       canSendWithModel,
+      creditSelection?.selectedTabHasCredits,
       introMode,
       isPreparingAttachments,
       hasPendingAttachments,
@@ -2979,6 +3020,7 @@ function ChatInterfaceInner({
       },
       [allowedModelApiIds]
     )
+    const isCreditLocked = creditSelection?.selectedTabHasCredits === false
     return (
       <div className="relative w-full group">
         {showLeftArrow && (
@@ -2992,16 +3034,19 @@ function ChatInterfaceInner({
         <div ref={scrollContainerRef} onScroll={updateScrollButtons} className="flex flex-row gap-3 items-start justify-start relative w-full overflow-x-auto scrollbar-hide px-2 py-2">
           {uiProviderGroups.map((g) => {
             const allowed = isProviderAllowed(g)
+            const showLock = !allowed || isCreditLocked
+            const lockTitle = isCreditLocked ? "크레딧이 부족합니다" : "선택한 플랜에서는 이 모델을 사용할 수 없습니다"
+            const looksDisabled = !allowed && !isCreditLocked
             return (
               <div
                 key={g.provider.id}
                 className={cn(
                   "relative bg-card border border-border flex flex-col items-start p-2 lg:p-4 rounded-md shrink-0 min-w-[100px] w-[120px] lg:w-[160px] transition-all",
-                  allowed ? "cursor-pointer hover:shadow-md" : "cursor-not-allowed opacity-60",
+                  "cursor-pointer hover:shadow-md",
+                  looksDisabled && "opacity-60 hover:opacity-80",
                   uiProviderGroup?.provider.id === g.provider.id ? "border-1 border-primary bg-accent" : ""
                 )}
                 onClick={() => {
-                  if (!allowed) return
                   selectionDirtyRef.current = true
                   setSelectedProviderId(g.provider.id)
                   const allAvailable = (g.models || []).filter((m) => m.is_available)
@@ -3049,8 +3094,8 @@ function ChatInterfaceInner({
                   <p className="font-medium text-card-foreground text-[14px] truncate">{g.provider.product_name}</p>
                   <p className="text-xs text-muted-foreground truncate hidden lg:block">{g.provider.name}</p>
                   </div>
-                  {!allowed && (
-                    <div className="absolute right-2 top-2 z-10 rounded-full bg-muted-foreground/80 p-1" title="선택한 플랜에서는 이 모델을 사용할 수 없습니다">
+                  {showLock && (
+                    <div className="absolute right-0 bottom-0 z-10 rounded-full bg-muted-foreground/80 p-1" title={lockTitle}>
                       <Lock className="size-3 text-primary-foreground" />
                     </div>
                   )}
@@ -3463,12 +3508,14 @@ function ChatInterfaceInner({
                                 !allowedModelApiIds ||
                                 allowedModelApiIds.size === 0 ||
                                 allowedModelApiIds.has(String(m.model_api_id || "").trim().toLowerCase())
+                              const isCreditLockedForModel = creditSelection?.selectedTabHasCredits === false
+                              const isSelectable = isAllowedForPlan && !isCreditLockedForModel
                               return (
                                 <DropdownMenuItem
                                   key={m.model_api_id}
-                                  disabled={!isAllowedForPlan}
+                                  disabled={!isSelectable}
                                   onClick={() => {
-                                    if (!isAllowedForPlan) return
+                                    if (!isSelectable) return
                                     selectionDirtyRef.current = true
                                     setSelectedSubModel(m.model_api_id)
                                     if (providerForPersist?.provider?.slug && m.model_api_id) {
@@ -3480,7 +3527,7 @@ function ChatInterfaceInner({
                                     }
                                   }}
                                 >
-                                  {isAllowedForPlan ? m.display_name : `(사용제한)${m.display_name || ""}`}
+                                  {isSelectable ? m.display_name : `(사용제한) ${m.display_name || ""}`}
                                 </DropdownMenuItem>
                               )
                             })}

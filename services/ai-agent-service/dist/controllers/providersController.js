@@ -1,19 +1,54 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getProviders = getProviders;
 exports.getProvider = getProvider;
 exports.createProvider = createProvider;
 exports.updateProvider = updateProvider;
+exports.reorderProviders = reorderProviders;
 exports.deleteProvider = deleteProvider;
-const db_1 = require("../config/db");
+const db_1 = __importStar(require("../config/db"));
+const providerClientKey_1 = require("../utils/providerClientKey");
 // AI 제공업체 목록 조회
 async function getProviders(_req, res) {
     try {
         const result = await (0, db_1.query)(`SELECT 
         id, provider_family, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url,
-        status, is_verified, metadata, created_at, updated_at
+        status, is_verified, metadata, sort_order, created_at, updated_at
       FROM ai_providers
-      ORDER BY created_at DESC`);
+      ORDER BY sort_order ASC, created_at DESC`);
         res.json(result.rows);
     }
     catch (error) {
@@ -48,10 +83,7 @@ async function createProvider(req, res) {
         }
         const family = typeof provider_family === "string" && provider_family.trim()
             ? provider_family.trim().toLowerCase()
-            : String(slug || "")
-                .trim()
-                .toLowerCase()
-                .split("-")[0] || "custom";
+            : (0, providerClientKey_1.deriveProviderClientKey)(null, slug) || "custom";
         const result = await (0, db_1.query)(`INSERT INTO ai_providers
         (provider_family, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url, status, is_verified, metadata)
       VALUES
@@ -97,6 +129,12 @@ async function updateProvider(req, res) {
             : logo_key === null || logo_key === ""
                 ? LOGO_KEY_CLEAR
                 : logo_key;
+        // provider_family: 명시적으로 전달되면 사용, slug 변경 시 prefix에서 추론 (openai/google/anthropic)
+        const familyToSet = typeof provider_family === "string" && provider_family.trim()
+            ? provider_family.trim().toLowerCase()
+            : slug && String(slug).trim()
+                ? (0, providerClientKey_1.deriveProviderClientKey)(null, String(slug).trim())
+                : null;
         // 부분 업데이트 지원
         const result = await (0, db_1.query)(`UPDATE ai_providers SET
         provider_family = COALESCE($2, provider_family),
@@ -121,7 +159,7 @@ async function updateProvider(req, res) {
         id, provider_family, name, product_name, slug, logo_key, description, website_url, api_base_url, documentation_url,
         status, is_verified, metadata, created_at, updated_at`, [
             id,
-            typeof provider_family === "string" ? provider_family.trim().toLowerCase() : null,
+            familyToSet,
             name ?? null,
             product_name ?? null,
             slug ?? null,
@@ -144,6 +182,42 @@ async function updateProvider(req, res) {
             return res.status(409).json({ message: "Duplicate provider (slug already exists)" });
         }
         res.status(500).json({ message: "Failed to update provider" });
+    }
+}
+// 순서 변경(드래그 정렬): ordered_ids 순서대로 sort_order 재부여
+async function reorderProviders(req, res) {
+    const client = await db_1.default.connect();
+    try {
+        const { ordered_ids } = (req.body || {});
+        if (!Array.isArray(ordered_ids) || ordered_ids.length === 0) {
+            return res.status(400).json({ message: "ordered_ids[] is required" });
+        }
+        const ids = ordered_ids.map((x) => String(x)).filter(Boolean);
+        if (ids.length !== ordered_ids.length) {
+            return res.status(400).json({ message: "ordered_ids contains invalid id" });
+        }
+        await client.query("BEGIN");
+        for (let i = 0; i < ids.length; i++) {
+            await client.query(`UPDATE ai_providers SET sort_order = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, [
+                i * 10,
+                ids[i],
+            ]);
+        }
+        await client.query("COMMIT");
+        res.json({ ok: true, count: ids.length });
+    }
+    catch (error) {
+        try {
+            await client.query("ROLLBACK");
+        }
+        catch {
+            // ignore
+        }
+        console.error("reorderProviders error:", error);
+        res.status(500).json({ message: "Failed to reorder providers" });
+    }
+    finally {
+        client.release();
     }
 }
 // 제공업체 삭제

@@ -42,6 +42,7 @@ exports.deleteModel = deleteModel;
 exports.simulateModel = simulateModel;
 const db_1 = __importStar(require("../config/db"));
 const providerClients_1 = require("../services/providerClients");
+const providerClientKey_1 = require("../utils/providerClientKey");
 function normalizeCapabilities(input) {
     // 권장 형태: object
     // - 기존 호환: 배열이면 { features: [...] }로 감쌉니다.
@@ -298,30 +299,8 @@ async function simulateModel(req, res) {
             return res.status(404).json({ message: "Model not found" });
         const row = m.rows[0];
         const providerId = row.provider_id;
-        // provider 라우팅은 "canonical key(openai/anthropic/google)"로 정규화합니다.
-        // - 운영 데이터에서는 ai_providers.name/slug가 다양하게 들어올 수 있어(예: name='OpenAI', slug='openai-chatgpt')
-        //   방어적으로 normalize 합니다.
-        const providerNameRaw = String(row.provider_name || "");
         const providerSlug = String(row.provider_slug || "");
-        const providerFamily = String(row.provider_family || "").trim().toLowerCase();
-        const providerKey = (() => {
-            // 1) provider_family가 있으면 그 값을 최우선 사용
-            if (providerFamily)
-                return providerFamily;
-            // 2) (레거시) name/slug로 추론
-            const n = providerNameRaw.trim().toLowerCase();
-            const s = providerSlug.trim().toLowerCase();
-            const s0 = s.split("-")[0] || s;
-            if (n.includes("openai"))
-                return "openai";
-            if (n.includes("anthropic"))
-                return "anthropic";
-            if (n.includes("google"))
-                return "google";
-            if (s0)
-                return s0;
-            return "";
-        })();
+        const providerKey = (0, providerClientKey_1.deriveProviderClientKey)(row.provider_family, row.provider_slug);
         const modelApiId = row.model_api_id;
         const apiBaseUrl = row.api_base_url || "";
         const auth = await (0, providerClients_1.getProviderAuth)(providerId);

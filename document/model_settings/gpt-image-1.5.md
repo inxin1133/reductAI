@@ -32,6 +32,87 @@ API Key 인증 정보 (OpenAI 공유)
 
 ---
 
+## response_schemas
+출력 계약 (이미지 응답 형식)
+
+| 필드 | 비고 |
+|------|------|
+| name | 예: `llm_image_response` |
+| strict | `true` |
+| schema | 아래 JSON |
+
+### schema
+```json
+{
+  "type": "object",
+  "required": ["images"],
+  "additionalProperties": false,
+  "properties": {
+    "title": { "type": "string" },
+    "summary": { "type": "string" },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "markdown"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "markdown" },
+          "markdown": { "type": "string" }
+        }
+      }
+    },
+    "images": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "url": { "type": "string" },
+          "b64_json": { "type": "string" },
+          "mime_type": { "type": "string" },
+          "width": { "type": "integer" },
+          "height": { "type": "integer" }
+        },
+        "anyOf": [
+          { "required": ["url"] },
+          { "required": ["b64_json"] }
+        ]
+      }
+    }
+  }
+}
+```
+
+> API 응답은 `data` 또는 `images` 배열. 각 항목은 `url` 또는 `b64_json` 포함. 런타임에서 block_json 형태로 변환하여 반환합니다.
+
+---
+
+## prompt_templates
+프롬프트 템플릿 (이미지용 — `prompt` 필드 사용)
+
+| 필드 | 비고 |
+|------|------|
+| name | 예: `gpt-image-1.5-generate` |
+| purpose | `image` | chat가 아님 |
+| is_active | `true` |
+| body | 아래 JSON |
+
+> 이미지 모델은 `messages`가 아니라 `prompt` 단일 필드를 사용합니다.  
+> 런타임에서 `promptFromTemplate || prompt` (user 입력)로 적용됩니다.
+
+### body
+```json
+{
+  "prompt": "{{userPrompt}}\n\nImage usage rule (very important):\n- If a reference image is provided, you MUST use it as the primary subject.\n- Apply a transformation to the provided image, not generate a new subject.\n- Preserve identity, proportions, and core structure of the original image unless explicitly told otherwise.\n\nGlobal style guide (always apply):\n- Clear, readable composition with a strong focal subject\n- Rich, high-quality visual detail (materials, textures, lighting)\n\nHard constraints (must follow):\n- No text, no letters, no numbers, no captions, no speech bubbles\n- No logos, no watermarks, no signatures, no UI\n\nQuality targets:\n- Sharp, clean, high fidelity\n- Avoid blur, noise, artifacts, distorted anatomy"
+}
+```
+
+> `{{userPrompt}}`는 런타임에서 사용자 입력으로 치환됩니다. ([models_prompt_image.md](document/models_prompt/models_prompt_image.md))
+
+---
+
 ## ai_models
 AI 모델 (이미지 타입)
 
@@ -118,86 +199,6 @@ AI 모델 (이미지 타입)
 
 ---
 
-## response_schemas
-출력 계약 (이미지 응답 형식)
-
-| 필드 | 비고 |
-|------|------|
-| name | 예: `llm_image_response` |
-| strict | `true` |
-| schema | 아래 JSON |
-
-### schema
-```json
-{
-  "type": "object",
-  "required": ["images"],
-  "additionalProperties": false,
-  "properties": {
-    "title": { "type": "string" },
-    "summary": { "type": "string" },
-    "blocks": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["type", "markdown"],
-        "additionalProperties": false,
-        "properties": {
-          "type": { "const": "markdown" },
-          "markdown": { "type": "string" }
-        }
-      }
-    },
-    "images": {
-      "type": "array",
-      "minItems": 1,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "url": { "type": "string" },
-          "b64_json": { "type": "string" },
-          "mime_type": { "type": "string" },
-          "width": { "type": "integer" },
-          "height": { "type": "integer" }
-        },
-        "anyOf": [
-          { "required": ["url"] },
-          { "required": ["b64_json"] }
-        ]
-      }
-    }
-  }
-}
-```
-
-> API 응답은 `data` 또는 `images` 배열. 각 항목은 `url` 또는 `b64_json` 포함. 런타임에서 block_json 형태로 변환하여 반환합니다.
-
----
-
-## prompt_templates
-프롬프트 템플릿 (이미지용 — `prompt` 필드 사용)
-
-| 필드 | 비고 |
-|------|------|
-| name | 예: `gpt-image-1.5-generate` |
-| purpose | `image` | chat가 아님 |
-| is_active | `true` |
-| body | 아래 JSON |
-
-> 이미지 모델은 `messages`가 아니라 `prompt` 단일 필드를 사용합니다.  
-> 런타임에서 `promptFromTemplate || prompt` (user 입력)로 적용됩니다.
-
-### body
-```json
-{
-  "prompt": "{{userPrompt}}\n\nImage usage rule (very important):\n- If a reference image is provided, you MUST use it as the primary subject.\n- Apply a transformation to the provided image, not generate a new subject.\n- Preserve identity, proportions, and core structure of the original image unless explicitly told otherwise.\n\nGlobal style guide (always apply):\n- Clear, readable composition with a strong focal subject\n- Rich, high-quality visual detail (materials, textures, lighting)\n\nHard constraints (must follow):\n- No text, no letters, no numbers, no captions, no speech bubbles\n- No logos, no watermarks, no signatures, no UI\n\nQuality targets:\n- Sharp, clean, high fidelity\n- Avoid blur, noise, artifacts, distorted anatomy"
-}
-```
-
-> `{{userPrompt}}`는 런타임에서 사용자 입력으로 치환됩니다. ([models_prompt_image.md](document/models_prompt/models_prompt_image.md))
-
----
 
 ## API 엔드포인트
 > 이미지 모델은 Responses API가 아니라 **Images API**를 사용합니다. 
